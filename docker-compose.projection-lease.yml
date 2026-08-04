@@ -1,0 +1,39 @@
+# Projection Phase 1 — a real, migrated PostgreSQL for the ACCESS-LEASE gate (G24, G25, G26).
+#
+# WHY A SEPARATE FILE, AND A SEPARATE PORT. `docker-compose.yml` is the ordinary development stack and binds
+# 5432, which is very often already taken on a machine that runs this product. Every gate here has to be
+# startable beside a running installation without disturbing it, so it takes its own project name, its own
+# network, its own volume and a port the operator can move.
+#
+# THE ENDPOINT AND THE DAEMON ARE NOT HERE, and their absence is deliberate. The gate starts them itself: the
+# daemon with the narrow authority a FUSE mount needs (/dev/fuse, CAP_SYS_ADMIN, root inside the container),
+# and the endpoint in expiring-lease mode with a control surface. Granting either of those in a Compose file
+# next to a database would make it look like a deployment shape somebody should copy. Neither is one — the
+# endpoint in particular exists only inside the pinned toolchain image and is never built into the production
+# Dockerfile.
+
+name: projection-lease-gate
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: catalog
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "${PROJECTION_LEASE_GATE_PG_PORT:-5540}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d catalog"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    tmpfs:
+      # THE DATABASE IS THROWAWAY, and it says so in the only way that cannot be forgotten: its storage does
+      # not survive the container. A gate that left a volume behind would eventually be run against the
+      # previous run's state, and "it passed" would stop meaning "it passed from nothing".
+      - /var/lib/postgresql/data
+
+networks:
+  default:
+    name: projection-lease-gate

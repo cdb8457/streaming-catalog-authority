@@ -235,14 +235,15 @@ type Server struct {
 	// objects by reference
 	objects map[string]Object
 	// faults by reference; remaining>0 means "apply this many more times, then stop"
-	faults        map[string]*faultState
-	leaseTTL      time.Duration
-	leasePrefix   string
-	publicBaseURL string
-	leaseSeq      atomic.Uint64
-	leases        map[string]time.Time
-	now           func() time.Time
-	timeoutFor    time.Duration
+	faults            map[string]*faultState
+	leaseTTL          time.Duration
+	leasePrefix       string
+	disallowedHostURL string
+	publicBaseURL     string
+	leaseSeq          atomic.Uint64
+	leases            map[string]time.Time
+	now               func() time.Time
+	timeoutFor        time.Duration
 	// requireAuth makes the resolver refuse a request with no bearer credential.
 	requireAuth bool
 	token       string
@@ -407,6 +408,13 @@ type Options struct {
 	// adapter's default request timeout on purpose.
 	MaxHold  time.Duration
 	MaxConns int
+	// DisallowedHostURL is the access URL FaultDisallowedHost hands back. Empty keeps the unroutable default.
+	//
+	// WHY A GATE NEEDS TO CHOOSE IT. The default names `evil.invalid`, which cannot resolve — so a daemon that
+	// tried to dial it would fail at DNS, and "the read failed" would be evidence about a nameserver rather
+	// than about the allowlist. A gate that wants to prove the daemon NEVER CONTACTED the host has to point
+	// the fault at an origin it is itself listening on, and then observe zero connections there.
+	DisallowedHostURL string
 	// Addr is where to listen. Empty means `127.0.0.1:0`, which is what every in-process test wants: an
 	// ephemeral port on loopback that nothing outside the test can reach. The publisher-to-mount gate runs
 	// this server in its own container and needs it reachable from the daemon's container, so it sets an
@@ -425,20 +433,21 @@ func New(opts Options) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{
-		listener:      listener,
-		objects:       map[string]Object{},
-		objectOrdinal: map[string]int{},
-		faults:        map[string]*faultState{},
-		holds:         map[string]chan struct{}{},
-		maxHold:       opts.MaxHold,
-		leases:        map[string]time.Time{},
-		leaseTTL:      opts.LeaseTTL,
-		leasePrefix:   opts.LeasePrefix,
-		publicBaseURL: strings.TrimRight(opts.PublicBaseURL, "/"),
-		now:           time.Now,
-		timeoutFor:    opts.TimeoutFor,
-		token:         opts.Token,
-		requireAuth:   opts.Token != "",
+		listener:          listener,
+		objects:           map[string]Object{},
+		objectOrdinal:     map[string]int{},
+		faults:            map[string]*faultState{},
+		holds:             map[string]chan struct{}{},
+		maxHold:           opts.MaxHold,
+		leases:            map[string]time.Time{},
+		leaseTTL:          opts.LeaseTTL,
+		leasePrefix:       opts.LeasePrefix,
+		disallowedHostURL: opts.DisallowedHostURL,
+		publicBaseURL:     strings.TrimRight(opts.PublicBaseURL, "/"),
+		now:               time.Now,
+		timeoutFor:        opts.TimeoutFor,
+		token:             opts.Token,
+		requireAuth:       opts.Token != "",
 	}
 	if s.leaseTTL == 0 {
 		s.leaseTTL = time.Hour
@@ -953,8 +962,12 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 		return
 	case FaultDisallowedHost:
 		// The provider names a host the daemon was never configured to contact. It must not be dialled.
+		disallowed := "http://evil.invalid/object/x/" + body.ObjectRef
+		if s.disallowedHostURL != "" {
+			disallowed = s.disallowedHostURL
+		}
 		writeJSON(w, map[string]any{
-			"url":             "http://evil.invalid/object/x/" + body.ObjectRef,
+			"url":             disallowed,
 			"expiresAtUnixMs": s.now().Add(s.leaseTTL).UnixMilli(),
 		})
 		return

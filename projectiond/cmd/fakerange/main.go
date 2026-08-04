@@ -82,6 +82,9 @@ func main() {
 	// repository has already paid for twice.
 	leaseTTL := flag.Duration("lease-ttl", 0, "how long a resolved access URL stays valid; 0 keeps the default")
 	token := flag.String("token-file", "", "file holding the bearer credential the resolver requires")
+	// Where FaultDisallowedHost points. A gate proving the daemon NEVER CONTACTED a disallowed origin has to
+	// point the fault at an origin it is itself listening on; the unroutable default would only prove DNS failed.
+	disallowed := flag.String("disallowed-host-url", "", "the access URL the disallowed-host fault hands back")
 	var objects objectList
 	var files fileList
 	flag.Var(&objects, "object", "ref:size, repeatable — bytes from the deterministic content function")
@@ -108,7 +111,7 @@ func main() {
 
 	server, err := fakeprovider.New(fakeprovider.Options{
 		Addr: *addr, LeasePrefix: *leasePrefix, PublicBaseURL: *publicBase, MaxHold: *maxHold,
-		LeaseTTL: *leaseTTL, Token: secret,
+		LeaseTTL: *leaseTTL, Token: secret, DisallowedHostURL: *disallowed,
 	})
 	if err != nil {
 		fail(err.Error())
