@@ -1173,7 +1173,11 @@ await test('three passing runs are counted, and the message is guarded by the CO
   assertEq(result.status, 0, 'three runs pass');
   assert(/3 of 3 consecutive PLEX runs completed, none skipped/.test(result.stdout), 'and are counted');
   assert(/must not be reported as Phase 1 closure/.test(result.stdout), 'while saying what it is not');
-  assert(/Emby is still untouched/.test(result.stdout), 'and naming the media server still untouched');
+  // IT NAMED EMBY AS UNTOUCHED UNTIL EMBY RAN THREE TIMES ON UNRAID, at which point the sentence became
+  // false. What it must still refuse is the reading that three green runs here closed the tranche.
+  assert(/All three media servers have now run three/.test(result.stdout),
+    'and says what has actually run');
+  assert(/Phase 1 remains open/.test(result.stdout), 'while refusing the closure reading');
 });
 
 await test('a wrapper asked for zero runs refuses to announce a completed sequence', () => {

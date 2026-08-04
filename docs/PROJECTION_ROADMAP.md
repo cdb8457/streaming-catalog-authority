@@ -45,21 +45,23 @@ are not reopened. This is the roadmap for the projection appliance, and it is de
   **no pass threshold**, so every cost figure is recorded and compared against nothing — what fails closed is
   the instrumentation. `docs/PROJECTION_PHASE_1_RCLONE_COMPARISON.md` says what it measures and refuses to
   claim; the §6.1 table records **G22 as NOT RUN**, because every run has been on Windows / Docker Desktop.
-- **DOCKER DESKTOP IS NOT UNRAID, AND FOUR GATES HAVE NOW RUN THERE — PLEX IS NOT ONE OF THEM.** The
-  Jellyfin data-plane gate (366 assertions per run) and the Emby one (395/394/394) each completed **three
-  consecutive fresh runs on a real Unraid host**, none failed and none skipped; so did **G18** (64) and
-  **G22** (70). The host preflight returned an authoritative verdict for the first time rather than
-  `undetermined`, and every run left the host clean — zero mountpoints, where the same gate used to leave
-  four behind. **THE PLEX GATE DOES NOT PASS THERE**: two sequences stopped at run 1, on an
-  encoder-liveness floor (6 and 7 against 8, while the working-span floor passed at 192 s against 120 s)
-  and on a scan window that reached the provider not at all. **Neither has been fixed by moving a number**,
-  because a threshold fitted to a failed measurement is the move this repository has already rejected
-  twice.
+- **DOCKER DESKTOP IS NOT UNRAID, AND EVERY GATE THAT HAS AN EXECUTABLE FORM HAS NOW RUN THERE.** Three
+  consecutive fresh runs each, on a real Unraid host, none failed and none skipped: **Jellyfin** (366
+  assertions per run), **Emby** (395/394/394), **Plex** (414/412/414), **G18** (64) and **G22** (70). The
+  host preflight returned an authoritative verdict rather than `undetermined`, and every run left the host
+  clean — zero mountpoints, where the same gate once left four behind.
 
-- **AND THAT STILL DOES NOT CLOSE PHASE 1.** The tranche needs **all three** media servers, and Plex is one
-  of the three. G24–G26 and G27’s three-server half have **no executable gate at all** — nothing has been
-  run for them, which is not the same as something having been run and fallen short. No real provider
-  endpoint has ever been contacted. What has been run, against which server, is
+- **GETTING THERE COST FIVE GATE DEFECTS AND NO PRODUCT DEFECTS, WHICH IS ITSELF THE RESULT.** A byte
+  budget measured against bytes that were never written; a byte budget that was arithmetically unreachable
+  on the only object it bound; a cleanup whose lazy unmount ran in a mount namespace that did not
+  propagate; a scan window that was never cold because Plex had already scanned it before the window
+  opened; and an encoder-liveness floor that counted throttle bursts and therefore scored LOWER on faster
+  hardware. Every one was invisible on Docker Desktop.
+
+- **AND PHASE 1 STILL DOES NOT CLOSE.** **G24–G26 and G27’s three-server half have no executable gate at
+  all** — nothing has been run for them, which is not the same as something run and fallen short — and
+  **no real provider endpoint has ever been contacted**. What has changed is that the reason the tranche
+  is open is no longer the platform. What has been run, against which server, is
   `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6.1 — and that table, not this page, is the authority on it.
 - Therefore the product now does the thing it is for, **on all three media servers, on a developer's machine**
   — and Phase 1 remains open.
@@ -83,17 +85,15 @@ real Linux or Unraid host.**
 **This rule has not been satisfied.** Three consecutive green runs on Windows and Docker Desktop are three
 green runs on Windows and Docker Desktop.
 
-**AND IT IS NOT SATISFIED BY THE UNRAID RUNS EITHER, WHICH IS THE WHOLE POINT OF STATING THEM PRECISELY.**
-The rule names the Phase 1 vertical slice **and all three media servers**. Jellyfin and Emby have three
-consecutive fresh Unraid runs each; **Plex does not pass on that host at all**. Two of three is not the
-rule. A partial truth recorded exactly is what this page is for; a partial truth rounded up to closure is
-what it exists to prevent.
+**AND THE UNRAID RUNS DO NOT SATISFY IT EITHER, WHICH IS THE WHOLE POINT OF STATING THEM PRECISELY.** The
+rule names **the Phase 1 vertical slice**, and the slice is not only the media-server gates. G24–G26 and
+G27’s three-server half have **no executable gate at all**, and **no real provider endpoint has ever been
+contacted** — the acceptance plan names a real-provider corpus and places it on exactly this environment.
+Five gates passing three times each is five gates passing three times each.
 
-**Nor is it weakened by a gate that exists.** Writing a third gate is exactly the kind of work the rule
-permits — it is the slice itself, not a document about it — but the rule is satisfied by RUNS, on the platform
-it names. A gate is only evidence once `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6.1 records it as run,
-and even then §6 decides what that run closes.
-
+**What has changed is which sentence is doing the work.** For the whole life of this document the reason
+Phase 1 was open was the platform. It is not any more. The reason now is that parts of the slice have
+never been executed, and a partial truth recorded exactly is what this page is for.
 This is a rule with teeth because this repository has the failure mode it prevents. There are 336 phases
 behind it, a large fraction of which are evidence packets, review gates, closure gates, authorization
 records, dispositions and acceptance seals for work whose end-to-end behaviour was never demonstrated. Each

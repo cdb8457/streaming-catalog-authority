@@ -401,88 +401,26 @@ default; on this host it is, so the requirement was satisfied without mutating t
 | **G22** rclone comparison control | 3 consecutive, fresh | **70 assertions per run, 0 failed, 0 skipped** |
 | **Jellyfin** data plane (G7–G13’s Jellyfin share) | 3 consecutive, fresh | **366 assertions per run, 0 failed, 0 skipped** |
 | **Emby** data plane (G7–G13’s Emby share) | 3 consecutive, fresh | **395 / 394 / 394 assertions, 0 failed, 0 skipped** |
-| **Plex** data plane | **NOT PASSING ON THIS HOST** | two sequences, each stopped at run 1 — see below |
+| **Plex** data plane (G7–G13’s Plex share) | **3/3 consecutive fresh** | **414 / 412 / 414 assertions, 0 failed, 0 skipped** |
 
 **AND EVERY ONE OF THOSE RUNS LEFT THE HOST CLEAN**, which is a claim the gates now make themselves: each
 reports `cleanup: 0 mountpoints and no run directory left under the gate root`, on success and on failure
 alike. Before the correction in §6.5 the same gate left four dangling mountpoints behind.
 
-**PLEX DOES NOT PASS ON THIS HOST, AND THE TWO FAILURES ARE NOT THE ONES THIS TRANCHE CORRECTED.** Both
-sequences stopped at run 1, on different assertions, and neither is a byte budget:
+**PLEX NOW PASSES, AND IT TOOK TWO GATE DEFECTS TO GET THERE.** Both earlier sequences stopped at run 1, on
+different assertions, and neither was a byte budget nor a fault in the product. §6.6 records what they were
+and how each was answered without moving a number. The measurements that had failed now read:
 
-| Assertion | Measured | Floor | What it is |
-|---|---|---|---|
-| `PX20-encoder-output-advances` | **7**, then **6** | 8 | distinct moments at which the encoder was seen to have produced NEW output. The companion `PX20-encoder-working-span-seconds` PASSED at 192 s against 120 s, so the encoder was working across the window — it advanced in fewer, larger steps than the floor’s derivation assumed. That derivation scaled a probe of 4 advances in 90 s to “roughly a dozen”; on this hardware it is 6–7. |
-| `PX9-scan-provider-bytes-floor` and `PX9-scan-range-requests-floor` | **0** and **0** | 1,048,576 and 1 | the first scan window reached the provider **not at all**. Every ceiling in that window passed by having had nothing happen in it, which is exactly what the floors exist to catch. |
+| Assertion | Before | After |
+|---|---|---|
+| `PX9-scan-range-requests-floor` | **0** against a floor of 1 | **5** |
+| `PX9-scan-provider-bytes-floor` | **0** against 1,048,576 | **11,534,336** |
+| `PX20` liveness | `output-advances` **7**, then **6**, against a floor of 8 | `advance-gap-seconds` **48** against a ceiling of **120** |
 
-### 6.6 Both Plex failures, diagnosed from evidence and fixed without moving a number
-
-**NEITHER WAS A BUDGET, AND NEITHER WAS THE PRODUCT.** Both were defects in how the gate measured.
-
-#### PX9 — the window was never cold; it was a race
-
-**THE EVIDENCE IS UNAMBIGUOUS.** In the failing run the counters snapshot taken *before* the window already
-read **6 ranged requests and 11,535,360 bytes** for the anchor object, and the snapshot taken *after* it was
-**byte-identical**. The window measured a delta of zero because all of the provider work had already
-happened — before the window opened.
-
-**THE CAUSE IS PLEX'S OWN LIBRARY-CREATION SCAN.** Plex begins scanning the instant a library exists, and no
-gate can prevent that. The anchor was published in generation 1, *before* the library was created, so that
-creation scan identified it. By the time the gate triggered its own explicit scan, there was nothing left to
-do. Whether the window saw any provider work at all depended on which finished first — **a race, not a
-measurement** — and the runs that passed were the ones where the snapshot happened to land mid-scan.
-
-**Every CEILING in that window passed by having had nothing happen in it.** Only the floors caught it, which
-is precisely what floors are for.
-
-**THE FIX IS THE CONTRACT'S OWN UNIT OF CHANGE, and it is the one G18 already uses.** Generation 1 now seeds a
-**local passthrough entry only** — an entry the creation scan can find that contacts no endpoint at all. The
-gate waits for Plex's own barrier to report that scan settled, **asserts it cost the provider zero ranged
-requests**, and only then publishes the HTTP Range anchor as a **new generation**. An object identity that did
-not exist while the creation scan ran cannot have been scanned by it, so the window is cold **by
-construction** rather than by timing. No host-wide `drop_caches`, no production mutation, no external
-provider access.
-
-#### PX20 — the advance COUNT measured burst size, not liveness
-
-**THE EVIDENCE, AGAIN FROM THE FAILING RUNS.** `PX20-encoder-output-advances` read **7** and then **6**
-against a floor of 8 — while `PX20-encoder-throttled-samples` read **38** and
-`PX20-encoder-working-span-seconds` read **192** against a floor of 120. An encoder that is throttled 38
-times and works across 192 seconds is alive; the count was measuring something else.
-
-**WHAT IT WAS MEASURING.** Plex holds the encoder to a bounded lead over the client
-(`TranscoderThrottleBuffer`, 60 s by default) and then stops it until the client drains. So the same media on
-faster hardware arrives in **fewer, larger bursts** — and the count goes **down**. A number that falls as the
-machine gets faster cannot be a liveness floor, and moving the 8 in either direction would have been fitting
-a threshold to whichever run was in front of somebody.
-
-**WHAT REPLACED IT** is the longest wall silence between two moments of new output — `advanceGapSeconds` —
-held at **two throttle buffers**, computed from the server's own configured quantity rather than from any
-run. The ninety-second probe recorded in the module had a largest gap of 42 s, well inside it, on hardware
-slower than this host.
-
-**IT STILL REFUSES EVERYTHING THE COUNT WAS THERE TO REFUSE, AND ONE THING THE COUNT COULD NOT SEE:**
-
-| Shape | What refuses it |
-|---|---|
-| A stalled encoder — one long silence | the gap ceiling |
-| A single burst, then nothing | `MIN_WORKING_SPAN_SECONDS` — one advance has no span |
-| An encoder that **died halfway** | the **trailing** gap, from the last advance to the end of the window. The count and the working span both PASS this shape; only the trailing silence exposes it |
-| A job that legitimately **finished** | nothing — the trailing gap is held only while the job is still incomplete, or every correct fast run would fail |
-
-The count is still **recorded**, asserted on by nothing, beside the full timestamped `wallMs:offset` timeline
-the two floors are statements about.
-
-**WHAT THESE DO NOT CLOSE, AND THE LIST IS LONGER THAN WHAT THEY DO.** G7–G13 are the per-server data-plane
-gates and are **not** closed by either of these. G24–G26 and G27's three-server half have **no executable gate
-at all** — see §6.4. No real provider endpoint has been contacted. Per-server provider attribution remains
-impossible under one shared daemon and is not claimed. **Phase 1 does not close, and neither gate's own run
-record should be read as saying otherwise.**
-
-**AND THE FIRST UNRAID RUNS COST TWO REAL DEFECTS, BOTH IN THE GATES RATHER THAN THE PRODUCT.** The byte
-budget was measured against a quantity that included bytes never written (§5.2), and it was arithmetically
-unreachable on the only object it bound (§5.1). Both were invisible on Docker Desktop. A third — four
-dangling FUSE mountpoints left on the host after four runs — is recorded in §6.5.
+**ALL FIVE GATES THAT HAVE AN EXECUTABLE FORM NOW HAVE THREE CONSECUTIVE FRESH UNRAID RUNS, AND PHASE 1 STILL
+DOES NOT CLOSE.** G24–G26 and G27's three-server half have **no executable gate at all** (§6.4), and **no real
+provider endpoint has ever been contacted** — which §2 names as a corpus of the tranche and §6 places on this
+very environment. What has changed is that the reason Phase 1 is open is no longer the platform.
 
 ### 6.4 The gates that do not exist
 
