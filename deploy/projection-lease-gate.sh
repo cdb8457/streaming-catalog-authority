@@ -349,6 +349,14 @@ node "$REL/identity.cjs" "$WORK/mnt/$ENTRY_PATH" "$WORK/manifest" "$ENTRY_PATH" 
 G24_DIGEST="$(tr -d " \r\n" < "$WORK/out/g24-digest.txt")"
 DIGEST_OK=false
 [ "$G24_DIGEST" = "$OBJECT_SHA" ] && DIGEST_OK=true
+G24_BYTES="$(wc -c < "$WORK/out/g24-part.bin" | tr -d " ")"
+# The digests are over SYNTHETIC content and are safe to print; the byte counts are what say WHERE a
+# mismatch came from — a short read and a wrong read are different defects.
+echo "  the pinned read produced $G24_BYTES of $OBJECT_SIZE bytes"
+if [ "$DIGEST_OK" != "true" ]; then
+  echo "  read digest   $G24_DIGEST" >&2
+  echo "  expected      $OBJECT_SHA" >&2
+fi
 
 # NO NEW GENERATION WAS PUBLISHED, and the media server is told nothing. There is no media server here, so
 # what stands in for "told nothing" is the namespace: the pointer has not moved and the entry's own identity
