@@ -176,7 +176,14 @@ step "starting the endpoint in EXPIRING-LEASE mode, with a file-backed credentia
 # leaked could not leak one. It is high-entropy so the redaction assertions have an exact string to search for.
 TOKEN="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d " \n")"
 printf '%s' "$TOKEN" > "$WORK/secret/endpoint-token"
-chmod 644 "$WORK/secret/endpoint-token"
+# 0600, BECAUSE THE DAEMON REFUSES ANYTHING WIDER, AND IT IS RIGHT TO.
+#  fails a credential whose mode has any group or world bit set: "a credential that
+# anybody on the host can read is not a credential". The first version of this gate wrote 644 and the read
+# died with an I/O error the reader could only report as "standard input". The gate was wrong and the
+# product was right, which is the outcome a gate should be able to have.
+#
+# BOTH SIDES CAN STILL READ IT: the daemon and the endpoint both run as root in their containers.
+chmod 600 "$WORK/secret/endpoint-token"
 LEASE_MARKER="lease-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d " \n")"
 
 OBJECT_REF="obj-projection-lease"
