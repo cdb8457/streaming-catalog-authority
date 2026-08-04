@@ -188,6 +188,18 @@ LEASE_MARKER="lease-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d " \n")"
 
 OBJECT_REF="obj-projection-lease"
 OBJECT_SIZE=$((32 * 1024 * 1024))
+# TWO OBJECTS, AND THE SECOND IS NOT A CONVENIENCE.
+#
+# G24 reads its subject WHOLE — it has to, because the digest recorded outside the mount is over the whole
+# object and that is the only comparison worth making. That leaves every byte of it in the daemon's cache,
+# so a stampede pointed at the same object reaches the provider ZERO times. The first version of this gate
+# did exactly that and G25 failed on its own floor, correctly, saying no lease had lapsed.
+#
+# So G25 and G26 read a SECOND, LARGE object, and every phase takes its own 4 MiB-ALIGNED offset — aligned
+# because the daemon fetches in demand blocks, and two offsets inside one block are one fetch.
+OBJECT_B_REF="obj-projection-lease-cold"
+OBJECT_B_SIZE=$((256 * 1024 * 1024))
+MIB=$((1024 * 1024))
 
 # THE TRAP LISTENER. It is a second endpoint on a port the daemon's allowlist does NOT name, and the
 # disallowed-host fault points at it. "The daemon never contacted the host it was told to" is only evidence if
@@ -208,7 +220,8 @@ docker run -d --name "$RANGE_CONTAINER" --network "$NETWORK" --network-alias fak
   --lease-prefix "$LEASE_MARKER" --lease-ttl 1h --token-file /secret/endpoint-token \
   --public-base-url "http://fakerange:8099" \
   --disallowed-host-url "http://trap:8099/direct/trap-object" \
-  --object "${OBJECT_REF}:${OBJECT_SIZE}" --emit /out/objects.json >/dev/null
+  --object "${OBJECT_REF}:${OBJECT_SIZE}" --object "${OBJECT_B_REF}:${OBJECT_B_SIZE}" \
+  --emit /out/objects.json >/dev/null
 
 echo "  waiting for both endpoints to come up"
 ready=0
@@ -228,6 +241,7 @@ echo "  the endpoint is in resolver mode and serves one $OBJECT_SIZE-byte object
 step "seeding the catalog and publishing generation 1"
 # ----------------------------------------------------------------------------------------------------------
 ENTRY_PATH="Movies/Projection Lease Subject (2026)/Projection Lease Subject (2026).bin"
+ENTRY_B_PATH="Movies/Projection Lease Cold (2026)/Projection Lease Cold (2026).bin"
 PROBES="$(node "$REL/objects.cjs" "$REL/out/objects.json" "$OBJECT_REF" probes)"
 PROBE_FLAGS=""
 for probe in $PROBES; do PROBE_FLAGS="$PROBE_FLAGS --probe $probe"; done
@@ -236,6 +250,13 @@ register root --id vault --kind http-range
 register version --key lease-subject --size "$OBJECT_SIZE" --mtime 2026-06-01T10:00:00.000Z $PROBE_FLAGS
 register entry --item "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa" --version-key lease-subject \
   --path "$ENTRY_PATH" --source "http-range:vault:${OBJECT_REF}"
+PROBES_B="$(node "$REL/objects.cjs" "$REL/out/objects.json" "$OBJECT_B_REF" probes)"
+PROBE_FLAGS_B=""
+for probe in $PROBES_B; do PROBE_FLAGS_B="$PROBE_FLAGS_B --probe $probe"; done
+# shellcheck disable=SC2086
+register version --key lease-cold --size "$OBJECT_B_SIZE" --mtime 2026-06-01T10:00:00.000Z $PROBE_FLAGS_B
+register entry --item "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb" --version-key lease-cold \
+  --path "$ENTRY_B_PATH" --source "http-range:vault:${OBJECT_B_REF}"
 publish > "$WORK/out/publish-1.json"
 test "$(field outcome < "$WORK/out/publish-1.json")" = "published" || die "generation 1 was not published"
 GENERATION_1="$(field generationId < "$WORK/out/publish-1.json")"
@@ -277,7 +298,8 @@ docker run -d --name "$MOUNT_CONTAINER" \
 echo "  waiting for the namespace to become visible to another container"
 ready=0
 for _ in $(seq 1 120); do
-  if docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" test -f "/mnt/$ENTRY_PATH" >/dev/null 2>&1; then
+  if docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" \
+      sh -c "test -f '/mnt/$ENTRY_PATH' && test -f '/mnt/$ENTRY_B_PATH'" >/dev/null 2>&1; then
     ready=1; break
   fi
   sleep 0.5
@@ -379,9 +401,9 @@ cat > "$WORK/out/stampede.sh" <<STAMPEDE
 set -eu
 i=1
 while [ "\$i" -le 20 ]; do
-  offset=\$(( 1024 * 1024 + i * 1024 * 1024 ))
+    offset=\$(( i * 4 * 1024 * 1024 ))
   (
-    if dd if="/mnt/$ENTRY_PATH" bs=65536 skip=\$(( offset / 65536 )) count=1 of=/dev/null 2>/dev/null; then
+    if dd if="/mnt/$ENTRY_B_PATH" bs=65536 skip=\$(( offset / 65536 )) count=1 of=/dev/null 2>/dev/null; then
       echo ok > "/out/stampede-\$i.done"
     else
       echo fail > "/out/stampede-\$i.done"
@@ -395,6 +417,11 @@ echo done > /out/stampede-complete
 STAMPEDE
 
 rm -f "$WORK/out/stampede-"*.started "$WORK/out/stampede-"*.done "$WORK/out/stampede-complete"
+# A LEASE MUST EXIST BEFORE IT CAN LAPSE. One read of the cold object mints one, at an offset no later
+# phase touches, so what the stampede meets is a STALE lease rather than no lease at all.
+docker run --rm --user 65534:65534 --cap-drop ALL -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" \
+  sh -c "dd if='/mnt/$ENTRY_B_PATH' bs=65536 skip=$(( 200 * MIB / 65536 )) count=1 of=/dev/null" \
+  >/dev/null 2>&1 || die "the cold object could not be read, so no lease was ever minted"
 control expire-leases
 counters counters-g25-before.json
 docker run --rm --name "${READER_CONTAINER}-s" --user 65534:65534 --cap-drop ALL \
@@ -413,10 +440,10 @@ step "G25 — after a FAILED resolution, the cooldown holds and the next open fa
 # ----------------------------------------------------------------------------------------------------------
 # The resolver is made to fail, the lease is lapsed, and one read spends the single resolution attempt. The
 # NEXT open, inside the cooldown, must ask the resolver nothing at all.
-control "fault/${OBJECT_REF}?fault=resolver-error&times=1"
+control "fault/${OBJECT_B_REF}?fault=resolver-error&times=1"
 control expire-leases
 docker run --rm --user 65534:65534 --cap-drop ALL -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" \
-  sh -c "dd if='/mnt/$ENTRY_PATH' bs=65536 skip=400 count=1 of=/dev/null 2>/dev/null" >/dev/null 2>&1 \
+  sh -c "dd if='/mnt/$ENTRY_B_PATH' bs=65536 skip=$(( 100 * MIB / 65536 )) count=1 of=/dev/null 2>/dev/null" \
   && die "the read succeeded although the resolver was made to fail"
 echo "  the resolution failed, as arranged, and the cooldown is now running"
 
@@ -425,7 +452,7 @@ counters counters-g25c-before.json
 COOLDOWN_START="$(date +%s%3N)"
 COOLDOWN_FAILED=false
 docker run --rm --user 65534:65534 --cap-drop ALL -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" \
-  sh -c "dd if='/mnt/$ENTRY_PATH' bs=65536 skip=500 count=1 of=/dev/null 2>/dev/null" >/dev/null 2>&1 \
+  sh -c "dd if='/mnt/$ENTRY_B_PATH' bs=65536 skip=$(( 104 * MIB / 65536 )) count=1 of=/dev/null 2>/dev/null" \
   || COOLDOWN_FAILED=true
 COOLDOWN_ELAPSED=$(( $(date +%s%3N) - COOLDOWN_START ))
 sleep 1
@@ -433,7 +460,7 @@ counters counters-g25c-after.json
 
 # THE NAMESPACE IS UNCHANGED: a resolver outage is not a deletion.
 NAMESPACE_OK=false
-docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" test -f "/mnt/$ENTRY_PATH" >/dev/null 2>&1 \
+docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" test -f "/mnt/$ENTRY_B_PATH" >/dev/null 2>&1 \
   && NAMESPACE_OK=true
 
 lease g25-cooldown --before "$REL/out/counters-g25c-before.json" \
@@ -447,17 +474,17 @@ step "G26 — a refreshed response is held to every rule the first one was"
 # and arming second means the 401 is answered without consuming the fault — and the fault then lands on the
 # POST-REFRESH request, which is exactly the response G26 is about.
 echo '[]' > "$WORK/out/g26.json"
-G26_SKIP=800
+G26_BLOCK=120
 for fault in mismatched-content-range short-body wrong-total-size full-body-on-range; do
   # Every fault gets its own cooldown-free window: the previous phase's cooldown must not be what refuses it.
   sleep $(( COOLDOWN_MS / 1000 + 1 ))
   control expire-leases
-  control "fault/${OBJECT_REF}?fault=${fault}&times=4"
+  control "fault/${OBJECT_B_REF}?fault=${fault}&times=4"
   counters "counters-g26-${fault}-before.json"
   BYTES=0
   FAILED=true
   if docker run --rm --user 65534:65534 --cap-drop ALL -v "$WORK/mnt:/mnt:rslave" -v "$WORK/out:/out" \
-      "$VERIFY_IMAGE" sh -c "dd if='/mnt/$ENTRY_PATH' bs=65536 skip=${G26_SKIP} count=1 of=/out/g26-out.bin 2>/dev/null" \
+      "$VERIFY_IMAGE" sh -c "dd if='/mnt/$ENTRY_B_PATH' bs=65536 skip=$(( G26_BLOCK * MIB / 65536 )) count=1 of=/out/g26-out.bin 2>/dev/null" \
       >/dev/null 2>&1; then
     FAILED=false
   fi
@@ -465,7 +492,7 @@ for fault in mismatched-content-range short-body wrong-total-size full-body-on-r
     BYTES="$(wc -c < "$WORK/out/g26-out.bin" | tr -d ' ')"
     rm -f "$WORK/out/g26-out.bin"
   fi
-  control "fault/${OBJECT_REF}?fault=&times=0"
+  control "fault/${OBJECT_B_REF}?fault=&times=0"
   node -e "
 const { readFileSync, writeFileSync } = require('node:fs');
 const path = process.argv[1];
@@ -474,7 +501,7 @@ seen.push({ fault: process.argv[2], bytesAccepted: Number(process.argv[3]), read
 writeFileSync(path, JSON.stringify(seen));
 " "$WORK/out/g26.json" "$fault" "$BYTES" "$FAILED"
   echo "  $fault: read failed=$FAILED, bytes accepted=$BYTES"
-  G26_SKIP=$(( G26_SKIP + 1 ))
+  G26_BLOCK=$(( G26_BLOCK + 4 ))
 done
 lease g26-refreshed --observations "$REL/out/g26.json"
 
@@ -485,12 +512,12 @@ sleep $(( COOLDOWN_MS / 1000 + 1 ))
 TRAP_BEFORE="$(curl -fsS --max-time 10 "http://127.0.0.1:${TRAP_PORT}/counters" | node "$REL/jq.cjs" rangeRequests)"
 counters counters-g26a-before.json
 control expire-leases
-control "fault/${OBJECT_REF}?fault=disallowed-host&times=4"
+control "fault/${OBJECT_B_REF}?fault=disallowed-host&times=4"
 ALLOWLIST_FAILED=true
 docker run --rm --user 65534:65534 --cap-drop ALL -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" \
-  sh -c "dd if='/mnt/$ENTRY_PATH' bs=65536 skip=900 count=1 of=/dev/null 2>/dev/null" >/dev/null 2>&1 \
+  sh -c "dd if='/mnt/$ENTRY_B_PATH' bs=65536 skip=$(( 150 * MIB / 65536 )) count=1 of=/dev/null 2>/dev/null" \
   && ALLOWLIST_FAILED=false
-control "fault/${OBJECT_REF}?fault=&times=0"
+control "fault/${OBJECT_B_REF}?fault=&times=0"
 sleep 1
 counters counters-g26a-after.json
 TRAP_AFTER="$(curl -fsS --max-time 10 "http://127.0.0.1:${TRAP_PORT}/counters" | node "$REL/jq.cjs" rangeRequests)"

@@ -388,8 +388,8 @@ test('G25 PROVES ALL TWENTY READERS STARTED, and gives each a DIFFERENT uncached
   assert(/stampede-.{0,3}i\.started/.test(GATE), 'each reader records that it started');
   assert(/STARTED=.*stampede-\*\.started.*wc -l/.test(GATE), 'the gate counts them');
   assert(GATE.includes('--opens "$STARTED"'), 'and hands the COUNT to the verdict rather than the plan\'s 20');
-  assert(/offset=.{0,3}\(\( 1024 \* 1024 \+ i \* 1024 \* 1024 \)\)/.test(GATE),
-    'the offsets differ per reader');
+  assert(/offset=.{0,3}(( i * 4 * 1024 * 1024 ))/.test(GATE),
+    'the offsets differ per reader, 4 MiB apart so each needs its own demand block');
 });
 
 test('G26 REPLAYS ALL FOUR SHAPES, and arms each AFTER the lapse so the fault lands post-refresh', () => {
