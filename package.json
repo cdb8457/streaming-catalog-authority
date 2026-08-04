@@ -104,6 +104,7 @@
     "test:projection-three-server-concurrency": "tsx test/projection-three-server-concurrency.ts",
     "test:projection-rclone-comparison": "tsx test/projection-rclone-comparison.ts",
     "test:projection-host-preflight": "tsx test/projection-host-preflight.ts",
+    "test:projection-lease-gates": "tsx test/projection-lease-gates.ts",
     "ops:projection-contract-export": "tsx src/ops/projection-contract-export-cli.ts",
     "ops:projection-register": "tsx src/ops/projection-register-cli.ts",
     "ops:projection-publish": "tsx src/ops/projection-publish-cli.ts",

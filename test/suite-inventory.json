@@ -405,6 +405,10 @@
       "group": "offline"
     },
     {
+      "file": "projection-lease-gates.ts",
+      "group": "offline"
+    },
+    {
       "file": "provider-availability-bridge.ts",
       "group": "offline"
     },

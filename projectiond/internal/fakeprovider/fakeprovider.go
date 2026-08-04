@@ -466,6 +466,32 @@ func New(opts Options) (*Server, error) {
 		s.Release(strings.TrimPrefix(r.URL.Path, "/control/release/"))
 		w.WriteHeader(http.StatusNoContent)
 	})
+	// THE LEASE GATES DRIVE THE ENDPOINT FROM OUTSIDE ITS PROCESS, which is the only difference between them
+	// and the in-process suites that already exercise every one of these behaviours. `InjectFault` and the
+	// lease store are ordinary methods; a gate that runs the endpoint in its own container cannot call them,
+	// so they get a control surface — UNCOUNTED, exactly as /counters and the hold controls are, because a
+	// control request that incremented a range counter would spend the budget it exists to measure.
+	mux.HandleFunc("/control/fault/", func(w http.ResponseWriter, r *http.Request) {
+		ref := strings.TrimPrefix(r.URL.Path, "/control/fault/")
+		if ref == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		times := 1
+		if raw := r.URL.Query().Get("times"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			times = parsed
+		}
+		s.InjectFault(ref, Fault(r.URL.Query().Get("fault")), times)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/control/expire-leases", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{"expired": s.ExpireAllLeases()})
+	})
 	s.server = &http.Server{
 		Handler:      mux,
 		ReadTimeout:  30 * time.Second,
@@ -824,6 +850,32 @@ func (s *Server) Snapshot() CountersSnapshot {
 // perturbed the numbers it reports would make every budget read a little bigger every time somebody looked.
 func (s *Server) handleCounters(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, s.Snapshot())
+}
+
+// ExpireAllLeases makes every outstanding lease lapse RIGHT NOW.
+//
+// WHY A GATE NEEDS THIS AND A SHORT TTL IS NOT ENOUGH. G24 asks for a lease that expires DURING a read. A
+// short `LeaseTTL` gets there eventually, but only by racing the reader: too long and the read finishes
+// first, too short and the lease is already dead before the read starts, and the gate passes or fails on
+// timing rather than on behaviour. That is the defect this repository has already paid for twice — a window
+// whose verdict depended on which of two things happened first.
+//
+// So the lapse is an EVENT the gate causes, at the moment of its choosing, between two reads it controls.
+// The next ranged request on an outstanding lease is then answered 401 exactly as a naturally lapsed one is —
+// the same code path, the same counter — because this does not special-case anything: it moves the recorded
+// expiry into the past and lets the ordinary check reject it.
+func (s *Server) ExpireAllLeases() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	past := s.now().Add(-time.Hour)
+	expired := 0
+	for lease := range s.leases {
+		if s.leases[lease].After(past) {
+			s.leases[lease] = past
+			expired++
+		}
+	}
+	return expired
 }
 
 // InjectFault applies a fault to the next `times` requests for one object. times <= 0 means "always".

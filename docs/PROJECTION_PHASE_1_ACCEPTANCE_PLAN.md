@@ -422,13 +422,51 @@ DOES NOT CLOSE.** G24–G26 and G27's three-server half have **no executable gat
 provider endpoint has ever been contacted** — which §2 names as a corpus of the tranche and §6 places on this
 very environment. What has changed is that the reason Phase 1 is open is no longer the platform.
 
+### 6.7 What the G24–G26 audit found: the product was already there
+
+**THE DAEMON'S TRANSPORT-RESOLUTION PATH IS COMPLETE, AND WAS COMPLETE BEFORE ANYONE LOOKED.** The audit this
+tranche began with expected to find lease handling absent or partial. It is neither:
+
+| Behaviour G24–G26 require | Where it already lives |
+|---|---|
+| Re-resolve a stable reference when access material lapses | `source/http.go` — a `ClassAccessRefresh` failure is followed by exactly one `resolver.Refresh` |
+| At most ONE refresh per read | the same function, followed by `terminalize`, which makes a post-refresh failure un-refreshable so a refresh can never lead to another |
+| Single-flight resolution under a stampede | `resolver.go` — `slot.inflight`, so concurrent callers wait on one call |
+| A cooldown after a FAILED resolution | `resolver.go` — `RefreshCooldown` against `lastRefreshAt` |
+| An egress allowlist a resolved URL cannot escape | `resolver.go` — `AllowedOrigins`, with a separate switch for private addresses |
+| Access material that cannot leak | `Lease.String()` returns `<access-lease redacted>`, so an accidental `%v` prints a placeholder |
+
+**SO NOTHING IN THE PRODUCT WAS IMPLEMENTED FOR THESE GATES, AND THAT IS THE FINDING.** What was missing was
+never the behaviour; it was the evidence. §6.1 recorded G24–G26 as "not run" and that remains exactly right —
+**a capability that exists and has never been exercised end to end is not a gate that passed.**
+
+**WHAT THIS TRANCHE BUILT** is the half that was missing, up to but not including the run:
+
+- an **uncounted control surface** on the fake endpoint (`/control/fault/…`, `/control/expire-leases`) so a
+  gate running the endpoint in its own container can arm a fault and lapse a lease — with Go tests proving a
+  control request moves neither the range counter nor the resolution counter, and that a deliberately lapsed
+  lease is refused on the **ordinary** path and the **ordinary** counter rather than a special case;
+- `--lease-ttl` and `--token-file` on `cmd/fakerange`, the credential from a file and never from argv;
+- the budgets, the fail-closed window rules and the verdicts in `src/core/projection/lease-gates.ts`, every
+  number traced to the clause that fixes it rather than to a measurement;
+- **28 adversarial offline tests**, weighted toward the false passes these gates are unusually exposed to,
+  because all three are statements about an ABSENCE — one resolution, zero bytes, zero requests — and an
+  absence is satisfied by doing nothing at all. A window in which no lease ever lapsed, a stampede whose
+  readers did not all start, a resolution that never happened so no disallowed host was ever named: each is
+  refused by name.
+
+**WHAT REMAINS IS THE GATE ITSELF**: the script that stands up PostgreSQL, the publisher, the endpoint in
+resolver mode and the daemon, drives a synthetic reader across a deliberate lapse, and runs three consecutive
+fresh times on the Unraid host. **Until that exists and has run, G24–G26 stay `not run`,** and the row above
+says so.
+
 ### 6.4 The gates that do not exist
 
 **A GATE THAT HAS NOT BEEN WRITTEN CANNOT BE RUN, AND SAYING SO IS NOT THE SAME AS SAYING IT FAILED.**
 
 | Gate | State |
 |---|---|
-| **G24** lease expires mid-read | The fake endpoint supports the expiring-lease mode; **no committed harness drives it end to end.** Not run, and not runnable today. |
+| **G24** lease expires mid-read | The daemon path is COMPLETE — see section 6.7 — and the rules, budgets and verdicts now exist with 28 adversarial offline tests behind them. | **No end-to-end gate has been run.** The harness that drives a synthetic reader across a lapse is not written, so nothing has been measured. |
 | **G25** lease expiry does not stampede | Same. No executable gate. |
 | **G26** a refreshed response is held to every rule | Same. No executable gate. |
 | **G27** three-server half | The admission-refusal half is closed offline by `npm run test:projection-publisher`. The retire → grace → delete → add sequence across three servers has **no executable gate.** |
