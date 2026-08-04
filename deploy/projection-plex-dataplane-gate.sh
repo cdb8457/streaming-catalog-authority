@@ -1524,10 +1524,29 @@ test "$ready" -eq 1 || { wait "$KILL_PID" || true; die "the stream never became 
 echo "  SIGKILL"
 docker kill --signal=KILL "$MOUNT_CONTAINER" >/dev/null
 docker rm -f "$MOUNT_CONTAINER" >/dev/null 2>&1 || true
-# THROUGH THE PROPAGATING HELPER. The inline version here bound the gate root `rprivate`, so on a host
-# where the mount really propagates it unmounted nothing at all and the dead namespace went on answering
-# `stat` — which is precisely how a remount assertion passes against a mount that is not there.
-projection_gate_unmount_run "$GATE_ROOT" "$WORK" "$VERIFY_IMAGE" || true
+# NOTHING IS UNMOUNTED HERE, AND THE REAL HOST IS WHY.
+#
+# There used to be a `umount -l` at this point, "so a stale mount does not go on answering". It never did
+# anything: it ran inside a container whose bind of the gate root carried Docker's default `rprivate`, so
+# the unmount happened in a namespace that was discarded immediately. On Docker Desktop that was invisible.
+#
+# MAKING IT WORK BROKE THE GATE, WHICH IS THE FINDING. Routed through the propagating helper it genuinely
+# detached the mount — and the MEDIA SERVER IS STILL RUNNING at this point, holding `$WORK/mnt` as an
+# `rslave` bind. A lazy unmount of the master detaches the slave copy too, and the media server can never
+# get it back: the run failed at the very next assertion with "the media server's own mount cannot be
+# READ". The dead mount is not what breaks recovery; removing it is.
+#
+# WHAT ACTUALLY MAKES RECOVERY WORK is that the restarted daemon mounts again at the same path and the new
+# mount STACKS over the dead one, so the media server's slave view resolves to the live namespace. That is
+# also what a real operator restart looks like, and this gate exists to measure that rather than to tidy
+# up before measuring it.
+#
+# THE STALE MOUNT IS NOT LEAKED, IT IS DEFERRED. Cleanup removes the media server FIRST and only then walks
+# every mountpoint under the run root, stacked ones included, and verifies the count reached zero.
+#
+# AND THE ASSERTION THIS COMMENT USED TO JUSTIFY IS STILL MADE, harder: the gate reads real bytes back
+# through the media server's own mount after the remount, so a dead namespace fails here whatever is or is
+# not mounted underneath it.
 
 echo "  restarting and remounting through the ordinary daemon start"
 start_daemon

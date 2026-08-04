@@ -90,16 +90,11 @@ projection_gate_cleanup_run() {
 
   _attempt=1
   while [ "$_attempt" -le "$PROJECTION_CLEANUP_ATTEMPTS" ]; do
-    # THE GATE ROOT IS BOUND `:rshared` SO THE UNMOUNT PROPAGATES BACK TO THE HOST. That is the whole fix.
-    # `-R` walks any nested mountpoints; a single `umount` of the top one leaves children behind.
-    #
-    # It falls back to an unshared bind if the daemon refuses `rshared` — on a host whose run root is not on a
-    # shared mount there is no host-side propagation to undo either, so the private unmount is the right one.
-    docker run --rm --privileged -v "$_gate_root:/gate:rshared" "$_image" \
-      sh -c "for m in \$(awk '\$5 ~ \"^/gate/$_base/\" {print \$5}' /proc/self/mountinfo | sort -r); do umount -l \"\$m\" 2>/dev/null || true; done" \
-      >/dev/null 2>&1 \
-      || docker run --rm --privileged -v "$_gate_root:/gate" "$_image" \
-        sh -c "umount -l /gate/$_base/mnt 2>/dev/null || true" >/dev/null 2>&1 || true
+    # ONE UNMOUNT IMPLEMENTATION, shared with the function above rather than spelled twice. It walks the real
+    # mount table in reverse so STACKED mounts come off in the right order — and stacking is the normal case
+    # here, because the kill-and-recover phase deliberately leaves a dead mount with the restarted daemon's
+    # live one on top of it.
+    projection_gate_unmount_run "$_gate_root" "$_run" "$_image" || true
 
     _left="$(projection_gate_mounts_under "$_run")"
     # An empty answer means the question could not be asked on this host; do not loop on it.
