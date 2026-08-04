@@ -222,9 +222,11 @@ step "seeding the catalog and publishing generation 1"
 # ----------------------------------------------------------------------------------------------------------
 ENTRY_PATH="Movies/Projection Lease Subject (2026)/Projection Lease Subject (2026).bin"
 PROBES="$(node "$REL/objects.cjs" "$REL/out/objects.json" "$OBJECT_REF" probes)"
+PROBE_FLAGS=""
+for probe in $PROBES; do PROBE_FLAGS="$PROBE_FLAGS --probe $probe"; done
 register root --id vault --kind http-range
 # shellcheck disable=SC2086
-register version --key lease-subject --size "$OBJECT_SIZE" --mtime 2026-06-01T10:00:00.000Z $PROBES
+register version --key lease-subject --size "$OBJECT_SIZE" --mtime 2026-06-01T10:00:00.000Z $PROBE_FLAGS
 register entry --item "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa" --version-key lease-subject \
   --path "$ENTRY_PATH" --source "http-range:vault:${OBJECT_REF}"
 publish > "$WORK/out/publish-1.json"
