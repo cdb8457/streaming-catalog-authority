@@ -1011,6 +1011,15 @@ esac
 echo "  the media server will be addressed by its address, not by its container name"
 
 drive prefs --state "$STATE"
+# THE PROVIDER BASELINE, TAKEN BEFORE THE LIBRARY EXISTS.
+#
+# It is a DELTA that matters, not the absolute counter. The gate has already made one ranged request of
+# its own by this point — the endpoint self-check that asserts a 206 — and an absolute comparison would
+# blame Plex for it. The first version of this assertion did exactly that and failed the run it was
+# written to protect.
+drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-before-library.json"
+BEFORE_LIBRARY_RANGE="$(field rangeRequests < "$WORK/out/counters-before-library.json")"
+
 drive library --state "$STATE" --mount-path /media/projection/Movies --name "Projection Movies"
 
 # ----------------------------------------------------------------------------------------------------------
@@ -1025,8 +1034,9 @@ drive scan --state "$STATE" --expect-file "$REL/out/seed-expected.json" \
 
 drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-after-seed.json"
 SEED_COUNTERS_RANGE="$(field rangeRequests < "$WORK/out/counters-after-seed.json")"
-test "${SEED_COUNTERS_RANGE:-0}" -eq 0 \
-  || die "the library-creation scan reached the provider ${SEED_COUNTERS_RANGE} time(s); the seed generation is supposed to be local-only"
+SEED_RANGE_DELTA=$(( SEED_COUNTERS_RANGE - BEFORE_LIBRARY_RANGE ))
+test "$SEED_RANGE_DELTA" -eq 0 \
+  || die "the library-creation scan reached the provider $SEED_RANGE_DELTA time(s); the seed generation is local-only, so it must cost nothing"
 echo "  Plex's creation scan settled, and it cost the provider zero ranged requests"
 
 # ----------------------------------------------------------------------------------------------------------
