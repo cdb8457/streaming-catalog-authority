@@ -1028,6 +1028,8 @@ async function main(): Promise<void> {
           committed: delta('bytesServed'),
           observed: delta('observedBytes'),
           truncatedBodies: delta('truncatedBodies'),
+          rangeRequests: delta('rangeRequests'),
+          bodiesInFlight: counterValue(after, 'bodiesInFlight'),
         }, plexScanByteCeiling(sizes),
         `${sizes.length} remote objects, each at most the per-class maximum for its own length`
           + (perObject ? '; implied by the per-object verdicts above, which are what bind' : ''))) {
@@ -1208,6 +1210,8 @@ async function main(): Promise<void> {
         committed: delta('bytesServed'),
         observed: delta('observedBytes'),
         truncatedBodies: delta('truncatedBodies'),
+        rangeRequests: delta('rangeRequests'),
+        bodiesInFlight: counterValue(after, 'bodiesInFlight'),
       }, seekBudget ? plexSeekByteCeiling(events) : Math.floor(objectBytes * multiplier * events),
       seekBudget
         ? `${events} seeks, each an encoder restart of at most `

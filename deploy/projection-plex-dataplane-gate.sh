@@ -45,6 +45,9 @@
 # fails the gate rather than occupying the machine.
 
 set -euo pipefail
+# shellcheck source=deploy/projection-gate-cleanup.sh
+. "$(cd "$(dirname "$0")" && pwd)/projection-gate-cleanup.sh"
+
 export MSYS_NO_PATHCONV=1
 
 IMAGE="${PROJECTIOND_IMAGE:-projectiond:phase1-local}"
@@ -117,11 +120,13 @@ cleanup() {
   docker rm -f "$PLEX_CONTAINER" >/dev/null 2>&1 || true
   docker rm -f "$MOUNT_CONTAINER" "$RANGE_CONTAINER" >/dev/null 2>&1 || true
   docker compose -f "$COMPOSE_FILE" down -v --remove-orphans >/dev/null 2>&1 || true
-  if [ -n "${WORK:-}" ] && [ -d "$WORK" ]; then
-    docker run --rm --privileged -v "$GATE_ROOT:/gate" "$VERIFY_IMAGE" \
-      sh -c "umount -l /gate/$(basename "$WORK")/mnt 2>/dev/null; rm -rf /gate/$(basename "$WORK")" >/dev/null 2>&1 || true
+  # THE UNMOUNT PROPAGATES BACK TO THE HOST, which the inline version that used to be here did not:
+  # it unmounted inside a container whose bind of the gate root was `rprivate`, so the host mountpoint
+  # survived every run. See `deploy/projection-gate-cleanup.sh`.
+  if [ -n "${WORK:-}" ]; then
+    projection_gate_cleanup_run "$GATE_ROOT" "$WORK" "$VERIFY_IMAGE" || true
+    projection_gate_report_cleanliness "$GATE_ROOT" "$WORK" || true
   fi
-  rm -rf "$WORK" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -1519,8 +1524,10 @@ test "$ready" -eq 1 || { wait "$KILL_PID" || true; die "the stream never became 
 echo "  SIGKILL"
 docker kill --signal=KILL "$MOUNT_CONTAINER" >/dev/null
 docker rm -f "$MOUNT_CONTAINER" >/dev/null 2>&1 || true
-docker run --rm --privileged -v "$GATE_ROOT:/gate" "$VERIFY_IMAGE" \
-  sh -c "umount -l /gate/$(basename "$WORK")/mnt 2>/dev/null" >/dev/null 2>&1 || true
+# THROUGH THE PROPAGATING HELPER. The inline version here bound the gate root `rprivate`, so on a host
+# where the mount really propagates it unmounted nothing at all and the dead namespace went on answering
+# `stat` — which is precisely how a remount assertion passes against a mount that is not there.
+projection_gate_unmount_run "$GATE_ROOT" "$WORK" "$VERIFY_IMAGE" || true
 
 echo "  restarting and remounting through the ordinary daemon start"
 start_daemon

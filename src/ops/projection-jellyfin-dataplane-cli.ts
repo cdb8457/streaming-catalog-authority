@@ -7,6 +7,7 @@ import {
   type CorpusExpectation, type GateResult, type SeekObservation, type SoakProbe, type SoakSegment,
   type TranscodeSessionSampleRecord,
 } from '../core/projection/media-server-dataplane.js';
+import { objectAttribution, scanByteResults } from '../core/projection/daemon-read-geometry.js';
 import {
   GateFailure, addMovieLibrary, appendResult, awaitFile, awaitServer, bootstrap, configureEncoding,
   directPlay, forcedTranscode, listMovies, mediaTimeSeekSet, openPinnedStream, pacedDirectPlay, rangeRead,
@@ -1000,19 +1001,26 @@ async function main(): Promise<void> {
       // that could never pass. Folding the two together would be worse than either: the large entries would
       // pay for the small ones, and a regression in the large path — the one the product's argument rests
       // on — would disappear into the average. So each names its own denominator, and both are printed.
-      const smallBytes = optionalNumber(args, 'small-bytes', 0);
-      const byteBudget = Math.floor(remoteBytes * MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION
-        + smallBytes * MEDIA_SERVER_BUDGETS.MAX_SMALL_OBJECT_SCAN_BYTE_MULTIPLIER);
-      // BOTH COLUMNS, because the committed one is not a delivery figure — see `providerByteResults`, and the
-      // Unraid run that failed this assertion at 6,357,097 having actually been served 5,312,437.
-      for (const result of providerByteResults(gate, {
+      // THE SCAN BYTE VERDICT, PER OBJECT, THROUGH THE RULE BOTH MEDIA-SERVER GATES SHARE.
+      //
+      // WHAT THIS REPLACED AND WHY. It used to be one aggregate ceiling of
+      // `MAX_SCAN_BYTE_FRACTION x (remote bytes above the single-probe threshold)` plus a 1.3x term for the
+      // ones below. On Unraid that came out at 4,297,137 over an 8,594,275-byte object, and the daemon's two
+      // legitimate read patterns for it are 3,772,849 and 4,821,425 — one probe window apart, with the
+      // ceiling between them. A budget a correct daemon fails half the time is not a budget.
+      //
+      // `MAX_SCAN_BYTE_FRACTION` IS UNCHANGED AT 0.5. What moved is where it is asserted: on objects big
+      // enough for it to be reachable, per object, alongside the block geometry. See `daemon-read-geometry`.
+      for (const result of scanByteResults(gate, {
         committed: delta('bytesServed'),
         observed: delta('observedBytes'),
         truncatedBodies: delta('truncatedBodies'),
-      }, byteBudget,
-      `denominators: ${remoteBytes} bytes in objects above the single-probe threshold at `
-        + `x${MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION}, and ${smallBytes} bytes below it at `
-        + `x${MEDIA_SERVER_BUDGETS.MAX_SMALL_OBJECT_SCAN_BYTE_MULTIPLIER}`)) record(args, result);
+        rangeRequests: delta('rangeRequests'),
+        bodiesInFlight: after.bodiesInFlight ?? 0,
+      }, objectAttribution(before), objectAttribution(after),
+      { requireFractionBearingObject: args.flags.get('require-large-object') === 'true' })) {
+        record(args, result);
+      }
       record(args, withinBudget(`${gate}-http-429`, delta('served429'), MEDIA_SERVER_BUDGETS.MAX_HTTP_429));
       record(args, withinBudget(`${gate}-full-body-on-range`, delta('fullBodyServed'),
         MEDIA_SERVER_BUDGETS.MAX_FULL_BODY_SERVED));
@@ -1047,6 +1055,8 @@ async function main(): Promise<void> {
         committed: delta('bytesServed'),
         observed: delta('observedBytes'),
         truncatedBodies: delta('truncatedBodies'),
+        rangeRequests: delta('rangeRequests'),
+        bodiesInFlight: after.bodiesInFlight ?? 0,
       }, Math.floor(objectBytes * multiplier),
       `denominator: the object's own ${objectBytes} bytes, read at most ${multiplier}x over the window`)) {
         record(args, result);

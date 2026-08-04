@@ -1636,6 +1636,11 @@ await test('EXECUTION: the two byte columns reach the SCAN ceiling through the C
   const abandoned = runBudget(argv, before, {
     ...QUIET_COUNTERS, bytesServed: QUIET_COUNTERS.bytesServed + 400_000 + 1_000_000,
     observedBytes: QUIET_COUNTERS.bytesServed + 400_000, truncatedBodies: 1,
+    // THE WINDOW MUST HAVE SERVED A BODY TO HAVE ABANDONED ONE. An earlier version of this fixture left the
+    // request count untouched, which is a window reporting one truncated body and zero ranged requests — and
+    // the coherence check correctly refuses it, because that is where an unbounded abandonment allowance
+    // would come from.
+    rangeRequests: QUIET_COUNTERS.rangeRequests + 2,
     objectBytes: [1_400_000], objectSizes: sizes,
   });
   assertEq(abandoned.results.find((r) => r.gate === 'PXtwo-provider-bytes-observed')?.measured, 400_000,
@@ -3249,7 +3254,12 @@ await test('the gate cleans up after itself, media server first', () => {
   assert(cleanup.indexOf('$PLEX_CONTAINER') < cleanup.indexOf('$MOUNT_CONTAINER'),
     'the media server is removed before the daemon: a FUSE mount with a live reader does not unmount '
     + 'cleanly, and a stale one is how the NEXT run passes for the wrong reason');
-  assert(cleanup.includes('umount -l'), 'and a lazy unmount catches whatever is left');
+  // THE UNMOUNT MOVED INTO THE SHARED HELPER, and that is the correction rather than a relocation: the
+  // inline version unmounted inside a container whose bind of the gate root was `rprivate`, so on a host
+  // where the mount really propagates the host mountpoint survived every run. Four of them were found on
+  // Unraid. The helper binds the gate root `:rshared` so the unmount travels back the way the mount came.
+  assert(cleanup.includes('projection_gate_cleanup_run'), 'the shared, propagating cleanup is what runs');
+  assert(GATE.includes('projection-gate-cleanup.sh'), 'and the gate sources it rather than restating it');
   assert(GATE.includes('trap cleanup EXIT'), 'cleanup runs on success and on failure');
 });
 

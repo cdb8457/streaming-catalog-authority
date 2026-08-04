@@ -890,7 +890,10 @@ await test('the gate never binds the mount read-only, so what refuses a write is
 
 await test('the corpus is the acceptance plan\'s ~50 entries with one long source beside it', () => {
   assert(GATE.includes('CORPUS_COUNT=47'), 'forty-seven generated entries');
-  assert(GATE.includes('--min-entries 50'), 'and the check demands the plan\'s fifty once anchors are added');
+  assert(GATE.includes('--min-entries 51'),
+    'the plan\'s fifty once anchors are added, plus the large fixture the byte fraction is asserted on');
+  assert(GATE.includes('LARGE_MIN_BYTES=98566144'),
+    'and that fixture is the 94 MiB one, the size at which the fraction is testable rather than unreachable');
   assert(GATE.includes('SOAK_SECONDS=340'), 'one long source, longer than the five minutes G8 and G10 need');
   assert(GATE.includes('drive corpus-check'), 'the corpus is checked against itself before a server sees it');
   // TWO BYTE-IDENTICAL ENTRIES WOULD MAKE EVERY DIGEST COMPARISON DECORATIVE, because a read that returned
@@ -985,7 +988,8 @@ await test('an interrupted run cannot leave its scratch credential where git cou
   assert(ignore.includes('throwaway access token'), 'and the reason is recorded beside the entry');
   // AND THE GATE REALLY DOES REMOVE IT, on both paths.
   assert(GATE.includes('trap cleanup EXIT'), 'the cleanup runs on every exit');
-  assert(/rm -rf "\$WORK"/.test(GATE), 'and removes the run directory');
+  assert(/projection_gate_cleanup_run "\$GATE_ROOT" "\$WORK"/.test(GATE),
+    'and removes the run directory through the shared helper, which guards the path before it deletes');
 });
 
 await test('the daemon still names no media server, which this gate does not change', () => {

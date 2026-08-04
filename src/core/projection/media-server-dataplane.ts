@@ -739,6 +739,19 @@ export interface ProviderByteWindow {
   readonly committed: number;
   readonly observed: number;
   readonly truncatedBodies: number;
+  /**
+   * Ranged requests in the same window. IT IS NOT DECORATION: it is what stops the abandonment allowance
+   * being unbounded — a body can only be abandoned if it was served, so `truncatedBodies` may never exceed
+   * it, and the allowance is computed against the smaller of the two.
+   */
+  readonly rangeRequests: number;
+  /**
+   * Bodies still being written when the snapshot was taken. A window read mid-write has a committed length
+   * whose observed counterpart has not landed yet, so the two columns legitimately disagree and NOTHING may
+   * be concluded from the difference. Callers settle first; this is here so an unsettled window is refused
+   * rather than measured.
+   */
+  readonly bodiesInFlight: number;
 }
 
 /**
@@ -747,7 +760,14 @@ export interface ProviderByteWindow {
  * The scan byte budget is the single most load-bearing number in these gates: it says a media server can
  * IDENTIFY an object without downloading it. It was asserted against the COMMITTED column alone.
  *
- * Committed is not a delivery figure and this repository already knows it. `internal/fakeprovider` says so
+ * WHAT THE OBSERVED COLUMN IS, STATED ONCE AND NOT OVERSTATED ANYWHERE. It is an APPLICATION-WRITE
+ * OBSERVATION: the count `Write` returned inside the endpoint handler. It is NOT peer receipt, NOT a TCP
+ * acknowledgement, NOT exact wire bytes and NOT provider billing. The word "delivery" is avoided throughout
+ * for that reason — a write that returned is a write the endpoint handed to its own HTTP stack, and what the
+ * far side did with it is outside every instrument here. G18 and G22 already word it this way; this is the
+ * per-server half saying the same thing rather than a stronger thing.
+ *
+ * Committed is not even that, and this repository already knows it. `internal/fakeprovider` says so
  * where it counts ("WHAT IT IS NOT is any statement that those bytes were written"), and G22 says it in the
  * report it prints: "committed-minus-observed is the endpoint's own optimism about reads the client
  * abandoned". G18 and G22 were brought onto both columns in `330a9e7` and `9f1d4de`. The three per-server
@@ -763,7 +783,8 @@ export interface ProviderByteWindow {
  *
  * WHAT THIS IS NOT IS A WEAKENING, AND THE SPLIT IS WHAT MAKES THAT TRUE.
  *
- *   - `observed` carries the load-bearing claim, AT THE UNCHANGED CEILING. A daemon that downloaded the
+ *   - `observed` carries the load-bearing claim, AT THE UNCHANGED CEILING, as an application-write
+ *     observation and nothing stronger. A daemon that downloaded the
  *     object to identify it delivers those bytes and fails here exactly as it always would have.
  *   - `abandoned` — committed minus observed — is bounded at ONE DEMAND BLOCK PER ABANDONED BODY. That is the
  *     most the daemon can leave on the table per cancellation, because a block is the unit it requests in.
@@ -793,7 +814,15 @@ export function providerByteCeilings(
   window: ProviderByteWindow, budget: number,
 ): ProviderByteCeilings {
   const abandoned = window.committed - window.observed;
-  const abandonedCeiling = PROVIDER_DEMAND_BLOCK_BYTES * Math.max(0, window.truncatedBodies);
+  // THE ALLOWANCE IS BOUNDED TWICE, AND THE SECOND BOUND IS THE ONE THAT CLOSES THE ESCAPE.
+  //
+  // One demand block per abandoned body is the per-body bound. On its own it is unbounded in the aggregate:
+  // a window reporting a million truncated bodies would grant itself four terabytes of headroom. A body can
+  // only be abandoned if it was SERVED, so the count of them can never exceed the window's own ranged
+  // requests — and those are bounded by the request ceiling every one of these gates already asserts. Taking
+  // the smaller of the two makes the abandonment allowance inherit that bound instead of escaping it.
+  const abandonableBodies = Math.max(0, Math.min(window.truncatedBodies, window.rangeRequests));
+  const abandonedCeiling = PROVIDER_DEMAND_BLOCK_BYTES * abandonableBodies;
   // `min` rather than the raw abandonment, so an over-abandoning window fails the committed check TOO rather
   // than having its own excess handed to it as headroom. A negative abandonment — observed above committed —
   // is a broken instrument, not headroom, and is clamped to zero so it cannot raise the ceiling either.
@@ -815,6 +844,48 @@ export function providerByteCeilings(
  */
 export function providerByteCoherenceProblems(window: ProviderByteWindow): readonly string[] {
   const problems: string[] = [];
+
+  // EVERY FIGURE IS A DELTA BETWEEN TWO SNAPSHOTS, so each of these shapes means the window describes no
+  // interval at all rather than a cheap one. They are checked BEFORE the relationships below, because a
+  // reset or a non-finite delta makes every comparison after it meaningless rather than false.
+  const columns: ReadonlyArray<readonly [string, number]> = [
+    ['committed', window.committed], ['observed', window.observed],
+    ['truncated bodies', window.truncatedBodies], ['ranged requests', window.rangeRequests],
+    ['bodies in flight', window.bodiesInFlight],
+  ];
+  for (const [name, value] of columns) {
+    if (!Number.isSafeInteger(value)) {
+      problems.push(`the ${name} column is ${value}, which is not a safe integer — a counter that overflowed `
+        + 'or a snapshot that was not a number describes no window, and arithmetic on it is not a measurement');
+    }
+  }
+  if (problems.length > 0) return problems;
+
+  // A COUNTER THAT FELL IS A RESTARTED ENDPOINT, NOT A FRUGAL WINDOW. Every column here is monotonic at the
+  // endpoint, so a negative delta means the two snapshots came from different processes and the difference
+  // between them is not an interval. `bodiesInFlight` is EXCLUDED BY NAME: it is a gauge, not a total, and it
+  // legitimately falls as bodies complete.
+  for (const [name, value] of columns) {
+    if (name === 'bodies in flight') continue;
+    if (value < 0) {
+      problems.push(`the ${name} column fell by ${-value} across the window; the endpoint's counters reset `
+        + 'underneath it, so this describes two processes rather than one interval');
+    }
+  }
+  if (problems.length > 0) return problems;
+
+  // AN UNSETTLED WINDOW IS REFUSED RATHER THAN MEASURED. A body still being written has its committed length
+  // counted and its observed length not, so the columns disagree for a reason that says nothing about the
+  // daemon. Measuring it would attribute an in-flight body to abandonment.
+  if (window.bodiesInFlight !== 0) {
+    problems.push(`${window.bodiesInFlight} body/bodies were still being written when the window closed, so `
+      + 'the observed column has not settled and the difference between the two columns is not abandonment');
+  }
+  if (window.truncatedBodies > window.rangeRequests) {
+    problems.push(`the window reports ${window.truncatedBodies} truncated bodies against only `
+      + `${window.rangeRequests} ranged requests; a body cannot be abandoned unless it was served, and an `
+      + 'abandonment allowance computed from the larger figure would be headroom the window invented');
+  }
   if (window.observed > window.committed) {
     problems.push(`the endpoint observed ${window.observed} bytes against ${window.committed} committed; `
       + 'more was written than was ever undertaken, which is a broken instrument rather than a measurement');
@@ -822,9 +893,6 @@ export function providerByteCoherenceProblems(window: ProviderByteWindow): reado
   if (window.truncatedBodies === 0 && window.committed !== window.observed) {
     problems.push(`the window abandoned no body, so its committed (${window.committed}) and observed `
       + `(${window.observed}) columns must agree, and they differ by ${window.committed - window.observed}`);
-  }
-  if (window.truncatedBodies < 0) {
-    problems.push(`a truncated-body count cannot be negative: ${window.truncatedBodies}`);
   }
   return problems;
 }
@@ -843,14 +911,17 @@ export function providerByteResults(
   const ceilings = providerByteCeilings(window, budget);
   const results: GateResult[] = [
     withinBudget(`${gate}-provider-bytes`, ceilings.committed, ceilings.committedCeiling,
-      `COMMITTED payload length — what the endpoint undertook to serve, not a delivery figure. ${denominators}`
+      `COMMITTED payload length — what the endpoint undertook to serve, which is neither an application-write `
+      + `observation nor any statement about receipt. ${denominators}`
       + (ceilings.truncatedBodies > 0
         ? `; the ceiling carries ${ceilings.committedCeiling - budget} bytes of abandonment that `
           + `${ceilings.truncatedBodies} truncated body/bodies account for, over a base budget of ${budget}`
         : '')),
     withinBudget(`${gate}-provider-bytes-observed`, ceilings.observed, budget,
-      'the SAME ceiling over what the endpoint\'s writes actually RETURNED. This is the load-bearing one: a '
-      + `scan that DOWNLOADED the object to identify it delivers those bytes and fails here. ${denominators}`),
+      'the SAME ceiling over what the endpoint\'s Write calls RETURNED — an APPLICATION-WRITE observation, '
+      + 'NOT peer receipt, NOT a TCP acknowledgement, NOT exact wire bytes and NOT billing. This is the '
+      + `load-bearing one: a scan that DOWNLOADED the object to identify it writes those bytes and fails `
+      + `here. ${denominators}`),
     withinBudget(`${gate}-provider-bytes-abandoned`, Math.max(0, ceilings.abandoned),
       ceilings.abandonedCeiling,
       `committed minus observed, bounded at one ${PROVIDER_DEMAND_BLOCK_BYTES}-byte demand block per `

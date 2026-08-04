@@ -56,6 +56,9 @@
 # EVERYTHING IS BOUNDED. Every readiness probe, scan, observation and wait has a hard deadline; a hang fails
 # the gate rather than occupying the machine.
 set -euo pipefail
+# shellcheck source=deploy/projection-gate-cleanup.sh
+. "$(cd "$(dirname "$0")" && pwd)/projection-gate-cleanup.sh"
+
 export MSYS_NO_PATHCONV=1
 
 GO_IMAGE="golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651"
@@ -108,12 +111,13 @@ cleanup() {
   # reports a cost figure produced by a mount it did not create.
   docker rm -f "$PLEX_CONTAINER" "$JF_CONTAINER" "$EMBY_CONTAINER" >/dev/null 2>&1 || true
   docker rm -f "$MOUNT_CONTAINER" "$DAV_CONTAINER" >/dev/null 2>&1 || true
-  if [ -n "${WORK:-}" ] && [ -d "$WORK" ]; then
-    docker run --rm --privileged -v "$GATE_ROOT:/gate" "$VERIFY_IMAGE" \
-      sh -c "umount -l /gate/$(basename "$WORK")/mnt 2>/dev/null; rm -rf /gate/$(basename "$WORK")" \
-      >/dev/null 2>&1 || true
+  # THE UNMOUNT PROPAGATES BACK TO THE HOST, which the inline version that used to be here did not:
+  # it unmounted inside a container whose bind of the gate root was `rprivate`, so the host mountpoint
+  # survived every run. See `deploy/projection-gate-cleanup.sh`.
+  if [ -n "${WORK:-}" ]; then
+    projection_gate_cleanup_run "$GATE_ROOT" "$WORK" "$VERIFY_IMAGE" || true
+    projection_gate_report_cleanliness "$GATE_ROOT" "$WORK" || true
   fi
-  rm -rf "$WORK" >/dev/null 2>&1 || true
   docker network rm "$NETWORK" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT

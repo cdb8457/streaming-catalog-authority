@@ -78,7 +78,7 @@ could never have passed however well the daemon behaved.
 |---|---|---|
 | G14a | **Range-request multiplier** | Ranged GETs against the object endpoint **≤ 1.2x** (entry count x scan windows per entry). With three windows and 50 entries: **≤ 180**. |
 | G14b | **Resolution-request multiplier** | Access-resolution requests **≤ 1.2x** the entry count. With 50 entries: **≤ 60**. |
-| G15 | **Byte multiplier** | Provider bytes **≤ 1.2x** (probe window x scan windows per entry x entry count). |
+| G15 | **Byte multiplier** | Provider bytes **≤ 1.2x** (probe window x scan windows per entry x entry count). Measured on **both** byte columns the endpoint reports — see §5.1. |
 | G16 | **Rate limiting** | HTTP **429** responses observed: **0**. Not "few". Zero — a 429 means the admission limits did not hold. |
 | G17 | **Connection cap** | Concurrent provider connections never exceed the configured per-endpoint cap, sampled at the server on every accept. |
 | G18 | **High-concurrency scan** | All three servers scanning simultaneously: G14a–G17 still hold, unchanged. |
@@ -93,6 +93,70 @@ byte-identity probes when it produces a manifest — up to three probe windows p
 at production time, and zero thereafter for an unchanged version. That cost belongs to manifest production
 and is measured separately in G23; folding it into the scan budget would make a one-off look like a per-scan
 cost and would hide a real regression in the scan path.
+
+### 5.1 Where `MAX_SCAN_BYTE_FRACTION` is asserted, and why it is not asserted everywhere
+
+**THE FRACTION IS UNCHANGED AT 0.5. WHAT CHANGED IS WHERE IT IS ASSERTED, AND THE FIRST UNRAID RUN IS WHY.**
+
+The media-server gates held a scan to `MAX_SCAN_BYTE_FRACTION` of the remote bytes above the contract's
+single-probe threshold, pooled over the corpus. On Unraid that ceiling came out at **4,297,137** over an
+**8,594,275**-byte object, and the daemon's scan of that object costs one of exactly two legitimate values:
+
+| Read pattern | Bytes |
+|---|---|
+| 1 probe window (1,048,576) + one EOF-clipped demand block (2,724,273) | **3,772,849** |
+| 2 probe windows (2,097,152) + the same clipped block | **4,821,425** |
+
+They differ by one probe window, both are inside the contract's own probe plan, and **the ceiling sat between
+them** — so a correct daemon passed or failed by luck. Docker Desktop happened to produce the smaller
+pattern; Unraid produced both. That is the "arithmetically unreachable budget" this section already warns
+about, and it had reached the most load-bearing number in the tranche.
+
+**A FRACTION BELOW 1.0 IS UNREACHABLE ON A SMALL OBJECT BY CONSTRUCTION.** The daemon serves a 4 MiB demand
+block for a one-byte read, so identifying a small object costs a whole block whatever the daemon does.
+Fitting the ceiling to what had been measured would have been a record of an observation with room around it
+— a move this repository has already rejected twice, as a `3.0` multiplier and as a size clamp the next run
+exceeded.
+
+So the budget is now **two bounds, asserted per object, against the object's own length**:
+
+| Bound | Applies to | What it is |
+|---|---|---|
+| **Block geometry** | every object | `BLOCK x min(4 MiB, size) + SMALL x min(1 MiB, size)` — the daemon's own demand block and probe window, at the per-class caps measured across every instrumented scan window this repository has. Not one number in it is chosen. |
+| **`MAX_SCAN_BYTE_FRACTION` = 0.5** | objects **≥ 94 MiB** | the product's whole argument, unchanged. 94 MiB is computed, not picked: it is the smallest whole MiB at which the maximum legitimate geometry sits comfortably below half the object **and** a whole-object read clearly breaches it. |
+
+**BOTH ARE ASSERTED WHERE BOTH APPLY, AND NEITHER REPLACES THE OTHER.** On a 94 MiB object the geometry
+(36,700,160) is the *tighter* of the two and the fraction (49,283,072) the looser, so asserting only the
+fraction there would be **weaker** than what came before. They bound different things: the geometry bounds the
+mechanism, the fraction bounds the outcome.
+
+**PER OBJECT, NOT POOLED, BECAUSE A TOTAL IS WHERE A RUNAWAY OBJECT HIDES.** A corpus total under a shared
+ceiling is perfectly consistent with one object downloaded in full and thirty-eight barely touched. The
+aggregate is kept beside the per-object verdicts — it catches bytes served for a reference the gate never
+registered, which attribution cannot — but the **binding** verdicts name their object.
+
+**AND THE CORPUS MUST CONTAIN AN OBJECT BIG ENOUGH TO CARRY THE CLAIM.** Every assertion above is satisfied by
+a corpus of tiny files, with the fraction simply not asserted on anything and no verdict saying so. So the
+gates assert that at least one fraction-bearing object was present: **shrinking or re-ordering the corpus
+cannot silently retire the product's central budget.**
+
+### 5.2 The two byte columns, and what the observed one does and does not mean
+
+The fake endpoint reports **committed** bytes — the payload length it undertook to serve, counted before the
+write — and **observed** bytes, the count `Write` itself returned. `MAX_SCAN_BYTE_FRACTION` and the geometry
+are asserted on **both**.
+
+**THE OBSERVED COLUMN IS AN APPLICATION-WRITE OBSERVATION AND NOTHING STRONGER.** It is **not** peer receipt,
+**not** a TCP acknowledgement, **not** exact wire bytes and **not** provider billing. The word "delivery" is
+avoided for that reason.
+
+**COMMITTED IS NOT EVEN THAT.** A demand block the daemon abandons part-way — its read-ahead cancellation
+working exactly as G10 exercises it — is counted in the committed column in full and never written. The first
+Unraid run failed a budget on 63,586 bytes that were never written, on a window that had been served 981,074
+bytes *under* the ceiling. So committed is asserted at the budget plus **only the abandonment its own
+truncated bodies justify**, and that allowance is bounded twice: one demand block per abandoned body, and no
+more abandoned bodies than the window served ranged requests. A window that abandoned nothing is held to
+exactly the budget, unchanged.
 
 | # | Gate | Budget |
 |---|---|---|
@@ -171,8 +235,8 @@ the same and only the second is evidence.
 | G11 **Generation swap mid-read** | run — the in-flight stream completed correctly across an admitted successor | not run | run on Docker Desktop only — one held-open response body, partially consumed and not drained, completed with the whole file's digest across an admitted successor, with 13,670,080 of its 13,981,376 bytes arriving after the event |
 | G12 **Kill and recover** | run — `SIGKILL` mid-stream, restart, remount: zero added, zero removed, zero item-id churn; playback resumable | not run | run on Docker Desktop only — `SIGKILL` mid-stream, restart, remount, followed by a byte-for-byte read through the media server's own mount so it cannot pass on a dead one: zero added, removed, duplicated, item-id-churned, metadata-drifted or path-drifted; the published generation did not move; playback resumable |
 | G13 **Re-scan churn** | run — twice, plus across a media-server restart | not run | run on Docker Desktop only — a repeat corpus scan, a scan after the media-server restart, and a plain re-scan, each with zero churn of any kind; the plain re-scan cost the provider **zero** ranged GETs and **zero** bytes |
-| G18 **High-concurrency scan** | **NOT RUN** for tranche purposes. A gate now exists and has been run on Docker Desktop only: `deploy/projection-three-server-concurrency-gate.sh` puts a real, digest-pinned Plex, Jellyfin and Emby on the SAME production mount, SAME admitted generation, SAME ~50-entry corpus and SAME fake endpoint, and observes all three scanning at the same instant. §6 says Docker Desktop closes none of G7–G13 or G18, so this column stays NOT RUN | same gate, same run, same platform — **NOT RUN** | same gate, same run, same platform — **NOT RUN** |
-| G22 **Comparison control** | **NOT RUN** for tranche purposes. A gate now exists and has been run on **Docker Desktop only**: `deploy/projection-rclone-comparison-gate.sh` puts the SAME ~50-entry corpus behind a digest-pinned rclone mount of a deterministic WebDAV endpoint and drives the SAME three real, digest-pinned media servers over it, with the SAME observer, the SAME barrier and the SAME overlap floors G18 uses. §6 says Docker Desktop closes none of G7–G13, G18 or G22, so this column stays NOT RUN. `docs/PROJECTION_PHASE_1_RCLONE_COMPARISON.md` §7 is the only place that says what has been run, and it carries **sixteen runs — one failure and fifteen completed, twelve of them through the committed three-consecutive-fresh-run wrapper in four sequences of three**. A coordinator review then found that the endpoint counted each response's Content-Length and reported it as what had been served, which invalidated one conclusion the document drew and none of its request, catalogue, overlap or cold-state evidence; the remediated instrument counts COMMITTED and OBSERVED bytes separately and has been run four more times, 70 assertions each with none failed and none skipped | same gate, same run, same platform — **NOT RUN** | same gate, same run, same platform — **NOT RUN** |
+| G18 **High-concurrency scan** | **RUN ON A REAL UNRAID HOST — three consecutive fresh runs, 64 assertions each, none failed and none skipped. See §6.3.** It closes G18 for THIS gate and nothing else: G7-G13 are other gates and remain open. Previously, A gate now exists and has been run on Docker Desktop only: `deploy/projection-three-server-concurrency-gate.sh` puts a real, digest-pinned Plex, Jellyfin and Emby on the SAME production mount, SAME admitted generation, SAME ~50-entry corpus and SAME fake endpoint, and observes all three scanning at the same instant. §6 says Docker Desktop closes none of G7–G13 or G18, so this column stays NOT RUN | same gate, same run, same platform — **NOT RUN** | same gate, same run, same platform — **NOT RUN** |
+| G22 **Comparison control** | **RUN ON A REAL UNRAID HOST — three consecutive fresh runs, 70 assertions each, none failed and none skipped. See §6.3.** G22 has no pass threshold, so what three Unraid runs establish is that the comparison instrumentation held there and its figures are reproducible — NOT that the naive path passed or failed anything. Previously, A gate now exists and has been run on **Docker Desktop only**: `deploy/projection-rclone-comparison-gate.sh` puts the SAME ~50-entry corpus behind a digest-pinned rclone mount of a deterministic WebDAV endpoint and drives the SAME three real, digest-pinned media servers over it, with the SAME observer, the SAME barrier and the SAME overlap floors G18 uses. §6 says Docker Desktop closes none of G7–G13, G18 or G22, so this column stays NOT RUN. `docs/PROJECTION_PHASE_1_RCLONE_COMPARISON.md` §7 is the only place that says what has been run, and it carries **sixteen runs — one failure and fifteen completed, twelve of them through the committed three-consecutive-fresh-run wrapper in four sequences of three**. A coordinator review then found that the endpoint counted each response's Content-Length and reported it as what had been served, which invalidated one conclusion the document drew and none of its request, catalogue, overlap or cold-state evidence; the remediated instrument counts COMMITTED and OBSERVED bytes separately and has been run four more times, 70 assertions each with none failed and none skipped | same gate, same run, same platform — **NOT RUN** | same gate, same run, same platform — **NOT RUN** |
 | G24–G26 **Lease gates** | **not run** through a media server; the fake endpoint supports the mode, this gate uses the direct one | — | — |
 | G27 **Path immutability** | admission half closed by `npm run test:projection-publisher`; **the three-server half is not run** | not run | not run |
 
@@ -244,8 +308,11 @@ Docker Desktop, which §6 says closes none of G7–G13 or G18. **Per-server prov
 there and is not claimed**: one daemon serves all three servers, so the endpoint sees the daemon and never the
 server behind a byte — every byte is attributed to a corpus OBJECT and none to a SERVER. **G22 is NOT RUN — a
 fifth gate now exists for it and has been run on Docker Desktop only; see below. G27's three-server half is not
-run.** No real provider endpoint has ever been contacted, no run has ever happened on Linux or Unraid, and
-**Phase 1 remains open**.
+run.** No real provider endpoint has ever been contacted, and **Phase 1 remains open**.
+
+**AND THE SENTENCE THAT USED TO END THIS PARAGRAPH — "no run has ever happened on Linux or Unraid" — IS NOW
+FALSE AND HAS BEEN REMOVED RATHER THAN SOFTENED.** See §6.3. Removing it changes nothing about G7–G13, which
+are other gates.
 
 **A FIFTH GATE EXISTS, IT IS THE COMPARISON CONTROL, AND THE G22 ROW STILL READS NOT RUN.**
 `deploy/projection-rclone-comparison-gate.sh` — `npm run go:rclone-comparison-gate` — stands up **one**
@@ -310,6 +377,68 @@ green runs. On an object that size the envelope (0.348 on that fixture) is the t
 so 0.5 remains the explicit headline but is not what would fail first. An earlier per-open model —
 `2 opens x min(3 x 4 MiB, size)`, saturating at 24 MiB — was **retired** when gate6 exceeded it, 32,505,856
 against 25,165,824.
+
+### 6.3 THE FIRST RUNS ON A REAL UNRAID HOST — what they were, and what they were not
+
+**TWO GATES HAVE NOW RUN ON A REAL UNRAID HOST, THREE CONSECUTIVE FRESH RUNS EACH, AND THE TRANCHE IS STILL
+OPEN.** This section exists because §6.1 is the evidence authority and an authority that concealed a partial
+truth would be worse than one that recorded it.
+
+The host: **Unraid 7.2.3, kernel 6.12.54, Docker 27.5.1, Compose v2.40.3, Node 22.18.0 on the host**, from an
+isolated checkout under `/mnt/user/appdata/catalog`. `/mnt/user` is `fuse.shfs` with propagation **`shared`**.
+
+**THE HOST PREFLIGHT RETURNED AN AUTHORITATIVE VERDICT FOR THE FIRST TIME.** §6.0 says its verdicts are
+three-valued and that `undetermined` is not a pass; every previous run was on Windows, where propagation and
+traversal are exactly that. On this host both were measured for real, `/dev/fuse` was reachable from a
+container and SELinux was absent. §6.0 predicted a checkout under `/mnt/user` would **not** be shared by
+default; on this host it is, so the requirement was satisfied without mutating the host and no
+`mount --make-rshared` was performed.
+
+| Gate | Runs | Result |
+|---|---|---|
+| **G18** three-server concurrency | 3 consecutive, fresh | **64 assertions per run, 0 failed, 0 skipped** |
+| **G22** rclone comparison control | 3 consecutive, fresh | **70 assertions per run, 0 failed, 0 skipped** |
+
+**WHAT THESE DO NOT CLOSE, AND THE LIST IS LONGER THAN WHAT THEY DO.** G7–G13 are the per-server data-plane
+gates and are **not** closed by either of these. G24–G26 and G27's three-server half have **no executable gate
+at all** — see §6.4. No real provider endpoint has been contacted. Per-server provider attribution remains
+impossible under one shared daemon and is not claimed. **Phase 1 does not close, and neither gate's own run
+record should be read as saying otherwise.**
+
+**AND THE FIRST UNRAID RUNS COST TWO REAL DEFECTS, BOTH IN THE GATES RATHER THAN THE PRODUCT.** The byte
+budget was measured against a quantity that included bytes never written (§5.2), and it was arithmetically
+unreachable on the only object it bound (§5.1). Both were invisible on Docker Desktop. A third — four
+dangling FUSE mountpoints left on the host after four runs — is recorded in §6.5.
+
+### 6.4 The gates that do not exist
+
+**A GATE THAT HAS NOT BEEN WRITTEN CANNOT BE RUN, AND SAYING SO IS NOT THE SAME AS SAYING IT FAILED.**
+
+| Gate | State |
+|---|---|
+| **G24** lease expires mid-read | The fake endpoint supports the expiring-lease mode; **no committed harness drives it end to end.** Not run, and not runnable today. |
+| **G25** lease expiry does not stampede | Same. No executable gate. |
+| **G26** a refreshed response is held to every rule | Same. No executable gate. |
+| **G27** three-server half | The admission-refusal half is closed offline by `npm run test:projection-publisher`. The retire → grace → delete → add sequence across three servers has **no executable gate.** |
+
+Writing these is slice work and is permitted by the roadmap's anti-detour rule. Until they exist, §6.1's
+`not run` for them means **nothing has been executed**, not that something was executed and fell short.
+
+### 6.5 The cleanup defect the real host exposed
+
+After four Jellyfin runs the isolated checkout carried **four dangling mountpoints**, each reporting
+`Transport endpoint is not connected`. The gates' own comments say a stale mount is how the next run inherits
+a namespace and passes for the wrong reason, so this was the failure mode the gate warns about happening to
+the gate.
+
+**IT WAS A PROPAGATION DEFECT, NOT A TIMING ONE.** The daemon binds its mount point `rshared` so the FUSE
+namespace reaches the media server beside it. The cleanup then ran `umount -l` inside a *different* container
+whose bind of the gate root carried Docker's default `rprivate` propagation — and an unmount in a private
+mount namespace is invisible outside it. The unmount genuinely succeeded, in a namespace discarded a
+millisecond later. **Docker Desktop cannot show this**: its bind sources live inside a Linux VM reached over a
+filesystem share, so there is no host-side mountpoint to leak. The same defect was present on the
+kill-and-recover path, where a stale mount would have let a remount assertion pass against a namespace that
+was not there.
 
 ### 6.2 What the five-minute gates prove, and the one thing G10 does not
 
