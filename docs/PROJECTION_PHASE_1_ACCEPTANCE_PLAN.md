@@ -398,6 +398,28 @@ default; on this host it is, so the requirement was satisfied without mutating t
 |---|---|---|
 | **G18** three-server concurrency | 3 consecutive, fresh | **64 assertions per run, 0 failed, 0 skipped** |
 | **G22** rclone comparison control | 3 consecutive, fresh | **70 assertions per run, 0 failed, 0 skipped** |
+| **Jellyfin** data plane (G7–G13’s Jellyfin share) | 3 consecutive, fresh | **366 assertions per run, 0 failed, 0 skipped** |
+| **Emby** data plane (G7–G13’s Emby share) | 3 consecutive, fresh | **395 / 394 / 394 assertions, 0 failed, 0 skipped** |
+| **Plex** data plane | **NOT PASSING ON THIS HOST** | two sequences, each stopped at run 1 — see below |
+
+**AND EVERY ONE OF THOSE RUNS LEFT THE HOST CLEAN**, which is a claim the gates now make themselves: each
+reports `cleanup: 0 mountpoints and no run directory left under the gate root`, on success and on failure
+alike. Before the correction in §6.5 the same gate left four dangling mountpoints behind.
+
+**PLEX DOES NOT PASS ON THIS HOST, AND THE TWO FAILURES ARE NOT THE ONES THIS TRANCHE CORRECTED.** Both
+sequences stopped at run 1, on different assertions, and neither is a byte budget:
+
+| Assertion | Measured | Floor | What it is |
+|---|---|---|---|
+| `PX20-encoder-output-advances` | **7**, then **6** | 8 | distinct moments at which the encoder was seen to have produced NEW output. The companion `PX20-encoder-working-span-seconds` PASSED at 192 s against 120 s, so the encoder was working across the window — it advanced in fewer, larger steps than the floor’s derivation assumed. That derivation scaled a probe of 4 advances in 90 s to “roughly a dozen”; on this hardware it is 6–7. |
+| `PX9-scan-provider-bytes-floor` and `PX9-scan-range-requests-floor` | **0** and **0** | 1,048,576 and 1 | the first scan window reached the provider **not at all**. Every ceiling in that window passed by having had nothing happen in it, which is exactly what the floors exist to catch. |
+
+**NEITHER IS FIXED BY MOVING A NUMBER, AND NEITHER HAS BEEN.** Lowering the advances floor to 6 would be a
+threshold fitted to a failed measurement — the move this plan has already rejected twice, as a `3.0`
+multiplier and as a size clamp the next run exceeded. Re-deriving it honestly needs instrumented
+observations of the encoder on this class of hardware, which is work, not a constant. The `PX9` floors are
+a different question again: they say a Plex scan window did no provider work at all, and what has to be
+established first is **why**, not what number would accept it.
 
 **WHAT THESE DO NOT CLOSE, AND THE LIST IS LONGER THAN WHAT THEY DO.** G7–G13 are the per-server data-plane
 gates and are **not** closed by either of these. G24–G26 and G27's three-server half have **no executable gate

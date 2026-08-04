@@ -62,5 +62,8 @@ fi
 echo
 echo "$completed of $RUNS consecutive EMBY runs completed, none skipped. On a Linux or Unraid host this is one"
 echo "media server's share of the repetition the acceptance plan asks for; on Windows or Docker Desktop it is"
-echo "not, and must not be reported as Phase 1 closure. All three media servers now have a gate; NONE of them"
-echo "has ever run on Linux or Unraid, and no real provider endpoint has ever been contacted."
+echo "not, and must not be reported as Phase 1 closure. All three media servers now have a gate, and all"
+echo "three HAVE now run three consecutive fresh times on a real Unraid host. That is one media servers"
+echo "share each of G7-G13 and nothing more: G18 and G22 are separate gates, G24-G26 and G27s three-server"
+echo "half have NO EXECUTABLE GATE AT ALL, no real provider endpoint has ever been contacted, and Phase 1"
+echo "remains open. docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md section 6.1 is the authority on what has run."
