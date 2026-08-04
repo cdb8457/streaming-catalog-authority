@@ -2401,6 +2401,40 @@ await test('THE CLEANUP HELPER REFUSES EVERY PATH THAT IS NOT UNDER THE RUN ROOT
   assertEq(ok.status, 0, 'a run directory that is already gone is nothing to do, not a failure');
 });
 
+await test('THE UNMOUNT-ONLY HELPER IS GUARDED EXACTLY AS THE CLEANUP ONE IS', () => {
+  // It exists because the cleanup helper also DELETES, and the mid-gate path must not. A second entry point
+  // is a second place for the containment to be forgotten, so it is driven through a real shell too.
+  const helperPath = join(root, 'deploy/projection-gate-cleanup.sh');
+  const attempt = (gateRoot: string, run: string): { status: number | null; stderr: string } => {
+    const result = spawnSync('bash', ['-c',
+      `. '${helperPath}'; projection_gate_unmount_run '${gateRoot}' '${run}' alpine`],
+    { encoding: 'utf8' });
+    return { status: result.status, stderr: result.stderr };
+  };
+  for (const [gateRoot, run, why] of [
+    ['/tmp/gate', '/tmp/elsewhere/run-1', 'a run directory outside the gate root'],
+    ['/tmp/gate', '/tmp/gate/../run-1', 'a parent traversal'],
+    ['/tmp/gate', '/tmp/gate', 'the gate root itself'],
+  ] as const) {
+    const refused = attempt(gateRoot, run);
+    assert(refused.status !== 0, `${why} is refused by the unmount helper`);
+    assert(refused.stderr.includes('unmount refused'), `${why} says so on stderr`);
+  }
+});
+
+await test('STACKED MOUNTS COME OFF INNERMOST FIRST, which is the normal case here', () => {
+  // The kill-and-recover phase deliberately leaves a dead mount with the restarted daemon's live one on top
+  // of it, so by cleanup time the run root routinely carries a STACK. Unmounting the outer one first would
+  // leave the inner mount behind and the run would leak exactly what this helper exists to prevent.
+  const helper = read('deploy/projection-gate-cleanup.sh');
+  assert(/sort -r/.test(helper), 'the mount table is walked in reverse');
+  assert(/mountinfo/.test(helper), 'from the real mount table rather than an assumed path');
+  assert(/stacked/i.test(helper), 'and the reason is recorded where the loop is');
+  // ...and the deletion still only ever names the run directory.
+  assert(helper.includes(String.raw`rm -rf /gate/$_base`), 'the delete is scoped to the run directory basename');
+  assert(!/rm -rf ..gate([^/]|$)/m.test(helper.replace(/$_base/g, String.fromCharCode(88))), 'never the gate root itself');
+});
+
 await test('EVERY GATE ROUTES ITS CLEANUP THROUGH THE ONE HELPER, on every exit path', () => {
   // Five gates, one cleanup. The failure this prevents is the one that produced the defect: four copies of a
   // cleanup, of which the fixed one would have been whichever the next person happened to edit.

@@ -761,7 +761,8 @@ export interface ProviderByteWindow {
  * IDENTIFY an object without downloading it. It was asserted against the COMMITTED column alone.
  *
  * WHAT THE OBSERVED COLUMN IS, STATED ONCE AND NOT OVERSTATED ANYWHERE. It is an APPLICATION-WRITE
- * OBSERVATION: the count `Write` returned inside the endpoint handler. It is NOT peer receipt, NOT a TCP
+ * OBSERVATION: the count the endpoint handler's own `http.ResponseWriter.Write` RETURNED. It is NOT peer
+ * receipt, NOT a TCP
  * acknowledgement, NOT exact wire bytes and NOT provider billing. The word "delivery" is avoided throughout
  * for that reason — a write that returned is a write the endpoint handed to its own HTTP stack, and what the
  * far side did with it is outside every instrument here. G18 and G22 already word it this way; this is the
@@ -785,10 +786,10 @@ export interface ProviderByteWindow {
  *
  *   - `observed` carries the load-bearing claim, AT THE UNCHANGED CEILING, as an application-write
  *     observation and nothing stronger. A daemon that downloaded the
- *     object to identify it delivers those bytes and fails here exactly as it always would have.
+ *     object to identify it WRITES those bytes and fails here exactly as it always would have.
  *   - `abandoned` — committed minus observed — is bounded at ONE DEMAND BLOCK PER ABANDONED BODY. That is the
  *     most the daemon can leave on the table per cancellation, because a block is the unit it requests in.
- *     This is the non-vacuous half: a daemon that REQUESTED a whole object and then abandoned it delivers
+ *     This is the non-vacuous half: a daemon that REQUESTED a whole object and then abandoned it writes
  *     little and would sail through an observed-only check, and is caught here instead.
  *   - `committed` is still asserted, at `budget + the abandonment its own truncated bodies justify`. When
  *     nothing was abandoned that ceiling IS the budget, unchanged — so every verdict every one of these gates

@@ -143,7 +143,8 @@ cannot silently retire the product's central budget.**
 ### 5.2 The two byte columns, and what the observed one does and does not mean
 
 The fake endpoint reports **committed** bytes — the payload length it undertook to serve, counted before the
-write — and **observed** bytes, the count `Write` itself returned. `MAX_SCAN_BYTE_FRACTION` and the geometry
+write — and **observed** bytes, **the count the handler's own `http.ResponseWriter.Write` RETURNED, and
+nothing else**. `MAX_SCAN_BYTE_FRACTION` and the geometry
 are asserted on **both**.
 
 **THE OBSERVED COLUMN IS AN APPLICATION-WRITE OBSERVATION AND NOTHING STRONGER.** It is **not** peer receipt,
@@ -414,12 +415,63 @@ sequences stopped at run 1, on different assertions, and neither is a byte budge
 | `PX20-encoder-output-advances` | **7**, then **6** | 8 | distinct moments at which the encoder was seen to have produced NEW output. The companion `PX20-encoder-working-span-seconds` PASSED at 192 s against 120 s, so the encoder was working across the window — it advanced in fewer, larger steps than the floor’s derivation assumed. That derivation scaled a probe of 4 advances in 90 s to “roughly a dozen”; on this hardware it is 6–7. |
 | `PX9-scan-provider-bytes-floor` and `PX9-scan-range-requests-floor` | **0** and **0** | 1,048,576 and 1 | the first scan window reached the provider **not at all**. Every ceiling in that window passed by having had nothing happen in it, which is exactly what the floors exist to catch. |
 
-**NEITHER IS FIXED BY MOVING A NUMBER, AND NEITHER HAS BEEN.** Lowering the advances floor to 6 would be a
-threshold fitted to a failed measurement — the move this plan has already rejected twice, as a `3.0`
-multiplier and as a size clamp the next run exceeded. Re-deriving it honestly needs instrumented
-observations of the encoder on this class of hardware, which is work, not a constant. The `PX9` floors are
-a different question again: they say a Plex scan window did no provider work at all, and what has to be
-established first is **why**, not what number would accept it.
+### 6.6 Both Plex failures, diagnosed from evidence and fixed without moving a number
+
+**NEITHER WAS A BUDGET, AND NEITHER WAS THE PRODUCT.** Both were defects in how the gate measured.
+
+#### PX9 — the window was never cold; it was a race
+
+**THE EVIDENCE IS UNAMBIGUOUS.** In the failing run the counters snapshot taken *before* the window already
+read **6 ranged requests and 11,535,360 bytes** for the anchor object, and the snapshot taken *after* it was
+**byte-identical**. The window measured a delta of zero because all of the provider work had already
+happened — before the window opened.
+
+**THE CAUSE IS PLEX'S OWN LIBRARY-CREATION SCAN.** Plex begins scanning the instant a library exists, and no
+gate can prevent that. The anchor was published in generation 1, *before* the library was created, so that
+creation scan identified it. By the time the gate triggered its own explicit scan, there was nothing left to
+do. Whether the window saw any provider work at all depended on which finished first — **a race, not a
+measurement** — and the runs that passed were the ones where the snapshot happened to land mid-scan.
+
+**Every CEILING in that window passed by having had nothing happen in it.** Only the floors caught it, which
+is precisely what floors are for.
+
+**THE FIX IS THE CONTRACT'S OWN UNIT OF CHANGE, and it is the one G18 already uses.** Generation 1 now seeds a
+**local passthrough entry only** — an entry the creation scan can find that contacts no endpoint at all. The
+gate waits for Plex's own barrier to report that scan settled, **asserts it cost the provider zero ranged
+requests**, and only then publishes the HTTP Range anchor as a **new generation**. An object identity that did
+not exist while the creation scan ran cannot have been scanned by it, so the window is cold **by
+construction** rather than by timing. No host-wide `drop_caches`, no production mutation, no external
+provider access.
+
+#### PX20 — the advance COUNT measured burst size, not liveness
+
+**THE EVIDENCE, AGAIN FROM THE FAILING RUNS.** `PX20-encoder-output-advances` read **7** and then **6**
+against a floor of 8 — while `PX20-encoder-throttled-samples` read **38** and
+`PX20-encoder-working-span-seconds` read **192** against a floor of 120. An encoder that is throttled 38
+times and works across 192 seconds is alive; the count was measuring something else.
+
+**WHAT IT WAS MEASURING.** Plex holds the encoder to a bounded lead over the client
+(`TranscoderThrottleBuffer`, 60 s by default) and then stops it until the client drains. So the same media on
+faster hardware arrives in **fewer, larger bursts** — and the count goes **down**. A number that falls as the
+machine gets faster cannot be a liveness floor, and moving the 8 in either direction would have been fitting
+a threshold to whichever run was in front of somebody.
+
+**WHAT REPLACED IT** is the longest wall silence between two moments of new output — `advanceGapSeconds` —
+held at **two throttle buffers**, computed from the server's own configured quantity rather than from any
+run. The ninety-second probe recorded in the module had a largest gap of 42 s, well inside it, on hardware
+slower than this host.
+
+**IT STILL REFUSES EVERYTHING THE COUNT WAS THERE TO REFUSE, AND ONE THING THE COUNT COULD NOT SEE:**
+
+| Shape | What refuses it |
+|---|---|
+| A stalled encoder — one long silence | the gap ceiling |
+| A single burst, then nothing | `MIN_WORKING_SPAN_SECONDS` — one advance has no span |
+| An encoder that **died halfway** | the **trailing** gap, from the last advance to the end of the window. The count and the working span both PASS this shape; only the trailing silence exposes it |
+| A job that legitimately **finished** | nothing — the trailing gap is held only while the job is still incomplete, or every correct fast run would fail |
+
+The count is still **recorded**, asserted on by nothing, beside the full timestamped `wallMs:offset` timeline
+the two floors are statements about.
 
 **WHAT THESE DO NOT CLOSE, AND THE LIST IS LONGER THAN WHAT THEY DO.** G7–G13 are the per-server data-plane
 gates and are **not** closed by either of these. G24–G26 and G27's three-server half have **no executable gate
