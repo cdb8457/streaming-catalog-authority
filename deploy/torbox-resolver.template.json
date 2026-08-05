@@ -1,15 +1,16 @@
 {
-  "_comment_purpose": "TEMPLATE — CONTAINS NO REAL VALUES. This describes the TorBox resolver side of a real-provider run. It is documentation of what to place, not a file to copy into service unchanged: every REPLACE-ME must be replaced, and the preflight refuses the file while any remain.",
+  "_comment_purpose": "TEMPLATE — CONTAINS NO REAL VALUES. Every REPLACE-ME must be replaced; the gate refuses the file while any remain. This describes the four protected inputs a real TorBox run needs, and the one command sequence that runs it.",
 
-  "_comment_where": "Place the real files under a 0700 directory. The default the gate looks in, and the only place it EVER looks, is /mnt/user/appdata/catalog/secrets/real-provider/. The gate never searches the filesystem for anything that might be a credential, never reads one from the environment, and never prompts.",
+  "_comment_status": "THE REAL-ACCOUNT RUN IS UNPROVEN. No TorBox account has ever been contacted by this repository. Everything below is executable and its offline equivalent has run 3/3 on a real Unraid host, but until an operator places these files and the run passes, nothing here is evidence about TorBox.",
 
-  "_comment_files": "FOUR FILES, ALL MODE 0600. Note that TWO of them hold secrets and they are different values: `torbox-credential` is your API key and only the resolver reads it; `credential` is the gate secret the daemon presents to the resolver.",
+  "_comment_where": "Place the real files under a 0700 directory. The default the gate looks in, and the ONLY place it ever looks, is /mnt/user/appdata/catalog/secrets/real-provider/. The gate never searches the filesystem for anything that might be a credential, never reads one from the environment, and never prompts. Override the directory with PROJECTION_REAL_PROVIDER_INPUT_DIR if your install differs.",
+
+  "_comment_files": "FOUR FILES, ALL MODE 0600. Two of them hold secrets and they MUST BE DIFFERENT VALUES: `torbox-credential` is your API key and only the resolver ever sees it; `credential` is the gate secret the daemon presents to the resolver. The gate FAILS if they are equal.",
   "files": {
-    "torbox-credential": "The TorBox API key and nothing else. NOTE WHY THIS MATTERS MORE THAN A USUAL TOKEN: TorBox authenticates requestdl with a ?token= QUERY PARAMETER, so the request URL is itself a bearer credential. Anything that logs a request URL publishes this key. The resolver never logs, stores or returns a request URL, and refuses any credential file whose mode has group or other bits set.",
-    "credential": "THE GATE SECRET, and note the name: this is the file `deploy/projection-real-provider-gate.sh` reads, and for a TorBox run it must hold the GATE SECRET rather than your TorBox key. The gate talks to the loopback resolver, not to TorBox; only the resolver ever sees your API key. Generate it locally, e.g. `head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \\n'`. It is NOT your TorBox key and must not be.",
-    "gate-secret-note": "Any high-entropy string you generate locally, e.g. `head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \\n'`. The projection daemon presents this to the resolver as a bearer. It is NOT your TorBox key and must not be. Two secrets exist so the data-plane binary — the one that talks to arbitrary provider-supplied CDN hosts — never holds the credential that can manage your whole TorBox account.",
-    "objects.json": "1-3 objects you are legally entitled to. See deploy/real-provider-objects.template.json. Each `ref` is a TorBox stable reference, described below. TREAT THIS FILE AS A SECRET: a reference identifies an item in your account.",
-    "endpoint.json": "See deploy/real-provider-endpoint.template.json, filled in as shown under `endpointShape` below."
+    "torbox-credential": "Your TorBox API key and nothing else. WHY THIS MATTERS MORE THAN A USUAL TOKEN: TorBox authenticates requestdl with a ?token= QUERY PARAMETER, so the request URL is itself a bearer credential. Anything that logs a request URL publishes this key. The resolver never logs, stores or returns one, refuses any credential file whose mode has group or other bits set, and this key is never mounted into the daemon container at all.",
+    "credential": "THE GATE SECRET — note the name, which is the file the gate reads. Any high-entropy string you generate locally: head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \\n'. The daemon presents it to the resolver as a bearer. It is NOT your TorBox key and must not be.",
+    "objects.json": "1-3 objects you are legally entitled to. See deploy/real-provider-objects.template.json for the field shape. Each `ref` is a TorBox stable reference, described below. TREAT THIS FILE AS A SECRET: a reference identifies an item in your account.",
+    "endpoint.json": "See endpointShape below. You supply the CDN origins; the gate supplies the resolver URL and origin itself, so you cannot get that part wrong."
   },
 
   "_comment_ref": "THE STABLE REFERENCE FORMAT. `torbox:<kind>:<providerId>:<fileId>` — the minimum TorBox's own endpoints need, and deliberately nothing else. No name, hash, size or category: each would be one more field to keep out of logs forever, and none is needed to fetch bytes.",
@@ -19,30 +20,30 @@
     "torbox:webdl:REPLACE-ME-ITEM-ID:REPLACE-ME-FILE-ID",
     "torbox:usenet:REPLACE-ME-ITEM-ID:REPLACE-ME-FILE-ID"
   ],
-  "_comment_ids": "Both ids are plain non-negative integers. The item id is the torrent/web/usenet id TorBox shows for the item; the file id is the index of the file within it. Get both from your own TorBox dashboard or from a read-only listing you already have — this gate never lists your account.",
+  "_comment_ids": "Both ids are plain non-negative integers. The item id is the torrent/web/usenet id TorBox shows for the item; the file id is the index of the file within it. Take both from your own TorBox dashboard — this gate never lists your account.",
 
-  "_comment_endpoint": "HOW endpoint.json MUST LOOK FOR A TORBOX RUN. resolverUrl points at the LOOPBACK resolver this repository runs, not at TorBox: the daemon talks to the resolver, the resolver talks to TorBox. allowedOrigins names the CDN origins TorBox may hand back — the daemon refuses to dial anything else, and re-checks every address at dial time.",
+  "_comment_endpoint": "WHAT YOU WRITE IN endpoint.json. You supply `id` and the CDN origins. YOU DO NOT WRITE THE RESOLVER URL: the gate constructs it and prepends its origin to the allowlist itself, because the resolver's address depends on a network namespace the gate creates. An earlier version of this template asked operators to write it, and the address it told them to write could not have worked.",
   "endpointShape": {
     "id": "torbox",
-    "resolverUrl": "http://127.0.0.1:8140/resolve",
-    "directBaseUrl": null,
     "allowedOrigins": [
-      "http://127.0.0.1:8140",
       "https://REPLACE-ME-cdn-host.torbox.app"
     ],
     "allowInsecureHttp": false,
     "allowPrivateAddresses": false
   },
-  "_comment_origins_resolver": "THE RESOLVER ORIGIN MUST BE IN THIS LIST TOO, and it is easy to miss. The daemon checks EVERY url it is about to dial against the allowlist, and the resolver is one of them -- omit it and the daemon refuses to start with \"origin not in endpoint allowlist\", naming the resolver rather than any CDN host.",
-  "_comment_origins_hard": "FINDING THE RIGHT CDN allowedOrigins IS THE ONE STEP THAT NEEDS CARE. TorBox mints CDN links on hosts that can differ by account and region, and the daemon will refuse a link whose origin is not listed — which is the behaviour you want, but it means a first run can fail closed on a host you did not anticipate. Resolve one object by hand first and list exactly the origin it returns. Do NOT widen this to a bare wildcard; an unbounded allowlist is how a signed URL becomes an SSRF.",
+  "_comment_origins_hard": "FINDING THE RIGHT CDN ORIGINS IS THE ONE STEP THAT NEEDS CARE. TorBox mints links on hosts that can differ by account and region, and the daemon refuses any link whose origin is not listed — which is the behaviour you want, but it means a first run can fail closed on a host you did not anticipate. Resolve one object by hand first and list exactly the origin it returns. Every entry must be https. Do NOT widen this to a wildcard; an unbounded allowlist is how a signed URL becomes an SSRF.",
 
-  "_comment_run": "COMMANDS. Nothing below takes a secret as an argument; every one takes a PATH.",
+  "_comment_topology": "HOW THE PIECES ARE ARRANGED, AND WHY YOU DO NOT ARRANGE THEM YOURSELF. The daemon runs in a container; the resolver runs in a SECOND container that JOINS THE DAEMON'S NETWORK NAMESPACE. They then share one loopback, so the daemon reaches the resolver at 127.0.0.1 and nothing else on the network can reach it at all — the resolver is never published to a host port, because anything that could reach it could mint CDN links for your account. Starting the resolver on the host instead does NOT work: inside the daemon's container 127.0.0.1 is the container, not your host.",
+  "_comment_authority": "The daemon is given a narrow `loopbackResolver` authority that permits the RESOLVER REQUEST ONLY to reach a literal 127.0.0.0/8 or ::1 address. It is not `allowPrivateAddresses`, which is test-only and would also authorise every RFC1918 destination; both fixture switches above stay false in a real run and the gate sets neither.",
+
+  "_comment_run": "THE COMMAND SEQUENCE, FROM A CLEAN UNRAID CHECKOUT. Nothing takes a secret as an argument; the gate starts and stops the resolver for you.",
   "commands": {
-    "1-preflight-resolver": "npx tsx src/ops/torbox-resolver-cli.ts preflight --credential <dir>/torbox-credential --gate-secret <dir>/credential",
-    "2-serve-resolver": "npx tsx src/ops/torbox-resolver-cli.ts serve --credential <dir>/torbox-credential --gate-secret <dir>/credential --port 8140",
-    "3-preflight-gate": "npm run go:real-provider-gate  (skips with 77 until all inputs are present)",
-    "4-three-runs": "npm run go:real-provider-gate:three"
+    "1-preflight-secrets": "npx tsx src/ops/torbox-resolver-cli.ts preflight --credential <dir>/torbox-credential --gate-secret <dir>/credential",
+    "2-one-real-run": "npm run go:torbox-real-gate",
+    "3-three-fresh-runs": "npm run go:torbox-real-gate:three",
+    "_comment_skip": "Steps 2 and 3 exit 77, before building an image or sending a packet, until all four files exist. That is the correct outcome on a machine you have not prepared and must never be read as a pass.",
+    "offline-equivalent": "npm run go:torbox-mount-gate:three   — the same path end to end against this repository's own TorBox fixture, needing no credential and contacting nothing"
   },
 
-  "_comment_never": "WHAT THIS ADAPTER WILL NEVER DO, whatever it is asked: create, control, edit, delete or download a provider job; request a permalink; list or export your account; or set redirect=true. The only verb is GET, on the three requestdl paths, and the only effect is that TorBox opens an existing file's link for a while."
+  "_comment_never": "WHAT THIS ADAPTER WILL NEVER DO, whatever it is asked: create, control, edit, delete or download a provider job; request a permalink; list or export your account; follow a redirect; or set redirect=true. The only verb is GET, on the three requestdl paths, and the only effect is that TorBox opens an existing file's link for a while."
 }

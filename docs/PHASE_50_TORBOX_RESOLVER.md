@@ -124,7 +124,42 @@ hits a finite deadline; and no log line, response or error carries a reference, 
 here contacts a real account, reads a real credential, or searches for one. The real gate stays **skipped
 with exit 77** until the operator supplies inputs.
 
-## 7. What an operator must supply
+## 7. Two review findings, and what they changed
+
+**THE DOCUMENTED REAL PROCEDURE COULD NOT WORK, AND IS NOW EXECUTABLE.** It told an operator to start the
+resolver on the Unraid HOST at `127.0.0.1:8140` and then start `projectiond` in a Docker bridge
+network — where `127.0.0.1` is the CONTAINER. The daemon would have dialled its own loopback and found
+nothing. The offline gate only worked because its resolver joins the daemon's network namespace, and that
+arrangement was never written down for a real run.
+
+`deploy/projection-torbox-real-gate.sh` now does it, executably: the daemon container starts first, the
+resolver container joins it with `--network container:<daemon>`, and the gate ASSERTS at run time that
+the resolver is unreachable from the gate network. There is no host-port spelling to get wrong, and the
+resolver is never published — a resolver anything on the network could reach is a credential oracle.
+
+**REACHING A LOOPBACK RESOLVER NO LONGER REQUIRES THE TEST-ONLY PRIVATE-ADDRESS SWITCH.** The template set
+`allowPrivateAddresses: false` while the egress policy refused a literal loopback address unless it was
+true — so the documented configuration could not have resolved anything, and the only workaround would have
+authorised every RFC1918 destination for CDN reads as well.
+
+`EndpointConfig.LoopbackResolver` is a separate, narrow PRODUCTION authority. It permits the RESOLVER
+REQUEST ONLY to dial a **literal** `127.0.0.0/8` or `::1` address. It does not reach RFC1918,
+link-local, `169.254.169.254`, the unspecified address, multicast, a DNS name that merely RESOLVES to
+loopback, a resolved CDN URL, or `directBaseUrl`. It is carried on a SEPARATE http client from the data
+plane, so no permission granted for reaching a resolver can apply to a URL a provider hands back. It defaults
+to off.
+
+`projectiond/internal/source/loopback_resolver_test.go` asserts each of those refusals with the switch
+ON — a permission is defined by what it refuses, and a test that only proved `127.0.0.1` became
+reachable would pass against an implementation that had simply re-enabled everything — plus a regression that
+`AllowPrivateAddresses` still means exactly what it meant.
+
+**THE API-ORIGIN OVERRIDE IS NOW FIXTURE-ONLY.** It previously accepted any origin from a file, which made
+the production pin advisory — and the request it governs carries the API key as a query parameter, so
+pointing it elsewhere hands that key to whoever runs the other end. Every fixture relaxation now requires one
+explicit `--fixture-mode` switch and fails closed without it.
+
+## 8. What an operator must supply
 
 Under a `0700` directory (default `/mnt/user/appdata/catalog/secrets/real-provider/`):
 
@@ -135,5 +170,9 @@ Under a `0700` directory (default `/mnt/user/appdata/catalog/secrets/real-provid
 | `objects.json` | `0600` | 1–3 entries, `ref` being `torbox:<kind>:<id>:<fileId>`, with sizes and externally-recorded digests |
 | `endpoint.json` | `0600` | `resolverUrl` pointing at the loopback resolver, and an `allowedOrigins` naming the TorBox CDN origins |
 
-Templates carrying **no real values**: `deploy/torbox-resolver.template.json`,
-`deploy/real-provider-objects.template.json`, `deploy/real-provider-endpoint.template.json`.
+Templates carrying **no real values**: `deploy/torbox-resolver.template.json`, which carries the
+single accurate command sequence, and `deploy/real-provider-objects.template.json`.
+
+**THE REAL-ACCOUNT RUN REMAINS UNPROVEN.** No TorBox account has ever been contacted by this repository. The
+path is executable and its offline equivalent has run 3/3 on a real Unraid host; until an operator places the
+four files and `npm run go:torbox-real-gate:three` passes, nothing here is evidence about TorBox.

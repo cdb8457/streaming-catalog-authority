@@ -501,8 +501,12 @@ async function main(): Promise<void> {
   await test('THE EXEMPTION IS SET IN EXACTLY ONE PLACE IN SHIPPED CODE, AND IT IS OPT-IN', () => {
     const cli = repoFile('src/ops/torbox-resolver-cli.ts');
     const service = repoFile('src/ops/torbox-resolver-service.ts');
-    assert(/allowPlaintextLink: argv\.includes\('--fixture-plaintext-link'\)/.test(cli),
-      'the CLI must derive the exemption from an explicit flag and nothing else');
+    // IT IS NOW STRICTER THAN A SINGLE FLAG: the relaxation requires --fixture-mode AS WELL, so a
+    // deployment cannot acquire it without the word fixture appearing on its command line.
+    assert(/allowPlaintextLink: fixtureMode && argv\.includes\('--fixture-plaintext-link'\)/.test(cli),
+      'the CLI must require BOTH the fixture-mode switch and the explicit flag');
+    assert(/--api-origin-file is FIXTURE-ONLY/.test(cli),
+      'and the API origin override must fail closed outside fixture mode');
     assert(/config\.allowPlaintextLink === true/.test(service),
       'and the service must require an exact true rather than any truthy value');
     assert(!/allowPlaintextLink:\s*true/.test(cli) && !/allowPlaintextLink:\s*true/.test(service),
@@ -810,6 +814,83 @@ async function main(): Promise<void> {
     const realGate = repoFile('deploy/projection-real-provider-gate.sh');
     assert(!/fixture-plaintext-link/.test(realGate),
       'and the REAL gate must never set it');
+  });
+
+  // -------------------------------------------------------------------------------------------------------
+  // The REAL gate: the topology, the narrow authority, and the fixture switches it must never set
+  // -------------------------------------------------------------------------------------------------------
+
+  await test('THE REAL GATE PUTS THE RESOLVER IN THE DAEMON NETWORK NAMESPACE, NOT ON A HOST PORT', () => {
+    // THE DEFECT THIS CLOSES. The documented procedure started the resolver on the Unraid HOST at
+    // 127.0.0.1:8140 and then started projectiond in a bridge network -- where 127.0.0.1 is the CONTAINER.
+    // The daemon would have dialled its own loopback and found nothing. This test fails against that
+    // arrangement and against any attempt to "fix" it by publishing the resolver to a host port.
+    const gate = repoFile('deploy/projection-torbox-real-gate.sh');
+    assert(/--network \"container:\$MOUNT_CONTAINER\"/.test(gate),
+      'the resolver must join the daemon network namespace');
+    // NO `-p ...RESOLVER_PORT` ANYWHERE. Publishing it would make the resolver reachable from the network,
+    // and anything that can reach it can mint CDN links for the operator's account.
+    assert(!gate.split('\n').some((line) => /^\s*-p\s/.test(line) && line.includes('RESOLVER_PORT')),
+      'the resolver port must never be published to the host: a reachable resolver is a credential oracle');
+    // And the daemon must be confirmed running first, or the join fails with a message about a consequence.
+    assert(gate.indexOf('daemon_up') < gate.indexOf('--network \"container:'),
+      'the daemon must be confirmed running before anything joins its namespace');
+    // The arrangement is asserted at run time, not merely configured.
+    assert(/it must be loopback-only/.test(gate),
+      'the gate must PROVE the resolver is unreachable from the gate network');
+  });
+
+  await test('THE REAL GATE USES THE NARROW LOOPBACK AUTHORITY AND NEVER THE BROAD PRIVATE-ADDRESS SWITCH', () => {
+    // THE SECOND DEFECT. Reaching a loopback resolver used to require allowPrivateAddresses -- a switch its
+    // own documentation calls test-only, which also authorises every RFC1918 destination and would widen
+    // CDN egress across the operator's whole private network.
+    const gate = repoFile('deploy/projection-torbox-real-gate.sh');
+    assert(/loopbackResolver: true/.test(gate), 'the narrow authority is what a real run sets');
+    assert(/allowPrivateAddresses: false/.test(gate), 'and the broad one stays off');
+    assert(/allowInsecureHttp: false/.test(gate), 'as does the plaintext switch');
+  });
+
+  await test('THE REAL GATE NEVER PASSES A FIXTURE FLAG, AND THE OFFLINE ONE ALWAYS DOES', () => {
+    // COMMENTS STRIPPED FIRST: the real gate's own comment explains that it passes no fixture flag, and
+    // that sentence is exactly the one that should be there. What must be absent is an ARGUMENT.
+    const strip = (text: string): string =>
+      text.split('\n').filter((line) => !/^\s*#/.test(line)).join('\n');
+    const real = strip(repoFile('deploy/projection-torbox-real-gate.sh'));
+    const offline = repoFile('deploy/projection-torbox-mount-gate.sh');
+    assert(!/--fixture-mode/.test(real), 'the real gate must never enter fixture mode');
+    assert(!/--fixture-plaintext-link/.test(real), 'nor relax the plaintext rule');
+    assert(!/--api-origin-file/.test(real),
+      'nor override the API origin: a real resolver is pinned to the official TorBox origin');
+    assert(/--fixture-mode --fixture-plaintext-link/.test(offline),
+      'and the offline gate must ask for both together');
+  });
+
+  await test('THE REAL GATE SKIPS WITH 77 BEFORE ANY BUILD, DATABASE OR PACKET', () => {
+    const gate = repoFile('deploy/projection-torbox-real-gate.sh');
+    const skip = gate.indexOf('exit "$GATE_SKIP_STATUS"');
+    assert(skip !== -1, 'the gate skips');
+    for (const [what, needle] of [
+      ['an image build', 'docker build'],
+      ['a database', 'docker compose -f "$COMPOSE_FILE" up'],
+      ['a network', 'docker network create'],
+    ] as const) {
+      assert(gate.indexOf(needle) > skip, `the skip must come before ${what}`);
+    }
+    assert(/NOTHING WAS CONTACTED/.test(gate), 'and say so');
+    assert(/It is not a pass and must not be reported as one/.test(gate),
+      'and refuse to be read as a pass');
+  });
+
+  await test('THE REAL GATE GIVES THE DAEMON THE GATE SECRET AND NEVER THE TORBOX KEY', () => {
+    const gate = repoFile('deploy/projection-torbox-real-gate.sh');
+    // A SEPARATE DIRECTORY, so the key is not merely unreferenced in the daemon container -- it is absent.
+    assert(/daemon-inputs/.test(gate), 'the daemon gets its own inputs directory');
+    assert(/install -m 600 "\$WORK\/inputs\/gate-secret" "\$WORK\/daemon-inputs\/gate-secret"/.test(gate),
+      'containing only the gate secret');
+    assert(/the TorBox credential is present inside the daemon container/.test(gate),
+      'and the gate must FAIL if the key ever appears there');
+    assert(/they must differ/.test(gate),
+      'and the two secrets must be required to differ');
   });
 
   await test('this suite runs in the aggregate', () => {

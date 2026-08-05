@@ -79,7 +79,28 @@ func NewHTTPRangeAdapter(cfg EndpointConfig, secret *SecretFile, breaker *Breake
 		CheckRedirect: func(*http.Request, []*http.Request) error { return errRedirectRefused },
 	}
 	adapter := &HTTPRangeAdapter{cfg: cfg, policy: policy, client: client, breaker: breaker, limiter: limiter, now: time.Now}
-	adapter.resolver = NewResolver(cfg, policy, client, secret)
+
+	// THE RESOLVER GETS ITS OWN CLIENT, AND THAT IS THE WHOLE CONTAINMENT.
+	//
+	// Its dialer carries the narrow literal-loopback authority when the endpoint asked for one; the data
+	// plane's client above never does. Sharing one client -- which is what this used to do -- would mean a
+	// permission granted so the daemon could reach a resolver on its own host also applied to every CDN URL
+	// a provider chose to hand back. The two differ in exactly one bit and they are now two objects, so no
+	// call site can pick the wrong one by accident.
+	//
+	// The resolver still holds the STRICT policy separately, because the URLs it hands back are checked
+	// against that one: the authority is for reaching the resolver, never for what the resolver returns.
+	resolverClient := client
+	if resolverPolicy := ResolverPolicy(policy, cfg); resolverPolicy.LiteralLoopbackResolver {
+		resolverTransport := transport.Clone()
+		resolverTransport.DialContext = resolverPolicy.DialContext(DefaultDialer())
+		resolverClient = &http.Client{
+			Transport:     resolverTransport,
+			Timeout:       timeout,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return errRedirectRefused },
+		}
+	}
+	adapter.resolver = NewResolver(cfg, policy, resolverClient, secret)
 	return adapter, nil
 }
 

@@ -431,7 +431,7 @@ docker run -d --name "$RESOLVER_CONTAINER" \
   "$NODE_IMAGE" ./node_modules/.bin/tsx src/ops/torbox-resolver-cli.ts serve \
   --credential /inputs/torbox-credential --gate-secret /inputs/gate-secret \
   --port "${RESOLVER_PORT}" --api-origin-file /inputs/api-origin \
-  --fixture-plaintext-link >/dev/null \
+  --fixture-mode --fixture-plaintext-link >/dev/null \
   || die "the resolver did not start"
 
 resolver_ready=0

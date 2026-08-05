@@ -4,15 +4,20 @@ import { findSecretShapes } from '../core/adapters/torbox-resolver.js';
 
 // The TorBox resolver service, from the command line.
 //
-//   serve      --credential F --gate-secret F [--host 127.0.0.1] [--port 8140] [--api-origin-file F]
-//                [--fixture-plaintext-link]   OFFLINE FIXTURE ONLY; refuses plaintext without it
+//   serve      --credential F --gate-secret F [--host 127.0.0.1] [--port 8140]
+//                [--fixture-mode [--api-origin-file F] [--fixture-plaintext-link]]
+//
+// EVERY FIXTURE RELAXATION REQUIRES --fixture-mode AND FAILS CLOSED WITHOUT IT. A real resolver is pinned to
+// the official TorBox origin and refuses a plaintext CDN link; neither can be relaxed by an operator who
+// did not deliberately ask for a fixture.
+//
+//   preflight  --credential F --gate-secret F
+//                checks both files exist, are regular, are non-empty and are mode 0600 — and CONTACTS NOTHING
 //
 // THERE IS NO --api-origin FLAG, AND THAT IS DELIBERATE. The argv check below refuses ANY url on the
 // command line, with no exceptions — because an exception for "it is only an origin" is one more thing
 // to get right, and the production origin is the built-in default nobody needs to pass. The offline
 // fixture overrides it with a FILE, which costs the fixture one line and keeps the rule absolute.
-//   preflight  --credential F --gate-secret F
-//                checks both files exist, are regular, are non-empty and are mode 0600 — and CONTACTS NOTHING
 //
 // EVERY SECRET ARRIVES AS A FILE PATH. argv is world-readable: `ps` shows it to every user on the host for
 // as long as the process lives, and on this endpoint family the credential is a URL query parameter, so a
@@ -63,6 +68,13 @@ switch (command) {
   }
 
   case 'serve': {
+    // ONE SWITCH GOVERNS EVERY FIXTURE RELAXATION, and it is named for what it is. Each relaxation used to
+    // be reachable on its own, which meant a real deployment could acquire one without ever writing the
+    // word fixture. Now they all require this, and a run without it is a real run in every respect.
+    const fixtureMode = argv.includes('--fixture-mode');
+    if (!fixtureMode && argv.includes('--fixture-plaintext-link')) {
+      fail('--fixture-plaintext-link is FIXTURE-ONLY and needs --fixture-mode');
+    }
     const host = flag('host') ?? '127.0.0.1';
     if (!['127.0.0.1', '::1', 'localhost'].includes(host)) {
       fail('this service binds loopback only; a resolver reachable off-host is a credential oracle');
@@ -78,6 +90,20 @@ switch (command) {
       apiOrigin: (() => {
         const path = flag('api-origin-file');
         if (path === undefined) return undefined;
+
+        // THE ORIGIN OVERRIDE IS FIXTURE-ONLY, AND IT FAILS CLOSED.
+        //
+        // A real resolver is pinned to the official TorBox origin and has no business being pointed
+        // anywhere else: the request it makes carries the operator's API key as a query parameter, so
+        // redirecting it at another host hands that key over. Accepting an override merely because a file
+        // said so — which is what this did — made the pin advisory. It now requires the SAME explicit
+        // fixture flag that relaxes the plaintext rule, so the two fixture relaxations travel together and
+        // neither can be reached by an operator who did not ask for a fixture.
+        if (!fixtureMode) {
+          fail('--api-origin-file is FIXTURE-ONLY and needs --fixture-mode. A real resolver is pinned to '
+            + 'the official TorBox API origin: the request carries your API key as a query parameter, so '
+            + 'pointing it at another host hands that key to whoever runs it');
+        }
         const value = readFileSync(path, 'utf8').trim();
         // A BARE ORIGIN AND NOTHING ELSE: no path, no query, no userinfo. The file is a convenience
         // for the fixture, not a way to smuggle a full URL past the argv rule.
@@ -87,7 +113,7 @@ switch (command) {
         return value.replace(/\/$/, '');
       })(),
       // OFFLINE FIXTURE ONLY, and opt-in. Omitted, a plaintext CDN link is refused.
-      allowPlaintextLink: argv.includes('--fixture-plaintext-link'),
+      allowPlaintextLink: fixtureMode && argv.includes('--fixture-plaintext-link'),
     };
     // FAIL CLOSED AT STARTUP. A service that came up and then refused every request would look healthy to a
     // supervisor and be useless to a reader.

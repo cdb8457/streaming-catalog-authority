@@ -42,9 +42,13 @@ type EndpointConfigFile struct {
 	// separate from allowInsecureHttp: permitting a plaintext scheme must not also permit the daemon to dial
 	// loopback, private or link-local addresses.
 	AllowPrivateAddresses bool `json:"allowPrivateAddresses,omitempty"`
-	MaxConnections        int  `json:"maxConnections,omitempty"`
-	ResolutionDeadlineMs  int  `json:"resolutionDeadlineMs,omitempty"`
-	RefreshCooldownMs     int  `json:"refreshCooldownMs,omitempty"`
+	// LoopbackResolver authorises the RESOLVER REQUEST ONLY to reach a literal 127.0.0.0/8 or ::1 address.
+	// It is NOT allowPrivateAddresses: it does not reach RFC1918, link-local, the metadata address, a name
+	// that resolves to loopback, a CDN URL or directBaseUrl. Default false.
+	LoopbackResolver     bool `json:"loopbackResolver,omitempty"`
+	MaxConnections       int  `json:"maxConnections,omitempty"`
+	ResolutionDeadlineMs int  `json:"resolutionDeadlineMs,omitempty"`
+	RefreshCooldownMs    int  `json:"refreshCooldownMs,omitempty"`
 }
 
 // Config is the daemon's whole configuration.
@@ -174,6 +178,7 @@ func New(cfg Config) (*Daemon, error) {
 			TokenFile:             endpoint.TokenFile,
 			AllowInsecureHTTP:     endpoint.AllowInsecureHTTP,
 			AllowPrivateAddresses: endpoint.AllowPrivateAddresses,
+			LoopbackResolver:      endpoint.LoopbackResolver,
 			MaxConnections:        endpoint.MaxConnections,
 			ResolutionDeadline:    durationOr(endpoint.ResolutionDeadlineMs, 5*time.Second),
 			RefreshCooldown:       durationOr(endpoint.RefreshCooldownMs, 30*time.Second),
