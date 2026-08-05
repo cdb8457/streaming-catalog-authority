@@ -186,6 +186,42 @@ const config = {
 writeFileSync(out, JSON.stringify(config, null, 2) + '\n');
 CONFIG
 
+cat > "$WORK/fill-digests.cjs" <<'FILLDIGESTS'
+// FAKE MODE ONLY: fills the fixture manifest's placeholder probe digest from the CONTROL record.
+//
+// WHY THIS IS LEGITIMATE AND NOT CIRCULAR. "Recorded outside the mount" is the property that matters, and the
+// control establishes it: it fetches the window with a direct request, with the daemon nowhere in the path.
+// Comparing a mount read against that is exactly as sound as comparing it against a digest the operator
+// wrote down beforehand -- the daemon had no hand in either.
+//
+// IT IS STILL FAKE-MODE ONLY, AND DELIBERATELY SO. In a real run the operator supplies the digests, because
+// the operator is the one who knows which bytes they are entitled to and has a copy to compute from. A gate
+// that derived expected values for a real object would be choosing its own answer even though the source was
+// honest, and the manifest is where an operator's intent belongs.
+const { readFileSync, writeFileSync } = require('node:fs');
+const [, , objectsPath, controlPath] = process.argv;
+const objects = JSON.parse(readFileSync(objectsPath, 'utf8'));
+const control = JSON.parse(readFileSync(controlPath, 'utf8'));
+let filled = 0;
+for (const object of objects) {
+  for (const probe of object.probeDigests ?? []) {
+    const key = object.label + ':' + probe.offset + ':' + probe.length;
+    const digest = control.digests?.[key];
+    if (typeof digest === 'string' && /^[0-9a-f]{64}$/.test(digest)) {
+      probe.sha256 = digest;
+      filled += 1;
+    }
+  }
+}
+if (filled === 0) {
+  // A FIXTURE RUN WHOSE DIGESTS WERE NEVER FILLED WOULD COMPARE AGAINST ZEROS AND FAIL FOR THE WRONG REASON.
+  console.error('fill-digests: the control recorded no window matching any approved probe');
+  process.exit(1);
+}
+writeFileSync(objectsPath, JSON.stringify(objects, null, 2) + '\n');
+console.log('  filled ' + filled + ' fixture digest(s) from the control, which read outside the mount');
+FILLDIGESTS
+
 cat > "$WORK/scan.cjs" <<'SCAN'
 // Searches everything the run wrote for the exact credential value.
 //
@@ -398,6 +434,14 @@ real_provider control --objects "$OBJECTS" --credential "$CREDENTIAL" --endpoint
   $FIXTURE_FLAG \
   --out "$REL/out/control.json" \
   || die "the control could not establish what the provider does"
+
+if [ "$MODE" = "fake" ]; then
+  # The fixture manifest carries a placeholder digest; the control has just read that exact window directly,
+  # outside the mount, so it is the authority. A REAL run never reaches this line -- the operator's own
+  # digests stand.
+  node "$REL/fill-digests.cjs" "$OBJECTS" "$REL/out/control.json" \
+    || die "the fixture digests could not be filled from the control"
+fi
 
 # ----------------------------------------------------------------------------------------------------------
 step "publishing a generation naming the operator's objects, and mounting it"
