@@ -58,7 +58,14 @@ WORK="$GATE_ROOT/run-$$"
 
 # THE REFRESH COOLDOWN IS CONFIGURED HERE AND ASSERTED AGAINST ITSELF. G25's "fails fast" ceiling is derived
 # from this number in `lease-gates.ts`, so moving it moves the ceiling and neither can drift from the other.
-COOLDOWN_MS=5000
+# THE COOLDOWN IS LONG ENOUGH TO LAND INSIDE, AND EVERY WAIT BELOW IS DERIVED FROM IT.
+#
+# The measured window has to open INSIDE the cooldown the setup failure starts, and two `docker run`s sit
+# between them at a second or two each. Five seconds left that to luck. Twenty gives bounded margin without
+# touching what is asserted: `lease-gates.ts` derives G25's fast-failure ceiling from this same number, so
+# moving it moves the ceiling and the two cannot drift apart.
+COOLDOWN_MS=20000
+COOLDOWN_S=$(( COOLDOWN_MS / 1000 ))
 
 export ADMIN_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:${PG_PORT}/catalog"
 export DATABASE_URL="postgresql://app:app@127.0.0.1:${PG_PORT}/catalog"
@@ -451,23 +458,57 @@ lease g25-stampede --before "$REL/out/counters-g25-before.json" \
 # ----------------------------------------------------------------------------------------------------------
 step "G25 — after a FAILED resolution, the cooldown holds and the next open fails fast"
 # ----------------------------------------------------------------------------------------------------------
-# The resolver is made to fail, the lease is lapsed, and one read spends the single resolution attempt. The
-# NEXT open, inside the cooldown, must ask the resolver nothing at all.
+# THE ORDER HERE COST A WHOLE SEQUENCE AND A FALSE BUG REPORT, SO IT IS SPELLED OUT.
+#
+# `Resolver.Get` passes `slot.resolvedOnce` as its `isRefresh` argument. Once ANYTHING has resolved for this
+# transport identity, every later resolution on an expired lease is already subject to `RefreshCooldown` —
+# the cooldown is NOT confined to the `Refresh` path. The stampede above ends with a successful resolution,
+# so it starts a cooldown of its own.
+#
+# The first version of this phase armed the resolver fault immediately afterwards. That setup read was
+# refused LOCALLY by the stampede cooldown, never reached the endpoint, and left the fault ARMED. The
+# measured read that followed was by then outside the cooldown, consumed the waiting fault, and recorded one
+# resolution — and the gate reported a product defect that does not exist. The product was right both times.
+#
+# So: wait out the stampede cooldown, then MEASURE that the setup failure really reached the endpoint, then
+# open the measured window immediately while the cooldown that failure started is still running.
+echo "  waiting out the cooldown the stampede's own successful resolution started"
+sleep $(( COOLDOWN_S + 2 ))
+
+counters counters-g25s-before.json
 control "fault/${OBJECT_B_REF}?fault=resolver-error&times=1"
 control expire-leases
+SETUP_FAILED=true
 docker run --rm --user 65534:65534 --cap-drop ALL -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" \
   sh -c "dd if='/mnt/$ENTRY_B_PATH' bs=65536 skip=$(( 100 * MIB / 65536 )) count=1 of=/dev/null 2>/dev/null" \
-  && die "the read succeeded although the resolver was made to fail"
-echo "  the resolution failed, as arranged, and the cooldown is now running"
-
-sleep 1
-counters counters-g25c-before.json
+  >/dev/null 2>&1 && SETUP_FAILED=false
 COOLDOWN_START="$(date +%s%3N)"
+sleep 1
+counters counters-g25s-after.json
+
+# THE SETUP IS MEASURED, NOT ASSUMED. Exactly one resolution must have reached the endpoint and been failed
+# there; a setup refused locally reaches zero and arms nothing, and everything after it would be measuring
+# an idle cooldown.
+lease g25-cooldown-setup --before "$REL/out/counters-g25s-before.json" \
+  --after "$REL/out/counters-g25s-after.json" --failed "$SETUP_FAILED"
+
+# ----------------------------------------------------------------------------------------------------------
+step "G25 — the 21st open, INSIDE the cooldown that failure started"
+# ----------------------------------------------------------------------------------------------------------
+counters counters-g25c-before.json
 COOLDOWN_FAILED=false
+READ_START="$(date +%s%3N)"
 docker run --rm --user 65534:65534 --cap-drop ALL -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" \
   sh -c "dd if='/mnt/$ENTRY_B_PATH' bs=65536 skip=$(( 104 * MIB / 65536 )) count=1 of=/dev/null 2>/dev/null" \
-  || COOLDOWN_FAILED=true
-COOLDOWN_ELAPSED=$(( $(date +%s%3N) - COOLDOWN_START ))
+  >/dev/null 2>&1 || COOLDOWN_FAILED=true
+COOLDOWN_ELAPSED=$(( $(date +%s%3N) - READ_START ))
+
+# THE WINDOW MUST HAVE BEEN INSIDE THE COOLDOWN, and that is checked rather than hoped for. If the read
+# landed after it lapsed, a resolution would be legitimate and a zero would prove nothing.
+SINCE_SETUP=$(( $(date +%s%3N) - COOLDOWN_START ))
+test "$SINCE_SETUP" -lt "$COOLDOWN_MS" \
+  || die "the 21st open landed ${SINCE_SETUP}ms after the failed resolution, outside the ${COOLDOWN_MS}ms cooldown, so a zero here would prove nothing"
+echo "  the 21st open landed ${SINCE_SETUP}ms into the ${COOLDOWN_MS}ms cooldown"
 sleep 1
 counters counters-g25c-after.json
 
@@ -490,7 +531,7 @@ echo '[]' > "$WORK/out/g26.json"
 G26_BLOCK=120
 for fault in mismatched-content-range short-body wrong-total-size full-body-on-range; do
   # Every fault gets its own cooldown-free window: the previous phase's cooldown must not be what refuses it.
-  sleep $(( COOLDOWN_MS / 1000 + 1 ))
+  sleep $(( COOLDOWN_S + 2 ))
   control expire-leases
   control "fault/${OBJECT_B_REF}?fault=${fault}&times=4"
   counters "counters-g26-${fault}-before.json"
@@ -521,7 +562,7 @@ lease g26-refreshed --observations "$REL/out/g26.json"
 # ----------------------------------------------------------------------------------------------------------
 step "G26 — a resolved URL outside the allowlist is NOT CONTACTED"
 # ----------------------------------------------------------------------------------------------------------
-sleep $(( COOLDOWN_MS / 1000 + 1 ))
+sleep $(( COOLDOWN_S + 2 ))
 TRAP_BEFORE="$(curl -fsS --max-time 10 "http://127.0.0.1:${TRAP_PORT}/counters" | node "$REL/jq.cjs" rangeRequests)"
 counters counters-g26a-before.json
 control expire-leases

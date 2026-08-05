@@ -199,6 +199,43 @@ export function leaseExpiryResults(
  * expensive: a provider that rate-limits resolution would answer most of them with a refusal, and the daemon
  * would have turned one lapsed lease into a partial outage.
  */
+/**
+ * G25 SETUP — the failed resolution that STARTS the cooldown must actually reach the endpoint.
+ *
+ * THE DEFECT THIS CLOSES, AND IT COST A WHOLE SEQUENCE AND A FALSE BUG REPORT. The gate used to arm the
+ * resolver fault immediately after the stampede refresh and take the failure for granted. But
+ * `Resolver.Get` passes `slot.resolvedOnce` as its `isRefresh` argument, so once anything has resolved,
+ * EVERY later resolution on an expired lease is already subject to `RefreshCooldown` — including the one
+ * the gate meant to fail at the endpoint. That setup read was refused LOCALLY, never reached the endpoint,
+ * and left the fault ARMED; the measured read, by then outside the cooldown, consumed it and recorded one
+ * resolution. The gate then reported a product defect that does not exist.
+ *
+ * So the setup is MEASURED rather than assumed: the fault must have been consumed, which means exactly one
+ * resolution reached the endpoint. A setup that resolved ZERO times armed nothing, and the window after it
+ * is measuring an idle cooldown rather than a refused one.
+ */
+export function cooldownSetupResults(
+  gate: string, before: CounterSnapshot, after: CounterSnapshot,
+  options: { readonly readFailed: boolean },
+): readonly GateResult[] {
+  const problems = windowProblems(before, after);
+  if (problems.length > 0) {
+    return [{
+      gate: `${gate}-window-coherent`, verdict: 'fail', measured: problems.length, budget: 0,
+      note: problems.join('; '),
+    }];
+  }
+  return [
+    { gate: `${gate}-window-coherent`, verdict: 'pass', measured: 0, budget: 0 },
+    exactly(`${gate}-resolutions`, delta(before, after, 'resolutions'), 1,
+      'the setup resolution REACHED THE ENDPOINT exactly once and was failed there. A setup refused '
+      + 'locally by a cooldown left over from an earlier phase reaches ZERO, arms nothing, and leaves the '
+      + 'fault waiting for whatever reads next'),
+    exactly(`${gate}-read-failed`, options.readFailed ? 1 : 0, 1,
+      'and the read failed, which is what starts the cooldown the next window measures'),
+  ];
+}
+
 export function stampedeResults(
   gate: string, before: CounterSnapshot, after: CounterSnapshot,
   options: { readonly opensObserved: number },

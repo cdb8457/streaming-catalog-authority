@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 import {
   LEASE_GATE_BUDGETS, PINNED_IDENTITY_FIELDS, REFRESHED_RESPONSE_FAULTS,
-  allowlistResults, cooldownResults, delta, leaseExpiryResults, refreshedResponseResults, stampedeResults,
+  allowlistResults, cooldownResults, cooldownSetupResults, delta, leaseExpiryResults, refreshedResponseResults, stampedeResults,
   windowProblems,
 } from '../src/core/projection/lease-gates.js';
 import { findRedactionProblems } from '../src/core/projection/media-server-dataplane.js';
@@ -174,6 +174,45 @@ test('G25 REFUSES A STAMPEDE IN WHICH NO LEASE EVER LAPSED', () => {
   const results = stampedeResults('G25', COUNTERS, move({ resolutions: 11, expiredRejected: 0 }),
     { opensObserved: 20 });
   assertEq(verdictOf(results, '-lease-actually-lapsed'), 'fail', 'the subject of the gate never happened');
+});
+
+test('THE COOLDOWN SETUP MUST ACTUALLY REACH THE ENDPOINT — the fault-not-consumed bypass', () => {
+  // THE DEFECT THIS CLOSES, AND IT PRODUCED A FALSE BUG REPORT AGAINST THE PRODUCT.
+  //
+  // `Resolver.Get` passes `slot.resolvedOnce` as its `isRefresh` argument, so once anything has resolved,
+  // every later resolution on an expired lease is ALREADY subject to RefreshCooldown — the cooldown is not
+  // confined to the Refresh path. The gate used to arm the resolver fault immediately after the stampede,
+  // whose successful resolution had just started a cooldown of its own. That setup read was refused
+  // LOCALLY, never reached the endpoint, and left the fault ARMED; the measured read, by then outside the
+  // cooldown, consumed it and recorded one resolution. The gate blamed the daemon for its own ordering.
+  //
+  // A setup that resolved ZERO times is exactly that shape, and it must fail here.
+  const armed = cooldownSetupResults('S', COUNTERS, move({ resolutions: 10 }), { readFailed: true });
+  assertEq(verdictOf(armed, '-resolutions'), 'fail',
+    'a setup that never reached the endpoint armed nothing, and the window after it measures an idle '
+    + 'cooldown rather than a refused one');
+
+  const consumed = cooldownSetupResults('S', COUNTERS, move({ resolutions: 11 }), { readFailed: true });
+  assert(consumed.every((result) => result.verdict === 'pass'),
+    'exactly one resolution reaching the endpoint is the honest setup');
+
+  // ...and more than one means the cooldown was not running when it should have been.
+  const twice = cooldownSetupResults('S', COUNTERS, move({ resolutions: 12 }), { readFailed: true });
+  assertEq(verdictOf(twice, '-resolutions'), 'fail', 'two setup resolutions is not one');
+
+  // A setup whose read SUCCEEDED never failed a resolution, so no cooldown was started at all.
+  const ok = cooldownSetupResults('S', COUNTERS, move({ resolutions: 11 }), { readFailed: false });
+  assertEq(verdictOf(ok, '-read-failed'), 'fail',
+    'a setup read that succeeded starts no cooldown, so the window after it is measuring nothing');
+});
+
+test('THE COOLDOWN IS NOT CONFINED TO THE REFRESH PATH, and the daemon says so', () => {
+  // The claim the corrected diagnosis rests on, pinned against the source so a future change to Get cannot
+  // silently make this gate meaningless again.
+  const resolver = read('projectiond/internal/source/resolver.go');
+  assert(/return r\.resolveLocked\(ctx, slot, objectRef, slot\.resolvedOnce\)/.test(resolver),
+    'Get passes resolvedOnce as isRefresh, so a later resolution on an expired lease IS cooldown-governed');
+  assert(resolver.includes('slot.resolvedOnce = true'), 'and resolvedOnce is set once anything has resolved');
 });
 
 test('G25 COOLDOWN PASSES on zero resolutions, a fast failure and an unchanged namespace', () => {
@@ -459,6 +498,17 @@ test('THE GATE CLEANS UP THROUGH THE SHARED HELPER, on every exit path', () => {
   const cleanup = GATE.split('cleanup() {')[1]?.split('trap cleanup EXIT')[0] ?? '';
   assert(cleanup.indexOf('READER_CONTAINER') < cleanup.indexOf('MOUNT_CONTAINER'),
     'the reader goes first: a FUSE mount with a live reader does not unmount cleanly');
+});
+
+test('THE GATE WAITS OUT THE PRIOR COOLDOWN AND PROVES THE WINDOW WAS INSIDE THE NEXT ONE', () => {
+  assert(GATE.includes('COOLDOWN_S=$(( COOLDOWN_MS / 1000 ))'), 'the waits are derived from the cooldown');
+  assert(GATE.includes("waiting out the cooldown the stampede's own successful resolution started"),
+    'the stampede cooldown is waited out before the fault is armed');
+  const phase = GATE.split('step "G25 — after a FAILED resolution')[1] ?? '';
+  assert(phase.indexOf('sleep $(( COOLDOWN_S + 2 ))') < phase.indexOf('fault=resolver-error'),
+    'the wait comes BEFORE the fault is armed, or the setup is refused locally and the fault survives');
+  assert(GATE.includes('outside the ${COOLDOWN_MS}ms cooldown, so a zero here would prove nothing'),
+    'and the gate REFUSES a measured window that landed after the cooldown lapsed');
 });
 
 test('THE GATE IS WIRED, and its Compose file is its own', () => {
