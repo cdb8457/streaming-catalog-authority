@@ -95,10 +95,17 @@ emby()      { npx tsx src/ops/projection-emby-dataplane-cli.ts "$@"; }
 ffmpeg_run() { docker run --rm --entrypoint "$GENERATOR_FFMPEG" -v "$WORK:/work" "$GENERATOR_IMAGE" "$@"; }
 
 # THE DAEMON'S OWN STATEMENT OF WHAT IT IS SERVING. Not the pointer — the pointer is the CONTROL PLANE's
-# claim, and the whole point of the refusal phase is that the daemon does not follow it. The daemon says
-# `serving generation N` when it admits one, so the last such line is what it is actually serving.
+# claim, and the whole point of the refusal phase is that the daemon does not follow it.
+#
+# IT TAKES BOTH SPELLINGS, and run 4 on the real host is why. The daemon says `serving generation N` ONCE,
+# when it first mounts; every later admission is `admitted generation N (+a added, -r removed)`. Matching
+# only the first spelling meant every phase read back generation 1 — so the whole lifecycle passed, the
+# namespace demonstrably changed twice under it, and the sequence check then reported one distinct
+# generation. That check was right to fail: an observer that always returns the same answer cannot tell a
+# four-generation lifecycle from a world that never moved.
 served_generation() {
-  docker logs "$MOUNT_CONTAINER" 2>&1 | grep -o "serving generation [0-9]*" | tail -1 | awk '{print $3}'
+  docker logs "$MOUNT_CONTAINER" 2>&1 \
+    | grep -oE "(serving|admitted) generation [0-9]+" | tail -1 | awk '{print $3}'
 }
 
 mkdir -p "$WORK/manifest" "$WORK/media" "$WORK/cache" "$WORK/mnt" "$WORK/out" \
