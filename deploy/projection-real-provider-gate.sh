@@ -148,7 +148,9 @@ objects.forEach((object, index) => {
     + ' --mtime 2026-01-01T00:00:00.000Z');
   lines.push(cli + ' entry --item ' + q(item) + ' --version-key ' + key
     + ' --path ' + q(object.label + '.bin')
-    + ' --source ' + q(endpoint.id + ':' + object.ref));
+    // A SOURCE IS kind:rootId:objectRef and nothing else -- there is no field for a URL, a token or a
+    // header, which is the registry's own way of making an unprintable value unstorable.
+    + ' --source ' + q('http-range:' + endpoint.id + ':' + object.ref));
 });
 const script = out.replace(/[^/]*$/, '') + 'register.sh';
 writeFileSync(script, lines.join('\n') + '\n');
