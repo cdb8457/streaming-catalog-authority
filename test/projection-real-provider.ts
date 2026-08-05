@@ -630,6 +630,74 @@ async function main(): Promise<void> {
     }
   });
 
+  // -------------------------------------------------------------------------------------------------------
+  // The fixture exemption, which is the most dangerous thing in this gate
+  // -------------------------------------------------------------------------------------------------------
+
+  await test('THE FIXTURE EXEMPTION DEFAULTS TO OFF, SO A FORGOTTEN FLAG FAILS CLOSED', () => {
+    // Fake mode has to drive the SAME code path a real run drives, and the fixture is plaintext HTTP on a
+    // private address — exactly what the strictest rules exist to forbid. So there is an exemption, and it is
+    // the single most dangerous thing in this gate: if it could be acquired by accident, a real run could
+    // report a pass having asserted neither TLS nor the egress rules.
+    const fixture: EndpointDescription = {
+      id: 'fake', directBaseUrl: 'http://fakerange:8099/direct',
+      allowedOrigins: ['http://fakerange:8099'], allowInsecureHttp: true, allowPrivateAddresses: true,
+    };
+    assert(endpointProblems(fixture).length > 0,
+      'the fixture endpoint was accepted with NO argument — the default must be a real endpoint');
+    assert(endpointProblems(fixture, true).length > 0, 'and explicitly real must refuse it');
+    assert(endpointProblems(fixture, false).length === 0, 'while the fixture mode accepts it');
+    assert(inputProblems({ objects: [OBJECT], credential: GOOD_CREDENTIAL, endpoint: fixture }).length > 0,
+      'and inputProblems defaults the same way');
+  });
+
+  await test('THE EXEMPTION RELAXES ONLY THE THREE REAL-ENDPOINT RULES, AND NO STRUCTURAL ONE', () => {
+    // A blanket "skip validation in fake mode" would mean the offline run never exercised the checks an
+    // operator depends on. These must bite in BOTH modes.
+    for (const [what, endpoint] of [
+      ['no allowlist', { id: 'f', directBaseUrl: 'http://f:1/d', allowedOrigins: [] }],
+      ['neither shape', { id: 'f', allowedOrigins: ['http://f:1'] }],
+      ['both shapes', { id: 'f', directBaseUrl: 'http://f:1/d', resolverUrl: 'http://f:1/r',
+        allowedOrigins: ['http://f:1'] }],
+    ] as const) {
+      assert(endpointProblems(endpoint as EndpointDescription, false).length > 0,
+        `${what} was accepted in fixture mode; the exemption is meant to be narrow`);
+    }
+    // ...and the corpus and credential rules are not touched by it at all.
+    assert(inputProblems({ objects: [], credential: GOOD_CREDENTIAL, endpoint: ENDPOINT,
+      realEndpoint: false }).length > 0, 'an empty corpus was accepted in fixture mode');
+    assert(inputProblems({ objects: [OBJECT], credential: { exists: true, mode: 0o644, sizeBytes: 9 },
+      endpoint: ENDPOINT, realEndpoint: false }).length > 0,
+    'a world-readable credential was accepted in fixture mode');
+  });
+
+  await test('TLS SKIPS AGAINST THE FIXTURE AND IS ASSERTED AGAINST ANYTHING ELSE', () => {
+    // A plaintext fixture has no TLS to be right about. Reporting `pass` there would mean the one gate whose
+    // whole purpose is real transport recorded a TLS success it never observed.
+    const plaintext = goodProbe({ tlsProtocol: '', tlsAuthorized: false });
+    const skipped = controlResults('RP1', [plaintext], [OBJECT], false);
+    const tls = skipped.find((result) => result.gate.endsWith('-tls'));
+    assert(tls?.verdict === 'skip', 'the fixture must SKIP the TLS assertion, not pass it');
+    assert(/A SKIP IS NOT A PASS/.test(tls?.note ?? ''), 'and say so where an operator reads it');
+    assert(failedGates(skipped).length === 0, 'while the rest of the control still evaluates');
+    // The same probe, without the exemption, must fail.
+    refuses(controlResults('RP1', [plaintext], [OBJECT]),
+      'a plaintext connection passed the TLS assertion when the endpoint was treated as real');
+  });
+
+  await test('THE GATE SETS THE EXEMPTION IN EXACTLY ONE PLACE, AND NEVER IN REAL MODE', () => {
+    const gate = repoFile('deploy/projection-real-provider-gate.sh');
+    const assignments = gate.match(/FIXTURE_FLAG="[^"]*"/g) ?? [];
+    assert(assignments.length === 2, `expected exactly two assignments, found ${assignments.length}`);
+    assert(assignments[0] === 'FIXTURE_FLAG=""', 'the first must be the empty default');
+    assert(assignments[1] === 'FIXTURE_FLAG="--fixture-endpoint"', 'and the second the fake-mode opt-in');
+    // The opt-in must sit inside the fake branch, after the real branch has already returned or skipped.
+    const fakeEcho = gate.indexOf('FAKE MODE: no credential');
+    assert(gate.indexOf('FIXTURE_FLAG="--fixture-endpoint"') < fakeEcho
+      && gate.indexOf('FIXTURE_FLAG="--fixture-endpoint"') > gate.indexOf('MODE="fake"'),
+    'the opt-in is not confined to the fake-mode branch');
+  });
+
   await test('this suite runs in the aggregate', () => {
     assert(AGGREGATE_SUITE_COMMAND.includes('tsx test/projection-real-provider.ts'),
       'a suite nobody runs is a suite that stops being true');

@@ -59,6 +59,9 @@ OBJECTS_FILE="$INPUT_DIR/objects.json"
 ENDPOINT_FILE="$INPUT_DIR/endpoint.json"
 
 MODE="real"
+# EMPTY IN REAL MODE, ALWAYS. The fixture relaxation is opt-in, and this is the only place it is ever
+# set. A real run cannot acquire it by forgetting something.
+FIXTURE_FLAG=""
 for arg in "$@"; do
   case "$arg" in
     --fake) MODE="fake" ;;
@@ -275,6 +278,7 @@ if [ "$MODE" = "real" ]; then
   CONTROL_ENDPOINT="$ENDPOINT_FILE"
   CREDENTIAL="$CREDENTIAL_FILE"
 else
+  FIXTURE_FLAG="--fixture-endpoint"
   echo "  FAKE MODE: no credential, no external contact, every assertion still evaluated"
 fi
 
@@ -389,6 +393,7 @@ fi
 step "CONTROL — one direct ranged request per object, with the daemon nowhere in the path"
 # ----------------------------------------------------------------------------------------------------------
 real_provider control --objects "$OBJECTS" --credential "$CREDENTIAL" --endpoint "$CONTROL_ENDPOINT" \
+  $FIXTURE_FLAG \
   --out "$REL/out/control.json" \
   || die "the control could not establish what the provider does"
 
@@ -455,6 +460,7 @@ node "$REL/observations.cjs" "$REL/out/observations.json" \
   "$WRITE_REFUSED" "$CREATE_REFUSED" "$UNLINK_REFUSED" "$CHMOD_REFUSED" "$LEASE_TRACES" "$MODE"
 
 real_provider verdict --objects "$OBJECTS" --control "$REL/out/control.json" \
+  $FIXTURE_FLAG \
   --reads "$REL/out/reads.json" --observations "$REL/out/observations.json" \
   --results "$REL/out/results.json"
 

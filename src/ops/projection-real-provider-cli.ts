@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, openSync, readFileSync, readSync, closeSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { request } from 'node:https';
+import { request as httpsRequest } from 'node:https';
+import { request as httpRequest } from 'node:http';
 import type { TLSSocket } from 'node:tls';
 import type { GateResult } from '../core/projection/media-server-dataplane.js';
 import {
@@ -16,13 +17,14 @@ import {
 // it to any user, and a gate that accepted a credential as a flag VALUE would leak it to every
 // process on the machine for as long as the run lasted.
 //
-//   preflight  --objects F --credential F --endpoint F [--json F]
+//   preflight  --objects F --credential F --endpoint F [--fixture-endpoint] [--json F]
 //                validates shape and permissions and CONTACTS NOTHING
 //   control    --objects F --credential F --endpoint F --out F
 //                one direct HTTPS Range request per object, outside the daemon
 //   reads      --objects F --mount D --control F --out F
 //                the reads through the mount, digested
 //   verdict    --objects F --control F --reads F --observations F --results F
+//                [--fixture-endpoint] — skips the TLS assertions, and says so as a SKIP
 //   report     --results F [--json F]
 
 class GateFailure extends Error {}
@@ -118,6 +120,17 @@ const recordAll = (args: Args, results: readonly GateResult[]): void => {
 interface ControlOutcome { readonly probe: DirectProbe; readonly body: Buffer }
 
 /**
+ * https for a real provider, http for the offline fixture — chosen from the URL and from nothing else.
+ *
+ * THE CHOICE IS NOT A POLICY DECISION AND MUST NOT BECOME ONE. Whether plaintext is ACCEPTABLE is decided in
+ * `endpointProblems`, which refuses it for any real endpoint before a request is ever made. By the time a URL
+ * reaches here it has already been authorised; all that is left is to dial it with the right client.
+ */
+const requestFor = (url: URL): typeof httpsRequest =>
+  (url.protocol === 'http:' ? httpRequest : httpsRequest) as typeof httpsRequest;
+
+
+/**
  * One ranged GET, straight at the provider.
  *
  * REDIRECTS ARE NOT FOLLOWED, AND THAT IS THE MEASUREMENT. `node:https` does not follow them on its own, so
@@ -132,10 +145,11 @@ function probeOnce(options: {
   return new Promise<ControlOutcome>((resolve, reject) => {
     const started = Date.now();
     const last = options.offset + options.length - 1;
-    const req = request({
+    const req = requestFor(options.url)({
       protocol: options.url.protocol,
       hostname: options.url.hostname,
-      port: options.url.port === '' ? 443 : Number(options.url.port),
+      port: options.url.port === '' ? (options.url.protocol === 'http:' ? 80 : 443)
+        : Number(options.url.port),
       path: `${options.url.pathname}${options.url.search}`,
       method: 'GET',
       // THE SYSTEM TRUST STORE, UNMODIFIED. No `rejectUnauthorized: false`, no pinned certificate, no
@@ -159,6 +173,8 @@ function probeOnce(options: {
         resolve({
           probe: {
             label: options.label,
+            // AN ABSENT TLS LAYER REPORTS AS ABSENT, NEVER AS COMPLIANT. A plaintext socket has neither
+            // method, and reading `undefined` as "fine" is how a gate passes a connection that had no TLS.
             tlsProtocol: typeof socket.getProtocol === 'function' ? (socket.getProtocol() ?? '') : '',
             tlsAuthorized: socket.authorized === true,
             status,
@@ -216,10 +232,10 @@ Promise<{ url: string; headers: Record<string, string> }> {
   return new Promise((resolve, reject) => {
     const target = new URL(resolverUrl);
     const payload = JSON.stringify({ objectRef: ref });
-    const req = request({
+    const req = requestFor(target)({
       protocol: target.protocol,
       hostname: target.hostname,
-      port: target.port === '' ? 443 : Number(target.port),
+      port: target.port === '' ? (target.protocol === 'http:' ? 80 : 443) : Number(target.port),
       path: `${target.pathname}${target.search}`,
       method: 'POST',
       headers: {
@@ -289,7 +305,11 @@ async function main(): Promise<void> {
       const objects = readJson<OperatorObject[]>(need(args, 'objects'), 'object manifest');
       const endpoint = readJson<EndpointDescription>(need(args, 'endpoint'), 'endpoint description');
       const credential = credentialStat(need(args, 'credential'));
-      const problems = [...inputProblems({ objects, credential, endpoint })];
+      // --fixture-endpoint relaxes ONLY the three real-provider rules, and only when asked for.
+      // Omitted, it defaults to a REAL endpoint, so an operator can never get the relaxation by
+      // accident and a forgotten flag fails closed rather than open.
+      const realEndpoint = args.flags.get('fixture-endpoint') !== 'true';
+      const problems = [...inputProblems({ objects, credential, endpoint, realEndpoint })];
 
       // The manifest itself must not carry anything unprintable, because the gate prints labels from it.
       const raw = readFileSync(need(args, 'objects'), 'utf8');
@@ -319,7 +339,8 @@ async function main(): Promise<void> {
       const endpoint = readJson<EndpointDescription>(need(args, 'endpoint'), 'endpoint description');
       const credentialPath = need(args, 'credential');
       const stat = credentialStat(credentialPath);
-      const problems = inputProblems({ objects, credential: stat, endpoint });
+      const realEndpoint = args.flags.get('fixture-endpoint') !== 'true';
+      const problems = inputProblems({ objects, credential: stat, endpoint, realEndpoint });
       if (problems.length > 0) fail(`the inputs are not usable; run preflight (${problems.length} problem(s))`);
       const credential = readFileSync(credentialPath, 'utf8').trim();
 
@@ -410,7 +431,8 @@ async function main(): Promise<void> {
         cleanup: Parameters<typeof cleanupResults>[1];
       }>(need(args, 'observations'), 'observation record');
 
-      recordAll(args, controlResults('RP1', control.probes, objects));
+      const realEndpoint = args.flags.get('fixture-endpoint') !== 'true';
+      recordAll(args, controlResults('RP1', control.probes, objects, realEndpoint));
       recordAll(args, readResults('RP2', reads.reads, objects));
       recordAll(args, transportResults('RP3', obs));
       recordAll(args, readOnlyResults('RP4', obs.readOnly));

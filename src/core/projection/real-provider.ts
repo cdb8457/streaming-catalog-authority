@@ -94,6 +94,8 @@ export function inputProblems(input: {
   readonly objects: readonly OperatorObject[];
   readonly credential: CredentialStat;
   readonly endpoint: EndpointDescription;
+  /** False ONLY for the offline fixture. Defaults to a real endpoint, so an omission fails closed. */
+  readonly realEndpoint?: boolean;
 }): readonly string[] {
   const problems: string[] = [];
 
@@ -166,7 +168,7 @@ export function inputProblems(input: {
     }
   }
 
-  problems.push(...endpointProblems(input.endpoint));
+  problems.push(...endpointProblems(input.endpoint, input.realEndpoint ?? true));
   return problems;
 }
 
@@ -179,8 +181,22 @@ export interface EndpointDescription {
   readonly allowPrivateAddresses?: boolean;
 }
 
-/** The endpoint rules that matter when the other end is real and not a fixture in a container. */
-export function endpointProblems(endpoint: EndpointDescription): readonly string[] {
+/**
+ * The endpoint rules that matter when the other end is REAL and not a fixture in a container.
+ *
+ * WHY THERE IS A FIXTURE EXEMPTION AT ALL, AND WHY IT IS SHAPED LIKE THIS. Fake mode has to drive the SAME
+ * code path a real run drives -- a gate whose real mode ran code no offline run had ever executed would be a
+ * gate first tested against somebody production account. But the fake endpoint is plaintext HTTP on a private
+ * address, which is exactly what the three strictest rules here exist to forbid.
+ *
+ * So the exemption is NARROW, EXPLICIT AND FAILS CLOSED. It is a parameter that defaults to `true` (real),
+ * it relaxes ONLY the three rules that are about the other end being a real provider carrying a real
+ * credential, and it relaxes none of the structural ones -- an endpoint with no allowlist, or naming both
+ * transport shapes, or naming neither, is refused in both modes. An offline test requires that every one of
+ * the relaxed rules still bites when `realEndpoint` is true.
+ */
+export function endpointProblems(endpoint: EndpointDescription,
+  realEndpoint = true): readonly string[] {
   const problems: string[] = [];
   const resolver = endpoint.resolverUrl ?? '';
   const direct = endpoint.directBaseUrl ?? '';
@@ -196,19 +212,24 @@ export function endpointProblems(endpoint: EndpointDescription): readonly string
 
   // TLS IS NOT OPTIONAL AGAINST A REAL PROVIDER, and neither switch that would relax it may be set. These are
   // two separate permissions in the product for a good reason, and a real-provider run needs neither.
-  for (const [name, value] of [['resolverUrl', resolver], ['directBaseUrl', direct]] as const) {
-    if (value !== '' && !value.startsWith('https://')) {
-      problems.push(`${name} is not https; a real-provider run carries a bearer credential and will not send `
-        + `it in plaintext`);
+  //
+  // THESE THREE, AND ONLY THESE THREE, ARE WHAT THE FIXTURE EXEMPTION RELAXES.
+  if (realEndpoint) {
+    for (const [name, value] of [['resolverUrl', resolver], ['directBaseUrl', direct]] as const) {
+      if (value !== '' && !value.startsWith('https://')) {
+        problems.push(`${name} is not https; a real-provider run carries a real credential and will not `
+          + `send it in plaintext`);
+      }
     }
-  }
-  if (endpoint.allowInsecureHttp === true) {
-    problems.push('allowInsecureHttp is set; that is a fixture switch and has no place in a run that carries '
-      + 'a real credential');
-  }
-  if (endpoint.allowPrivateAddresses === true) {
-    problems.push('allowPrivateAddresses is set; that authorises the daemon to dial loopback and link-local '
-      + 'addresses, which against a real provider means a redirect could steer it at the host itself');
+    if (endpoint.allowInsecureHttp === true) {
+      problems.push('allowInsecureHttp is set; that is a fixture switch and has no place in a run that '
+        + 'carries a real credential');
+    }
+    if (endpoint.allowPrivateAddresses === true) {
+      problems.push('allowPrivateAddresses is set; that authorises the daemon to dial loopback and '
+        + 'link-local addresses, which against a real provider means a redirect could steer it at the host '
+        + 'itself');
+    }
   }
 
   if (endpoint.allowedOrigins.length === 0) {
@@ -216,7 +237,7 @@ export function endpointProblems(endpoint: EndpointDescription): readonly string
       + 'somewhere the operator never authorised, and an empty list is not a permissive one by accident here');
   }
   for (const origin of endpoint.allowedOrigins) {
-    if (!origin.startsWith('https://')) {
+    if (realEndpoint && !origin.startsWith('https://')) {
       problems.push('an allowed origin is not https');
     }
   }
@@ -318,7 +339,7 @@ export interface DirectProbe {
  * provider this product correctly refuses to use; that has to be reported as such rather than as a failure.
  */
 export function controlResults(gate: string, probes: readonly DirectProbe[],
-  objects: readonly OperatorObject[]): readonly GateResult[] {
+  objects: readonly OperatorObject[], realEndpoint = true): readonly GateResult[] {
   const results: GateResult[] = [];
   if (probes.length === 0) {
     return [{ gate: `${gate}-control-ran`, verdict: 'fail', measured: 0, budget: 1,
@@ -331,12 +352,27 @@ export function controlResults(gate: string, probes: readonly DirectProbe[],
     const at = `${gate}:${probe.label}`;
 
     // --- real TLS -----------------------------------------------------------------------------------------
-    results.push(exactly(`${at}-tls`, probe.tlsProtocol.startsWith('TLSv1.2')
-      || probe.tlsProtocol.startsWith('TLSv1.3') ? 1 : 0, 1,
-    `the connection negotiated ${probe.tlsProtocol || 'no TLS at all'}; TLS 1.2 is the floor`));
-    results.push(exactly(`${at}-tls-authorized`, probe.tlsAuthorized ? 1 : 0, 1,
-      'and the certificate chain validated against the system trust store — no pinning, no skipped '
-      + 'verification, no operator-supplied CA, because a run that trusted anything proves nothing about TLS'));
+    //
+    // AGAINST THE OFFLINE FIXTURE THESE SKIP, AND A SKIP IS NOT A PASS. The fixture is plaintext HTTP on
+    // loopback and has no TLS to assert anything about; reporting `pass` there would mean the one gate whose
+    // entire purpose is REAL transport recorded a TLS success it never observed. The default is a real
+    // endpoint, so a forgotten flag fails closed — it asserts TLS and fails — rather than silently skipping.
+    if (!realEndpoint) {
+      results.push({
+        gate: `${at}-tls`, verdict: 'skip',
+        note: 'SKIPPED, AND A SKIP IS NOT A PASS: this ran against the offline fixture, which is plaintext '
+          + 'HTTP on loopback. Real TLS is asserted only against a real endpoint, and this run closes '
+          + 'nothing about one',
+      });
+    } else {
+      results.push(exactly(`${at}-tls`, probe.tlsProtocol.startsWith('TLSv1.2')
+        || probe.tlsProtocol.startsWith('TLSv1.3') ? 1 : 0, 1,
+      `the connection negotiated ${probe.tlsProtocol || 'no TLS at all'}; TLS 1.2 is the floor`));
+      results.push(exactly(`${at}-tls-authorized`, probe.tlsAuthorized ? 1 : 0, 1,
+        'and the certificate chain validated against the system trust store — no pinning, no skipped '
+        + 'verification, no operator-supplied CA, because a run that trusted anything proves nothing '
+        + 'about TLS'));
+    }
 
     // --- redirects ----------------------------------------------------------------------------------------
     results.push(exactly(`${at}-no-redirect`, probe.redirected ? 1 : 0, 0,
