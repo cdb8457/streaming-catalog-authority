@@ -33,6 +33,8 @@ export MSYS_NO_PATHCONV=1
 
 IMAGE="${PROJECTIOND_IMAGE:-projectiond:phase1-local}"
 VERIFY_IMAGE="alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
+# The same pinned Go image every other gate builds the fake endpoint with.
+GO_IMAGE="golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651"
 
 COMPOSE_FILE="docker-compose.projection-real-provider.yml"
 NETWORK="projection-real-provider-gate"
@@ -270,6 +272,7 @@ if [ "$MODE" = "real" ]; then
   echo "  the operator has supplied a corpus; this run WILL contact a real provider"
   OBJECTS="$OBJECTS_FILE"
   ENDPOINT="$ENDPOINT_FILE"
+  CONTROL_ENDPOINT="$ENDPOINT_FILE"
   CREDENTIAL="$CREDENTIAL_FILE"
 else
   echo "  FAKE MODE: no credential, no external contact, every assertion still evaluated"
@@ -301,23 +304,54 @@ step "standing up the pinned deterministic fake provider, and writing the inputs
   head -c 64 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$WORK/inputs/credential"
   chmod 600 "$WORK/inputs/credential"
 
-  docker run -d --name "$FAKE_CONTAINER" --network "$NETWORK" \
+  # THE FAKE PROVIDER IS BUILT AND RUN THE WAY EVERY OTHER GATE RUNS IT: `go run ./cmd/fakerange` inside the
+  # pinned Go image, with the repository bind-mounted. It is NOT in the projectiond image and must not be --
+  # the production image ships one binary, and adding a fixture server to it would put a fault injector in
+  # the artifact an operator deploys.
+  docker run -d --name "$FAKE_CONTAINER" --network "$NETWORK" --network-alias fakerange \
     -p "127.0.0.1:${FAKE_PORT}:8099" \
+    -v "$PWD:/workspace" -w /workspace/projectiond \
     -v "$WORK/inputs:/inputs:ro" -v "$WORK/out:/out" \
-    --entrypoint /usr/local/bin/fakerange "$IMAGE" \
-    -addr 0.0.0.0:8099 -object "rp-object-1:${FAKE_SIZE}" \
-    -token-file /inputs/credential -emit /out/fake-objects.json >/dev/null \
+    -e GOFLAGS=-buildvcs=false -e GOTOOLCHAIN=local -e CGO_ENABLED=0 \
+    "$GO_IMAGE" go run ./cmd/fakerange --addr 0.0.0.0:8099 \
+    --object "rp-object-1:${FAKE_SIZE}" \
+    --token-file /inputs/credential --emit /out/fake-objects.json >/dev/null \
     || die "the fake provider did not start"
 
-  for _ in $(seq 1 60); do
-    curl -fsS "http://127.0.0.1:${FAKE_PORT}/healthz" >/dev/null 2>&1 && break
+  # LIVENESS IS `/counters`, NOT A RANGED GET. A readiness loop that sent a ranged request would be real
+  # object traffic: it would serve bytes and be counted, dozens of times on a slow host, before the gate had
+  # asserted anything. The range semantics are checked exactly once afterwards, by the control phase.
+  cat > "$WORK/out/alive.sh" <<'ALIVE'
+set -eu
+wget -q -O /dev/null "$1"
+ALIVE
+  ready=0
+  for _ in $(seq 1 240); do
+    if docker run --rm --network "$NETWORK" -v "$WORK/out:/out" "$VERIFY_IMAGE" \
+      sh /out/alive.sh "http://fakerange:8099/counters" >/dev/null 2>&1; then
+      ready=1; break
+    fi
     sleep 0.5
   done
+  test "$ready" -eq 1 || { logs_tail "$FAKE_CONTAINER"; die "the fake provider never came up"; }
+  test -s "$WORK/out/fake-objects.json" || die "the fake provider started but emitted no descriptor"
 
   # THE FAKE PROVIDER SPEAKS PLAINTEXT ON LOOPBACK, so this mode deliberately relaxes the two switches the
   # real mode refuses -- and `endpointProblems` refuses BOTH of them for a real endpoint, which is exactly
   # why the fake inputs are written here rather than reused as a template for an operator.
+  # TWO SPELLINGS OF ONE ENDPOINT, AND BOTH ARE NEEDED. The DAEMON dials it by network alias from inside the
+  # gate network; the CONTROL dials it from the host over the published loopback port. A single spelling would
+  # be wrong for one of the two, and the control is the thing that establishes ground truth independently.
   cat > "$WORK/inputs/endpoint.json" <<JSON
+{
+  "id": "fake",
+  "directBaseUrl": "http://fakerange:8099/direct",
+  "allowedOrigins": ["http://fakerange:8099"],
+  "allowInsecureHttp": true,
+  "allowPrivateAddresses": true
+}
+JSON
+  cat > "$WORK/inputs/endpoint-control.json" <<JSON
 {
   "id": "fake",
   "directBaseUrl": "http://127.0.0.1:${FAKE_PORT}/direct",
@@ -329,6 +363,7 @@ JSON
   node "$REL/fake-objects.cjs" "$REL/out/fake-objects.json" "$REL/inputs/objects.json" "$FAKE_SIZE"
   OBJECTS="$REL/inputs/objects.json"
   ENDPOINT="$REL/inputs/endpoint.json"
+  CONTROL_ENDPOINT="$REL/inputs/endpoint-control.json"
   CREDENTIAL="$REL/inputs/credential"
 fi
 
@@ -353,7 +388,7 @@ fi
 # ----------------------------------------------------------------------------------------------------------
 step "CONTROL — one direct ranged request per object, with the daemon nowhere in the path"
 # ----------------------------------------------------------------------------------------------------------
-real_provider control --objects "$OBJECTS" --credential "$CREDENTIAL" --endpoint "$ENDPOINT" \
+real_provider control --objects "$OBJECTS" --credential "$CREDENTIAL" --endpoint "$CONTROL_ENDPOINT" \
   --out "$REL/out/control.json" \
   || die "the control could not establish what the provider does"
 
