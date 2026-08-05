@@ -308,6 +308,12 @@ test "$(field entryCount < "$WORK/out/publish.json")" = "3" || die "the generati
 # ----------------------------------------------------------------------------------------------------------
 step "mounting, with the endpoint pointed at the LOOPBACK resolver rather than at any provider"
 # ----------------------------------------------------------------------------------------------------------
+# THE ALLOWLIST NAMES BOTH HOPS, AND THAT IS THE PRODUCT'''S RULE RATHER THAN THIS GATE'''S CHOICE. The daemon
+# checks EVERY url it is about to dial against the endpoint allowlist -- and the resolver is one of those:
+# the first run of this gate failed with "origin not in endpoint allowlist" naming the resolver, not the
+# CDN. So the list carries the resolver origin AND the origin the CDN links will name. An operator
+# configuring a real run has to do the same, and the template says so.
+#
 # BOTH RELAXATIONS BELOW ARE FIXTURE-ONLY AND OPT-IN. The fixture speaks plaintext HTTP on a private address;
 # a real endpoint description sets neither of these, and the real-provider gate's preflight REFUSES a
 # configuration that does. They are here, in an offline gate, and in no shipped real path.
@@ -322,7 +328,10 @@ cat > "$WORK/config.json" <<JSON
     {
       "id": "torbox",
       "resolverUrl": "http://127.0.0.1:${RESOLVER_PORT}/resolve",
-      "allowedOrigins": ["http://torbox-fixture:${TORBOX_PORT}"],
+      "allowedOrigins": [
+        "http://127.0.0.1:${RESOLVER_PORT}",
+        "http://torbox-fixture:${TORBOX_PORT}"
+      ],
       "tokenFile": "/var/lib/projectiond/inputs/gate-secret",
       "allowInsecureHttp": true,
       "allowPrivateAddresses": true,

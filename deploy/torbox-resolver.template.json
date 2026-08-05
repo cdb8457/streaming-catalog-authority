@@ -26,12 +26,14 @@
     "resolverUrl": "http://127.0.0.1:8140/resolve",
     "directBaseUrl": null,
     "allowedOrigins": [
+      "http://127.0.0.1:8140",
       "https://REPLACE-ME-cdn-host.torbox.app"
     ],
     "allowInsecureHttp": false,
     "allowPrivateAddresses": false
   },
-  "_comment_origins_hard": "FINDING THE RIGHT allowedOrigins IS THE ONE STEP THAT NEEDS CARE. TorBox mints CDN links on hosts that can differ by account and region, and the daemon will refuse a link whose origin is not listed — which is the behaviour you want, but it means a first run can fail closed on a host you did not anticipate. Resolve one object by hand first and list exactly the origin it returns. Do NOT widen this to a bare wildcard; an unbounded allowlist is how a signed URL becomes an SSRF.",
+  "_comment_origins_resolver": "THE RESOLVER ORIGIN MUST BE IN THIS LIST TOO, and it is easy to miss. The daemon checks EVERY url it is about to dial against the allowlist, and the resolver is one of them -- omit it and the daemon refuses to start with \"origin not in endpoint allowlist\", naming the resolver rather than any CDN host.",
+  "_comment_origins_hard": "FINDING THE RIGHT CDN allowedOrigins IS THE ONE STEP THAT NEEDS CARE. TorBox mints CDN links on hosts that can differ by account and region, and the daemon will refuse a link whose origin is not listed — which is the behaviour you want, but it means a first run can fail closed on a host you did not anticipate. Resolve one object by hand first and list exactly the origin it returns. Do NOT widen this to a bare wildcard; an unbounded allowlist is how a signed URL becomes an SSRF.",
 
   "_comment_run": "COMMANDS. Nothing below takes a secret as an argument; every one takes a PATH.",
   "commands": {
