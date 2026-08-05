@@ -150,6 +150,23 @@ test('no accidental TorBox implementation appears outside the static boundary an
     'src/ops/torbox-live-smoke-plan.ts',
     'src/ops/torbox-live-smoke-plan-cli.ts',
     'test/torbox-boundary.ts',
+    // ---------------------------------------------------------------------------------------------------
+    // PHASE 50 - THE READ-ONLY requestdl RESOLVER.
+    //
+    // Phase 41 future-gated the three requestdl endpoints and said they "require a later explicit phase";
+    // docs/PHASE_50_TORBOX_RESOLVER.md is that phase, and these are the files it authorises. Adding them
+    // here is the ONLY legitimate way to widen this boundary: the list is what stops TorBox knowledge
+    // leaking into the rest of the codebase by accident, so a file arrives on it deliberately or not at all.
+    //
+    // NOTE WHAT IS NOT HERE. The Phase 33 smoke client is untouched -- request-download-link REMAINS in
+    // TORBOX_REAL_CLIENT_FUTURE_GATED_OPERATIONS and torbox-live-transport.ts stays cache-and-status only.
+    // This phase gives the RESOLVER that capability, on its own surface, and nothing else gains it.
+    'src/core/adapters/torbox-resolver.ts',
+    'src/ops/torbox-resolver-service.ts',
+    'src/ops/torbox-resolver-cli.ts',
+    'src/ops/torbox-fixture-service.ts',
+    'src/ops/torbox-fixture-cli.ts',
+    'test/torbox-resolver.ts',
   ]);
   const phase50Labels = read('src/ops/torbox-live-smoke-labels.ts');
   const phase49Summary = read('src/ops/torbox-live-smoke-summary-pack.ts');

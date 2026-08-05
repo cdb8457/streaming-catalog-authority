@@ -3,10 +3,11 @@
 
   "_comment_where": "Place the real files under a 0700 directory. The default the gate looks in, and the only place it EVER looks, is /mnt/user/appdata/catalog/secrets/real-provider/. The gate never searches the filesystem for anything that might be a credential, never reads one from the environment, and never prompts.",
 
-  "_comment_files": "FOUR FILES, ALL MODE 0600.",
+  "_comment_files": "FOUR FILES, ALL MODE 0600. Note that TWO of them hold secrets and they are different values: `torbox-credential` is your API key and only the resolver reads it; `credential` is the gate secret the daemon presents to the resolver.",
   "files": {
     "torbox-credential": "The TorBox API key and nothing else. NOTE WHY THIS MATTERS MORE THAN A USUAL TOKEN: TorBox authenticates requestdl with a ?token= QUERY PARAMETER, so the request URL is itself a bearer credential. Anything that logs a request URL publishes this key. The resolver never logs, stores or returns a request URL, and refuses any credential file whose mode has group or other bits set.",
-    "gate-secret": "Any high-entropy string you generate locally, e.g. `head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \\n'`. The projection daemon presents this to the resolver as a bearer. It is NOT your TorBox key and must not be. Two secrets exist so the data-plane binary — the one that talks to arbitrary provider-supplied CDN hosts — never holds the credential that can manage your whole TorBox account.",
+    "credential": "THE GATE SECRET, and note the name: this is the file `deploy/projection-real-provider-gate.sh` reads, and for a TorBox run it must hold the GATE SECRET rather than your TorBox key. The gate talks to the loopback resolver, not to TorBox; only the resolver ever sees your API key. Generate it locally, e.g. `head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \\n'`. It is NOT your TorBox key and must not be.",
+    "gate-secret-note": "Any high-entropy string you generate locally, e.g. `head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \\n'`. The projection daemon presents this to the resolver as a bearer. It is NOT your TorBox key and must not be. Two secrets exist so the data-plane binary — the one that talks to arbitrary provider-supplied CDN hosts — never holds the credential that can manage your whole TorBox account.",
     "objects.json": "1-3 objects you are legally entitled to. See deploy/real-provider-objects.template.json. Each `ref` is a TorBox stable reference, described below. TREAT THIS FILE AS A SECRET: a reference identifies an item in your account.",
     "endpoint.json": "See deploy/real-provider-endpoint.template.json, filled in as shown under `endpointShape` below."
   },
@@ -37,8 +38,8 @@
 
   "_comment_run": "COMMANDS. Nothing below takes a secret as an argument; every one takes a PATH.",
   "commands": {
-    "1-preflight-resolver": "npx tsx src/ops/torbox-resolver-cli.ts preflight --credential <dir>/torbox-credential --gate-secret <dir>/gate-secret",
-    "2-serve-resolver": "npx tsx src/ops/torbox-resolver-cli.ts serve --credential <dir>/torbox-credential --gate-secret <dir>/gate-secret --port 8140",
+    "1-preflight-resolver": "npx tsx src/ops/torbox-resolver-cli.ts preflight --credential <dir>/torbox-credential --gate-secret <dir>/credential",
+    "2-serve-resolver": "npx tsx src/ops/torbox-resolver-cli.ts serve --credential <dir>/torbox-credential --gate-secret <dir>/credential --port 8140",
     "3-preflight-gate": "npm run go:real-provider-gate  (skips with 77 until all inputs are present)",
     "4-three-runs": "npm run go:real-provider-gate:three"
   },

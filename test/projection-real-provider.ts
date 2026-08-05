@@ -381,6 +381,34 @@ async function main(): Promise<void> {
       'the plaintext opt-in was accepted on a real-provider run');
   });
 
+  await test('A LOOPBACK RESOLVER MAY BE PLAINTEXT, AND NOTHING ELSE MAY BE', () => {
+    // WHY THIS EXEMPTION EXISTS. A provider adapter may run as a LOOPBACK-ONLY resolver process
+    // holding the provider credential, and the daemon reaches it at http://127.0.0.1:N. Requiring
+    // TLS there would mean shipping a certificate authority for a socket that never touches a network
+    // interface and that nothing off-host can address. The threat TLS answers has no wire to be on.
+    //
+    // WHY IT IS THIS NARROW. Everything below must still be refused, or the exemption becomes a way to send
+    // a real credential in the clear to somewhere that is not this host.
+    const torbox: EndpointDescription = {
+      id: 'torbox', resolverUrl: 'http://127.0.0.1:8140/resolve',
+      allowedOrigins: ['http://127.0.0.1:8140', 'https://cdn.example.invalid'],
+    };
+    assert(endpointProblems(torbox).length === 0,
+      'the loopback resolver arrangement a provider adapter needs was refused');
+    for (const [what, endpoint] of [
+      ['a non-loopback plaintext resolver', { ...torbox, resolverUrl: 'http://elsewhere.example/resolve' }],
+      ['a plaintext directBaseUrl, which names the PROVIDER and is never on this host',
+        { id: 'x', directBaseUrl: 'http://127.0.0.1:9/o', allowedOrigins: ['http://127.0.0.1:9'] }],
+      ['a non-loopback plaintext allowed origin',
+        { ...torbox, allowedOrigins: ['http://cdn.example.invalid'] }],
+      ['userinfo smuggled into a loopback URL', { ...torbox, resolverUrl: 'http://a:b@127.0.0.1:8140/r' }],
+      ['a hostname that merely resolves to loopback, which is a DNS answer and can change',
+        { ...torbox, resolverUrl: 'http://loopback.example/resolve' }],
+    ] as const) {
+      assert(endpointProblems(endpoint as EndpointDescription).length > 0, what + ' was accepted');
+    }
+  });
+
   await test('AN ENDPOINT THAT COULD BE STEERED AT THE HOST ITSELF FAILS CLOSED', () => {
     assert(endpointProblems({ ...ENDPOINT, allowPrivateAddresses: true }).length > 0,
       'the private-address opt-in was accepted, which would let a redirect reach the host metadata service');

@@ -181,6 +181,32 @@ export interface EndpointDescription {
   readonly allowPrivateAddresses?: boolean;
 }
 
+
+/**
+ * A plaintext URL that cannot leave this host.
+ *
+ * WHY THIS EXEMPTION EXISTS AND WHY IT IS SAFE. A provider adapter may run as a LOOPBACK-ONLY resolver
+ * process holding the provider credential, and the daemon reaches it at `http://127.0.0.1:N`.
+ * Requiring TLS on that socket would mean shipping a certificate authority for a connection that never
+ * touches a network interface and that nothing off-host can address. The threat TLS answers here — somebody
+ * on the wire — has no wire to be on.
+ *
+ * IT IS DELIBERATELY NARROW. Only the literal loopback addresses and `localhost`, only over http, and only
+ * where this is consulted. A hostname that merely RESOLVES to loopback is refused, because that is a DNS
+ * answer rather than a fact about the URL, and it can change between the check and the dial.
+ */
+function isLoopbackHttp(raw: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'http:') return false;
+  if (parsed.username !== '' || parsed.password !== '') return false;
+  return ['127.0.0.1', 'localhost', '[::1]', '::1'].includes(parsed.hostname);
+}
+
 /**
  * The endpoint rules that matter when the other end is REAL and not a fixture in a container.
  *
@@ -216,10 +242,17 @@ export function endpointProblems(endpoint: EndpointDescription,
   // THESE THREE, AND ONLY THESE THREE, ARE WHAT THE FIXTURE EXEMPTION RELAXES.
   if (realEndpoint) {
     for (const [name, value] of [['resolverUrl', resolver], ['directBaseUrl', direct]] as const) {
-      if (value !== '' && !value.startsWith('https://')) {
-        problems.push(`${name} is not https; a real-provider run carries a real credential and will not `
-          + `send it in plaintext`);
-      }
+      if (value === '' || value.startsWith('https://')) continue;
+      // A LOOPBACK RESOLVER IS THE ONE PLAINTEXT URL A REAL RUN MAY CARRY, and only the resolver: a
+      // `directBaseUrl` names the PROVIDER, which is never on this host, so a loopback one is a
+      // misconfiguration rather than an architecture.
+      if (name === 'resolverUrl' && isLoopbackHttp(value)) continue;
+      problems.push(`${name} is not https; a real-provider run carries a real credential and will not `
+        + `send it in plaintext`
+        + (name === 'resolverUrl'
+          ? '. A loopback resolver — http://127.0.0.1:PORT — is the one exception, because that '
+            + 'connection never reaches a network interface'
+          : ''));
     }
     if (endpoint.allowInsecureHttp === true) {
       problems.push('allowInsecureHttp is set; that is a fixture switch and has no place in a run that '
@@ -237,8 +270,10 @@ export function endpointProblems(endpoint: EndpointDescription,
       + 'somewhere the operator never authorised, and an empty list is not a permissive one by accident here');
   }
   for (const origin of endpoint.allowedOrigins) {
-    if (realEndpoint && !origin.startsWith('https://')) {
-      problems.push('an allowed origin is not https');
+    // The resolver's own origin has to be on this list -- the daemon checks every url it dials against it,
+    // including the resolver's -- so the same loopback exemption applies, and nothing wider.
+    if (realEndpoint && !origin.startsWith('https://') && !isLoopbackHttp(origin)) {
+      problems.push('an allowed origin is neither https nor a loopback address');
     }
   }
   return problems;

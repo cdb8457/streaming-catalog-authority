@@ -178,6 +178,19 @@ await test('TorBox source allowlist includes Phase 39 explicitly and nothing acc
     'src/ops/torbox-live-smoke-acceptance-record-cli.ts',
     'src/ops/torbox-live-smoke-plan.ts',
     'src/ops/torbox-live-smoke-plan-cli.ts',
+    // PHASE 50 - THE READ-ONLY requestdl RESOLVER. Phase 41 future-gated the three
+    // requestdl endpoints and said they require a later explicit phase;
+    // docs/PHASE_50_TORBOX_RESOLVER.md is that phase and these are the files it
+    // authorises. This list is what stops TorBox knowledge leaking into the rest of
+    // the codebase by accident, so a file joins it deliberately or not at all.
+    // The Phase 33 smoke client is UNTOUCHED: request-download-link remains
+    // future-gated there and torbox-live-transport.ts stays cache-and-status only.
+    'src/core/adapters/torbox-resolver.ts',
+    'src/ops/torbox-resolver-service.ts',
+    'src/ops/torbox-resolver-cli.ts',
+    'src/ops/torbox-fixture-service.ts',
+    'src/ops/torbox-fixture-cli.ts',
+    'test/torbox-resolver.ts',
   ]);
   for (const [path, source] of walkTs('src')) {
     if (allowed.has(path)) continue;

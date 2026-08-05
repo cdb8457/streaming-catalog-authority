@@ -95,6 +95,26 @@ process.stdin.on('end', () => {
 });
 JQ
 
+cat > "$WORK/probe-resolver.cjs" <<'PROBE'
+// Is the resolver listening, and does it refuse an unauthenticated request?
+//
+// WHY THIS IS A FILE RATHER THAN `node -e`. `test/custody-runtime-closure.ts` refuses a shipped script
+// carrying a multi-line `node -e` string, and it is right to: a quoted program inside a quoted shell
+// argument is one escaping mistake away from being unparseable, and an unreadable line in a gate is not an
+// empty one. It also gives the probe somewhere to explain itself.
+//
+// A 401 IS THE HEALTHY ANSWER. The probe presents no credential on purpose: a resolver that answered
+// anything else to an unauthenticated request would be a resolver worth failing the gate over.
+const http = require('node:http');
+const port = Number(process.argv[2]);
+const req = http.request(
+  { host: '127.0.0.1', port, path: '/resolve', method: 'POST' },
+  (res) => process.exit(res.statusCode === 401 ? 0 : 1),
+);
+req.on('error', () => process.exit(1));
+req.end();
+PROBE
+
 cat > "$WORK/register.cjs" <<'REGISTER'
 // Emits the register commands into a 0600 shell file.
 //
@@ -416,10 +436,8 @@ docker run -d --name "$RESOLVER_CONTAINER" \
 
 resolver_ready=0
 for _ in $(seq 1 240); do
-  if docker exec "$RESOLVER_CONTAINER" node -e "
-    require('node:http').request({host:'127.0.0.1',port:${RESOLVER_PORT},path:'/resolve',method:'POST'},
-      (r)=>process.exit(r.statusCode===401?0:1)).on('error',()=>process.exit(1)).end();
-  " >/dev/null 2>&1; then
+  if docker exec "$RESOLVER_CONTAINER" \
+    node "/workspace/$REL/probe-resolver.cjs" "${RESOLVER_PORT}" >/dev/null 2>&1; then
     resolver_ready=1; break
   fi
   sleep 0.5

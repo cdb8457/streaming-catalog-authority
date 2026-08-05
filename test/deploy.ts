@@ -226,6 +226,14 @@ test('adapter boundary ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ�
     }
     if (f === 'fake-torbox-adapter.ts' || f === 'torbox-real-client-gate.ts' || f === 'torbox-readonly-client.ts') continue;
     if (f === 'torbox-provider-adapter.ts') continue;
+    // PHASE 50: the requestdl resolver contract. It names TorBox because that is what it is, and it is
+    // exempt from the provider-NAME rule for the same reason its siblings above are.
+    //
+    // IT IS NOT EXEMPT FROM THE NETWORK RULE, and that is the part worth stating: the assertion above still
+    // runs against it, so this module must stay free of node:http, fetch and every client library. All the
+    // I/O lives in src/ops/torbox-resolver-service.ts, which is not in this directory. Keeping the contract
+    // network-free is what lets it be attacked exhaustively offline.
+    if (f === 'torbox-resolver.ts') continue;
     assert(!providers.test(src), `src/core/adapters/${f} names no real provider / scraping / playback`);
   }
   assert(exists('docs/PHASE_7_ADAPTER_BOUNDARY.md'), 'adapter boundary doc exists');
