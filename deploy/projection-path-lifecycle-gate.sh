@@ -41,6 +41,10 @@ VERIFY_IMAGE="alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d
 JELLYFIN_IMAGE="jellyfin/jellyfin@sha256:7ae36aab93ef9b6aaff02b37f8bb23df84bb2d7a3f6054ec8fc466072a648ce2"
 PLEX_IMAGE="plexinc/pms-docker@sha256:a2b03d75aa16f422488c692935cab476d966b75f2af3c93bb6d910c6051906f5"
 EMBY_IMAGE="emby/embyserver@sha256:734a6f03c7c783a9e566b08d09a2b6376f41229ff29f032a7e00302e0be98f8a"
+# THE MEDIA GENERATOR IS THE JELLYFIN IMAGE, because it already ships an ffmpeg and is already pinned here.
+# Pulling a separate ffmpeg image would add a fourth external dependency to a gate that needs no new one.
+GENERATOR_IMAGE="$JELLYFIN_IMAGE"
+GENERATOR_FFMPEG="/usr/lib/jellyfin-ffmpeg/ffmpeg"
 
 COMPOSE_FILE="docker-compose.projection-lifecycle.yml"
 NETWORK="projection-lifecycle-gate"
@@ -88,6 +92,7 @@ lifecycle() { npx tsx src/ops/projection-path-lifecycle-cli.ts "$@" --results "$
 jellyfin()  { npx tsx src/ops/projection-jellyfin-dataplane-cli.ts "$@"; }
 plex()      { npx tsx src/ops/projection-plex-dataplane-cli.ts "$@"; }
 emby()      { npx tsx src/ops/projection-emby-dataplane-cli.ts "$@"; }
+ffmpeg_run() { docker run --rm --entrypoint "$GENERATOR_FFMPEG" -v "$WORK:/work" "$GENERATOR_IMAGE" "$@"; }
 
 # THE DAEMON'S OWN STATEMENT OF WHAT IT IS SERVING. Not the pointer — the pointer is the CONTROL PLANE's
 # claim, and the whole point of the refusal phase is that the daemon does not follow it. The daemon says
@@ -116,16 +121,6 @@ const { createHash } = require('node:crypto');
 const { readFileSync } = require('node:fs');
 console.log(createHash('sha256').update(readFileSync(process.argv[2])).digest('hex'));
 SHA
-
-cat > "$WORK/fill.cjs" <<'FILL'
-// Deterministic bytes, so two runs of this gate compare the same digest and nothing is downloaded.
-const { writeFileSync } = require('node:fs');
-const size = Number(process.argv[3]);
-const step = Number(process.argv[4]);
-const buffer = Buffer.alloc(size);
-for (let index = 0; index < size; index += 1) buffer[index] = (index * step + 11) % 251;
-writeFileSync(process.argv[2], buffer);
-FILL
 
 cat > "$WORK/watch.cjs" <<'WATCH'
 const { readFileSync, writeFileSync } = require('node:fs');
@@ -202,29 +197,46 @@ step "writing the two local files, and recording their digests OUTSIDE the mount
 # PATH A AND PATH B ARE DIFFERENT FILES WITH DIFFERENT BYTES, and that is deliberate. If the corrected path
 # carried the same bytes, a server that had silently kept the old item and renamed it would produce exactly
 # the digest the addition phase expects.
-FILE_A="Projection Lifecycle A (2026).bin"
-FILE_B="Projection Lifecycle B (2026).bin"
+#
+# THEY ARE REAL MP4s, GENERATED WITH FFMPEG, and run 2 on the real host is why. The first version wrote
+# deterministic byte fills named `.bin`: Jellyfin and Emby both catalogued them, Plex catalogued NOTHING and
+# its scan settled in one second. Plex's movie scanner only considers files whose extension it recognises as
+# video, so a `.bin` is not a thing it declines to identify — it is a thing it never looks at. The gate would
+# have been asserting a lifecycle against two servers and an empty library.
+FILE_A="Projection Lifecycle A (2026).mp4"
+FILE_B="Projection Lifecycle B (2026).mp4"
 # THE BYSTANDER. It is published in generation 1, is never retired, never deleted and never re-registered,
 # and it exists so that NO inventory in this gate is ever empty. An empty listing produces a difference of
 # zero against anything, which is what every "nothing else changed" assertion below wants to hear -- so a
 # scan that silently did no work would satisfy the deletion phase and the addition phase both. With a
 # bystander in the library, a zero-work scan fails coherence instead, and "exactly the removal of path A"
 # becomes a claim about a world that still demonstrably contains something else.
-FILE_C="Projection Lifecycle Bystander (2026).bin"
+FILE_C="Projection Lifecycle Bystander (2026).mp4"
 PATH_A="Movies/Projection Lifecycle A (2026)/$FILE_A"
 PATH_B="Movies/Projection Lifecycle B (2026)/$FILE_B"
 PATH_C="Movies/Projection Lifecycle Bystander (2026)/$FILE_C"
-SIZE_A=$((6 * 1024 * 1024))
-SIZE_B=$((7 * 1024 * 1024))
-SIZE_C=$((5 * 1024 * 1024))
-node "$REL/fill.cjs" "$REL/media/$FILE_A" "$SIZE_A" 17
-node "$REL/fill.cjs" "$REL/media/$FILE_B" "$SIZE_B" 23
-node "$REL/fill.cjs" "$REL/media/$FILE_C" "$SIZE_C" 29
+
+# THREE DIFFERENT DURATIONS AND THREE DIFFERENT TONES, so no two of them are byte-identical. If the corrected
+# path carried the same bytes as the original, a server that had silently kept the old item and renamed it
+# would produce exactly the digest the addition phase expects, and the digest check would confirm a defect.
+generate() { # file, duration, tone
+  ffmpeg_run -hide_banner -loglevel error -y \
+    -f lavfi -i "testsrc=size=128x96:rate=15:duration=$2" \
+    -f lavfi -i "sine=frequency=$3:duration=$2" \
+    -c:v mpeg4 -qscale:v 5 -c:a aac -b:a 32k -shortest -movflags +faststart "/work/media/$1"
+}
+generate "$FILE_A" 3 311
+generate "$FILE_B" 4 440
+generate "$FILE_C" 2 220
+SIZE_A="$(wc -c < "$WORK/media/$FILE_A" | tr -d ' ')"
+SIZE_B="$(wc -c < "$WORK/media/$FILE_B" | tr -d ' ')"
+SIZE_C="$(wc -c < "$WORK/media/$FILE_C" | tr -d ' ')"
 SHA_A="$(node "$REL/sha.cjs" "$REL/media/$FILE_A")"
-SHA_C="$(node "$REL/sha.cjs" "$REL/media/$FILE_C")"
 SHA_B="$(node "$REL/sha.cjs" "$REL/media/$FILE_B")"
+SHA_C="$(node "$REL/sha.cjs" "$REL/media/$FILE_C")"
 test "$SHA_A" != "$SHA_B" || die "the two files are byte-identical, so no digest comparison could discriminate"
-echo "  A $SIZE_A bytes, B $SIZE_B bytes, digests recorded before anything was published"
+test "$SIZE_A" -gt 0 && test "$SIZE_B" -gt 0 && test "$SIZE_C" -gt 0 || die "a generated file is empty"
+echo "  A $SIZE_A bytes, B $SIZE_B bytes, bystander $SIZE_C bytes; digests recorded before publishing"
 
 # ----------------------------------------------------------------------------------------------------------
 step "generation 1: the active item at path A"
