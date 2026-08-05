@@ -149,6 +149,12 @@ const objects = JSON.parse(readFileSync(objectsPath, 'utf8'));
 const shift = Number(shiftRaw ?? '0');
 const cold = shift !== 0;
 
+// EVERY WINDOW IS CLAMPED INSIDE THE OBJECT. A shifted cold offset can otherwise run past the end -- which
+// is a defect in the GATE, not in the thing under test, and it presents as an unreadable file.
+function clampOffset(offset, length, size) {
+  return Math.max(0, Math.min(offset, size - length));
+}
+
 function windowAt(path, offset, length) {
   const started = Date.now();
   const fd = openSync(path, 'r');
@@ -172,7 +178,7 @@ for (const object of objects) {
 
   // 1. THE APPROVED WINDOW, against a digest recorded outside the mount. On a cold pass the window is
   //    shifted, so there is no approved digest for it and only the length is asserted.
-  const probeOffset = probe.offset + shift;
+  const probeOffset = clampOffset(probe.offset + shift, probe.length, object.sizeBytes);
   const got = windowAt(path, probeOffset, probe.length);
   const digest = createHash('sha256').update(got.bytes).digest('hex');
   const ok = got.bytes.length === probe.length && (cold || digest === probe.sha256);
@@ -181,7 +187,7 @@ for (const object of objects) {
     expected: probe.length, match: ok, digestChecked: !cold, elapsedMs: got.elapsedMs });
 
   // 2. PAST 90%.
-  const tailOffset = Math.floor(object.sizeBytes * 0.91) + shift;
+  const tailOffset = clampOffset(Math.floor(object.sizeBytes * 0.91) + shift, 65536, object.sizeBytes);
   const tailLength = Math.min(65536, object.sizeBytes - tailOffset);
   const tail = windowAt(path, tailOffset, tailLength);
   const tailOk = tail.bytes.length === tailLength;
@@ -191,7 +197,7 @@ for (const object of objects) {
     sha256: createHash('sha256').update(tail.bytes).digest('hex') });
 
   // 3. BACKWARDS, to an offset lower than the one just read.
-  const back = windowAt(path, shift, 65536);
+  const back = windowAt(path, clampOffset(shift, 65536, object.sizeBytes), 65536);
   const backOk = back.bytes.length === 65536;
   if (!backOk) problems += 1;
   results.push({ label: object.label, kind: cold ? 'backward-cold' : 'backward', bytes: back.bytes.length,
