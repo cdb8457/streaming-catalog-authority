@@ -1,0 +1,21 @@
+{
+  "_comment_id": "REPLACE-ME. A short name for this endpoint. It appears in the daemon's configuration and in the source string of each registered entry. It is printed, so keep it boring — 'provider', not the company name and not an account identifier.",
+  "id": "REPLACE-ME-endpoint-id",
+
+  "_comment_shape": "EXACTLY ONE OF resolverUrl OR directBaseUrl. The product uses the resolver whenever one is present, so setting both would leave the other as silently dead configuration — preflight refuses that rather than picking for you.",
+
+  "_comment_resolver": "OPTIONAL. An https endpoint that exchanges a stable objectRef for short-lived access material. Use this when your provider issues expiring signed URLs. The gate POSTs {\"objectRef\": \"...\"} with the credential sent in the bearer-scheme Authorization header, and expects {\"url\": \"...\", \"headers\": {...}} back. Leave as null if your provider serves references directly.",
+  "resolverUrl": null,
+
+  "_comment_direct": "OPTIONAL. An https base URL the stable reference is appended to as ONE path segment. Use this when your provider serves a durable URL per object. Leave as null if you set resolverUrl.",
+  "directBaseUrl": "https://REPLACE-ME.example.invalid/objects",
+
+  "_comment_origins": "REQUIRED, AND NEVER EMPTY. The egress allowlist, as scheme+host+port. A resolved URL whose origin is not on this list is never contacted — which is what stops a signed URL, or a redirect, steering the daemon somewhere you never authorised. Empty is not permissive here; it is refused. List every origin your provider may legitimately hand back, and nothing else.",
+  "allowedOrigins": [
+    "https://REPLACE-ME.example.invalid"
+  ],
+
+  "_comment_switches": "BOTH OF THESE MUST STAY FALSE FOR A REAL RUN, and preflight refuses either one set. They are fixture switches. allowInsecureHttp would send a real credential, in the clear, over plaintext HTTP. allowPrivateAddresses would authorise the daemon to dial loopback and link-local addresses — which against a real provider means a redirect could steer it at the host's own metadata service. They are two separate permissions in the product precisely because deriving one from the other was a bug.",
+  "allowInsecureHttp": false,
+  "allowPrivateAddresses": false
+}

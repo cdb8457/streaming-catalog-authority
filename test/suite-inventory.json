@@ -401,6 +401,10 @@
       "group": "offline"
     },
     {
+      "file": "projection-real-provider.ts",
+      "group": "offline"
+    },
+    {
       "file": "projection-rclone-comparison.ts",
       "group": "offline"
     },

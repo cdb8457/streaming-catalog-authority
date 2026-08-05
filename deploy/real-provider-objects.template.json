@@ -1,0 +1,41 @@
+[
+  {
+    "_comment_label": "REPLACE-ME. The ONLY identity this object has in any report line, log line or evidence file. Keep it boring: lower-case letters, digits and hyphens, at most 31 characters. It must not be a filename, a title or an account name, because everything else about this object is deliberately unprintable.",
+    "label": "object-1",
+
+    "_comment_ref": "REPLACE-ME. The stable reference the product resolves — for a direct endpoint it is appended to directBaseUrl as one path segment, and for a resolver endpoint it is exchanged for short-lived access material. THIS FIELD NEVER REACHES A REPORT, A LOG LINE OR ARGV. Treat this file as a secret: mode 0600, in the same directory as the credential.",
+    "ref": "REPLACE-ME-opaque-object-reference",
+
+    "_comment_size": "REPLACE-ME. The object's exact size in bytes. This is what the provider's own Content-Range total is checked against — a total that disagrees means these are not the bytes of the object this entry describes, and the daemon refuses the read on that basis. Get it with the provider's own listing, not by guessing.",
+    "sizeBytes": 0,
+
+    "_comment_digest": "ONE OF sha256 OR probeDigests IS REQUIRED. With neither, 'the bytes through the mount are correct' degrades to 'the mount returned some bytes' and every read assertion becomes unfalsifiable.",
+
+    "_comment_sha256": "OPTIONAL. The whole object's sha256, recorded OUTSIDE the mount before the run. Use this when you are willing to let the gate read the object whole. On a large file that is a bandwidth bill, so prefer probeDigests below.",
+    "sha256": null,
+
+    "_comment_probes": "OPTIONAL, AND THE RIGHT CHOICE FOR A LARGE OBJECT. Windows you have approved the gate to read, each with the sha256 of exactly those bytes, computed outside the mount. The gate reads these exact windows through the mount and compares. Every window must lie inside sizeBytes.",
+    "probeDigests": [
+      {
+        "offset": 0,
+        "length": 1048576,
+        "sha256": "REPLACE-ME-64-lower-case-hex-characters"
+      }
+    ]
+  },
+
+  {
+    "_comment": "1 TO 3 OBJECTS. §2 of the acceptance plan says this corpus is deliberately tiny: it answers a CORRECTNESS question, not a quantitative one, and it is never a load test. Four or more is refused by preflight. Delete this second entry if you are supplying only one.",
+    "label": "object-2",
+    "ref": "REPLACE-ME-opaque-object-reference",
+    "sizeBytes": 0,
+    "sha256": null,
+    "probeDigests": [
+      {
+        "offset": 0,
+        "length": 1048576,
+        "sha256": "REPLACE-ME-64-lower-case-hex-characters"
+      }
+    ]
+  }
+]
