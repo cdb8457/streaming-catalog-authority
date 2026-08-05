@@ -78,5 +78,6 @@ echo "G22 has no pass threshold, so what these runs establish is that the compar
 echo "three times and that its figures are reproducible -- NOT that the naive path passed or failed anything."
 echo "This gate HAS now run on a real Unraid host — three consecutive fresh runs, none skipped. That is the"
 echo "repetition the acceptance plan asks for, for THIS gate, and it closes NOTHING ELSE: G7-G13 are other"
-echo "gates, G24-G27 have no executable gate at all, no real provider endpoint has ever been contacted, and"
+echo "gates, G27s three-server half has no executable gate, no real provider endpoint has ever been"
+echo "contacted, and"
 echo "Phase 1 remains open. What has been run is docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md section 6.1."

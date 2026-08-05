@@ -524,6 +524,84 @@ test('THE GATE IS WIRED, and its Compose file is its own', () => {
     'the endpoint and the daemon are NOT in the Compose file: neither is a deployment shape to copy');
 });
 
+// ---------------------------------------------------------------------------------------------------------
+// The authority documents, against the run that actually happened
+// ---------------------------------------------------------------------------------------------------------
+
+const PLAN = read('docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md');
+const ROADMAP = read('docs/PROJECTION_ROADMAP.md');
+
+test('NO DOCUMENT CLAIMS IN THE PRESENT TENSE THAT G24-G26 HAVE NO GATE OR HAVE NOT RUN', () => {
+  // THE FAILURE THIS CLOSES IS THE ONE THIS REPOSITORY EXISTS TO PREVENT: a document that disagrees with
+  // what runs. When the lease gate was written and ran, five separate present-tense claims that it did not
+  // exist were left behind across two authority documents and four shipped wrappers — and one of those
+  // wrappers PRINTS its claim at the end of every run.
+  //
+  // Historical framing is allowed and wanted: section 6.7 keeps its finding, marked as prior state. What is
+  // refused is a claim that reads as CURRENT.
+  const forbidden = [
+    /G24[^.\n]{0,60}no executable gate/i,
+    /G24[^.\n]{0,60}have no executable gate at all/i,
+    /Until that exists and has run, G24/i,
+    /G24[^.\n]{0,40}stay `not run`/i,
+  ];
+  for (const [name, text] of [['the acceptance plan', PLAN], ['the roadmap', ROADMAP]] as const) {
+    for (const pattern of forbidden) {
+      assert(!pattern.test(text),
+        name + ' still carries a present-tense claim that the lease gates do not exist: ' + String(pattern));
+    }
+  }
+  // ...and the shipped wrappers, which an operator reads at the end of a run.
+  for (const wrapper of ['projection-three-server-concurrency-gate-three.sh',
+    'projection-rclone-comparison-gate-three.sh', 'projection-plex-dataplane-gate-three.sh',
+    'projection-emby-dataplane-gate-three.sh', 'projection-lease-gate-three.sh']) {
+    const text = read(`deploy/${wrapper}`);
+    assert(!/G24-G2[67] have no executable gate/.test(text),
+      wrapper + ' still prints that the lease gates have no executable gate');
+  }
+});
+
+test('THE ONLY GATE STILL RECORDED AS MISSING IS G27, and both documents agree on that', () => {
+  assert(PLAN.includes('### 6.4 The gate that does not exist'),
+    'the section is singular now, because exactly one entry in it is still missing');
+  assert(/G27[^.\n]{0,60}(no executable gate|has no executable gate)/i.test(PLAN),
+    'and the plan still says so of G27');
+  assert(/G27[^.\n]{0,80}no executable gate/i.test(ROADMAP), 'as does the roadmap');
+  // Both must still refuse closure for the OTHER outstanding reason.
+  for (const [name, text] of [['the acceptance plan', PLAN], ['the roadmap', ROADMAP]] as const) {
+    assert(/no real provider endpoint has ever been contacted/i.test(text),
+      name + ' still records that no real provider endpoint has been contacted');
+  }
+});
+
+test('THE RUN RECORD CITES THE SEQUENCE THAT ACTUALLY PRODUCED IT', () => {
+  // A run record is the one place a commit hash belongs: it identifies the bytes the numbers came from.
+  // Pinning it here is deliberate and is NOT a general requirement that documents track HEAD — nothing
+  // outside this record asserts a hash at all.
+  const record = PLAN.split('### 6.8')[1]?.split('### ')[0] ?? '';
+  assert(record.length > 200, 'the run record section exists');
+  assert(record.includes('ab29078'), 'it names the commit the passing sequence ran against');
+  assert(record.includes('lease-three-final.log'), 'and the evidence file that sequence wrote');
+  // The superseded sequence may be MENTIONED as history, but must not be cited as the one that counts.
+  assert(!/commit `d424553`/.test(record),
+    'and it does not cite the superseded commit as the sequence of record');
+
+  // The measurements, as measured. These are facts about a run, not thresholds, so they are pinned exactly.
+  assert(record.includes('29 assertions per run'), 'the assertion count');
+  assert(record.includes('340 / 345 / 377 ms'), 'the three cooldown timings actually measured');
+  assert(!/331[–-]346 ms/.test(record), 'and not the superseded ones');
+  assert(/0 failed, 0 skipped/.test(record), 'with nothing failed and nothing skipped');
+});
+
+test('THE CORRECTION THAT NO PRODUCT CODE CHANGED IS PRESERVED', () => {
+  // This is the most load-bearing sentence in the record: a product defect was published against the daemon
+  // twice and was wrong both times. Losing it would leave the accusation and drop the retraction.
+  assert(PLAN.includes('No product code was changed'), 'the plan keeps the correction');
+  assert(/no product code changed/i.test(ROADMAP), 'and so does the roadmap');
+  assert(PLAN.includes('slot.resolvedOnce'),
+    'with the call path that disproves the claim, so the correction can be checked rather than believed');
+});
+
 test('this suite runs in the aggregate', () => {
   assert(AGGREGATE_SUITE_COMMAND.length > 0, 'the aggregate command exists');
   const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };

@@ -61,16 +61,17 @@ are not reopened. This is the roadmap for the projection appliance, and it is de
 - **AND G24-G26 HAVE NOW RUN TOO** — three consecutive fresh Unraid runs, 29 assertions each, none
   failed and none skipped: a lease lapsed under an in-flight read and was re-resolved EXACTLY once with all
   seven identity fields unchanged; twenty concurrent opens cost EXACTLY one resolution; the open inside the
-  cooldown cost none and failed in about a third of a second; all four malformed refreshed responses were
-  refused with zero bytes accepted; and the disallowed origin was never contacted. No product code changed:
-  the daemon already did all of it.
+  cooldown cost none and failed in 340, 345 and 377 ms against a 10,000 ms ceiling; all four malformed
+  refreshed responses were refused with zero bytes accepted; and the disallowed origin was never contacted.
+  No product code changed: the daemon already did all of it.
 
-- **AND PHASE 1 STILL DOES NOT CLOSE.** **G24–G26 and G27’s three-server half have no executable gate at
-  all** — nothing has been run for them, which is not the same as something run and fallen short — and
-  **no real provider endpoint has ever been contacted**. What has changed is that the reason the tranche
-  is open is no longer the platform. What has been run, against which server, is
-  `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6.1 — and that table, not this page, is the authority on it.
-- Therefore the product now does the thing it is for, **on all three media servers, on a developer's machine**
+- **AND PHASE 1 STILL DOES NOT CLOSE, FOR TWO REASONS AND NO LONGER FOR THE OLD ONE.** **G27's
+  three-server lifecycle half has no executable gate**, and **no real provider endpoint has ever been
+  contacted**. Those are the whole of what is left. For most of this document's life the reason was the
+  platform; it is not any more, and it is no longer the absence of a lease gate either. What has been run,
+  against which server, is `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6.1 — and that table, not this page,
+  is the authority on it.
+- Therefore the product now does the thing it is for, **on all three media servers, on a real Unraid host**
   — and Phase 1 remains open.
 
 ## The only tranche
@@ -78,7 +79,7 @@ are not reopened. This is the roadmap for the projection appliance, and it is de
 | | |
 |---|---|
 | **Projection Phase 0** | The executable product contract. `docs/ADR_002_PROJECTION_APPLIANCE.md`, `docs/PROJECTION_PHASE_0_PRODUCT_CONTRACT.md`, `docs/schemas/projection-manifest-v1.schema.json`, `src/core/projection/*`, `test/projection-manifest-v1.ts`. **Done.** |
-| **Projection Phase 1** | The **vertical slice**: manifest producer → published artifact → `projectiond` → FUSE mount → Plex, Jellyfin and Emby scanning and playing it. Local passthrough and HTTP Range adapters, in the same tranche. Gates in `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md`. **Open.** The daemon, the manifest producer (`docs/PROJECTION_PHASE_1_MANIFEST_PUBLISHER.md`), the publisher-to-mount gate and **all three media-server data-plane gates** are built and run — **on Windows / Docker Desktop only, which closes none of G7–G13**. **The Unraid half is not**, and the tranche does not close until every gate passes on a real Linux or Unraid host, on all three media servers, three times. Whether any given gate has ever passed is §6.1 of the acceptance plan and each gate's own run record, because **a gate existing is not a gate passing**. |
+| **Projection Phase 1** | The **vertical slice**: manifest producer → published artifact → `projectiond` → FUSE mount → Plex, Jellyfin and Emby scanning and playing it. Local passthrough and HTTP Range adapters, in the same tranche. Gates in `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md`. **Open.** The daemon, the manifest producer (`docs/PROJECTION_PHASE_1_MANIFEST_PUBLISHER.md`), the publisher-to-mount gate, **all three media-server data-plane gates**, the three-server concurrency gate, the rclone comparison control and the access-lease gate are built and have each **run three consecutive fresh times on a real Unraid host**. **The platform is no longer why this row says Open.** It stays open because G27's three-server lifecycle half has no executable gate and **no real provider endpoint has ever been contacted**. Whether any given gate has ever passed is §6.1 of the acceptance plan and each gate's own run record, because **a gate existing is not a gate passing**. |
 
 There is no Phase 2 in this document. Writing one now would be a guess, and a guess in a roadmap is how a
 product acquires thirty phases of scaffolding around a thing that has never run.
@@ -93,14 +94,16 @@ real Linux or Unraid host.**
 green runs on Windows and Docker Desktop.
 
 **AND THE UNRAID RUNS DO NOT SATISFY IT EITHER, WHICH IS THE WHOLE POINT OF STATING THEM PRECISELY.** The
-rule names **the Phase 1 vertical slice**, and the slice is not only the media-server gates. G24–G26 and
-G27’s three-server half have **no executable gate at all**, and **no real provider endpoint has ever been
+rule names **the Phase 1 vertical slice**, and the slice is not only the gates that have run. **G27's
+three-server lifecycle half has no executable gate**, and **no real provider endpoint has ever been
 contacted** — the acceptance plan names a real-provider corpus and places it on exactly this environment.
-Five gates passing three times each is five gates passing three times each.
+Six gates passing three times each is six gates passing three times each.
 
-**What has changed is which sentence is doing the work.** For the whole life of this document the reason
-Phase 1 was open was the platform. It is not any more. The reason now is that parts of the slice have
-never been executed, and a partial truth recorded exactly is what this page is for.
+**What has changed is which sentence is doing the work, and it has changed twice.** For most of this
+document's life the reason Phase 1 was open was the platform; that stopped being true when the gates ran on
+Unraid. It was then the absence of a lease gate; that stopped being true when G24–G26 were written and ran.
+What is left is G27's lifecycle half and the real-provider run, and a partial truth recorded exactly is what
+this page is for.
 This is a rule with teeth because this repository has the failure mode it prevents. There are 336 phases
 behind it, a large fraction of which are evidence packets, review gates, closure gates, authorization
 records, dispositions and acceptance seals for work whose end-to-end behaviour was never demonstrated. Each
