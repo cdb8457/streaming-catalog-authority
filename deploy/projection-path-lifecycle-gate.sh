@@ -387,11 +387,23 @@ lifecycle refusal --before "$REL/out/inv-1.json" --after "$REL/out/inv-2.json" \
 # not be one: the publisher's job is to REFUSE this successor, not to offer a way to withdraw one. But the
 # lawful sequence below has to start from a pointer the daemon and the control plane agree about, and the
 # only honest way to get there is to put back the last generation the daemon actually admitted.
-rm -rf "$WORK/manifest"
-cp -a "$WORK/manifest-before-forge" "$WORK/manifest"
+#
+# THE DIRECTORY ITSELF IS NEVER REPLACED, ONLY ITS CONTENTS, and run 3 on the real host is why. The first
+# version did `rm -rf` on the manifest directory and copied the backup back into place. That directory is
+# BIND-MOUNTED into the daemon's container: removing it detaches the container's mount from the new host
+# inode, so the daemon saw `pointer-unreadable` on every poll from then on and never admitted another
+# generation. The retire, the deletion and the addition were all published into a directory nothing was
+# reading, and the run died four phases later at a symptom with no visible cause.
+find "$WORK/manifest" -mindepth 1 -delete
+cp -a "$WORK/manifest-before-forge/." "$WORK/manifest/"
 sleep 6
 if [ "$(served_generation)" != "$GEN_SEED" ]; then
   die "the daemon is not back on the generation it was serving before the forged one"
+fi
+# AND THE DAEMON IS PROVEN TO BE READING THE DIRECTORY AGAIN, not merely to have kept its last good state.
+# Those two look identical from `served_generation` alone, and the second one is the failure above.
+if docker logs --since 10s "$MOUNT_CONTAINER" 2>&1 | grep -q "pointer-unreadable"; then
+  die "the daemon cannot read the restored pointer; its bind mount no longer reaches the manifest directory"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
