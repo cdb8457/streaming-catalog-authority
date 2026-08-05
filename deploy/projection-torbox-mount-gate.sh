@@ -346,6 +346,27 @@ docker run -d --name "$MOUNT_CONTAINER" \
   "$IMAGE" --config /etc/projectiond/config.json --poll 2s --strict-direct-mount >/dev/null
 
 # ----------------------------------------------------------------------------------------------------------
+step "waiting for the daemon to be RUNNING before anything joins its namespace"
+# ----------------------------------------------------------------------------------------------------------
+# A CONTAINER THAT EXITED CANNOT LEND ITS NETWORK NAMESPACE, and "cannot join network of a non running
+# container" says nothing about WHY the daemon stopped. So the daemon is confirmed up first, and its own log
+# is dumped if it is not -- the failure an operator needs to see is the daemon's, not docker's complaint
+# about a consequence of it.
+daemon_up=0
+for _ in $(seq 1 120); do
+  if [ "$(docker inspect -f '{{.State.Running}}' "$MOUNT_CONTAINER" 2>/dev/null)" = "true" ]; then
+    daemon_up=1; break
+  fi
+  sleep 0.5
+done
+if [ "$daemon_up" -ne 1 ]; then
+  echo "--- the daemon exited; its own log follows ---" >&2
+  logs_tail "$MOUNT_CONTAINER"
+  die "the daemon is not running, so the resolver cannot share its network namespace"
+fi
+echo "  the daemon is running"
+
+# ----------------------------------------------------------------------------------------------------------
 step "starting the REAL resolver INSIDE the daemon's network namespace, so it stays loopback-only"
 # ----------------------------------------------------------------------------------------------------------
 docker run -d --name "$RESOLVER_CONTAINER" \
