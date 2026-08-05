@@ -133,8 +133,21 @@ cat > "$WORK/verify.cjs" <<'VERIFY'
 // would pass against an implementation that is wrong in both of the ways that matter.
 const { openSync, readSync, closeSync, readFileSync, writeFileSync } = require('node:fs');
 const { createHash } = require('node:crypto');
-const [, , objectsPath, mountDir, out] = process.argv;
+const [, , objectsPath, mountDir, out, shiftRaw] = process.argv;
 const objects = JSON.parse(readFileSync(objectsPath, 'utf8'));
+
+// THE SHIFT IS WHAT MAKES THE SECOND PASS MEAN ANYTHING.
+//
+// The first pass reads three windows per object. Reading the SAME windows again proves nothing about the
+// provider: the daemon's caches already hold those bytes, so the read is served without a request and the
+// resolution count does not move -- which is exactly what the first version of this gate mistook for a
+// failure to re-resolve. A non-zero shift moves every window to an offset nothing has touched, so the bytes
+// can only come from the provider, and the provider can only be reached by re-resolving an expired link.
+//
+// A SHIFTED WINDOW HAS NO APPROVED DIGEST, and none is invented. What is asserted for a cold pass is the
+// length, the distinctness of the windows, and -- in the gate above -- that the resolution count rose.
+const shift = Number(shiftRaw ?? '0');
+const cold = shift !== 0;
 
 function windowAt(path, offset, length) {
   const started = Date.now();
@@ -157,29 +170,31 @@ for (const object of objects) {
   const path = mountDir + '/' + object.label + '.bin';
   const probe = object.probeDigests[0];
 
-  // 1. THE APPROVED WINDOW, against a digest recorded outside the mount.
-  const got = windowAt(path, probe.offset, probe.length);
+  // 1. THE APPROVED WINDOW, against a digest recorded outside the mount. On a cold pass the window is
+  //    shifted, so there is no approved digest for it and only the length is asserted.
+  const probeOffset = probe.offset + shift;
+  const got = windowAt(path, probeOffset, probe.length);
   const digest = createHash('sha256').update(got.bytes).digest('hex');
-  const ok = digest === probe.sha256 && got.bytes.length === probe.length;
+  const ok = got.bytes.length === probe.length && (cold || digest === probe.sha256);
   if (!ok) problems += 1;
-  results.push({ label: object.label, kind: 'probe', bytes: got.bytes.length,
-    expected: probe.length, match: ok, elapsedMs: got.elapsedMs });
+  results.push({ label: object.label, kind: cold ? 'probe-cold' : 'probe', bytes: got.bytes.length,
+    expected: probe.length, match: ok, digestChecked: !cold, elapsedMs: got.elapsedMs });
 
   // 2. PAST 90%.
-  const tailOffset = Math.floor(object.sizeBytes * 0.91);
+  const tailOffset = Math.floor(object.sizeBytes * 0.91) + shift;
   const tailLength = Math.min(65536, object.sizeBytes - tailOffset);
   const tail = windowAt(path, tailOffset, tailLength);
   const tailOk = tail.bytes.length === tailLength;
   if (!tailOk) problems += 1;
-  results.push({ label: object.label, kind: 'tail', bytes: tail.bytes.length,
+  results.push({ label: object.label, kind: cold ? 'tail-cold' : 'tail', bytes: tail.bytes.length,
     expected: tailLength, match: tailOk, elapsedMs: tail.elapsedMs,
     sha256: createHash('sha256').update(tail.bytes).digest('hex') });
 
   // 3. BACKWARDS, to an offset lower than the one just read.
-  const back = windowAt(path, 0, 65536);
+  const back = windowAt(path, shift, 65536);
   const backOk = back.bytes.length === 65536;
   if (!backOk) problems += 1;
-  results.push({ label: object.label, kind: 'backward', bytes: back.bytes.length,
+  results.push({ label: object.label, kind: cold ? 'backward-cold' : 'backward', bytes: back.bytes.length,
     expected: 65536, match: backOk, elapsedMs: back.elapsedMs,
     sha256: createHash('sha256').update(back.bytes).digest('hex') });
 
@@ -440,8 +455,16 @@ docker run --rm --network "$NETWORK" "$VERIFY_IMAGE" \
   wget -qO- "http://torbox-fixture:${TORBOX_PORT}/control/expire-links" >/dev/null
 BEFORE_REFRESH="$RESOLUTIONS_AFTER_READS"
 
-# A COLD READ, at an offset nothing has touched, so the answer cannot come from a cache.
+# A COLD READ, AT OFFSETS NOTHING HAS TOUCHED, so the answer cannot come from a cache.
+#
+# The first version of this gate re-read the SAME windows here and then failed because the resolution count
+# had not moved. It had not moved because the daemon served those bytes from its own cache without asking
+# anybody -- which is correct behaviour, and meant the assertion was measuring the cache rather than the
+# refresh. The shift moves every window somewhere untouched, so reaching the provider is the only way to
+# answer, and reaching the provider after an expiry requires a re-resolution.
+COLD_SHIFT=1048576
 node "$REL/verify.cjs" "$REL/out/torbox-objects.json" "$WORK/mnt" "$REL/out/reads-after-expiry.json" \
+  "$COLD_SHIFT" \
   || { logs_tail "$MOUNT_CONTAINER"; logs_tail "$RESOLVER_CONTAINER"; die "reads did not recover after expiry"; }
 
 AFTER_REFRESH="$(docker run --rm --network "$NETWORK" "$VERIFY_IMAGE" \
