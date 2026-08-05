@@ -148,12 +148,20 @@ writeFileSync(out, `${JSON.stringify(observations, null, 2)}\n`);
 WATCH
 
 cat > "$WORK/expect.cjs" <<'EXPECT'
-// The single-entry expectation each server's own scan barrier is driven against.
+// The expectation each server's own scan barrier is driven against, as a BARE ARRAY of entries carrying an
+// `anchor` flag — which is the shape `corpusProblems` in media-server-dataplane.ts actually reads.
+//
+// IT TAKES (key, size, sha) TRIPLES rather than one entry, so the barrier covers the lifecycle entry AND the
+// bystander together. A barrier that waited for only one of the two published entries would release while
+// the library was still half-scanned, and the very first inventory would then be a partial one.
 const { writeFileSync } = require('node:fs');
-const [, , out, key, size, sha] = process.argv;
-writeFileSync(out, `${JSON.stringify({
-  entries: [{ key, sizeBytes: Number(size), sha256: sha, kind: 'local', role: 'anchor' }],
-}, null, 2)}\n`);
+const [, , out, ...rest] = process.argv;
+const entries = [];
+for (let index = 0; index + 2 < rest.length; index += 3) {
+  entries.push({ key: rest[index], sizeBytes: Number(rest[index + 1]), sha256: rest[index + 2],
+    kind: 'local', anchor: true });
+}
+writeFileSync(out, `${JSON.stringify(entries, null, 2)}\n`);
 EXPECT
 
 # ----------------------------------------------------------------------------------------------------------
