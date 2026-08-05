@@ -66,5 +66,5 @@ echo
 echo "$completed of $RUNS consecutive access-lease runs completed, none skipped. On a Linux or Unraid host"
 echo "this is the repetition the acceptance plan asks for; on Windows or Docker Desktop it is not, and must"
 echo "not be reported as Phase 1 closure. It closes G24, G25 and G26 and NOTHING ELSE: G7-G13 and G18 are"
-echo "other gates, G27s three-server half has no executable gate at all, no real provider endpoint has ever"
-echo "been contacted, and Phase 1 remains open."
+echo "other gates, G27s three-server half has run 3/3 on a real Unraid host too, and no real provider"
+echo "endpoint has ever been contacted, so Phase 1 remains open."

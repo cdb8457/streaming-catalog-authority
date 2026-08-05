@@ -239,7 +239,7 @@ the same and only the second is evidence.
 | G18 **High-concurrency scan** | **RUN ON A REAL UNRAID HOST — three consecutive fresh runs, 64 assertions each, none failed and none skipped. See §6.3.** It closes G18 for THIS gate and nothing else: G7-G13 are other gates and remain open. Previously, A gate now exists and has been run on Docker Desktop only: `deploy/projection-three-server-concurrency-gate.sh` puts a real, digest-pinned Plex, Jellyfin and Emby on the SAME production mount, SAME admitted generation, SAME ~50-entry corpus and SAME fake endpoint, and observes all three scanning at the same instant. §6 says Docker Desktop closes none of G7–G13 or G18, so this column stays NOT RUN | same gate, same run, same platform — **NOT RUN** | same gate, same run, same platform — **NOT RUN** |
 | G22 **Comparison control** | **RUN ON A REAL UNRAID HOST — three consecutive fresh runs, 70 assertions each, none failed and none skipped. See §6.3.** G22 has no pass threshold, so what three Unraid runs establish is that the comparison instrumentation held there and its figures are reproducible — NOT that the naive path passed or failed anything. Previously, A gate now exists and has been run on **Docker Desktop only**: `deploy/projection-rclone-comparison-gate.sh` puts the SAME ~50-entry corpus behind a digest-pinned rclone mount of a deterministic WebDAV endpoint and drives the SAME three real, digest-pinned media servers over it, with the SAME observer, the SAME barrier and the SAME overlap floors G18 uses. §6 says Docker Desktop closes none of G7–G13, G18 or G22, so this column stays NOT RUN. `docs/PROJECTION_PHASE_1_RCLONE_COMPARISON.md` §7 is the only place that says what has been run, and it carries **sixteen runs — one failure and fifteen completed, twelve of them through the committed three-consecutive-fresh-run wrapper in four sequences of three**. A coordinator review then found that the endpoint counted each response's Content-Length and reported it as what had been served, which invalidated one conclusion the document drew and none of its request, catalogue, overlap or cold-state evidence; the remediated instrument counts COMMITTED and OBSERVED bytes separately and has been run four more times, 70 assertions each with none failed and none skipped | same gate, same run, same platform — **NOT RUN** | same gate, same run, same platform — **NOT RUN** |
 | G24–G26 **Lease gates** | **RUN — 3/3 consecutive fresh runs on a real Unraid host**, 29 assertions per run, 0 failed, 0 skipped, by `deploy/projection-lease-gate.sh` with a **synthetic reader**. These gates **need no media server**: they are about the daemon's transport resolution, not about a scanner, so no column below applies to them. See §6.8 | — | — |
-| G27 **Path immutability** | admission half closed by `npm run test:projection-publisher`; **the three-server half is not run** | not run | not run |
+| G27 **Path immutability** | **RUN — 3/3 consecutive fresh runs on a real Unraid host**, **85 assertions per run, 0 failed, 0 skipped**, by `deploy/projection-path-lifecycle-gate.sh`. ONE daemon, ONE mount, ONE generation sequence and all three servers reading it, so the three columns to the right are not independent runs of anything — they are the same run observed three ways, which is what G27 asks for. See §6.9. The admission-refusal half remains closed offline by `npm run test:projection-publisher` | **same run** — observed the refusal, the removal and the addition | **same run** — observed the refusal, the removal and the addition |
 
 `docs/PROJECTION_PHASE_1_JELLYFIN_DATA_PLANE.md` describes the gate that produced the Jellyfin column. Every
 run of it so far has been on **Windows / Docker Desktop**, which §6 says closes none of G7–G13. The tranche
@@ -308,8 +308,9 @@ entry on purpose and a local entry's own byte-identity window lands in the same 
 Docker Desktop, which §6 says closes none of G7–G13 or G18. **Per-server provider attribution is impossible
 there and is not claimed**: one daemon serves all three servers, so the endpoint sees the daemon and never the
 server behind a byte — every byte is attributed to a corpus OBJECT and none to a SERVER. **G22 is NOT RUN — a
-fifth gate now exists for it and has been run on Docker Desktop only; see below. G27's three-server half is not
-run.** No real provider endpoint has ever been contacted, and **Phase 1 remains open**.
+fifth gate now exists for it and has been run on Docker Desktop only; see below. **G27's three-server half has
+now RUN — 3/3 consecutive fresh Unraid runs, 85 assertions each; see §6.9.** No real provider endpoint has ever
+been contacted, and **Phase 1 remains open on that ground alone**.
 
 **AND THE SENTENCE THAT USED TO END THIS PARAGRAPH — "no run has ever happened on Linux or Unraid" — IS NOW
 FALSE AND HAS BEEN REMOVED RATHER THAN SOFTENED.** See §6.3. Removing it changes nothing about G7–G13, which
@@ -417,11 +418,12 @@ and how each was answered without moving a number. The measurements that had fai
 | `PX9-scan-provider-bytes-floor` | **0** against 1,048,576 | **11,534,336** |
 | `PX20` liveness | `output-advances` **7**, then **6**, against a floor of 8 | `advance-gap-seconds` **48** against a ceiling of **120** |
 
-**EVERY GATE THAT HAS AN EXECUTABLE FORM NOW HAS THREE CONSECUTIVE FRESH UNRAID RUNS — SIX OF THEM — AND
-PHASE 1 STILL DOES NOT CLOSE.** **G27's three-server lifecycle half has no executable gate** (§6.4), and **no
-real provider endpoint has ever been contacted** — which §2 names as a corpus of the tranche and §6 places on
-this very environment. Those two are the whole of what is left. The reason Phase 1 is open is no longer the
-platform, and it is no longer a missing lease gate either.
+**EVERY PHASE 1 GATE NOW HAS AN EXECUTABLE FORM AND THREE CONSECUTIVE FRESH UNRAID RUNS — SEVEN OF THEM —
+AND PHASE 1 STILL DOES NOT CLOSE.** G27's three-server half was the last one missing; it now exists and has
+run (§6.4, §6.9). **What is left is one thing and one thing only: no real provider endpoint has ever been
+contacted** — which §2 names as a corpus of the tranche and §6 places on this very environment. The reason
+Phase 1 is open is no longer the platform, no longer a missing lease gate, and no longer a missing lifecycle
+gate. **It is that single remaining ground, and nothing else.**
 
 ### 6.7 HISTORICAL — what the G24–G26 audit found before the gate existed
 
@@ -505,23 +507,66 @@ The gate now waits out the prior cooldown on a wait derived from `COOLDOWN_MS`, 
 failure reached the endpoint exactly once, and **refuses** a measured window that landed after the cooldown
 lapsed — because a zero there would prove nothing. **No product code was changed.**
 
-### 6.4 The gate that does not exist
+### 6.9 G27's three-server half — run, and what it measured
+
+**3/3 CONSECUTIVE FRESH RUNS ON THE REAL UNRAID HOST, 85 ASSERTIONS PER RUN, 0 FAILED, 0 SKIPPED.** Commit
+`a9fa7ab`, evidence `evidence/lifecycle-three-final.log` in the isolated checkout,
+via `npm run go:path-lifecycle-gate:three`. One production `projectiond`, one FUSE mount, one admitted
+generation sequence, and the same three digest-pinned media servers the other gates use — Jellyfin 10.10.7,
+Plex, Emby 4.9.5.0 — all reading the SAME mount.
+
+**EVERY PHASE IS A SET DIFFERENCE, NOT A COUNT.** Each observation lists all three servers' catalogues with
+each server's OWN item id, and the phases compare inventories: what entered, what left, and what changed
+identity underneath a path that stayed. A count that happens to drop, a scan that returned nothing, an
+inventory read twice, and a server that removed the wrong item and added another all produce the same count
+and are all refused.
+
+| Phase | What it required | What was measured |
+|---|---|---|
+| **L1** seed | the item at path A catalogued exactly once, as an ordinary file, on all three | 2 items per server (the entry and a bystander), all three |
+| **L2** refusal | a successor moving the carried entry **directly to path B** is refused; served generation unchanged; path B absent; path A still there | the daemon logged `PATH_CHANGED_FOR_CARRIED_ENTRY` and kept serving its generation; **0 added, 0 removed, 0 item-id churn on all three** |
+| **L3** retiring | path A still catalogued AND still readable through the mount | present on all three, 0 churn, digest matched |
+| **L4** past grace | the grace deadline crossed, and **nothing disappears because time passed** | present on all three, 0 churn, still readable |
+| **L5** deletion | **exactly** path A removed, nothing added, no unrelated churn, on all three | 1 removed, and it was path A, on all three; 0 added, 0 churn |
+| **L6** addition | **exactly** path B added, ordinary-file metadata correct, size and bytes right | 1 added, and it was path B, on all three; 42,628 bytes; digest matched a value recorded OUTSIDE the mount before publishing |
+| **L7** watch state | **recorded, asserted by nothing** | **all three servers did NOT preserve it** — every item id changed across the delete+add pair |
+| **L8** sequence | four DISTINCT admitted generations | 4 of 4, none unknown |
+
+**WHAT L7 IS AND IS NOT.** All three servers reassigned the item id across the delete and the add, so on all
+three a play position or watched flag attached to the old item does not follow the new one. **That is
+recorded and it fails nothing.** This product has never promised watch state survives a delete and an add,
+G27 explicitly says the observation is not an assertion, and the check is built so it cannot become one:
+`watchStateObservations` has no budget and no comparison, and an offline test pins that for preserved, not
+preserved and not determinable alike.
+
+**FOUR HARNESS DEFECTS WERE FOUND AND FIXED, AND NO PRODUCT CODE WAS CHANGED.** The fixtures were `.bin`
+files Plex's scanner never opens, so the gate had been asserting a three-server lifecycle against two
+servers; the scan barrier wrote a shape `corpusProblems` does not parse; the forged-pointer rollback did
+`rm -rf` on a bind-mounted directory and detached the daemon's own mount from it; and the served-generation
+observer matched only the daemon's first-mount log line, not the per-admission one, so it returned the same
+answer forever. **Each was in the gate. The daemon refused the illegal move correctly the first time it was
+ever asked.**
+
+**THIS CLOSES G27 AND NOTHING ELSE.** No real provider endpoint has ever been contacted, and Phase 1 remains
+open on that ground.
+
+### 6.4 The gates that did not exist — now none of them
 
 **A GATE THAT HAS NOT BEEN WRITTEN CANNOT BE RUN, AND SAYING SO IS NOT THE SAME AS SAYING IT FAILED.**
-**This section used to list four gates. Three of them — G24, G25 and G26 — now exist and have run**, and are
-kept in the table below with their result rather than deleted, because a row that quietly disappeared would
-read as closure by omission. **Exactly one entry here is still missing: G27's three-server half.**
+**This section used to list four gates. All four now exist and all four have run**, and every one is kept in
+the table below with its result rather than deleted, because a row that quietly disappeared would read as
+closure by omission. **Nothing in this section is missing any more.** That does NOT close Phase 1: §6.9
+records what G27 measured, and the tranche stays open on the one ground that remains.
 
 | Gate | State |
 |---|---|
 | **G24** lease expires mid-read | **RUN — 3/3 consecutive fresh Unraid runs**, 29 assertions per run, 0 failed, 0 skipped. `deploy/projection-lease-gate.sh`. |
 | **G25** lease expiry does not stampede | **RUN — same sequence.** Exactly one resolution served twenty concurrent opens; the 21st, inside the cooldown, asked the resolver nothing and failed in 340–377 ms. |
 | **G26** a refreshed response is held to every rule | **RUN — same sequence.** All four malformed shapes replayed after a refresh, zero bytes accepted from each; the disallowed origin was never contacted. |
-| **G27** three-server half | The admission-refusal half is closed offline by `npm run test:projection-publisher`. The retire → grace → delete → add sequence across three servers has **no executable gate.** |
+| **G27** three-server half | **RUN — 3/3 consecutive fresh Unraid runs**, **85 assertions per run, 0 failed, 0 skipped**. `deploy/projection-path-lifecycle-gate.sh`, §6.9. The admission-refusal half remains closed offline by `npm run test:projection-publisher`, and this gate does not replace it. |
 
-Writing G27's remaining half is slice work and is permitted by the roadmap's anti-detour rule. Until it
-exists, §6.1's `not run` for **that one row** means **nothing has been executed**, not that something was
-executed and fell short.
+**§6.1'S `not run` NO LONGER APPLIES TO ANY ROW IN THIS SECTION.** What remains open is §6.9's closing
+paragraph and the provider ground below, not a missing gate.
 
 ### 6.5 The cleanup defect the real host exposed
 

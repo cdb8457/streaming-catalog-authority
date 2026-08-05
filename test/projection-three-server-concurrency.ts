@@ -1342,11 +1342,13 @@ async function main(): Promise<void> {
       'and it must say where they did happen');
     assert(THREE.includes('Phase 1 remains open'),
       'while refusing the reading that this closed the tranche');
-    // IT NAMES THE GATES THAT CANNOT BE RUN AT ALL, so "not run" is never confused with "run and failed".
-    // That list used to be G24-G27; G24, G25 and G26 have since been written and run 3/3 on Unraid, so only
-    // G27's three-server half is left and the wrapper must say the smaller, true thing.
-    assert(/G27s three-server half has no executable gate/.test(THREE),
-      'and naming the gate that cannot be run at all');
+    // IT USED TO NAME THE GATES THAT COULD NOT BE RUN AT ALL, so "not run" was never confused with "run
+    // and failed". That list was G24-G27; all four have since been written and run 3/3 on Unraid, so the
+    // list is empty and the wrapper must say THAT true thing rather than keep a claim which has expired.
+    assert(/G27s three-server half has run 3\/3 on a real Unraid host/.test(THREE),
+      'and recording that the last missing gate has since been written and run');
+    assert(!/G27s three-server half has no executable gate/.test(THREE),
+      'and no longer claiming otherwise, which was true only until that gate existed');
     assert(!/G24-G2[67] have no executable gate/.test(THREE),
       'and no longer claiming that of the lease gates, which exist and have run');
     assert(THREE.includes('a run that inherited the previous one'),

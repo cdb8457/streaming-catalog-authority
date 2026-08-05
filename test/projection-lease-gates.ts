@@ -561,16 +561,26 @@ test('NO DOCUMENT CLAIMS IN THE PRESENT TENSE THAT G24-G26 HAVE NO GATE OR HAVE 
   }
 });
 
-test('THE ONLY GATE STILL RECORDED AS MISSING IS G27, and both documents agree on that', () => {
-  assert(PLAN.includes('### 6.4 The gate that does not exist'),
-    'the section is singular now, because exactly one entry in it is still missing');
-  assert(/G27[^.\n]{0,60}(no executable gate|has no executable gate)/i.test(PLAN),
-    'and the plan still says so of G27');
-  assert(/G27[^.\n]{0,80}no executable gate/i.test(ROADMAP), 'as does the roadmap');
-  // Both must still refuse closure for the OTHER outstanding reason.
+test('NO GATE IS RECORDED AS MISSING ANY MORE, and neither document has quietly closed the tranche', () => {
+  // This test used to require that both documents said G27 had no executable gate. It now requires the
+  // OPPOSITE, because G27's three-server half has since been written and has run 3/3 on the real host.
+  //
+  // The assertion that matters is unchanged and is the second half. Writing the last missing gate is exactly
+  // the moment a document is most likely to drift into announcing closure, so the guard bites hardest here:
+  // the one remaining ground for keeping Phase 1 open must still be stated, in both documents.
+  assert(PLAN.includes('### 6.4 The gates that did not exist — now none of them'),
+    'the section is plural and settled now, because nothing in it is still missing');
+  assert(!/G27[^.\n]{0,60}(no executable gate|has no executable gate)/i.test(PLAN),
+    'the plan must no longer claim G27 has no executable gate; it has one and it has run');
+  assert(!/G27[^.\n]{0,80}no executable gate/i.test(ROADMAP), 'nor may the roadmap');
+  assert(/### 6\.9 G27/.test(PLAN), 'and the plan carries G27’s run record');
+
+  // THE ONE GROUND THAT REMAINS.
   for (const [name, text] of [['the acceptance plan', PLAN], ['the roadmap', ROADMAP]] as const) {
     assert(/no real provider endpoint has ever been contacted/i.test(text),
       name + ' still records that no real provider endpoint has been contacted');
+    assert(/Phase 1 remains open|says Open|\*\*Open\.\*\*/i.test(text),
+      name + ' still records that Phase 1 is open');
   }
 });
 
