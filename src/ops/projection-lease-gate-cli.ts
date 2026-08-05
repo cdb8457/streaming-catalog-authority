@@ -3,7 +3,7 @@ import { dirname } from 'node:path';
 import { findRedactionProblems, type GateResult } from '../core/projection/media-server-dataplane.js';
 import {
   LEASE_GATE_BUDGETS, PINNED_IDENTITY_FIELDS, REFRESHED_RESPONSE_FAULTS,
-  allowlistResults, cooldownResults, leaseExpiryResults, refreshedResponseResults, stampedeResults,
+  allowlistResults, cooldownResults, cooldownSetupResults, leaseExpiryResults, refreshedResponseResults, stampedeResults,
   type CounterSnapshot, type RefreshedResponseObservation,
 } from '../core/projection/lease-gates.js';
 
@@ -16,6 +16,7 @@ import {
 //   counters        --url U --out F                       snapshot the endpoint's counters
 //   g24             --before F --after F --digest-ok B --identity-before F --identity-after F
 //   g25-stampede    --before F --after F --opens N
+//   g25-cooldown-setup --before F --after F --failed B
 //   g25-cooldown    --before F --after F --failed B --elapsed-ms N --cooldown-ms N --namespace-ok B
 //   g26-refreshed   --observations F
 //   g26-allowlist   --requests N --failed B --resolutions N
@@ -125,6 +126,12 @@ async function main(): Promise<void> {
       recordAll(args, stampedeResults('G25', readJson(need(args, 'before')), readJson(need(args, 'after')), {
         opensObserved: Number(need(args, 'opens')),
       }));
+      return;
+    }
+
+    case 'g25-cooldown-setup': {
+      recordAll(args, cooldownSetupResults('G25-cooldown-setup', readJson(need(args, 'before')),
+        readJson(need(args, 'after')), { readFailed: boolFlag(args, 'failed') }));
       return;
     }
 
