@@ -460,15 +460,45 @@ resolver mode and the daemon, drives a synthetic reader across a deliberate laps
 fresh times on the Unraid host. **Until that exists and has run, G24–G26 stay `not run`,** and the row above
 says so.
 
+### 6.8 G24–G26 — run, and what each measured
+
+**THREE CONSECUTIVE FRESH RUNS ON THE REAL UNRAID HOST: 29 assertions per run, 0 failed, 0 skipped**, each
+leaving zero mountpoints and no run directory. `npm run go:lease-gate:three`, commit `d424553`.
+
+| Clause | Measured, every run |
+|---|---|
+| G24 re-resolves **once** | resolutions delta **exactly 1**, with the lapse observed at the endpoint |
+| G24 completes with correct bytes | 33,554,432 / 33,554,432, digest recorded outside the mount |
+| G24 identity unchanged | all **seven** pinned fields byte-identical; no new generation published |
+| G25 stampede | **20** readers started, **exactly 1** resolution served them all |
+| G25 cooldown | **0** resolutions inside it; EIO in **331–346 ms** against a 10,000 ms ceiling |
+| G26 refreshed responses | all **4** shapes replayed, **0** bytes accepted from each |
+| G26 allowlist | **0** requests reached the disallowed origin, observed at a listener the gate stands up |
+
+**A CORRECTION WORTH RECORDING, BECAUSE IT WAS PUBLISHED AS A PRODUCT DEFECT AND WAS NOT ONE.** An earlier
+run reported that `RefreshCooldown` did not cover `Resolver.Get`, so a read whose cached lease was already
+expired could resolve without consulting it. **That was wrong.** `Get` passes `slot.resolvedOnce` as its
+`isRefresh` argument, and `resolvedOnce` is set on every resolution — so once anything has resolved for a
+transport identity, every later resolution on an expired lease **is** cooldown-governed.
+
+What actually happened was a harness ordering defect. The stampede ends with a **successful** resolution,
+which starts a cooldown of its own; the gate armed the resolver fault immediately afterwards, so its setup
+read was refused **locally**, never reached the endpoint, and left the fault **armed**. The measured read
+that followed was by then outside the cooldown, consumed the waiting fault, and recorded one resolution.
+
+The gate now waits out the prior cooldown on a wait derived from `COOLDOWN_MS`, **measures** that the setup
+failure reached the endpoint exactly once, and **refuses** a measured window that landed after the cooldown
+lapsed — because a zero there would prove nothing. **No product code was changed.**
+
 ### 6.4 The gates that do not exist
 
 **A GATE THAT HAS NOT BEEN WRITTEN CANNOT BE RUN, AND SAYING SO IS NOT THE SAME AS SAYING IT FAILED.**
 
 | Gate | State |
 |---|---|
-| **G24** lease expires mid-read | The daemon path is COMPLETE — see section 6.7 — and the rules, budgets and verdicts now exist with 28 adversarial offline tests behind them. | **No end-to-end gate has been run.** The harness that drives a synthetic reader across a lapse is not written, so nothing has been measured. |
-| **G25** lease expiry does not stampede | Same. No executable gate. |
-| **G26** a refreshed response is held to every rule | Same. No executable gate. |
+| **G24** lease expires mid-read | **RUN — 3/3 consecutive fresh Unraid runs**, 29 assertions per run, 0 failed, 0 skipped. `deploy/projection-lease-gate.sh`. |
+| **G25** lease expiry does not stampede | **RUN — same sequence.** Exactly one resolution served twenty concurrent opens; the 21st, inside the cooldown, asked the resolver nothing and failed in ~331 ms. |
+| **G26** a refreshed response is held to every rule | **RUN — same sequence.** All four malformed shapes replayed after a refresh, zero bytes accepted from each; the disallowed origin was never contacted. |
 | **G27** three-server half | The admission-refusal half is closed offline by `npm run test:projection-publisher`. The retire → grace → delete → add sequence across three servers has **no executable gate.** |
 
 Writing these is slice work and is permitted by the roadmap's anti-detour rule. Until they exist, §6.1's

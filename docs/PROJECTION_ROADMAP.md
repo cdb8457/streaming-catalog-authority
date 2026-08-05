@@ -58,6 +58,13 @@ are not reopened. This is the roadmap for the projection appliance, and it is de
   opened; and an encoder-liveness floor that counted throttle bursts and therefore scored LOWER on faster
   hardware. Every one was invisible on Docker Desktop.
 
+- **AND G24-G26 HAVE NOW RUN TOO** — three consecutive fresh Unraid runs, 29 assertions each, none
+  failed and none skipped: a lease lapsed under an in-flight read and was re-resolved EXACTLY once with all
+  seven identity fields unchanged; twenty concurrent opens cost EXACTLY one resolution; the open inside the
+  cooldown cost none and failed in about a third of a second; all four malformed refreshed responses were
+  refused with zero bytes accepted; and the disallowed origin was never contacted. No product code changed:
+  the daemon already did all of it.
+
 - **AND PHASE 1 STILL DOES NOT CLOSE.** **G24–G26 and G27’s three-server half have no executable gate at
   all** — nothing has been run for them, which is not the same as something run and fallen short — and
   **no real provider endpoint has ever been contacted**. What has changed is that the reason the tranche
