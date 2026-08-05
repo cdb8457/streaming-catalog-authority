@@ -561,18 +561,122 @@ test('NO DOCUMENT CLAIMS IN THE PRESENT TENSE THAT G24-G26 HAVE NO GATE OR HAVE 
   }
 });
 
+// ---------------------------------------------------------------------------------------------------------
+// THE STALE-CLAIM SWEEP, AND WHY IT NORMALISES WHITESPACE FIRST
+//
+// The guard this replaces matched with `[^.\n]{0,60}` between the gate name and the claim. Excluding `\n`
+// meant it could only ever see a claim that fitted on ONE LINE — and these are Markdown documents that wrap
+// at 110 columns and shell scripts that `echo` one clause per line. So the roadmap kept saying "G27's
+// three-server lifecycle half has no executable gate" across a line break, in three separate places, for a
+// whole dispatch after G27 had run; a shipped wrapper kept printing "G27s three-server / half have NO
+// EXECUTABLE GATE AT ALL" split the same way; and the guard passed every time.
+//
+// Flattening every run of whitespace to one space before matching removes the entire class. A claim that is
+// stale is stale wherever the line happens to break.
+// ---------------------------------------------------------------------------------------------------------
+
+const flat = (text: string): string => text.replace(/\s+/g, ' ');
+
+/** Every document and shipped script that states Phase 1 status to a reader. */
+const AUTHORITY_FILES: readonly string[] = [
+  'docs/PROJECTION_ROADMAP.md',
+  'docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md',
+  'docs/PROJECTION_PHASE_1_THREE_SERVER_CONCURRENCY.md',
+  'deploy/projection-three-server-concurrency-gate-three.sh',
+  'deploy/projection-rclone-comparison-gate-three.sh',
+  'deploy/projection-plex-dataplane-gate-three.sh',
+  'deploy/projection-emby-dataplane-gate-three.sh',
+  'deploy/projection-jellyfin-dataplane-gate-three.sh',
+  'deploy/projection-lease-gate-three.sh',
+  'deploy/projection-path-lifecycle-gate-three.sh',
+];
+
+/**
+ * Claims that were true once and are false now.
+ *
+ * EVERY ONE OF THESE WAS FOUND IN A SHIPPED FILE, not imagined as a possible future mistake. A pattern is
+ * removed from this list only when the claim becomes true again, which for all of these would mean a gate
+ * being deleted.
+ */
+const STALE_CLAIMS: readonly (readonly [RegExp, string])[] = [
+  [/G27[^.]{0,90}(?:has no executable gate|no executable gate|is not run)/i,
+    'G27 described as missing or not run'],
+  [/G27s three-server half have NO EXECUTABLE GATE/i, 'a wrapper printing that G27 has no gate'],
+  [/G18 is still not run/i, 'G18 described as not run'],
+  [/G24-G2[67] have no executable gate/i, 'the lease gates described as missing'],
+  [/(?:table )?records it as \*\*NOT RUN\*\*/i, 'a gate currently recorded NOT RUN'],
+  [/records \*\*G22 as NOT RUN\*\*/i, 'G22 currently recorded NOT RUN'],
+  [/so this column stays NOT RUN/i, 'an evidence column pinned to NOT RUN'],
+  [/Six gates passing three times each/i, 'the superseded six-gate count'],
+  [/DOES NOT CLOSE, FOR TWO REASONS/i, 'two remaining blockers when there is one'],
+  [/Every run of every one of them has been on \*\*Windows \/ Docker Desktop\*\*/i,
+    'a present-tense Docker-Desktop-only claim'],
+  [/This rule has not been satisfied\.\*\* Three consecutive green runs on Windows/i,
+    'the anti-detour rule justified by the platform, which is spent'],
+  [/What is left is G27/i, 'G27 named as outstanding work'],
+  [/The reason is the platform, and it always was/i, 'the platform named as the current reason'],
+];
+
+/** Returns a description of every stale claim in `text`, whitespace-insensitively. */
+function staleClaimsIn(text: string): string[] {
+  const subject = flat(text);
+  return STALE_CLAIMS.filter(([pattern]) => pattern.test(subject)).map(([, label]) => label);
+}
+
+test('NO AUTHORITY DOCUMENT OR SHIPPED WRAPPER STILL MAKES A CLAIM THAT G18, G22, G24-G26 OR G27 HAS NOT RUN',
+  () => {
+    const found: string[] = [];
+    for (const file of AUTHORITY_FILES) {
+      for (const claim of staleClaimsIn(read(file))) found.push(`${file}: ${claim}`);
+    }
+    assert(found.length === 0, `stale current-tense claims survive:\n  ${found.join('\n  ')}`);
+  });
+
+test('THE SWEEP ACTUALLY BITES — the exact sentences that slipped through are caught when reintroduced', () => {
+  // THIS IS THE TEST THAT MAKES THE ONE ABOVE MEAN SOMETHING. A sweep that matched nothing would pass the
+  // previous test on an empty repository. So the two real sentences that survived a whole dispatch are
+  // reintroduced here VERBATIM, INCLUDING THEIR LINE BREAKS, and the sweep must catch both.
+  const roadmapG27 = [
+    'rule names **the Phase 1 vertical slice**, and the slice is not only the gates that have run.',
+    "**G27's",
+    'three-server lifecycle half has no executable gate**, and **no real provider endpoint has ever been',
+    'contacted**.',
+  ].join('\n');
+  assert(staleClaimsIn(roadmapG27).length > 0,
+    'the multiline G27 sentence that survived a dispatch is still not detected');
+
+  const roadmapG18 = ['- **A FOURTH GATE NOW RUNS ALL THREE AT ONCE, AND', 'G18 IS STILL NOT RUN.**'].join('\n');
+  assert(staleClaimsIn(roadmapG18).length > 0, 'the early G18-not-run sentence is not detected');
+
+  const wrapperG27 = [
+    'echo "share each of G7-G13 and nothing more: G18 and G22 are separate gates, G27s three-server"',
+    'echo "half have NO EXECUTABLE GATE AT ALL, no real provider endpoint has ever been contacted, and Phase 1"',
+  ].join('\n');
+  assert(staleClaimsIn(wrapperG27).length > 0, 'the wrapper claim split across two echo lines is not detected');
+
+  // And the same three on ONE line, so the guard is not accidentally newline-only in the other direction.
+  assert(staleClaimsIn(flat(roadmapG27)).length > 0, 'nor detected when the same claim fits on one line');
+  assert(staleClaimsIn(flat(roadmapG18)).length > 0, 'nor for G18');
+  assert(staleClaimsIn(flat(wrapperG27)).length > 0, 'nor for the wrapper');
+
+  // A document making no stale claim must not be flagged, or the sweep is a rubber stamp in reverse.
+  assert(staleClaimsIn('G27 has run 3/3 on a real Unraid host, 85 assertions each.').length === 0,
+    'the sweep flags a document that states the truth');
+});
+
+test('THE COUNT OF PROVEN GATE GROUPS IS SEVEN, AND BOTH DOCUMENTS SAY SO', () => {
+  // Six was right until G27 ran. A count is the easiest thing in a document to leave behind, because nothing
+  // reads wrong about it.
+  assert(/seven/i.test(flat(ROADMAP)), 'the roadmap counts the proven gate groups');
+  assert(!/Six gates passing/i.test(flat(ROADMAP)), 'and no longer says six');
+  assert(/SEVEN/i.test(flat(PLAN)), 'and so does the acceptance plan');
+});
+
 test('NO GATE IS RECORDED AS MISSING ANY MORE, and neither document has quietly closed the tranche', () => {
-  // This test used to require that both documents said G27 had no executable gate. It now requires the
-  // OPPOSITE, because G27's three-server half has since been written and has run 3/3 on the real host.
-  //
-  // The assertion that matters is unchanged and is the second half. Writing the last missing gate is exactly
-  // the moment a document is most likely to drift into announcing closure, so the guard bites hardest here:
-  // the one remaining ground for keeping Phase 1 open must still be stated, in both documents.
+  // Writing the last missing gate is exactly the moment a document drifts into announcing closure, so the
+  // guard bites hardest here: the one remaining ground must still be stated, in both documents.
   assert(PLAN.includes('### 6.4 The gates that did not exist — now none of them'),
     'the section is plural and settled now, because nothing in it is still missing');
-  assert(!/G27[^.\n]{0,60}(no executable gate|has no executable gate)/i.test(PLAN),
-    'the plan must no longer claim G27 has no executable gate; it has one and it has run');
-  assert(!/G27[^.\n]{0,80}no executable gate/i.test(ROADMAP), 'nor may the roadmap');
   assert(/### 6\.9 G27/.test(PLAN), 'and the plan carries G27’s run record');
 
   // THE ONE GROUND THAT REMAINS.
@@ -582,6 +686,20 @@ test('NO GATE IS RECORDED AS MISSING ANY MORE, and neither document has quietly 
     assert(/Phase 1 remains open|says Open|\*\*Open\.\*\*/i.test(text),
       name + ' still records that Phase 1 is open');
   }
+});
+
+test('HISTORY IS KEPT, BUT ONLY IN THE PAST TENSE', () => {
+  // The instruction the corrections followed: a superseded finding may stay, and SHOULD, because the sequence
+  // of what was believed when is evidence too. What it may not do is read as current. Every place a
+  // superseded status survives is therefore labelled and tensed, and this is what refuses the shortcut of
+  // deleting the history instead of dating it.
+  const road = flat(ROADMAP);
+  assert(/HISTORICAL — SUPERSEDED/.test(road),
+    'the roadmap keeps its superseded Docker-Desktop-only finding, marked as such');
+  assert(/HISTORICALLY\*{0,2} the §6\.1 table recorded it as `NOT RUN`/.test(road),
+    'and G18s former NOT RUN is kept in the past tense rather than deleted');
+  assert(/had been/.test(road), 'with past-perfect where a present tense used to be');
+  assert(/HISTORICALLY/.test(flat(PLAN)), 'and the acceptance plan does the same');
 });
 
 test('THE RUN RECORD CITES THE SEQUENCE THAT ACTUALLY PRODUCED IT', () => {
