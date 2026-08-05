@@ -34,7 +34,10 @@ export MSYS_NO_PATHCONV=1
 
 IMAGE="${PROJECTIOND_IMAGE:-projectiond:phase1-local}"
 VERIFY_IMAGE="alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
-NODE_IMAGE="node:22-alpine@sha256:41b8b1b1d1e6cb96e26e3f6e0a0d5ae3f0e6b6a8b8c8bb1e1b0d5f5f6c1e8b1a"
+# PINNED BY DIGEST, like every other external image this repository runs. The fixture and the resolver are
+# ordinary Node processes; they run the repository own tsx from the bind-mounted node_modules rather than
+# fetching anything, so this container needs a network only to reach the fixture and never the registry.
+NODE_IMAGE="node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32"
 
 COMPOSE_FILE="docker-compose.projection-torbox.yml"
 NETWORK="projection-torbox-gate"
@@ -268,7 +271,7 @@ docker run -d --name "$FIXTURE_CONTAINER" --network "$NETWORK" --network-alias t
   -v "$PWD:/workspace" -w /workspace \
   -v "$WORK/inputs:/inputs:ro" -v "$WORK/out:/out" \
   -e npm_config_update_notifier=false \
-  "$NODE_IMAGE" npx -y tsx src/ops/torbox-fixture-cli.ts serve \
+  "$NODE_IMAGE" ./node_modules/.bin/tsx src/ops/torbox-fixture-cli.ts serve \
   --token-file /inputs/torbox-credential \
   --object "torbox:torrent:1234:0:${TB_SIZE}" \
   --object "torbox:webdl:5678:1:${TB_SIZE}" \
@@ -350,7 +353,7 @@ docker run -d --name "$RESOLVER_CONTAINER" \
   -v "$PWD:/workspace" -w /workspace \
   -v "$WORK/inputs:/inputs:ro" \
   -e npm_config_update_notifier=false \
-  "$NODE_IMAGE" npx -y tsx src/ops/torbox-resolver-cli.ts serve \
+  "$NODE_IMAGE" ./node_modules/.bin/tsx src/ops/torbox-resolver-cli.ts serve \
   --credential /inputs/torbox-credential --gate-secret /inputs/gate-secret \
   --port "${RESOLVER_PORT}" --api-origin "http://torbox-fixture:${TORBOX_PORT}" \
   --fixture-plaintext-link >/dev/null \
