@@ -1,10 +1,16 @@
 import { createResolverService, readSecretFile, CredentialError } from './torbox-resolver-service.js';
+import { readFileSync } from 'node:fs';
 import { findSecretShapes } from '../core/adapters/torbox-resolver.js';
 
 // The TorBox resolver service, from the command line.
 //
-//   serve      --credential F --gate-secret F [--host 127.0.0.1] [--port 8140] [--api-origin URL]
+//   serve      --credential F --gate-secret F [--host 127.0.0.1] [--port 8140] [--api-origin-file F]
 //                [--fixture-plaintext-link]   OFFLINE FIXTURE ONLY; refuses plaintext without it
+//
+// THERE IS NO --api-origin FLAG, AND THAT IS DELIBERATE. The argv check below refuses ANY url on the
+// command line, with no exceptions — because an exception for "it is only an origin" is one more thing
+// to get right, and the production origin is the built-in default nobody needs to pass. The offline
+// fixture overrides it with a FILE, which costs the fixture one line and keeps the rule absolute.
 //   preflight  --credential F --gate-secret F
 //                checks both files exist, are regular, are non-empty and are mode 0600 — and CONTACTS NOTHING
 //
@@ -69,7 +75,17 @@ switch (command) {
       port,
       credentialFile: need('credential'),
       gateSecretFile: need('gate-secret'),
-      apiOrigin: flag('api-origin'),
+      apiOrigin: (() => {
+        const path = flag('api-origin-file');
+        if (path === undefined) return undefined;
+        const value = readFileSync(path, 'utf8').trim();
+        // A BARE ORIGIN AND NOTHING ELSE: no path, no query, no userinfo. The file is a convenience
+        // for the fixture, not a way to smuggle a full URL past the argv rule.
+        if (!/^https?:\/\/[^\s/?#@]+\/?$/.test(value)) {
+          fail('--api-origin-file must contain a bare origin, with no path, query or credentials');
+        }
+        return value.replace(/\/$/, '');
+      })(),
       // OFFLINE FIXTURE ONLY, and opt-in. Omitted, a plaintext CDN link is refused.
       allowPlaintextLink: argv.includes('--fixture-plaintext-link'),
     };

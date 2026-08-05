@@ -254,6 +254,10 @@ step "generating TWO secrets, neither of them real, and never letting them meet"
 head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$WORK/inputs/torbox-credential"
 head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$WORK/inputs/gate-secret"
 chmod 600 "$WORK/inputs/torbox-credential" "$WORK/inputs/gate-secret"
+# THE FIXTURE ORIGIN ARRIVES AS A FILE TOO. The resolver CLI refuses ANY url on its command line --
+# there is no exception for "it is only an origin" -- so the override that only the offline fixture
+# needs is written here rather than passed.
+printf '%s' "http://torbox-fixture:${TORBOX_PORT}" > "$WORK/inputs/api-origin"
 test "$(cat "$WORK/inputs/torbox-credential")" != "$(cat "$WORK/inputs/gate-secret")" \
   || die "the two secrets are identical, which would defeat the split this gate exists to prove"
 
@@ -385,7 +389,7 @@ docker run -d --name "$RESOLVER_CONTAINER" \
   -e npm_config_update_notifier=false \
   "$NODE_IMAGE" ./node_modules/.bin/tsx src/ops/torbox-resolver-cli.ts serve \
   --credential /inputs/torbox-credential --gate-secret /inputs/gate-secret \
-  --port "${RESOLVER_PORT}" --api-origin "http://torbox-fixture:${TORBOX_PORT}" \
+  --port "${RESOLVER_PORT}" --api-origin-file /inputs/api-origin \
   --fixture-plaintext-link >/dev/null \
   || die "the resolver did not start"
 
