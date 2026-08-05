@@ -397,6 +397,10 @@
       "group": "offline"
     },
     {
+      "file": "projection-path-lifecycle.ts",
+      "group": "offline"
+    },
+    {
       "file": "projection-rclone-comparison.ts",
       "group": "offline"
     },
