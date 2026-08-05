@@ -114,6 +114,25 @@ const { readFileSync } = require('node:fs');
 console.log(createHash('sha256').update(readFileSync(process.argv[2])).digest('hex'));
 SHA
 
+# EVERY EMBEDDED SCRIPT IS A FILE IN A QUOTED HEREDOC, not an inline `node -e "..."` spanning lines.
+# `test/custody-runtime-closure.ts` parses every shipped script and refuses a line whose quotes do not close
+# on it, because an unreadable line is one a "does this region contain X" gate answers "no" for.
+cat > "$WORK/delta.cjs" <<'DELTA'
+const { readFileSync } = require('node:fs');
+const [, , before, after, key] = process.argv;
+const a = JSON.parse(readFileSync(before, 'utf8'));
+const b = JSON.parse(readFileSync(after, 'utf8'));
+console.log(b[key] - a[key]);
+DELTA
+
+cat > "$WORK/g26-record.cjs" <<'G26REC'
+const { readFileSync, writeFileSync } = require('node:fs');
+const [, , path, fault, bytes, failed] = process.argv;
+const seen = JSON.parse(readFileSync(path, 'utf8'));
+seen.push({ fault, bytesAccepted: Number(bytes), readFailed: failed === 'true' });
+writeFileSync(path, JSON.stringify(seen));
+G26REC
+
 cat > "$WORK/objects.cjs" <<'OBJECTS'
 const { readFileSync } = require('node:fs');
 const objects = JSON.parse(readFileSync(process.argv[2], 'utf8'));
@@ -328,22 +347,28 @@ step "G24 — a lease lapses under a read that is already in flight"
 # THE HANDLE SPANS THE LAPSE. The reader opens the entry, reads its first megabyte through file descriptor 3,
 # signals, waits, and then reads THE REST OF THE FILE THROUGH THE SAME DESCRIPTOR. The gate lapses every
 # outstanding lease in between. If the daemon did not re-resolve, the second half could not arrive at all.
-cat > "$WORK/out/pinned-read.sh" <<PINNED
+# THE HEREDOC IS QUOTED, AND THE PATH ARRIVES AS AN ARGUMENT.
+#
+# An UNQUOTED heredoc body containing a command substitution really executes it at write time, and
+# `test/custody-runtime-closure.ts` refuses every shipped script that has one — it parses each of them under
+# all three line endings and will not skip past a live command. The first version of this used `<<PINNED`
+# so that $ENTRY_PATH would expand, and its escaped arithmetic tripped exactly that rule.
+cat > "$WORK/out/pinned-read.sh" <<'PINNED'
 set -eu
-exec 3< "/mnt/$ENTRY_PATH"
+target="$1"
+exec 3< "$target"
 dd bs=1024 count=1024 <&3 > /out/g24-part.bin
 echo opened > /out/g24-handle-open
 attempt=0
 while [ ! -f /out/g24-release ]; do
-  attempt=\$((attempt + 1))
-  test "\$attempt" -lt 240 || { echo "the release never arrived" >&2; exit 1; }
+  attempt=$(( attempt + 1 ))
+  test "$attempt" -lt 240 || { echo "the release never arrived" >&2; exit 1; }
   sleep 0.5
 done
 cat <&3 >> /out/g24-part.bin
 exec 3<&-
 # ATOMIC, OR THE WAITER READS AN EMPTY FILE. A redirect CREATES the file before sha256sum has hashed 32 MiB,
-# so a gate polling for its existence can read nothing and call it a digest mismatch. Run 7 did exactly that:
-# 33,554,432 of 33,554,432 bytes produced and an EMPTY digest. Write elsewhere, then rename.
+# so a gate polling for its existence can read nothing and call it a digest mismatch.
 sha256sum /out/g24-part.bin | cut -d" " -f1 > /out/g24-digest.tmp
 mv /out/g24-digest.tmp /out/g24-digest.txt
 PINNED
@@ -352,7 +377,7 @@ node "$REL/identity.cjs" "$WORK/mnt/$ENTRY_PATH" "$WORK/manifest" "$ENTRY_PATH" 
 
 rm -f "$WORK/out/g24-handle-open" "$WORK/out/g24-release" "$WORK/out/g24-digest.txt"
 docker run -d --name "$READER_CONTAINER" --user 65534:65534 --cap-drop ALL \
-  -v "$WORK/mnt:/mnt:rslave" -v "$WORK/out:/out" "$VERIFY_IMAGE" sh /out/pinned-read.sh >/dev/null
+  -v "$WORK/mnt:/mnt:rslave" -v "$WORK/out:/out" "$VERIFY_IMAGE" sh /out/pinned-read.sh "/mnt/$ENTRY_PATH" >/dev/null
 
 ready=0
 for _ in $(seq 1 120); do
@@ -417,20 +442,25 @@ step "G25 — twenty concurrent opens meet ONE expired lease"
 # EACH READER TAKES A DIFFERENT, UNCACHED OFFSET, so every one of them genuinely needs the provider. Twenty
 # readers on the same offset would be answered by the daemon's own single-flight over the READ, and the gate
 # would be measuring that instead of resolution single-flight.
-cat > "$WORK/out/stampede.sh" <<STAMPEDE
+# QUOTED, for the same reason, with the projected path passed in.
+cat > "$WORK/out/stampede.sh" <<'STAMPEDE'
 set -eu
+target="$1"
 i=1
-while [ "\$i" -le 20 ]; do
-    offset=\$(( i * 4 * 1024 * 1024 ))
+while [ "$i" -le 20 ]; do
+  # FOUR MIB APART, so every reader needs its OWN demand block. Two offsets inside one block are one fetch,
+  # and the gate would then be measuring the daemon's read single-flight rather than resolution
+  # single-flight, which is what G25 is about.
+  offset=$(( i * 4 * 1024 * 1024 ))
   (
-    if dd if="/mnt/$ENTRY_B_PATH" bs=65536 skip=\$(( offset / 65536 )) count=1 of=/dev/null 2>/dev/null; then
-      echo ok > "/out/stampede-\$i.done"
+    if dd if="$target" bs=65536 skip=$(( offset / 65536 )) count=1 of=/dev/null 2>/dev/null; then
+      echo ok > "/out/stampede-$i.done"
     else
-      echo fail > "/out/stampede-\$i.done"
+      echo fail > "/out/stampede-$i.done"
     fi
   ) &
-  echo started > "/out/stampede-\$i.started"
-  i=\$(( i + 1 ))
+  echo started > "/out/stampede-$i.started"
+  i=$(( i + 1 ))
 done
 wait
 echo done > /out/stampede-complete
@@ -445,7 +475,7 @@ docker run --rm --user 65534:65534 --cap-drop ALL -v "$WORK/mnt:/mnt:rslave" "$V
 control expire-leases
 counters counters-g25-before.json
 docker run --rm --name "${READER_CONTAINER}-s" --user 65534:65534 --cap-drop ALL \
-  -v "$WORK/mnt:/mnt:rslave" -v "$WORK/out:/out" "$VERIFY_IMAGE" sh /out/stampede.sh >/dev/null 2>&1 || true
+  -v "$WORK/mnt:/mnt:rslave" -v "$WORK/out:/out" "$VERIFY_IMAGE" sh /out/stampede.sh "/mnt/$ENTRY_B_PATH" >/dev/null 2>&1 || true
 test -f "$WORK/out/stampede-complete" || die "the stampede never completed"
 sleep 1
 counters counters-g25-after.json
@@ -547,13 +577,7 @@ for fault in mismatched-content-range short-body wrong-total-size full-body-on-r
     rm -f "$WORK/out/g26-out.bin"
   fi
   control "fault/${OBJECT_B_REF}?fault=&times=0"
-  node -e "
-const { readFileSync, writeFileSync } = require('node:fs');
-const path = process.argv[1];
-const seen = JSON.parse(readFileSync(path, 'utf8'));
-seen.push({ fault: process.argv[2], bytesAccepted: Number(process.argv[3]), readFailed: process.argv[4] === 'true' });
-writeFileSync(path, JSON.stringify(seen));
-" "$WORK/out/g26.json" "$fault" "$BYTES" "$FAILED"
+  node "$REL/g26-record.cjs" "$REL/out/g26.json" "$fault" "$BYTES" "$FAILED"
   echo "  $fault: read failed=$FAILED, bytes accepted=$BYTES"
   G26_BLOCK=$(( G26_BLOCK + 4 ))
 done
@@ -576,11 +600,7 @@ sleep 1
 counters counters-g26a-after.json
 TRAP_AFTER="$(curl -fsS --max-time 10 "http://127.0.0.1:${TRAP_PORT}/counters" | node "$REL/jq.cjs" rangeRequests)"
 TRAP_DELTA=$(( TRAP_AFTER - TRAP_BEFORE ))
-RESOLUTIONS="$(node -e "
-const a = require('./$REL/out/counters-g26a-before.json');
-const b = require('./$REL/out/counters-g26a-after.json');
-console.log(b.resolutions - a.resolutions);
-")"
+RESOLUTIONS="$(node "$REL/delta.cjs" "$REL/out/counters-g26a-before.json" "$REL/out/counters-g26a-after.json" resolutions)"
 echo "  the trap listener saw $TRAP_DELTA ranged request(s); $RESOLUTIONS resolution(s) happened"
 lease g26-allowlist --requests "$TRAP_DELTA" --failed "$ALLOWLIST_FAILED" --resolutions "$RESOLUTIONS"
 

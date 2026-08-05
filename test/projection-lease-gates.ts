@@ -399,8 +399,8 @@ test('EVERY MEASURED WINDOW IS BOUNDED BY TWO SNAPSHOTS, and the gate fails clos
 
 test('THE G24 HANDLE SPANS THE LAPSE — the read is genuinely in flight', () => {
   // A gate that closed the file and reopened it would be measuring a NEW read, not a lapse under one already
-  // in flight, and G24's whole subject is the second thing.
-  assert(GATE.includes('exec 3< "/mnt/'), 'the reader opens a descriptor');
+  assert(GATE.includes(String.raw`exec 3< "$target"`),
+    'the reader opens a descriptor');
   assert(GATE.includes('cat <&3 >>'), 'and reads the rest of the file through THE SAME one');
   const order = [
     GATE.indexOf('g24-handle-open'),
@@ -427,7 +427,7 @@ test('G25 PROVES ALL TWENTY READERS STARTED, and gives each a DIFFERENT uncached
   assert(/stampede-.{0,3}i\.started/.test(GATE), 'each reader records that it started');
   assert(/STARTED=.*stampede-\*\.started.*wc -l/.test(GATE), 'the gate counts them');
   assert(GATE.includes('--opens "$STARTED"'), 'and hands the COUNT to the verdict rather than the plan\'s 20');
-  assert(GATE.includes(String.raw`offset=\$(( i * 4 * 1024 * 1024 ))`),
+  assert(GATE.includes(String.raw`offset=$(( i * 4 * 1024 * 1024 ))`),
     'the offsets differ per reader, 4 MiB apart so each needs its own demand block');
 });
 
