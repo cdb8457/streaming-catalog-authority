@@ -1,0 +1,45 @@
+{
+  "_comment_purpose": "TEMPLATE — CONTAINS NO REAL VALUES. This describes the TorBox resolver side of a real-provider run. It is documentation of what to place, not a file to copy into service unchanged: every REPLACE-ME must be replaced, and the preflight refuses the file while any remain.",
+
+  "_comment_where": "Place the real files under a 0700 directory. The default the gate looks in, and the only place it EVER looks, is /mnt/user/appdata/catalog/secrets/real-provider/. The gate never searches the filesystem for anything that might be a credential, never reads one from the environment, and never prompts.",
+
+  "_comment_files": "FOUR FILES, ALL MODE 0600.",
+  "files": {
+    "torbox-credential": "The TorBox API key and nothing else. NOTE WHY THIS MATTERS MORE THAN A USUAL TOKEN: TorBox authenticates requestdl with a ?token= QUERY PARAMETER, so the request URL is itself a bearer credential. Anything that logs a request URL publishes this key. The resolver never logs, stores or returns a request URL, and refuses any credential file whose mode has group or other bits set.",
+    "gate-secret": "Any high-entropy string you generate locally, e.g. `head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \\n'`. The projection daemon presents this to the resolver as a bearer. It is NOT your TorBox key and must not be. Two secrets exist so the data-plane binary — the one that talks to arbitrary provider-supplied CDN hosts — never holds the credential that can manage your whole TorBox account.",
+    "objects.json": "1-3 objects you are legally entitled to. See deploy/real-provider-objects.template.json. Each `ref` is a TorBox stable reference, described below. TREAT THIS FILE AS A SECRET: a reference identifies an item in your account.",
+    "endpoint.json": "See deploy/real-provider-endpoint.template.json, filled in as shown under `endpointShape` below."
+  },
+
+  "_comment_ref": "THE STABLE REFERENCE FORMAT. `torbox:<kind>:<providerId>:<fileId>` — the minimum TorBox's own endpoints need, and deliberately nothing else. No name, hash, size or category: each would be one more field to keep out of logs forever, and none is needed to fetch bytes.",
+  "stableReferenceFormat": "torbox:<torrent|webdl|usenet>:<itemId>:<fileId>",
+  "stableReferenceExamples": [
+    "torbox:torrent:REPLACE-ME-ITEM-ID:REPLACE-ME-FILE-ID",
+    "torbox:webdl:REPLACE-ME-ITEM-ID:REPLACE-ME-FILE-ID",
+    "torbox:usenet:REPLACE-ME-ITEM-ID:REPLACE-ME-FILE-ID"
+  ],
+  "_comment_ids": "Both ids are plain non-negative integers. The item id is the torrent/web/usenet id TorBox shows for the item; the file id is the index of the file within it. Get both from your own TorBox dashboard or from a read-only listing you already have — this gate never lists your account.",
+
+  "_comment_endpoint": "HOW endpoint.json MUST LOOK FOR A TORBOX RUN. resolverUrl points at the LOOPBACK resolver this repository runs, not at TorBox: the daemon talks to the resolver, the resolver talks to TorBox. allowedOrigins names the CDN origins TorBox may hand back — the daemon refuses to dial anything else, and re-checks every address at dial time.",
+  "endpointShape": {
+    "id": "torbox",
+    "resolverUrl": "http://127.0.0.1:8140/resolve",
+    "directBaseUrl": null,
+    "allowedOrigins": [
+      "https://REPLACE-ME-cdn-host.torbox.app"
+    ],
+    "allowInsecureHttp": false,
+    "allowPrivateAddresses": false
+  },
+  "_comment_origins_hard": "FINDING THE RIGHT allowedOrigins IS THE ONE STEP THAT NEEDS CARE. TorBox mints CDN links on hosts that can differ by account and region, and the daemon will refuse a link whose origin is not listed — which is the behaviour you want, but it means a first run can fail closed on a host you did not anticipate. Resolve one object by hand first and list exactly the origin it returns. Do NOT widen this to a bare wildcard; an unbounded allowlist is how a signed URL becomes an SSRF.",
+
+  "_comment_run": "COMMANDS. Nothing below takes a secret as an argument; every one takes a PATH.",
+  "commands": {
+    "1-preflight-resolver": "npx tsx src/ops/torbox-resolver-cli.ts preflight --credential <dir>/torbox-credential --gate-secret <dir>/gate-secret",
+    "2-serve-resolver": "npx tsx src/ops/torbox-resolver-cli.ts serve --credential <dir>/torbox-credential --gate-secret <dir>/gate-secret --port 8140",
+    "3-preflight-gate": "npm run go:real-provider-gate  (skips with 77 until all inputs are present)",
+    "4-three-runs": "npm run go:real-provider-gate:three"
+  },
+
+  "_comment_never": "WHAT THIS ADAPTER WILL NEVER DO, whatever it is asked: create, control, edit, delete or download a provider job; request a permalink; list or export your account; or set redirect=true. The only verb is GET, on the three requestdl paths, and the only effect is that TorBox opens an existing file's link for a while."
+}

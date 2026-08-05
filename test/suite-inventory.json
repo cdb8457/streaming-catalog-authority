@@ -405,6 +405,10 @@
       "group": "offline"
     },
     {
+      "file": "torbox-resolver.ts",
+      "group": "offline"
+    },
+    {
       "file": "projection-rclone-comparison.ts",
       "group": "offline"
     },
