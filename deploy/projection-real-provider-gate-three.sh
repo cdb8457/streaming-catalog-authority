@@ -70,9 +70,17 @@ if [ "$completed" -ne "$RUNS" ] || [ "$completed" -eq 0 ]; then
 fi
 
 echo
-echo "$completed of $RUNS consecutive real-provider runs completed, none skipped. On a Linux or Unraid host"
-echo "this is the repetition the acceptance plan asks for, for THIS gate, and it closes NOTHING ELSE: a real"
-echo "provider endpoint has still never been contacted, and Phase 1 remains open on that ground alone."
-echo "What has been run is docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md G27's three-server half. The publisher"
-echo "side of G27 -- that admission REFUSES a moved carried entry -- is closed separately and offline by"
-echo "npm run test:projection-publisher, and this gate does not replace it."
+echo "$completed of $RUNS consecutive real-provider runs completed, none skipped."
+echo
+echo "WHAT THAT MEANS DEPENDS ENTIRELY ON WHICH MODE RAN, AND THIS WRAPPER DOES NOT KNOW."
+echo
+echo "  If these were FAKE-MODE runs, they closed NOTHING. They prove the gate works, that it evaluates"
+echo "  every assertion, and that it can fail -- which is worth having and is why fake mode exists. They"
+echo "  prove nothing whatsoever about any real provider, because no provider was contacted."
+echo
+echo "  If these were REAL runs against an operator-supplied corpus, they are the repetition the acceptance"
+echo "  plan asks for, for THIS gate, and they close the real-provider correctness requirement of"
+echo "  docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md section 2 -- and NOTHING ELSE."
+echo
+echo "  Read the report above: the TLS assertions SKIP in fake mode and are asserted in a real one. That"
+echo "  is how you tell the two apart, and a skip is never a pass."

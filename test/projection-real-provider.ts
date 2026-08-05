@@ -513,6 +513,18 @@ async function main(): Promise<void> {
     assert(!/consecutive real-provider runs completed/.test(out), 'and never print the closing message');
   });
 
+  await test('THE CLOSING MESSAGE REFUSES TO SAY WHICH MODE RAN, BECAUSE IT CANNOT KNOW', () => {
+    // THE FAILURE THIS CLOSES: three green FAKE runs printing a message that reads as three real-provider
+    // passes. The wrapper drives whatever command it was given and has no way to tell the two apart, so it
+    // must not claim to -- it states both readings and points at the one thing that distinguishes them.
+    const { code, out } = runWrapper('projection-real-provider-gate-three.sh', 0, '3');
+    assert(code === 0, 'three clean runs exit 0');
+    assert(/If these were FAKE-MODE runs, they closed NOTHING/.test(out),
+      'the closing message must state the fake reading');
+    assert(/If these were REAL runs/.test(out), 'and the real one');
+    assert(/a skip is never a pass/.test(out), 'and say how to tell them apart');
+  });
+
   await test('A FAILING RUN STOPS THE SEQUENCE AT ONCE', () => {
     const { code, out } = runWrapper('projection-real-provider-gate-three.sh', 1, '3');
     assert(code === 1, `a failure must propagate, got ${code}`);

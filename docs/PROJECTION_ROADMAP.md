@@ -83,6 +83,16 @@ are not reopened. This is the roadmap for the projection appliance, and it is de
   **recorded, not asserted** — none of the three did, and that fails nothing. Four defects were found and all
   four were in the gate: **no product code changed.**
 
+- **AND THE REAL-PROVIDER CORRECTNESS GATE NOW EXISTS** — `deploy/projection-real-provider-gate.sh`,
+  operator-run, file-backed and redaction-safe. It asserts real TLS, redirect refusal, `206`-only with an
+  exact `Content-Range`, size agreement, digests recorded outside the mount, a backward read and one past
+  90 %, finite deadlines, bounded retries, at most one refresh per read, egress allowlisting, a read-only
+  mount and a positive byte count. It **supplies nothing itself**: with no operator corpus at the approved
+  path it SKIPS with status 77 and says a skip closes nothing. Offline against the product's own fake
+  provider it has run **3/3 consecutive fresh times on the real Unraid host, 33 assertions each**, with 60
+  adversarial offline tests behind it. **THAT CLOSES NOTHING.** It proves the gate can fail; no provider has
+  been contacted. What changed is that the missing thing is now **a run rather than a gate**.
+
 - **AND PHASE 1 STILL DOES NOT CLOSE, FOR ONE REASON AND NO LONGER FOR ANY OF THE OLD ONES.** **No real
   provider endpoint has ever been contacted.** That is the whole of what is left. For most of this document's
   life the reason was the platform; then it was the absence of a lease gate; then it was G27's missing

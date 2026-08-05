@@ -427,7 +427,7 @@ and how each was answered without moving a number. The measurements that had fai
 
 **EVERY PHASE 1 GATE NOW HAS AN EXECUTABLE FORM AND THREE CONSECUTIVE FRESH UNRAID RUNS — SEVEN OF THEM —
 AND PHASE 1 STILL DOES NOT CLOSE.** G27's three-server half was the last one missing; it now exists and has
-run (§6.4, §6.9). **What is left is one thing and one thing only: no real provider endpoint has ever been
+run (§6.4, §6.9). A gate for the real-provider corpus now exists too and has been exercised offline 3/3 (§6.10), which changes what is missing from *a gate* to *a run*. **What is left is one thing and one thing only: no real provider endpoint has ever been
 contacted** — which §2 names as a corpus of the tranche and §6 places on this very environment. The reason
 Phase 1 is open is no longer the platform, no longer a missing lease gate, and no longer a missing lifecycle
 gate. **It is that single remaining ground, and nothing else.**
@@ -556,6 +556,63 @@ ever asked.**
 
 **THIS CLOSES G27 AND NOTHING ELSE.** No real provider endpoint has ever been contacted, and Phase 1 remains
 open on that ground.
+
+### 6.10 The real-provider correctness gate — built, exercised offline, NOT RUN against a provider
+
+**THE LAST OUTSTANDING REQUIREMENT NOW HAS A GATE, AND THAT IS NOT THE SAME AS HAVING RUN IT.** §2 asks for
+1–3 files the operator is legally entitled to, to answer whether the HTTP Range adapter works against a real
+endpoint. `deploy/projection-real-provider-gate.sh` is that gate. **No real provider has been contacted, and
+Phase 1 remains open on exactly that ground.**
+
+**IT SUPPLIES NOTHING ITSELF AND LOOKS IN EXACTLY ONE PLACE.** It never invents a credential, an object
+manifest or an endpoint; it does not search the filesystem for anything that might be a secret, does not read
+one from the environment, and does not prompt. With the approved inputs absent it **skips with status 77** and
+says a skip closes nothing. That is the correct outcome on any machine an operator has not prepared, and it is
+what happens on this host today.
+
+**WHAT IS ASSERTED.** Real TLS with the system trust store and no pinning; redirect refusal; `206` only, with
+`Content-Range` granting exactly the requested window; the provider's total agreeing with the operator
+manifest; `Content-Length` agreeing with the window; a body neither short nor long; digests recorded **outside
+the mount** compared against reads **through** it; a **backward** read and one **past 90 %** of the object;
+finite deadlines on every request and every read; retries bounded; **at most one** access refresh per read;
+zero contact with any origin outside the allowlist; an ordinary read-only FUSE mount refusing write, create,
+unlink and chmod; no access material anywhere on disk, searched for by the exact value the run used; and a
+**positive byte count**, because every ceiling above is satisfied by a run that contacted nothing.
+
+**NOT ASSERTED, DELIBERATELY.** 429s are **recorded and asserted by nothing** — a real provider is entitled to
+rate-limit, this corpus is never a load test, and G16 asserts zero 429s against the fake endpoint where the
+harness controls the load. Where the supplied endpoint serves stable references directly, the refresh
+assertion **skips**; G24–G26 hold that contract in full.
+
+**NOTHING REACHES ARGV, A LOG LINE OR A REPORT.** argv is world-readable, so every URL, reference and
+credential arrives as a **file path**. An object's only identity anywhere in the output is an operator-chosen
+label and a 12-character digest prefix; the stable reference is the one field that never reaches a report at
+all. The scrubber refuses URL shapes, signed query parameters, credentials, long opaque strings and media
+filenames, and runs **before** the report is printed.
+
+| Run | Mode | Result |
+|---|---|---|
+| `npm run go:real-provider-gate:fake` | offline fixture | **33 assertions, 0 failed, 2 skipped** — 3/3 consecutive fresh runs on the real Unraid host, `evidence/real-provider-fake-three.log` |
+| `npm run go:real-provider-gate` | real | **SKIPPED (77)** — no operator corpus exists at the approved path |
+| `npm run test:projection-real-provider` | offline | **60 adversarial tests** |
+
+**THE 3/3 FAKE SEQUENCE CLOSES NOTHING.** It proves the gate evaluates every assertion and can fail. The two
+skips are the TLS assertions, which skip against a plaintext fixture and are asserted against a real endpoint
+— that is how the report distinguishes the two, and a skip is never a pass. **No product code was changed:**
+the adapter already refuses redirects, accepts only `206`, requires an exact `Content-Range`, checks the total,
+bounds the body, terminalises a second refresh and enforces both the allowlist and the credential file mode.
+
+**WHAT AN OPERATOR MUST SUPPLY TO CLOSE THIS.** Three files under
+`/mnt/user/appdata/catalog/secrets/real-provider/`, directory mode `0700`:
+
+| File | Mode | What it is |
+|---|---|---|
+| `credential` | **`0600`** | The long-lived token, and nothing else. The daemon refuses any mode with `0o077` set, and so does preflight, before anything is contacted. |
+| `objects.json` | `0600` | 1–3 objects: `label`, `ref`, `sizeBytes`, and **either** `sha256` **or** `probeDigests`. Template: `deploy/real-provider-objects.template.json`. |
+| `endpoint.json` | `0600` | `id`, **exactly one** of `resolverUrl` or `directBaseUrl` (https), a non-empty `allowedOrigins`, and both fixture switches false. Template: `deploy/real-provider-endpoint.template.json`. |
+
+Then: `npm run go:real-provider-gate` to preflight and run once, and
+`npm run go:real-provider-gate:three` for the three consecutive fresh runs the plan requires.
 
 ### 6.4 The gates that did not exist — now none of them
 
