@@ -1277,12 +1277,25 @@ await test('A REAL PROVIDER LEASE IS MINTED, and the leak check searches for its
   // Searched for by exact value in all three places the product promises it never reaches.
   // Anchored to the leakcheck INVOCATION, not to the first textual mention: the step heading names the same
   // places, and matching that would have checked a sentence instead of a command.
+  //
+  // THE MARKER NO LONGER APPEARS IN THE INVOCATION, AND THAT IS THE CORRECTION RATHER THAN A WEAKENING.
+  // Passing it there put it in the host's process table and in `docker inspect .Config.Cmd`, measurably, for
+  // the life of every one of these containers. Each call now names a needle FILE, and the assertion follows
+  // it: the file must exist as a `printf` built from `$LEASE_MARKER`, so the search still has the run's own
+  // secret as its subject. `test/projection-gate-embedded-programs.ts` executes the helper against both.
   for (const target of ['the published manifest directory', 'the daemon probe cache',
     'the media server\'s library state']) {
     const at = gate.indexOf(`leakcheck.sh "${target}"`);
     assert(at > 0, `the leak check is invoked for ${target}`);
-    assert(gate.slice(at, at + 400).includes('$LEASE_MARKER'),
-      `and searches ${target} for the lease secret itself`);
+    const invocation = gate.slice(at, gate.indexOf('\n', at));
+    assert(!invocation.includes('$LEASE_MARKER'),
+      `${target}: the lease secret is still passed to the leak check as an argument`);
+    const kind = (/leak-needles-([a-z]+)\.txt/.exec(invocation) ?? [])[1];
+    assert(typeof kind === 'string',
+      `and ${target} is searched from a needle file instead: ${invocation}`);
+    assert(new RegExp(`printf '%s\\\\n' "\\$LEASE_MARKER"[\\s\\S]{0,320}leak-needles-${kind}\\.txt`)
+      .test(gate),
+    `and that file is built from the lease secret itself, so ${target} is searched for the run's own lease`);
   }
   assert(/RESOLUTIONS.*-ge 1|\-ge 1/.test(gate),
     'and the run asserts a lease was actually minted, or the searches had no subject');

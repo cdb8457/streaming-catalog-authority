@@ -984,32 +984,131 @@ step "no PROVIDER access lease reached the manifest, the probe cache or any serv
 # their own authentication state, because a server that did not would not survive a restart. None of that is
 # provider access material and none of it is searched for below.
 cat > "$WORK/out/leakcheck.sh" <<'LEAK'
+# THE SEARCH BEHIND "NO PROVIDER ACCESS MATERIAL REACHED DISK", AND THE THREE WAYS IT PROVED NOTHING.
+#
+# Each was found by RUNNING this program in the gate's own digest-pinned image against fixtures, not by
+# reading it:
+#
+#   - IT DISCARDED grep's ERRORS AND ITS EXIT STATUS ALIKE. `grep -rlF "$pattern" /scan 2>/dev/null` sends a
+#     scan root that does not exist and a file that cannot be opened down the same path as a clean miss: no
+#     output, so no leak, so exit 0. Measured in the pinned image: a secret sitting in plain text in a
+#     mode-000 file was reported ABSENT, and a /scan that did not exist was reported CLEAN. busybox grep
+#     exits 2 and writes a diagnostic for both, so both are now hard failures. A zero that means "did not
+#     look" is indistinguishable from one that means "did not leak", and this is the ONLY measurement
+#     standing behind the claim.
+#   - THE NEEDLE ARRIVED IN ARGV. Every call site passed the secret as a `docker run` argument, so it lived
+#     in the host's process table and in `docker inspect .Config.Cmd` for the life of the container --
+#     measured, verbatim -- while the rclone gate's own comment says its token "is in no argv, no container
+#     inspect output and no shell history". The needles now arrive as a FILE PATH, which is the idiom the
+#     register path was already corrected to.
+#   - THE FAILURE PATH PRINTED THE SECRET AND THE FILES IT WAS FOUND IN. Section 7 of the acceptance plan
+#     allows counts, digests and gate ids and nothing else. A hit now names the needle by its INDEX in the
+#     list; no needle and no path under the scan root is ever printed.
+#
+# WHAT IS REPORTED RATHER THAN REQUIRED, so that what is required can be trusted. The examined-file count is
+# printed for every scan and is REQUIRED only at the minimum the caller passes. A mount client entitled to
+# write nothing into its own cache directory must not fail a check about a leak that could not have happened,
+# and inventing a floor there would be fitting a threshold to an expectation.
 set -eu
 label="$1"
-shift
-found=0
-for pattern in "$@"; do
-  if grep -rlF "$pattern" /scan 2>/dev/null | head -5 | grep -q .; then
-    echo "LEAK: '$pattern' appears under $label" >&2
-    grep -rlF "$pattern" /scan 2>/dev/null | head -5 >&2
-    found=1
+needles="$2"
+minimum="${3:-1}"
+# THE ROOT IS AN ARGUMENT WITH THE CONTAINER PATH AS ITS DEFAULT, so the offline suite can run these exact
+# bytes against a temporary directory. A program only a container can execute is a program only a container
+# has ever executed, which is how this one kept three defects nobody could see.
+root="${4:-/scan}"
+
+refuse() { echo "leakcheck: $label: $1" >&2; exit 3; }
+
+test -d "$root" \
+  || refuse "the scan root is not a directory, so a clean result would mean the search never ran"
+test -s "$needles" \
+  || refuse "the needle list is missing or empty, so a clean result would mean nothing was searched for"
+
+# THE SCRATCH IS ITS OWN REFUSAL. Every diagnostic below is read out of a file, so a scratch directory
+# that could not be created would silently turn each of them into an empty file -- which is the shape of
+# "clean". It is created first and its failure ends the run.
+work="$(mktemp -d)" || refuse "no scratch directory could be created, so no diagnostic could be read back"
+trap 'rm -rf "$work"' EXIT
+
+# A ROOT THE WALKER CANNOT ENUMERATE IS NOT AN EMPTY ROOT.
+if ! find "$root" -type f > "$work/files" 2> "$work/walk"; then
+  refuse "the scan root could not be walked"
+fi
+test ! -s "$work/walk" || refuse "the scan root could not be walked completely"
+examined="$(wc -l < "$work/files" | tr -d ' ')"
+test "$examined" -ge "$minimum" \
+  || refuse "$examined file(s) under the scan root against a required $minimum; a clean result proves nothing"
+
+# A NEEDLE LIST THAT DOES NOT END IN A NEWLINE IS REFUSED, AND THIS ONE ALMOST SHIPPED.
+#
+# `wc -l` counts TERMINATORS and `read` drops an unterminated final record, so a nonempty one-line needle
+# file with no trailing newline counts ZERO needles, runs ZERO searches, and then agrees with itself at
+# zero: 0 needles read of 0 expected, 0 hits, exit 0. Measured against the same secret in the same tree
+# that the terminated list finds it in — "1 file(s) examined for 0 needle(s), 0 hit(s)", clean. A malformed
+# needle list is exactly what a caller gets wrong, and it produced the friendliest possible answer.
+#
+# Command substitution strips trailing newlines, so an empty last byte IS the terminator.
+test -z "$(tail -c 1 "$needles")" \
+  || refuse "the needle list does not end in a newline, so its last needle is dropped by every reader"
+total="$(wc -l < "$needles" | tr -d ' ')"
+test "$total" -ge 1 \
+  || refuse "the needle list holds no complete needle, so a clean result would mean nothing was searched"
+index=0
+hits=0
+while IFS= read -r pattern; do
+  index=$(( index + 1 ))
+  test -n "$pattern" || refuse "needle $index of $total is empty, and an empty needle matches every file"
+  status=0
+  grep -rlF -e "$pattern" "$root" > "$work/hit" 2> "$work/err" || status=$?
+  # 0 IS A MATCH, 1 IS A CLEAN MISS, AND ANYTHING ELSE IS A SEARCH THAT DID NOT COMPLETE.
+  if [ "$status" -ge 2 ] || [ -s "$work/err" ]; then
+    refuse "needle $index of $total could not be searched for across the whole root"
   fi
-done
-test "$found" -eq 0
+  if [ "$status" -eq 0 ]; then
+    hits=$(( hits + 1 ))
+    echo "LEAK: needle $index of $total appears under $label" >&2
+  fi
+done < "$needles"
+test "$index" -eq "$total" \
+  || refuse "read $index of $total needles, so the list was not searched in full"
+
+echo "  $label: $examined file(s) examined for $total needle(s), $hits hit(s)"
+test "$hits" -eq 0
 LEAK
+
+# THE NEEDLES ARRIVE AS A FILE, AND THAT IS THE WHOLE OF WHY THIS BLOCK EXISTS. Passing them to `docker run`
+# put every one of them -- including the per-run lease secret the searches below are FOR -- into the host's
+# process table and into `docker inspect .Config.Cmd`, which is measurably not "nowhere". A path in argv is
+# the idiom this repository already corrected the register path to.
+#
+# THE MODE IS 0644 FOR THE REASON SECTION 6.0 RECORDS: a file the consuming container's uid cannot read is a
+# defect Docker Desktop cannot show you, and these are per-run synthetic markers in a directory the run
+# deletes. What changes is not the file's reach but the secret's: it is out of argv.
+printf '%s\n' "$LEASE_MARKER" "fakerange" "://" "X-Fake-Lease" "expiresAtUnixMs" "Authorization:" "Bearer " \
+  > "$WORK/out/leak-needles-manifest.txt"
+printf '%s\n' "$LEASE_MARKER" "fakerange" "http://" "https://" "X-Fake-Lease" "expiresAtUnixMs" \
+  "Authorization:" "Bearer " > "$WORK/out/leak-needles-cache.txt"
+printf '%s\n' "$LEASE_MARKER" "fakerange" "X-Fake-Lease" "expiresAtUnixMs" \
+  > "$WORK/out/leak-needles-library.txt"
+chmod 644 "$WORK/out/leak-needles-manifest.txt" "$WORK/out/leak-needles-cache.txt" \
+  "$WORK/out/leak-needles-library.txt"
+# AND THE MINTED MARKER MUST BE LONG ENOUGH TO BE DECISIVE. A short needle occurs by chance and turns a
+# search for the secret into a search for noise; the same rule `scan.cjs` is held to, asserted here because
+# this is where the value is chosen.
+test "${#LEASE_MARKER}" -ge 8 \
+  || die "the lease marker is under 8 bytes, so a search for it could not be decisive"
 
 # THE MANIFEST DIRECTORY IS TEXT the control plane authored, so a bare `://` there is conclusive.
 docker run --rm -v "$WORK/manifest:/scan:ro" -v "$WORK/out:/out:ro" "$VERIFY_IMAGE" \
-  sh /out/leakcheck.sh "the published manifest directory" \
-  "$LEASE_MARKER" "fakerange" "://" "X-Fake-Lease" "expiresAtUnixMs" "Authorization:" "Bearer " \
+  sh /out/leakcheck.sh "the published manifest directory" /out/leak-needles-manifest.txt \
   || die "the manifest directory holds provider access material"
 
 # THE PROBE CACHE IS MEDIA BYTES, and `://` is not a usable signal against it: a three-byte sequence occurs
 # in a few megabytes of high-entropy data by chance. So it is searched for the things that could only have
 # got there from a leak, and FIRST AMONG THEM THE ACTUAL LEASE SECRET minted for this run.
 docker run --rm -v "$WORK/cache:/scan:ro" -v "$WORK/out:/out:ro" "$VERIFY_IMAGE" \
-  sh /out/leakcheck.sh "the daemon probe cache" \
-  "$LEASE_MARKER" "fakerange" "http://" "https://" "X-Fake-Lease" "expiresAtUnixMs" "Authorization:" "Bearer " \
+  sh /out/leakcheck.sh "the daemon probe cache" /out/leak-needles-cache.txt \
   || die "the probe cache holds provider access material"
 
 # ALL THREE SERVERS' LIBRARY STATE. Each holds its own device and access-token records — it has to — and
@@ -1017,8 +1116,7 @@ docker run --rm -v "$WORK/cache:/scan:ro" -v "$WORK/out:/out:ro" "$VERIFY_IMAGE"
 # nothing to do with the provider lease this step is about.
 for scan_dir in jf-config plex-config emby-config; do
   docker run --rm -v "$WORK/$scan_dir:/scan:ro" -v "$WORK/out:/out:ro" "$VERIFY_IMAGE" \
-    sh /out/leakcheck.sh "a media server's library state" \
-    "$LEASE_MARKER" "fakerange" "X-Fake-Lease" "expiresAtUnixMs" \
+    sh /out/leakcheck.sh "a media server's library state" /out/leak-needles-library.txt \
     || die "a media server persisted provider access material"
 done
 echo "  no media server's library state names the provider endpoint or holds a lease"

@@ -145,20 +145,64 @@ OBJECTS
 # The seven identity fields G24 pins, read from the mount and from the published manifest. `stat` gives the
 # inode, the size and the mtime a media server would see; the manifest gives the four ids.
 cat > "$WORK/identity.cjs" <<'IDENT'
-const { readFileSync, statSync, readdirSync } = require('node:fs');
+// THE SEVEN FIELDS G24 PINS, AND WHY THREE OF THEM COULD NOT HAVE DIFFERED.
+//
+// This read the FIRST directory entry beginning `generation-`, which is not the generation `pointer.json`
+// names. Executed against a manifest directory holding `generation-1-FIRST.json` and
+// `generation-2-SECOND.json` with the pointer naming the second, the shipped program emitted
+// `generationId: gen_SECOND` and `sequence: 2` beside `projectedEntryId: pe_OLD`, `sourceId: src_OLD` and
+// `sourceGeneration: 1` — one record describing two generations, and readdir order is why. Because the
+// before and the after call both read the SAME wrong file, those three fields were read out of a document
+// nothing rewrites during the window: they were structurally incapable of differing whatever the daemon did,
+// while the acceptance plan records "all SEVEN pinned fields byte-identical".
+//
+// AND THE BINDING WAS ALREADY THERE TO USE. `PointerDocument` in `src/core/projection/artifact-store.ts`
+// carries `artifactName` beside the generation id and the sequence — the pointer says which file it means,
+// and this program was guessing instead. An artifact that is not there is a refusal, never a fallback.
+const { readFileSync, statSync } = require('node:fs');
 const [, , mountPath, manifestDir, entryPath, out] = process.argv;
 const pointer = JSON.parse(readFileSync(`${manifestDir}/pointer.json`, 'utf8'));
-const artifact = readdirSync(manifestDir).find((name) => name.startsWith('generation-'));
-const manifest = JSON.parse(readFileSync(`${manifestDir}/${artifact}`, 'utf8'));
+// THE NAME IS DERIVED FROM VALIDATED PARTS AND THEN COMPARED, RATHER THAN SANITISED AND THEN USED.
+//
+// Refusing `/` in `artifactName` is not enough and the first version of this did exactly that: on Windows
+// `\` is a separator too, so `..\..\somewhere.json` would have escaped the manifest directory — in a file
+// this program is handed rather than one it trusts. Rebuilding the name from `sequence` and `generationId`,
+// both checked against the shapes `deriveGenerationId` and `artifactNameFor` actually produce
+// (`gen_<32 hex>`, a non-negative safe integer), makes traversal impossible by construction instead of by
+// blacklist, and makes the pointer's own two halves agree with the name it carries.
+if (typeof pointer.generationId !== 'string' || !/^gen_[0-9a-f]{32}$/.test(pointer.generationId)
+  || !Number.isSafeInteger(pointer.sequence) || pointer.sequence < 0) {
+  throw new Error('the pointer does not name a generation, so no identity could be bound to one');
+}
+const artifactName = `generation-${pointer.sequence}-${pointer.generationId.slice('gen_'.length)}.json`;
+if (pointer.artifactName !== artifactName) {
+  throw new Error('the pointer names an artifact that is not the one its own generation id and sequence '
+    + 'derive, so the name it carries is not a binding');
+}
+const manifest = JSON.parse(readFileSync(`${manifestDir}/${artifactName}`, 'utf8'));
+// AND THE ARTIFACT MUST AGREE WITH THE POINTER THAT NAMED IT, or the name is the only thing that was bound.
+if (manifest.generation === null || typeof manifest.generation !== 'object'
+  || manifest.generation.generationId !== pointer.generationId
+  || manifest.generation.sequence !== pointer.sequence) {
+  throw new Error('the artifact the pointer names carries a different generation');
+}
 const entry = manifest.entries.find((candidate) => candidate.path === entryPath);
 if (entry === undefined) throw new Error('the manifest does not carry the entry the gate is pinning');
+// `sources[0]` IS A POSITION, NOT AN IDENTITY. An entry with two sources would report the same first one
+// across a failover, so a pinned entry is required to have exactly one and the fields name that one.
+if (!Array.isArray(entry.sources) || entry.sources.length !== 1) {
+  throw new Error('the pinned entry does not carry exactly one source, so a positional read of it would '
+    + 'report the same value across a failover');
+}
 const source = entry.sources[0];
 const stat = statSync(mountPath);
 require('node:fs').writeFileSync(out, `${JSON.stringify({
   projectedEntryId: entry.projectedEntryId,
   generationId: pointer.generationId,
   sourceId: source.sourceId,
-  sourceGeneration: source.sourceGeneration,
+  // STRINGIFIED LIKE EVERY SIBLING. It was the one numeric field in a record of strings, so a comparison
+  // that ever normalised types would have treated it differently from the six beside it.
+  sourceGeneration: String(source.sourceGeneration),
   inode: String(stat.ino),
   sizeBytes: String(stat.size),
   mtime: String(Math.trunc(stat.mtimeMs)),

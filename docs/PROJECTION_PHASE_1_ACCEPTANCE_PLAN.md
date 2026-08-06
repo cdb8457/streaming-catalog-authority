@@ -683,6 +683,143 @@ having contacted nothing. Every run reported `cleanup: 0 mountpoints and no run 
 root`, both gate roots were left empty, and the host's container, network, volume and mountpoint counts were
 identical before and after (26 running / 42 total, 17, 45, 0).
 
+### 6.12 The second credential-free audit loop — the shell siblings, and the half the first fix left behind
+
+**THE FIRST LOOP CORRECTED `scan.cjs` AND LEFT ITS FIVE SHELL SIBLINGS UNTOUCHED.** §6.11 records
+`leakcheck.sh` nowhere, because the inventory was of programs and this one is five byte-identical copies of
+the same fifteen lines across `deploy/projection-{jellyfin,emby,plex}-dataplane-gate.sh`,
+`deploy/projection-three-server-concurrency-gate.sh` and `deploy/projection-rclone-comparison-gate.sh` —
+**fifteen call sites**, carrying the same claim `scan.cjs` carries and, as it turned out, three of the same
+defects. **Every finding below was produced by executing the shipped bytes** — the shell helpers in the
+gates' own digest-pinned `alpine@sha256:d9e853e8…`, the `.cjs` helpers under `node` — **and every one is
+pinned by a test that fails against `dac5abe` and passes after.** The new suite is
+`test/projection-gate-embedded-programs.ts`, and its mutation proof, measured against the **final** bytes of
+both trees and with the working tree restored byte-identical after each swap, is:
+
+| Platform | against merge base `dac5abe` | against this tree |
+|---|---|---|
+| Windows / Docker Desktop (developer machine) | **7 passed, 20 failed** | **27 passed, 0 failed** |
+| Unraid host, as root | **4 passed, 23 failed** | **27 passed, 0 failed** |
+
+The two rows differ by exactly the three cases Windows cannot express — the two unopenable-file fixtures and
+the fifo fixture, which need POSIX modes and a real named pipe. Those are **reported rather than judged** on
+Windows, which is §6.0's three-valued rule; they are live on the host and are among the 23 failures there.
+
+| # | Where | What was wrong | How it presented |
+|---|---|---|---|
+| 1 | `leakcheck.sh` — **5 gates, 15 call sites** | `grep -rlF "$pattern" /scan 2>/dev/null` **discarded grep's errors and its exit status alike**, so a root that did not exist and a file that could not be opened went down the same path as a clean miss: no output, no leak, exit 0 | Measured in the pinned image: a secret sitting in plain text in a **mode-000 file was reported ABSENT**, and a `/scan` that did not exist was reported **CLEAN**. This is the only measurement behind "no provider access material reached disk" in all five gates |
+| 2 | the same 15 call sites | **The needle was in argv.** Each passed the secret as a `docker run` argument | `docker inspect -f '{{json .Config.Cmd}}'` returned `["sh","/out/leakcheck.sh","the mount client cache","PJDDAV…","Authorization:"]` — the value **verbatim**, for the life of the container, and in the host's `ps` besides. The rclone gate's own comment, fifteen lines above its first call, says its token "is in no argv, no container inspect output and no shell history"; **the only place it ever reached argv was the check written to prove it had not leaked** |
+| 3 | the same helper's failure path | It printed **`LEAK: '<the secret>' appears under <label>`** and then up to five **matched file paths** | §7 of this plan allows counts, digests and gate ids and nothing else, and §6.11 says in its own words that the leak scan "never [prints] a filename, a line or the needle". A hit now names the needle by its **index** and nothing else |
+| 4 | `scan.cjs` — 3 gates, 6 call sites | The half the first correction left behind: it closed "a root that did not exist was walked in silence" and left **"a file that could not be opened was skipped in silence"** — `catch { continue; }`, with the readable files beside it keeping `examined` above zero so the "a scan that opened nothing is not a scan that found nothing" guard never fired | Executed as uid 65534 over one harmless readable file and one mode-000 file holding the credential: **merge base prints `0` and exits `0`; the corrected program exits 4 and says which coverage it did not have.** These six call sites run **on the host as the operator** over directories containers wrote as other uids, so it is live. A socket or fifo is now skipped rather than read, which could otherwise block for ever |
+| 5 | `cacheceiling.cjs` — 3 gates | **A missing `sizeBytes` RAISED the ceiling.** `undefined < SINGLE_PROBE_BELOW` is false, so an entry with no size fell through to the three-window branch and bought itself 3 MiB of headroom | On a 51-entry corpus with one size removed the ceiling went from **25,185,364 to 29,858,950**, silently, exit 0. A budget that **loosens** when its input degrades is what §5.1 exists to prevent, and this one bounds the probe cache in all three media-server gates |
+| 6 | `published.cjs` — 3 gates | `total + entry.sizeBytes` is **string concatenation** when one size is a string | A 122,345,436-byte corpus reported **87,511,611,050,000,008,594,275** — a syntactically valid integer `test -lt` accepts without complaint, about 10^15 times the truth, which made `test "$CACHE_BYTES" -lt "$PUBLISHED_BYTES"` unfailable. A missing size reported `NaN` |
+| 7 | `identity.cjs` — the lease gate, G24 | It read the **first** directory entry beginning `generation-`, which is not the generation `pointer.json` names — while `PointerDocument` carries `artifactName` and always did | Executed with `generation-1-FIRST.json` and `generation-2-SECOND.json` present and the pointer naming the second, it emitted `generationId: gen_SECOND` and `sequence: 2` **beside** `projectedEntryId: pe_OLD`, `sourceId: src_OLD` and `sourceGeneration: 1` — **one record describing two generations.** Because the before and the after call read the same wrong file, **three of the seven pinned fields were read out of a document nothing rewrites during the window** and could not have differed whatever the daemon did. §6.8 records "all seven pinned fields byte-identical"; **four were measured.** `sources[0]` was positional besides, so a failover between two sources was invisible by construction; a pinned entry must now carry exactly one |
+| 8 | `counters.cjs` — 3 gates | `snapshot[name] ?? 0` printed **`0`** for a counter the endpoint does not carry | **LATENT, not live**: every name these gates ask for — `heldRequests`, `currentHeldWaiters`, `holdTimeouts`, `rangeRequests`, `resolutions` — exists in `fakeprovider.go` today, and that is asserted so it stays true. Recorded and refused because it is a zero meaning "the field is not there" on the surface every §5 budget is differenced from, and `windowProblems` in `lease-gates.ts` already refuses exactly that absence one layer up |
+
+**AND TWO OF THE CORRECTIONS ABOVE WERE THEMSELVES WRONG FIRST, WHICH IS RECORDED RATHER THAN TIDIED AWAY.**
+A review of this loop's own diff, before any host run, found all three:
+
+- **`Number.isInteger` IS NOT THE GUARD.** The first version of findings 5, 6 and 8 refused a non-integer and
+  accepted `2**53 + 2` and every integer above it — where `+` has already stopped being exact. A corpus could
+  then carry sizes that each pass while the total is off by an arbitrary amount, in the arithmetic that
+  decides §5.1's budgets. All three now use **`Number.isSafeInteger`** — what `windowProblems` in
+  `lease-gates.ts` already holds the lease counters to — and `published.cjs` checks its **running** total
+  too, because individually safe sizes can sum past the boundary. `cacheceiling.cjs` cannot reach it from its
+  input (its per-entry contribution is capped at three windows, so it is bounded by the entry count and would
+  need about three billion of them); the guard is kept because that cap is a property of the program, and a
+  program's own invariant is what a later edit removes silently. Both facts are pinned by tests.
+- **REFUSING `/` IN `pointer.artifactName` LEFT WINDOWS OPEN.** The first version of finding 7 read the
+  pointer's `artifactName` and rejected a POSIX separator. On Windows `\` is a separator too: measured, a
+  pointer naming `generation-..\..\..\outside\elsewhere.json` made that version **read an entry out of a
+  file the manifest directory does not contain, and exit 0**. The name is now **derived** from `sequence` and
+  `generationId` — both checked against the shapes `deriveGenerationId` and `artifactNameFor` actually
+  produce, `gen_<32 hex>` and a non-negative safe integer — and the pointer's own `artifactName` must equal
+  it. Traversal is impossible by construction rather than by blacklist, and the regression asserts the
+  refusal comes from **that rule** rather than from `ENOENT`, since a path that merely does not exist would
+  pass against no rule at all.
+
+- **AND MOVING THE NEEDLES INTO A FILE INTRODUCED A THIRD ONE, WHICH IS THE POINT OF REVIEWING A DIFF.**
+  The first version counted needles with `wc -l` and read them with a plain `while read`. Both drop an
+  **unterminated final record**, so a nonempty one-needle file with no trailing newline counted **zero**
+  needles, ran **zero** searches, and then agreed with itself at zero — `0 needles read of 0 expected`,
+  `0 hits`, exit 0. Reproduced against the same secret in the same tree the terminated list finds it in:
+  *"1 file(s) examined for 0 needle(s), 0 hit(s)"*, clean. A malformed needle list is precisely what a caller
+  gets wrong, and it produced the friendliest possible answer. The helper now **refuses** a list that does
+  not end in a newline and one that holds no complete needle, and a second regression asserts every needle
+  file the five gates write is built by a newline-terminating `printf '%s\n'` — so the rule is a guard rather
+  than a trap.
+
+**AND THE SHARPEST TWO CASES DROP PRIVILEGES RATHER THAN SKIPPING, BECAUSE THE GATES ARE RUN AS ROOT.**
+"A file the scan could not open" is a fixture root reads straight through, so on the tranche-closing host —
+where these gates run as uid 0 — the case would have passed against the **unfixed** program just as readily
+as against the fixed one, and a regression that cannot fail on the only machine that closes anything is not
+one. The regression therefore spawns the shipped helper as uid 65534 when the suite is root, and both
+unopenable-file cases are among the 23 host failures in the table above. Windows carries no POSIX mode and
+cannot express the fixture at all; there it is **reported rather than judged**, which is §6.0's own
+three-valued rule, and no claim is made from that silence.
+
+**WHAT WAS CHECKED AND FOUND SOUND, because a loop that only reports findings is not an audit.** busybox
+1.36.1's `du -b` really is apparent size (it is missing from the usage summary and present in the option
+table, and was verified at 3,004,096 over a 3,000,000-byte file), so the probe-cache measurement is in the
+unit it claims; busybox `grep -rlF` matches across NUL bytes, so the binary probe cache really is searched;
+`cacheceiling.cjs`'s window and threshold are `PROJECTION_PROBE_PLAN.WINDOW_BYTES` and
+`SINGLE_PROBE_BELOW_BYTES` exactly; every counter name the gates ask for exists at the endpoint; and the
+`RESOLUTIONS >= 1` guard already fails closed on an absent field. `token.sh` in the rclone gate was examined
+and no defect was found in it — its custody claim holds everywhere except call sites 2 above.
+
+**NO THRESHOLD MOVED AND NO FAILURE BECAME A SKIP.** The one thing that is *reported rather than required* is
+new: `leakcheck.sh` now prints how many files it examined, and the caller says whether that count has a
+floor. It is 1 for the manifest directory, the daemon probe cache and every media server's library state,
+and **0 for the rclone client's own cache and configuration** — that client is run `--vfs-cache-mode off` and
+is entitled to write nothing there, and inventing a floor would be fitting a threshold to an expectation.
+The count is in the output either way, so a scan of nothing is now visible where before it was silent.
+
+**AND THE HOST RUNS SETTLED THAT SPLIT AS A MEASUREMENT RATHER THAN A JUDGEMENT.** Identically across three
+fresh runs of each gate on the Unraid host:
+
+| Scan root | Files examined | Needles |
+|---|---|---|
+| the published manifest directory | **3** | 7 |
+| the daemon probe cache | **52** | 8 |
+| each media server's library state (Jellyfin / Plex / Emby) | **22 / 396 / 46** | 4 |
+| the rclone client's own cache | **0** | 3 |
+| the rclone client's own configuration | **0** | 1 |
+
+Zero hits everywhere. The last two rows are the point: **the naive client writes nothing into either
+directory**, so those two checks were vacuous before this loop and had no way to say so — and had the floor
+of 1 been applied there uniformly, it would have failed a *correct* run of G22 three times out of three. The
+first three rows are comfortably above their floor, so requiring one there costs a correct run nothing.
+
+**WHAT WAS RUN, AND WHAT WAS NOT.** On an isolated checkout at
+`/mnt/user/appdata/catalog-phase1-heredoc-audit-2` on the same Unraid host, verified **byte-identical to the
+committed tree by `sha256sum` over all 1,575 tracked files**:
+
+**EVERY GATE WHOSE EXECUTABLE BYTES THIS LOOP CHANGED WAS RUN THREE CONSECUTIVE FRESH TIMES**, and each
+assertion count is the one already on record for that gate — this loop moved none of them:
+
+| Gate | Result | On record |
+|---|---|---|
+| `go:torbox-mount-gate:three` | **3/3, exit 0** | — |
+| `go:real-provider-gate:fake` | **3/3, 33 assertions, 0 failed, 3 skipped** each, `RP7-own-run-directory-removed` and `RP7-own-mountpoints-removed` passing every run | §6.10: 33 / 3 skipped |
+| `deploy/projection-torbox-real-gate.sh` | **SKIPPED (77)**, having contacted nothing | §6.10 |
+| `go:lease-gate:three` | **3/3, 29 assertions, 0 failed, 0 skipped** each — with the corrected `identity.cjs` | §6.8: 29 |
+| `go:jellyfin-dataplane-gate:three` | **3/3, 366 / 366 / 366 assertions, 0 failed, 0 skipped** | §6.3: 366 |
+| `go:emby-dataplane-gate:three` | **3/3, 394 / 395 / 395 assertions, 0 failed, 0 skipped** | §6.3: 395 / 394 / 394 |
+| `go:plex-dataplane-gate:three` | **3/3, 414 / 414 / 414 assertions, 0 failed, 0 skipped** | §6.3: 414 / 412 / 414 |
+| `go:three-server-concurrency-gate:three` | **3/3, 64 assertions, 0 failed, 0 skipped** each | §6.3: 64 |
+| `go:rclone-comparison-gate:three` | **3/3, 70 assertions, 0 failed, 0 skipped** each | §6.3: 70 |
+
+The five media-server and comparison gates ran **sequentially, one at a time**, between 03:00 and 05:24 on
+the host. Every run reported `cleanup: 0 mountpoints and no run directory left under the gate root`, and the
+host's container, network, volume and catalog-mountpoint counts were sampled **between every gate** and were
+identical at all six samples: **26 running / 42 total, 17 networks, 45 volumes, 0 mountpoints** under
+`/mnt/user/appdata/catalog*`. No production media, service, Compose project, secret or unrelated network was
+touched.
+
+**THESE RUNS CHANGE NOTHING IN §6.1, AND SAYING SO IS THE POINT.** They are the validation this loop owed for
+the bytes it edited — that the corrected programs do not fail a correct run — not new evidence about G7–G13,
+G18 or G22, which were already recorded as run on this host. §6.1's rows are unchanged.
+
 **AND IT CLOSES NOTHING.** No real provider endpoint was contacted, no operator corpus exists at either
 approved path, and Phase 1 remains open on exactly that ground.
 
