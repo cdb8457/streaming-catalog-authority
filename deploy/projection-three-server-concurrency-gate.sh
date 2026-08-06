@@ -251,9 +251,41 @@ cat > "$WORK/corpus.cjs" <<'CORPUS'
 const { readFileSync, writeFileSync, statSync } = require('node:fs');
 const { createHash } = require('node:crypto');
 const [, , work, totalRaw, localRaw, largeFile, largeRef] = process.argv;
-const total = Number(totalRaw);
-const localCount = Number(localRaw);
+const die = (message) => { console.error(message); process.exit(1); };
+// THE TWO COUNTS ARE VALIDATED BEFORE A SINGLE FILE IS WALKED.
+//
+// THE DEFECT THIS CLOSES, MEASURED BY RUNNING IT. `Number(totalRaw)` on anything non-numeric is NaN,
+// `1 <= NaN` is false, and the loop below then ran ZERO TIMES: this program wrote an EMPTY
+// corpus-register.json, an EMPTY corpus-expected.json and a corpus-totals.json reading
+// `{entries: 0, localEntries: 2, remoteEntries: -2}`, printed `0` and EXITED 0. Every caller sends that `0`
+// to /dev/null. The floors one process later — `corpus-check --min-entries` on the three dataplane gates,
+// `test "$CORPUS_TOTAL" -ge 48` on this one — are what caught it, which makes this LATENT rather than live.
+// It is corrected anyway: an empty corpus published as a corpus is the worst document this program can
+// emit, and it emitted it in silence, under an exit status that says the walk succeeded.
+//
+// AND A LOCAL COUNT ABOVE THE TOTAL PRODUCED A NEGATIVE REMOTE COUNT, also at exit 0 — a number the gate
+// spends as `--entries "$(( CORPUS_REMOTE_ENTRIES + 2 ))"`, the denominator of the request budget, with no
+// floor anywhere beneath it.
+const count = (raw, what) => {
+  // A BLANK ARGUMENT IS NOT ZERO. `Number("")` is 0, so an unset shell variable used to arrive here as a
+  // perfectly valid count of nothing and be reported as "a corpus of no entries" — the wrong diagnosis of
+  // the wrong failure. It is a measurement that did not happen, and it says so.
+  const value = String(raw ?? '').trim() === '' ? NaN : Number(raw);
+  if (!Number.isSafeInteger(value) || value < 0) {
+    die(`${what} is ${JSON.stringify(raw)}, which is not a whole number of entries. A corpus walk that `
+      + 'cannot read its own bounds writes an empty corpus and reports success');
+  }
+  return value;
+};
+const total = count(totalRaw, 'the corpus size');
+const localCount = count(localRaw, 'the local-entry count');
+if (total < 1) die('a corpus of no entries is not a corpus; nothing published from it could be asserted');
+if (localCount > total) {
+  die(`${localCount} of ${total} entries were asked to be local, which leaves a NEGATIVE remote count for `
+    + 'the budget denominators this walk writes');
+}
 const objects = JSON.parse(readFileSync(`${work}/out/objects.json`, 'utf8'));
+if (!Array.isArray(objects)) die(`${work}/out/objects.json is not an array of registered objects`);
 const byRef = new Map(objects.map((object) => [object.ref, object]));
 
 const versions = [];
@@ -275,8 +307,15 @@ let localBytes = 0;
 //   would breach it — so passing that assertion is the statement that the second and third concurrent scans
 //   read what the first one cached.
 const describe = (ref, onDisk, key, path, versionKey, source) => {
+  // THE PUBLISHED SIZE IS THE LENGTH OF THE BYTES THAT WERE DIGESTED, not a second syscall's answer about
+  // the same path. `statSync` after `readFileSync` describes what the file is NOW; the digest describes what
+  // it was when it was read. Publishing one beside the other is a manifest whose size and digest can mean
+  // two different byte streams, and the stat is kept only so a file that moved under the walk is named.
   const bytes = readFileSync(onDisk);
-  const size = statSync(onDisk).size;
+  const size = bytes.length;
+  if (statSync(onDisk).size !== size) {
+    die(`${onDisk} changed length while it was being read; a corpus cannot describe a moving file`);
+  }
   const sha256 = createHash('sha256').update(bytes).digest('hex');
   let probes = [];
   if (ref !== null) {
@@ -285,6 +324,12 @@ const describe = (ref, onDisk, key, path, versionKey, source) => {
     if (object.size !== size || object.sha256 !== sha256) {
       console.error(`the endpoint and the file disagree about ${ref}`);
       process.exit(1);
+    }
+    // AND IT HAS A PROBE PLAN. This used to be a bare `.map` on whatever the endpoint returned, so an
+    // object registered without one crashed in a property read instead of naming the object.
+    if (!Array.isArray(object.probes) || object.probes.length === 0) {
+      die(`the endpoint registered ${ref} with no probe plan, so nothing published from it could ever have`
+        + ' its bytes verified');
     }
     probes = object.probes.map((probe) => `${probe.position}:${probe.offset}:${probe.length}:${probe.sha256}`);
   }
@@ -319,12 +364,23 @@ for (let index = 1; index <= total; index += 1) {
   if (local) localBytes += size; else smallRemoteBytes += size;
 }
 
+// THE TWO ENTRY COUNTS ARE COUNTED FROM THE WALK, NOT COPIED OUT OF THE ARGUMENTS. They were `localCount`
+// and a subtraction from it — the numbers this program was ASKED for, restated in the output document as
+// though they were findings. The header above says all three documents come from one walk; two fields of
+// the third one did not come from it at all, which is how a negative remote count reached the request
+// budget's denominator.
+const localEntries = expected.filter((entry) => entry.kind === 'local').length;
+const remoteEntries = expected.filter((entry) => entry.kind === 'http-range').length;
+if (localEntries + remoteEntries !== expected.length) {
+  die('the walk produced a corpus entry that is neither local nor http-range, so the two counts the budget '
+    + 'denominators are drawn from would not add up to the corpus');
+}
 writeFileSync(`${work}/out/corpus-register.json`, `${JSON.stringify({ versions, entries }, null, 2)}\n`);
 writeFileSync(`${work}/out/corpus-expected.json`, `${JSON.stringify(expected, null, 2)}\n`);
 writeFileSync(`${work}/out/corpus-totals.json`, `${JSON.stringify({
   entries: expected.length,
-  localEntries: localCount,
-  remoteEntries: expected.length - localCount,
+  localEntries,
+  remoteEntries,
   smallRemoteBytes,
   largeRemoteBytes,
   localBytes,
@@ -339,7 +395,23 @@ cat > "$WORK/seed-expect.cjs" <<'SEEDEXPECT'
 // is genuinely the first thing that ever reads the corpus.
 const { writeFileSync } = require('node:fs');
 const [, , out, key, size, sha] = process.argv;
-const entry = { key, sizeBytes: Number(size), sha256: sha, kind: 'local', anchor: true };
+// THE MEASUREMENT IS CHECKED BEFORE IT IS WRITTEN DOWN.
+//
+// THE DEFECT THIS CLOSES. `Number(size)` turned '' into 0 and 'abc' into NaN, which `JSON.stringify`
+// writes as `null` — and both are exactly what a shell hands over when the command that was supposed to
+// measure the file produced nothing. The entry was then compared against a real file and the FILE was
+// blamed. `corpusSelfProblems` refuses a non-positive size one process downstream; it names the corpus,
+// not the measurement, and it never sees a digest that is not a digest at all.
+const die = (message) => { console.error(message); process.exit(1); };
+const sizeBytes = Number(size);
+if (!Number.isSafeInteger(sizeBytes) || sizeBytes <= 0) {
+  die(`"${key}" was given the size ${JSON.stringify(size)}, which is not a positive whole number of `
+    + 'bytes');
+}
+if (!/^[0-9a-f]{64}$/.test(String(sha))) {
+  die(`"${key}" was given the digest ${JSON.stringify(sha)}, which is not a sha256`);
+}
+const entry = { key, sizeBytes, sha256: sha, kind: 'local', anchor: true };
 writeFileSync(out, `${JSON.stringify([entry], null, 2)}
 `);
 SEEDEXPECT
@@ -349,8 +421,29 @@ cat > "$WORK/expect.cjs" <<'EXPECT'
 // servers are held against.
 const { readFileSync, writeFileSync } = require('node:fs');
 const [, , out, base, key, size, sha] = process.argv;
+// THE MEASUREMENT IS CHECKED BEFORE IT IS WRITTEN DOWN.
+//
+// THE DEFECT THIS CLOSES. `Number(size)` turned '' into 0 and 'abc' into NaN, which `JSON.stringify`
+// writes as `null` — and both are exactly what a shell hands over when the command that was supposed to
+// measure the file produced nothing. The entry was then compared against a real file and the FILE was
+// blamed. `corpusSelfProblems` refuses a non-positive size one process downstream; it names the corpus,
+// not the measurement, and it never sees a digest that is not a digest at all.
+const die = (message) => { console.error(message); process.exit(1); };
+const sizeBytes = Number(size);
+if (!Number.isSafeInteger(sizeBytes) || sizeBytes <= 0) {
+  die(`"${key}" was given the size ${JSON.stringify(size)}, which is not a positive whole number of `
+    + 'bytes');
+}
+if (!/^[0-9a-f]{64}$/.test(String(sha))) {
+  die(`"${key}" was given the digest ${JSON.stringify(sha)}, which is not a sha256`);
+}
 const entries = JSON.parse(readFileSync(base, 'utf8'));
-entries.unshift({ key, sizeBytes: Number(size), sha256: sha, kind: 'local', anchor: true });
+if (!Array.isArray(entries)) die(`the base expectation ${base} is not an array of entries`);
+if (entries.some((entry) => entry && entry.key === key)) {
+  die(`"${key}" is already in the corpus expectation; two entries under one name make every later `
+    + 'per-key lookup answer with whichever was written first');
+}
+entries.unshift({ key, sizeBytes, sha256: sha, kind: 'local', anchor: true });
 writeFileSync(out, `${JSON.stringify(entries, null, 2)}\n`);
 console.log(String(entries.length));
 EXPECT
@@ -523,6 +616,36 @@ step "generating the ${CORPUS_COUNT}-item legal synthetic corpus, in one contain
 cat > "$WORK/out/gen-corpus.sh" <<'GENCORPUS'
 set -eu
 total="$1"; localCount="$2"; ff="$3"
+# THE TWO COUNTS ARE VALIDATED BEFORE THE LOOP, BECAUSE `set -e` DOES NOT REACH INTO A `while` CONDITION.
+#
+# THE DEFECT THIS CLOSES, MEASURED BY RUNNING IT. With `total` empty or non-numeric,
+# `[ "$i" -le "$total" ]` exits 2 with "integer expression expected" -- and a command that fails as the
+# CONDITION of a `while` is exempt from `set -e`. The loop therefore ended on its first evaluation, NOT ONE
+# FILE WAS GENERATED, and this script printed "generated  corpus files" and EXITED 0. The line under the
+# loop echoed the ARGUMENT it had been handed and never a count of anything, so the only thing the caller
+# ever saw was a success message about a corpus that does not exist. A `total` of 0 did the same without
+# even the error line.
+case "$total" in
+  ''|*[!0-9]*)
+    echo "gen-corpus: the corpus size \"$total\" is not a whole number of entries" >&2
+    exit 1
+    ;;
+esac
+case "$localCount" in
+  ''|*[!0-9]*)
+    echo "gen-corpus: the local-entry count \"$localCount\" is not a whole number of entries" >&2
+    exit 1
+    ;;
+esac
+if [ "$total" -lt 1 ]; then
+  echo "gen-corpus: a corpus of no entries is not a corpus; nothing published from one could be asserted" >&2
+  exit 1
+fi
+if [ "$localCount" -gt "$total" ]; then
+  echo "gen-corpus: $localCount of $total entries were asked to be local" >&2
+  exit 1
+fi
+made=0
 i=1
 while [ "$i" -le "$total" ]; do
   n=$(printf "%02d" "$i")
@@ -536,14 +659,24 @@ while [ "$i" -le "$total" ]; do
   dur="2.$(( i % 7 ))"
   freq=$(( 200 + i * 7 ))
   if [ "$i" -gt $(( total - localCount )) ]; then dir=media; else dir=remote; fi
+  out="/work/${dir}/Projection Corpus ${n} (2026).mp4"
   "$ff" -hide_banner -loglevel error -y \
     -f lavfi -i "${src}=size=128x96:rate=15:duration=${dur}" \
     -f lavfi -i "sine=frequency=${freq}:duration=${dur}" \
     -c:v mpeg4 -qscale:v 5 -c:a aac -b:a 32k -shortest -movflags +faststart \
-    "/work/${dir}/Projection Corpus ${n} (2026).mp4"
+    "$out"
+  # AND EACH FILE IS LOOKED AT RATHER THAN ASSUMED. An encoder can exit 0 having written a container
+  # header and no media, and a zero-byte corpus entry then fails its digest comparison forty steps later,
+  # inside a gate whose subject is a media server rather than this generator.
+  if [ ! -s "$out" ]; then
+    echo "gen-corpus: the generator exited 0 but left no bytes in $out" >&2
+    exit 1
+  fi
+  made=$(( made + 1 ))
   i=$(( i + 1 ))
 done
-echo "  generated ${total} corpus files"
+# A COUNT OF THE FILES THIS SCRIPT VERIFIED, not a restatement of the number it was asked for.
+echo "  generated ${made} corpus files"
 GENCORPUS
 docker run --rm --entrypoint /bin/sh -v "$WORK:/work" "$GENERATOR_IMAGE" \
   /work/out/gen-corpus.sh "$CORPUS_COUNT" "$CORPUS_LOCAL" "$GENERATOR_FFMPEG"

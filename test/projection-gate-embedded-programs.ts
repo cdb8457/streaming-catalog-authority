@@ -1133,6 +1133,483 @@ test('AN OBJECT THE ENDPOINT IS NOT SERVING IS NAMED BY EVERY FORM, not raised a
   });
 
 // ---------------------------------------------------------------------------------------------------------
+// The catalogue/manifest-selection programs: `gen-corpus.sh`, `corpus.cjs`, `expect.cjs`, `sizelist.cjs`
+//
+// THESE ARE THE PROGRAMS THAT DECIDE WHAT THE ~50-ENTRY CORPUS *IS*. Everything downstream — the scan
+// barrier, the per-entry anchor assertions, the byte ceiling and the byte floor — is a comparison against a
+// document one of these four wrote. None of them had ever been executed by a test, and running them found a
+// generator that reported success having produced nothing, a walk that published an empty corpus at exit 0,
+// an expectation whose anchor flag silently defaulted to "no", and a size list that dropped the sizes its
+// own named consumer exists to refuse.
+// ---------------------------------------------------------------------------------------------------------
+
+const DATAPLANE_GATES = [
+  'deploy/projection-plex-dataplane-gate.sh',
+  'deploy/projection-emby-dataplane-gate.sh',
+  'deploy/projection-jellyfin-dataplane-gate.sh',
+] as const;
+
+const CORPUS_GATES = [...DATAPLANE_GATES, 'deploy/projection-three-server-concurrency-gate.sh'] as const;
+
+const GEN_CORPUS_GATES = [...CORPUS_GATES, 'deploy/projection-rclone-comparison-gate.sh'] as const;
+
+/** A 64-hex digest that is a digest, so a case about SIZE is not accidentally a case about the sha. */
+const DIGEST_A = 'a'.repeat(64);
+const DIGEST_B = 'b'.repeat(64);
+
+/** Everything but the comments, so "these are one program" survives a comment being reworded in one copy. */
+function code(body: string): string {
+  return body.split('\n').filter((line) => !/^\s*(\/\/|#)/.test(line) && line.trim() !== '').join('\n');
+}
+
+// --- `gen-corpus.sh` ---------------------------------------------------------------------------------
+
+test('THE FIVE COPIES OF gen-corpus.sh ARE ONE PROGRAM BUT FOR THE SPLIT LINE, so a fix cannot reach four',
+  () => {
+    // The rclone copy puts the LOCAL entries at the END of the run rather than the start — one line, and it
+    // is deliberate. Everything else must match, or a correction applied to the product's generator would
+    // leave the comparison gate generating its corpus with the defect still in it.
+    const split = /^\s*if \[ "\$i".*then dir=media; else dir=remote; fi$/gm;
+    const bodies = GEN_CORPUS_GATES.map((gate) => code(heredoc(gate, 'out/gen-corpus.sh')).replace(split, 'SPLIT'));
+    for (const [index, body] of bodies.entries()) {
+      assertEq(body, bodies[0] as string,
+        `${GEN_CORPUS_GATES[index]} carries a gen-corpus.sh that differs from the others by more than the split`);
+    }
+  });
+
+test('A COUNT THAT IS NOT A COUNT NOW FAILS, where the generator produced NOTHING and reported success',
+  () => {
+    // THE DEFECT, MEASURED. `while [ "$i" -le "$total" ]` with `total` empty or non-numeric makes `[` exit 2
+    // — and a command that fails as the CONDITION of a `while` is exempt from `set -e`. Against the merge
+    // base the loop ended on its first evaluation, NOT ONE FILE was written, and the script printed
+    // `  generated  corpus files` (or `  generated abc corpus files`) and EXITED 0. The only thing the
+    // caller ever saw was a success message about a corpus that does not exist.
+    if (!bashAvailable) throw new Error('bash is required to execute the shipped helper');
+    for (const gate of GEN_CORPUS_GATES) {
+      for (const [total, local] of [['', '1'], ['abc', '1'], ['0', '0'], ['2', '4']]) {
+        const { dir, script } = extract(gate, 'out/gen-corpus.sh');
+        const run = runBash(script, [total as string, local as string, '/bin/false'], dir);
+        assert(run.code !== 0,
+          `${gate}: total=${JSON.stringify(total)} local=${local} must be refused: ${run.out}`);
+        // AND IT MUST NOT HAVE CLAIMED A CORPUS ON THE WAY OUT. The merge base's whole failure was the
+        // success line, so a case that read only the status would have passed against it for `total=0`
+        // — which exits 0 there too, just as silently.
+        assert(!/generated/.test(run.out),
+          `${gate}: and must not report a generated corpus: ${run.out}`);
+        assert(/gen-corpus:/.test(run.out), `${gate}: and must name itself in the diagnosis: ${run.out}`);
+      }
+    }
+  });
+
+test('THE ANNOUNCED COUNT IS A COUNT, not the argument the generator was handed', () => {
+  // Against the merge base the closing line was `echo "  generated ${total} corpus files"` — the ARGUMENT,
+  // echoed back, whatever had or had not been written. `abc` in produced `generated abc corpus files` out.
+  for (const gate of GEN_CORPUS_GATES) {
+    const body = heredoc(gate, 'out/gen-corpus.sh');
+    assert(/echo "  generated \$\{made\} corpus files"/.test(body),
+      `${gate}: the generator still announces the argument rather than what it verified`);
+    assert(/if \[ ! -s "\$out" \]; then/.test(body),
+      `${gate}: and still does not look at the file the encoder claimed to write`);
+  }
+});
+
+// --- `corpus.cjs` ------------------------------------------------------------------------------------
+
+/** A work directory shaped as the gate's: generated files on disk and the endpoint's account of them. */
+function corpusFixture(gate: string, total: number, localCount: number, localAtEnd: boolean): {
+  dir: string; script: string;
+} {
+  const { dir, script } = extract(gate, 'corpus.cjs');
+  for (const sub of ['out', 'media', 'remote']) mkdirSync(join(dir, sub));
+  const objects: Array<Record<string, unknown>> = [];
+  const put = (ref: string | null, name: string, seed: number, local: boolean): void => {
+    const bytes = Buffer.alloc(1000 + seed, seed);
+    writeFileSync(join(dir, local ? 'media' : 'remote', name), bytes);
+    if (ref === null) return;
+    objects.push({
+      ref, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'),
+      probes: [{ position: 'head', offset: 0, length: 16, sha256: DIGEST_A }],
+    });
+  };
+  // The three-server copy also describes a large "barrier" object, named on its command line.
+  put('obj-large', 'Projection Large (2026).mp4', 200, false);
+  for (let index = 1; index <= total; index += 1) {
+    const n = String(index).padStart(2, '0');
+    const local = localAtEnd ? index > total - localCount : index <= localCount;
+    put(local ? null : `obj-projection-corpus-${n}`, `Projection Corpus ${n} (2026).mp4`, index, local);
+  }
+  writeFileSync(join(dir, 'out', 'objects.json'), JSON.stringify(objects), 'utf8');
+  return { dir, script };
+}
+
+/** The command line each copy takes; the three-server one names its barrier object too. */
+function corpusArgv(gate: string, dir: string, total: string, local: string): string[] {
+  return gate.includes('three-server')
+    ? [dir, total, local, 'Projection Large (2026).mp4', 'obj-large']
+    : [dir, total, local];
+}
+
+test('THE CORPUS WALK IS ONE PROGRAM ACROSS THE THREE DATAPLANE GATES, comments aside', () => {
+  const bodies = DATAPLANE_GATES.map((gate) => code(heredoc(gate, 'corpus.cjs')));
+  for (const [index, body] of bodies.entries()) {
+    assertEq(body, bodies[0] as string,
+      `${DATAPLANE_GATES[index]} carries a corpus.cjs whose CODE differs from the other two`);
+  }
+});
+
+test('AN HONEST CORPUS STILL WALKS, and its three documents still agree — the control for the cases below',
+  () => {
+    for (const gate of CORPUS_GATES) {
+      const three = gate.includes('three-server');
+      const { dir, script } = corpusFixture(gate, 4, 2, three);
+      const run = runNode(script, corpusArgv(gate, dir, '4', '2'), dir);
+      assertEq(run.code, 0, `${gate}: an honest corpus must walk: ${run.out}`);
+      const expected = JSON.parse(readFileSync(join(dir, 'out', 'corpus-expected.json'), 'utf8')) as
+        Array<{ key: string; kind: string; sizeBytes: number }>;
+      const totals = JSON.parse(readFileSync(join(dir, 'out', 'corpus-totals.json'), 'utf8')) as
+        Record<string, number>;
+      // The three-server copy describes its barrier object as a fifth entry; the others describe four.
+      assertEq(expected.length, three ? 5 : 4, `${gate}: the walk described the wrong number of entries`);
+      assertEq(totals['entries'], expected.length, `${gate}: the totals disagree with the expectation`);
+      // THE TWO COUNTS ARE THE ONES THE BUDGET DENOMINATORS ARE DRAWN FROM, and they must now be COUNTS.
+      assertEq((totals['localEntries'] ?? 0) + (totals['remoteEntries'] ?? 0), expected.length,
+        `${gate}: localEntries + remoteEntries no longer add up to the corpus`);
+      assertEq(totals['localEntries'], expected.filter((entry) => entry.kind === 'local').length,
+        `${gate}: localEntries is not a count of the local entries this walk found`);
+      assertEq(totals['remoteEntries'], expected.filter((entry) => entry.kind === 'http-range').length,
+        `${gate}: remoteEntries is not a count of the remote entries this walk found`);
+    }
+  });
+
+test('A CORPUS SIZE THAT IS NOT A NUMBER NOW FAILS, where it published an EMPTY corpus and exited 0', () => {
+  // THE DEFECT, MEASURED. `Number('abc')` is NaN, `1 <= NaN` is false, so the walk ran zero times. Against
+  // the merge base this wrote an EMPTY corpus-register.json, an EMPTY corpus-expected.json, a
+  // corpus-totals.json reading `{entries: 0, localEntries: 2, remoteEntries: -2}`, printed `0` and EXITED 0
+  // — and every caller sends that `0` to /dev/null.
+  for (const gate of CORPUS_GATES) {
+    for (const total of ['abc', '', '0']) {
+      const three = gate.includes('three-server');
+      const { dir, script } = corpusFixture(gate, 4, 2, three);
+      const run = runNode(script, corpusArgv(gate, dir, total, '2'), dir);
+      assert(run.code !== 0, `${gate}: a corpus size of ${JSON.stringify(total)} must be refused: ${run.out}`);
+      // AND NO DOCUMENT MAY HAVE BEEN LEFT BEHIND. The failure was never the exit status alone: it was that
+      // three documents describing a corpus of nothing were written where later phases would read them.
+      assert(!existsSync(join(dir, 'out', 'corpus-expected.json')),
+        `${gate}: and must not leave an empty expectation for a later phase to assert against`);
+      assert(!existsSync(join(dir, 'out', 'corpus-totals.json')),
+        `${gate}: and must not leave totals for the budget denominators to be drawn from`);
+    }
+  }
+});
+
+test('A LOCAL COUNT ABOVE THE TOTAL NOW FAILS, where it wrote a NEGATIVE remote count at exit 0', () => {
+  // `remoteEntries: total - localCount` was a subtraction of two arguments with nothing between them and
+  // the walk. `corpus.cjs work 2 4` produced `{entries: 2, localEntries: 4, remoteEntries: -2}` and exited
+  // 0; the plex gate spends that as `--entries "$(( CORPUS_REMOTE_ENTRIES + 2 ))"`, the denominator of the
+  // request budget, and nothing floors it.
+  for (const gate of CORPUS_GATES) {
+    const three = gate.includes('three-server');
+    const { dir, script } = corpusFixture(gate, 4, 2, three);
+    const run = runNode(script, corpusArgv(gate, dir, '2', '4'), dir);
+    assert(run.code !== 0, `${gate}: more local entries than entries must be refused: ${run.out}`);
+    assert(/NEGATIVE remote count/.test(run.out), `${gate}: and must say what it refused: ${run.out}`);
+    assert(!existsSync(join(dir, 'out', 'corpus-totals.json')),
+      `${gate}: and must not leave a totals document carrying a negative count`);
+  }
+});
+
+test('AN ENDPOINT OBJECT WITH NO PROBE PLAN IS NAMED, not raised as a TypeError inside a `.map`', () => {
+  for (const gate of CORPUS_GATES) {
+    const three = gate.includes('three-server');
+    const { dir, script } = corpusFixture(gate, 4, 2, three);
+    const objectsPath = join(dir, 'out', 'objects.json');
+    const objects = JSON.parse(readFileSync(objectsPath, 'utf8')) as Array<Record<string, unknown>>;
+    // The barrier object is the one the three-server copy describes first; strip every plan so whichever
+    // object each copy reaches first is the one without one.
+    for (const object of objects) delete object['probes'];
+    writeFileSync(objectsPath, JSON.stringify(objects), 'utf8');
+    const run = runNode(script, corpusArgv(gate, dir, '4', '2'), dir);
+    assert(run.code !== 0, `${gate}: an object with no probe plan must be refused: ${run.out}`);
+    assert(/no probe plan/.test(run.out), `${gate}: and named rather than crashed into: ${run.out}`);
+    assert(!/TypeError/.test(run.out), `${gate}: and not by a property read on undefined: ${run.out}`);
+  }
+});
+
+// --- `expect.cjs`, the five-argument form ------------------------------------------------------------
+
+/** The five-argument form's happy path, so every refusal case below has a control beside it. */
+const GOOD_ENTRY = ['one.mp4', '4096', DIGEST_A, 'local', 'anchor'] as const;
+
+test('THE EXPECTATION BUILDER IS ONE PROGRAM ACROSS THE THREE DATAPLANE GATES, comments aside', () => {
+  const bodies = DATAPLANE_GATES.map((gate) => code(heredoc(gate, 'expect.cjs')));
+  for (const [index, body] of bodies.entries()) {
+    assertEq(body, bodies[0] as string,
+      `${DATAPLANE_GATES[index]} carries an expect.cjs whose CODE differs from the other two`);
+  }
+});
+
+test('AN HONEST EXPECTATION IS STILL BUILT, with anchor and plain both meaning what they say', () => {
+  for (const gate of DATAPLANE_GATES) {
+    const { dir, script } = extract(gate, 'expect.cjs');
+    const run = runNode(script, ['./out.json', '-', ...GOOD_ENTRY,
+      'two.mp4', '8192', DIGEST_B, 'http-range', 'plain'], dir);
+    assertEq(run.code, 0, `${gate}: an honest expectation must be built: ${run.out}`);
+    assertEq(run.out.trim(), '2', `${gate}: and its count printed for the caller to capture`);
+    const entries = JSON.parse(readFileSync(join(dir, 'out.json'), 'utf8')) as
+      Array<{ key: string; sizeBytes: number; kind: string; anchor: boolean }>;
+    assertEq(entries[0]?.anchor, true, `${gate}: "anchor" must still mean anchor`);
+    assertEq(entries[1]?.anchor, false, `${gate}: "plain" must still mean not-an-anchor`);
+    assertEq(entries[0]?.sizeBytes, 4096, `${gate}: and the size must still be the number given`);
+    assertEq(entries[1]?.kind, 'http-range', `${gate}: and the kind must still be the kind given`);
+  }
+});
+
+test('AN UNRECOGNISED ANCHOR TOKEN NOW FAILS, where it silently meant "not an anchor"', () => {
+  // THE DEFECT, MEASURED, AND IT IS THE SHARPEST IN THIS TRANCHE. `anchor: rest[i + 4] === 'anchor'` made
+  // ANY other token false. Every consumer selects `expected.filter((entry) => entry.anchor === true)`, so a
+  // document built from a mistyped token sends that loop round ZERO TIMES: the per-entry size and
+  // ordinary-file assertions — `EM3-…-size:`, `TS2-anchor:`, `RC2-anchor:` — are not recorded at all, while
+  // every aggregate beside them still passes. Against the merge base this exited 0 and wrote `anchor: false`.
+  for (const gate of DATAPLANE_GATES) {
+    for (const token of ['anchored', 'Anchor', '']) {
+      const { dir, script } = extract(gate, 'expect.cjs');
+      const run = runNode(script, ['./out.json', '-', 'one.mp4', '4096', DIGEST_A, 'local', token], dir);
+      assert(run.code !== 0, `${gate}: the token ${JSON.stringify(token)} must be refused: ${run.out}`);
+      assert(/anchor or plain was expected/.test(run.out),
+        `${gate}: and refused for THAT reason rather than another: ${run.out}`);
+      assert(!existsSync(join(dir, 'out.json')),
+        `${gate}: and no expectation written for a scan barrier to be driven against`);
+    }
+  }
+});
+
+test('AN UNRECOGNISED KIND NOW FAILS, where it dropped the entry out of the byte ceiling AND the floor',
+  () => {
+    // `kind` was written straight through. `sizelist.cjs` selects `kind === 'http-range'` and
+    // `corpus-check` floors that same count, so `htttp-range` removed the object from the byte ceiling and
+    // from the byte FLOOR together — and the floor is the assertion that the scan opened the entries.
+    for (const gate of DATAPLANE_GATES) {
+      const { dir, script } = extract(gate, 'expect.cjs');
+      const run = runNode(script, ['./out.json', '-', 'one.mp4', '4096', DIGEST_A, 'htttp-range', 'anchor'],
+        dir);
+      assert(run.code !== 0, `${gate}: a misspelled kind must be refused: ${run.out}`);
+      assert(/local or http-range/.test(run.out), `${gate}: and the vocabulary named: ${run.out}`);
+    }
+  });
+
+test('A SIZE OR A DIGEST THAT DID NOT MEASURE NOW FAILS, where the file was blamed for it instead', () => {
+  // `Number('')` is 0 and `Number('abc')` is NaN, which `JSON.stringify` writes as `null`. Both are what a
+  // shell hands over when the command that was supposed to measure the file produced nothing, and both were
+  // written into the expectation and then compared against a real file.
+  for (const gate of DATAPLANE_GATES) {
+    const bad: Array<readonly [string, string, string]> = [
+      ['', DIGEST_A, 'positive whole number'],
+      ['abc', DIGEST_A, 'positive whole number'],
+      ['-1', DIGEST_A, 'positive whole number'],
+      ['4096', '', 'not a sha256'],
+      ['4096', 'not-a-digest', 'not a sha256'],
+    ];
+    for (const [size, sha, why] of bad) {
+      const { dir, script } = extract(gate, 'expect.cjs');
+      const run = runNode(script, ['./out.json', '-', 'one.mp4', size, sha, 'local', 'anchor'], dir);
+      assert(run.code !== 0, `${gate}: size=${JSON.stringify(size)} sha=${JSON.stringify(sha)} must be `
+        + `refused: ${run.out}`);
+      assert(run.out.includes(why), `${gate}: and refused for that reason: ${run.out}`);
+    }
+  }
+});
+
+test('A DUPLICATE KEY AND A BASE THAT IS NOT AN ARRAY BOTH NOW FAIL, rather than one silently shadowing',
+  () => {
+    for (const gate of DATAPLANE_GATES) {
+      const { dir, script } = extract(gate, 'expect.cjs');
+      assertEq(runNode(script, ['./base.json', '-', ...GOOD_ENTRY], dir).code, 0, 'the base is built');
+      const dup = runNode(script, ['./out.json', './base.json', 'one.mp4', '9', DIGEST_B, 'local', 'plain'],
+        dir);
+      assert(dup.code !== 0, `${gate}: a second entry under one name must be refused: ${dup.out}`);
+      assert(/already in this expectation/.test(dup.out), `${gate}: by name: ${dup.out}`);
+
+      writeFileSync(join(dir, 'notarray.json'), '{"entries": []}', 'utf8');
+      const bad = runNode(script, ['./out2.json', './notarray.json', ...GOOD_ENTRY], dir);
+      assert(bad.code !== 0, `${gate}: a base that is not an array must be refused: ${bad.out}`);
+      // AGAINST THE MERGE BASE THIS WAS A TypeError ON `entries.push`. It failed, which is why it is latent
+      // rather than live — but it failed as a stack trace naming a property, not as a statement about the
+      // document, and a run that ends in one is a run nobody can triage from the log.
+      assert(!/TypeError/.test(bad.out), `${gate}: and said so rather than crashed: ${bad.out}`);
+    }
+  });
+
+// --- `sizelist.cjs` ----------------------------------------------------------------------------------
+
+const SIZELIST_GATE = 'deploy/projection-plex-dataplane-gate.sh';
+
+/** The corpus expectation `sizelist.cjs` reads, plus the extra sizes its caller names on the command line. */
+function sizelistFixture(entries: unknown): { dir: string; script: string } {
+  const { dir, script } = extract(SIZELIST_GATE, 'sizelist.cjs');
+  writeFileSync(join(dir, 'expected.json'), JSON.stringify(entries), 'utf8');
+  return { dir, script };
+}
+
+const SIZELIST_CORPUS = [
+  { key: 'a.mp4', sizeBytes: 40_000, sha256: DIGEST_A, kind: 'http-range' },
+  { key: 'b.mp4', sizeBytes: 50_000, sha256: DIGEST_B, kind: 'http-range' },
+  { key: 'c.mp4', sizeBytes: 60_000, sha256: DIGEST_A, kind: 'local' },
+];
+
+test('THE SIZE LIST IS STILL THE REMOTE OBJECTS AND THE NAMED EXTRAS, in order — the control', () => {
+  const { dir, script } = sizelistFixture(SIZELIST_CORPUS);
+  const run = runNode(script, ['./expected.json', '4000000', '9000000'], dir);
+  assertEq(run.code, 0, `an honest size list must be produced: ${run.out}`);
+  assertEq(run.out.trim(), '40000,50000,4000000,9000000', 'and be exactly what it was before');
+});
+
+test('AN EXTRA SIZE THAT FAILED TO COMPUTE NOW FAILS, where it was DROPPED before its consumer could refuse',
+  () => {
+    // THE DEFECT THE PREVIOUS LOOP RECORDED AND DEFERRED. `if (Number.isFinite(size) && size > 0)` dropped
+    // the token, so `sizelist.cjs expected.json "" 9000000` returned `40000,50000,9000000` at exit 0 — the
+    // soak source simply gone. That record judged it fail-closed because a shorter list is a SMALLER
+    // ceiling. The same list is also the FLOOR: `sizes.reduce((t, s) => t + Math.min(s, PROBE_WINDOW), 0)`,
+    // asserted as "a scan that read less than that did not open the entries". Dropping a four-megabyte
+    // object takes a whole 1 MiB probe window off that floor, so a scan that never opened it still clears
+    // it. THAT direction is fail-open, which is why this is corrected rather than recorded again.
+    for (const extra of ['', 'abc', '0', '-5', ' ']) {
+      const { dir, script } = sizelistFixture(SIZELIST_CORPUS);
+      const run = runNode(script, ['./expected.json', extra, '9000000'], dir);
+      assert(run.code !== 0, `the extra size ${JSON.stringify(extra)} must be refused: ${run.out}`);
+      assert(/shrinks the byte ceiling AND the byte floor/.test(run.out),
+        `and must say which way the error runs: ${run.out}`);
+      assert(run.out.trim().split('\n').every((line) => !/^[\d,]+$/.test(line)),
+        `and must not also print a list that omits it: ${run.out}`);
+    }
+  });
+
+test('A CORPUS ENTRY WITH NO USABLE SIZE NOW FAILS, where `join` turned it into an EMPTY TOKEN', () => {
+  // `[undefined, 4000000].join(',')` is `",4000000"`. The CLI refuses that token — so the outcome was
+  // fail-closed by an accident of `join` rather than by anything this program decided, and the diagnosis
+  // arrived one process away from the document that caused it.
+  for (const broken of [{}, { sizeBytes: null }, { sizeBytes: 0 }, { sizeBytes: '40000' }]) {
+    const { dir, script } = sizelistFixture([{ key: 'a.mp4', kind: 'http-range', ...broken }]);
+    const run = runNode(script, ['./expected.json', '4000000'], dir);
+    assert(run.code !== 0, `${JSON.stringify(broken)} must be refused: ${run.out}`);
+    assert(!/^,|,,|,$/m.test(run.out), `and no list with an empty token printed: ${run.out}`);
+  }
+});
+
+test('A MISSPELLED KIND AND AN EMPTY LIST NOW FAIL, where both left the budget measuring fewer objects',
+  () => {
+    const misspelled = sizelistFixture([{ key: 'a.mp4', sizeBytes: 40_000, kind: 'httprange' }]);
+    const one = runNode(misspelled.script, ['./expected.json', '4000000'], misspelled.dir);
+    assert(one.code !== 0, `a misspelled kind must be refused rather than filtered out: ${one.out}`);
+    assert(/local or http-range/.test(one.out), `and the vocabulary named: ${one.out}`);
+
+    // AN EMPTY LIST IS THE END STATE OF ALL OF THE ABOVE, and the CLI's own comment says an empty
+    // `--object-sizes` "skipped the byte ceiling altogether". It refuses one now; so does its producer.
+    const empty = sizelistFixture([]);
+    const none = runNode(empty.script, ['./expected.json'], empty.dir);
+    assert(none.code !== 0, `an empty size list must be refused: ${none.out}`);
+    assert(/budget over nothing/.test(none.out), `and named as what it is: ${none.out}`);
+  });
+
+// --- the single-purpose variants: rclone, three-server and path-lifecycle ------------------------------
+
+/** The endpoint's registration document, as the rclone gate's `expect.cjs` reads it. */
+function registrationFixture(): { dir: string; script: string } {
+  const { dir, script } = extract(RCLONE_GATE, 'expect.cjs');
+  writeFileSync(join(dir, 'objects.json'), JSON.stringify([
+    { ref: 'obj-canary', path: '/Canary/Canary.bin', size: 100, sha256: DIGEST_A },
+    { ref: 'obj-01', path: '/Movies/A (2026)/A (2026).mp4', size: 200, sha256: DIGEST_B },
+    { ref: 'obj-barrier', path: '/Movies/B (2026)/B (2026).mp4', size: 300, sha256: 'c'.repeat(64) },
+  ]), 'utf8');
+  return { dir, script };
+}
+
+test('THE COMPARISON EXPECTATION STILL EXCLUDES THE CANARY AND STILL ANCHORS THE BARRIER — the control',
+  () => {
+    const { dir, script } = registrationFixture();
+    const run = runNode(script, ['./objects.json', './out.json', 'obj-canary', 'obj-barrier'], dir);
+    assertEq(run.code, 0, `an honest registration must produce an expectation: ${run.out}`);
+    const entries = JSON.parse(readFileSync(join(dir, 'out.json'), 'utf8')) as
+      Array<{ key: string; anchor?: boolean }>;
+    assertEq(entries.length, 2, 'the canary is excluded and the other two are described');
+    assertEq(entries.filter((entry) => entry.anchor === true).length, 1, 'and exactly one anchor is named');
+  });
+
+test('A REFERENCE THAT MATCHES NO REGISTERED OBJECT NOW FAILS, where it leaked the canary or lost the anchor',
+  () => {
+    // THE DEFECT, MEASURED, TWICE OVER. A mistyped canary reference skipped nothing, so the canary — the one
+    // object this gate reads BEFORE the measurement, and therefore the one whose cold window is already
+    // spent — was written into the corpus expectation it exists to stay out of. A mistyped barrier
+    // reference produced an expectation with ZERO anchors at exit 0, and `verify-corpus` then ran its
+    // per-anchor loop zero times for all three servers while every aggregate beside it passed.
+    for (const [canary, barrier, why] of [
+      ['obj-canry', 'obj-barrier', 'the canary'],
+      ['obj-canary', 'obj-barier', 'the barrier'],
+    ] as Array<[string, string, string]>) {
+      const { dir, script } = registrationFixture();
+      const run = runNode(script, ['./objects.json', './out.json', canary, barrier], dir);
+      assert(run.code !== 0, `${why}: an unmatched reference must be refused: ${run.out}`);
+      assert(run.out.includes(`${why} object`), `and named: ${run.out}`);
+      assert(!existsSync(join(dir, 'out.json')),
+        `and no expectation left behind for verify-corpus to run zero anchors against: ${run.out}`);
+    }
+    // AND THE REFERENCES CANNOT SIMPLY BE ABSENT. Two missing arguments used to describe every object,
+    // canary included, with no anchor at all — the two defects above at once, from a truncated command line.
+    const { dir, script } = registrationFixture();
+    const run = runNode(script, ['./objects.json', './out.json'], dir);
+    assert(run.code !== 0, `an unnamed canary and barrier must be refused: ${run.out}`);
+  });
+
+test('THE THREE-SERVER SEED AND MERGE FORMS REFUSE A MEASUREMENT THAT DID NOT HAPPEN', () => {
+  const gate = 'deploy/projection-three-server-concurrency-gate.sh';
+  for (const name of ['seed-expect.cjs', 'expect.cjs']) {
+    const base = name === 'expect.cjs';
+    for (const [size, sha] of [['', DIGEST_A], ['abc', DIGEST_A], ['4096', 'nope']] as Array<[string, string]>) {
+      const { dir, script } = extract(gate, name);
+      if (base) writeFileSync(join(dir, 'base.json'), '[]', 'utf8');
+      const argv = base
+        ? ['./out.json', './base.json', 'seed.mp4', size, sha]
+        : ['./out.json', 'seed.mp4', size, sha];
+      const run = runNode(script, argv, dir);
+      assert(run.code !== 0,
+        `${name}: size=${JSON.stringify(size)} sha=${JSON.stringify(sha)} must be refused: ${run.out}`);
+      assert(!existsSync(join(dir, 'out.json')), `${name}: and nothing written: ${run.out}`);
+    }
+    // The control, so the cases above are about the values rather than about the form.
+    const { dir, script } = extract(gate, name);
+    if (base) writeFileSync(join(dir, 'base.json'), '[]', 'utf8');
+    const ok = runNode(script, base
+      ? ['./out.json', './base.json', 'seed.mp4', '4096', DIGEST_A]
+      : ['./out.json', 'seed.mp4', '4096', DIGEST_A], dir);
+    assertEq(ok.code, 0, `${name}: an honest seed must still be described: ${ok.out}`);
+  }
+});
+
+test('THE LIFECYCLE BARRIER REFUSES A PARTIAL TRIPLE AND AN EMPTY EXPECTATION, where it absorbed both', () => {
+  // THE DEFECT, MEASURED. `for (let index = 0; index + 2 < rest.length; index += 3)` walked whole triples
+  // and SILENTLY DROPPED a trailing remainder — the sibling copies of this program refuse one outright with
+  // `rest.length % 5`, and this one alone absorbed it. The entry it drops is the entry the barrier then
+  // never waits for, which is precisely what the program's own comment says it exists to prevent. And no
+  // arguments at all wrote `[]`: a barrier over an empty expectation is satisfied by an empty library.
+  const gate = 'deploy/projection-path-lifecycle-gate.sh';
+  for (const argv of [
+    ['./out.json', 'a.mp4', '10', DIGEST_A, 'c.mp4'],
+    ['./out.json', 'a.mp4', '10', DIGEST_A, 'c.mp4', '20'],
+    ['./out.json'],
+  ]) {
+    const { dir, script } = extract(gate, 'expect.cjs');
+    const run = runNode(script, argv, dir);
+    assert(run.code !== 0, `${JSON.stringify(argv.slice(1))} must be refused: ${run.out}`);
+    assert(!existsSync(join(dir, 'out.json')),
+      `and no barrier document left behind to release early against: ${run.out}`);
+  }
+  const { dir, script } = extract(gate, 'expect.cjs');
+  const ok = runNode(script, ['./out.json', 'a.mp4', '10', DIGEST_A, 'c.mp4', '20', DIGEST_B], dir);
+  assertEq(ok.code, 0, `two honest triples must still build a barrier: ${ok.out}`);
+  assertEq((JSON.parse(readFileSync(join(dir, 'out.json'), 'utf8')) as unknown[]).length, 2,
+    'and describe both of them');
+});
+
+// ---------------------------------------------------------------------------------------------------------
 // Wiring
 // ---------------------------------------------------------------------------------------------------------
 

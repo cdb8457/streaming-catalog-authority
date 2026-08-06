@@ -979,6 +979,186 @@ credential and no operator corpus exists at either approved path**. The fake-pro
 corrected programs and close nothing about a provider: a deterministic fake is not a provider. §6.1's rows
 are unchanged, and Phase 1 remains open on exactly the ground §6.10 already names.
 
+### 6.14 The fourth credential-free audit loop — the programs that decide what the corpus IS
+
+**THE TRANCHE, AND WHY IT IS THIS ONE.** §6.11 executed six programs, §6.12 the shared leak/cache/published/
+counters/scan/identity subset, §6.13 the measurement primitives. What none of them touched is the layer
+those primitives measure THROUGH: the four programs that build the ~50-entry corpus and the document every
+later phase is compared against — **`gen-corpus.sh`, `corpus.cjs`, `expect.cjs` and `sizelist.cjs`**. Every
+scan barrier, every per-entry anchor assertion, every byte ceiling and the byte floor beneath it is a
+comparison against something one of these four wrote. **None of them had ever been executed by a test.**
+
+**THE INVENTORY, COUNTED RATHER THAN ASSUMED.** Eighteen copies across seven gates, which are **ten distinct
+programs** at **thirty-one call sites**:
+
+| Program | Copies | Distinct | Where |
+|---|---|---|---|
+| `out/gen-corpus.sh` | 5 | 1 program + 1 line | plex, emby, jellyfin, three-server, rclone — the rclone copy puts its LOCAL entries at the END of the run; everything else is identical |
+| `corpus.cjs` | 4 | 2 | plex/emby/jellyfin are **one program in code** (only comment text differs); the three-server copy adds a large barrier object described through a shared helper |
+| `expect.cjs` | 6 | 4 | plex/emby/jellyfin are **one program in code**; the three-server, rclone and path-lifecycle copies are three different programs that share the name |
+| `sizelist.cjs` | 1 | 1 | plex only, two call sites |
+| `seed-expect.cjs` | 2 | 2 | three-server (from arguments) and rclone (from the registration document) |
+
+**EVERY FINDING BELOW WAS PRODUCED BY RUNNING THE SHIPPED BYTES** — the `.cjs` copies under `node`, the
+`.sh` copies under `bash` and again under the busybox `sh` of the gates' own digest-pinned image, against
+fixtures built for the purpose. Nothing here is a reading of the source that was not then executed.
+
+**NOT ONE OF THE FOURTEEN IS LIVE, AND THAT IS STATED FIRST RATHER THAN BURIED.** §6.11 and §6.13 each found
+defects reachable with the gates' own present-day inputs. **This loop found none.** Every one below is held
+off today by a literal in the gate, by `set -euo pipefail` around the command substitution that feeds it, or
+by a floor one process downstream. They are defects in what the corpus layer would do with a degraded input,
+not in what it does with today's. Calling them live would overstate the loop; calling them theoretical would
+understate a set in which **four separate programs report success over an artefact they did not produce**.
+
+| # | Program | Copies / sites | What it did, MEASURED | Live? |
+|---|---|---|---|---|
+| 1 | `out/gen-corpus.sh` | 5 / 5 | With `total` empty or non-numeric, `[ "$i" -le "$total" ]` exits 2 — **and a command that fails as the CONDITION of a `while` is exempt from `set -e`.** The loop ended on its first evaluation, **not one file was written**, and the script printed `  generated  corpus files` and **EXITED 0**. `total=0` did the same without even the error line. The closing line echoed the **ARGUMENT** it was handed and never a count: `abc` in produced `generated abc corpus files` out | latent — `CORPUS_COUNT` and `CORPUS_LOCAL` are literals in all five gates |
+| 2 | `out/gen-corpus.sh` | 5 / 5 | It never looked at what the encoder left. A stub exiting 0 having created three **empty** files produced `generated 3 corpus files` and exit 0; the zero-byte entries then fail their digest comparison forty steps later, inside a gate whose subject is a media server | latent — ffmpeg does write bytes today |
+| 3 | `corpus.cjs` | 4 / 4 | `Number(totalRaw)` on anything non-numeric is NaN and `1 <= NaN` is false, so the walk ran **zero times**: it wrote an **EMPTY** `corpus-register.json`, an **EMPTY** `corpus-expected.json`, a `corpus-totals.json` reading `{entries: 0, localEntries: 2, remoteEntries: -2}`, printed `0` and **EXITED 0**. Every caller sends that `0` to `/dev/null` | latent — `corpus-check --min-entries 50/51` and `test "$CORPUS_TOTAL" -ge 48` floor it one process later |
+| 4 | `corpus.cjs` | 4 / 4 | `localEntries` and `remoteEntries` were the **arguments**, restated in the output document as though they were findings — the header above them says all three documents come from one walk. `corpus.cjs work 2 4` wrote `remoteEntries: -2` at exit 0, and the plex gate spends that as `--entries "$(( CORPUS_REMOTE_ENTRIES + 2 ))"`, the denominator of the request budget, **with no floor anywhere beneath it** | latent |
+| 5 | `corpus.cjs` | 4 / 4 | The published `sizeBytes` came from a **second `statSync`**, not from the bytes that were digested. The digest describes what the file was when it was read; the size describes what it is now. A manifest whose two fields can mean two byte streams | latent |
+| 6 | `corpus.cjs` | 4 / 4 | `object.probes.map(…)` on an endpoint object registered without a probe plan — a **TypeError inside a property read** rather than a statement about the object. `ProbeOffsetsFor` returns nothing for a zero-length object, which is exactly the case | latent — fail-closed either way |
+| 7 | `expect.cjs` (plex/emby/jellyfin) | 3 / 16 | `anchor: rest[i + 4] === 'anchor'` made **every other token mean "not an anchor"** — `anchored`, `Anchor`, an argument a shell dropped for expanding to nothing. Every consumer selects `entry.anchor === true`, so the per-entry anchor assertions (`EM3-…-size:`, `TS2-anchor:`, `RC2-anchor:`) **iterate zero times and record nothing**, while every aggregate beside them passes. Measured: exit 0, `anchor: false` | latent — all sixteen call sites spell it correctly today |
+| 8 | `expect.cjs` (plex/emby/jellyfin) | 3 / 16 | `kind` was written straight through. `sizelist.cjs` selects `kind === 'http-range'` and `corpus-check --min-remote` floors that same count, so `htttp-range` removes the object from the byte **ceiling** and the byte **floor** together — and the floor is the assertion that the scan opened the entries | latent |
+| 9 | `expect.cjs` (plex/emby/jellyfin) | 3 / 16 | `Number(size)` turned `''` into **0** and `'abc'` into NaN, which `JSON.stringify` writes as **`null`** — both what a shell hands over when the measuring command produced nothing. The digest was not checked at all. A duplicate key silently accumulated; a base document that is not an array was a **TypeError on `entries.push`** | latent — `corpusSelfProblems` refuses `sizeBytes <= 0` downstream and names the corpus rather than the measurement; **nothing anywhere checked the digest** |
+| 10 | `sizelist.cjs` | 1 copy, 1 site, 2 windows | **The defect §6.13 recorded and deferred.** `if (Number.isFinite(size) && size > 0)` dropped an extra size, so `sizelist.cjs expected.json "" 9000000` returned `40000,50000,9000000` at exit 0 — the soak source simply gone — while `projection-plex-dataplane-cli.ts` says in its own comment that it made exactly those tokens fatal, which it cannot do for a token it is never handed | latent — `set -euo pipefail` makes today's `wc -c` substitutions fail rather than empty |
+| 11 | `sizelist.cjs` | 1 copy, 1 site, 2 windows | The **corpus** side was never checked at all: `entry.sizeBytes` went straight into `join`, where `undefined` becomes an **empty token** — `[undefined, 4000000].join(',')` is `",4000000"`. `kind` was unchecked too, so a misspelling removed the object from the list in silence | latent |
+| 12 | `expect.cjs` (rclone) | 1 / 1 | `canaryRef` and `barrierRef` were compared and never checked. A mistyped canary reference skipped nothing, so **the canary was written into the corpus expectation it exists to stay out of** — the one object this gate reads before the measurement. A mistyped barrier reference produced an expectation with **ZERO anchors at exit 0**, and `verify-corpus` then ran its per-anchor loop zero times for all three servers | latent — `RC2-corpus-size` catches the canary leak by exact count; **nothing catches the zero-anchor case** |
+| 13 | `expect.cjs` (path-lifecycle) | 1 / 1 | `for (let index = 0; index + 2 < rest.length; index += 3)` walked whole triples and **silently dropped a trailing remainder** — its three siblings refuse one outright with `rest.length % 5`; this copy alone absorbed it. The entry it drops is the entry the barrier then never waits for, which is what the program's own comment says it exists to prevent. No arguments at all wrote **`[]`**, and a barrier over an empty expectation releases immediately | latent |
+| 14 | `seed-expect.cjs` and `expect.cjs` (three-server) | 2 / 2 | The same unvalidated `Number(size)` and unchecked digest as #9, in two more programs that share neither its code nor its shape | latent |
+
+**WHAT THE CORRECTIONS DO, AND THE ONE DIRECTION THAT MATTERS.** Every one refuses an input the program used
+to absorb, by name, before it writes anything: a count that is not a count, a token outside a closed
+vocabulary, a size or digest that did not measure, a reference that matches no registered object, a partial
+argument group, an empty list. **NO THRESHOLD MOVED AND NO FAILURE BECAME A SKIP.** The happy-path output of
+all ten programs is byte-for-byte what it was — asserted, not assumed, by a control beside every refusal
+case, and `corpus.cjs`'s two derived counts reproduce the arithmetic they replaced exactly on every real
+input (`localEntries` was `localCount`; `remoteEntries` was `total - localCount`, and on the three-server
+copy `expected.length - localCount`, both of which the walk now counts to the same numbers).
+
+**THE ONE FINDING THAT CHANGED A PREVIOUS LOOP'S CONCLUSION IS #10, AND IT IS RECORDED AS A CORRECTION TO
+§6.13 RATHER THAN AS A NEW DISCOVERY.** §6.13 examined the same filter and left it, reasoning that dropping a
+size **shrinks the ceiling** and is therefore fail-closed on the budget. That reading is half the story. The
+same list is also the **floor** — `sizes.reduce((total, size) => total + Math.min(size, PROBE_WINDOW_BYTES), 0)`,
+asserted with the note *"a scan that read less than that did not open the entries"*. Dropping a
+four-megabyte soak source takes a whole 1 MiB probe window off the least a real scan could have cost, so a
+scan that never opened that object still clears the floor. **That direction is fail-open**, which is why the
+producer is corrected now instead of recorded a second time.
+
+**AND THE CORRECTIONS WERE REVIEWED, WHICH FOUND ONE DEFECT IN THEM.** The first draft wrote the
+`gen-corpus.sh` validation as `case … ) echo …; exit 1 ;;` — semicolon-joined arms. `test/projection-plex-dataplane.ts`
+reads the shipped gate line by line and requires every deliberate exit on the default path to be a bare
+`exit 1` or the skip status, and it **failed against my patch**: `the default path exits only to skip or to
+fail: exit 1 ;;`. It is recorded because the repository's own invariant caught a patch written by the loop
+whose subject is programs that do not check themselves. Three further assumptions were checked against the
+producers rather than assumed: both fake endpoints emit `hex.EncodeToString`, so the new 64-hex digest rule
+cannot reject a real registration; `manifest.ProbeOffsetsFor` returns an empty plan **only** for a
+zero-length object, so the new non-empty rule cannot reject a real one; and every one of the sixteen `anchor`
+call sites spells the token `anchor` or `plain`, which is why those are the two the vocabulary admits.
+
+**CHECKED AND FOUND SOUND, WHICH IS PART OF THE RESULT.** `gen-corpus.sh` contains no pipeline, so the
+absence of `pipefail` from its own `set -eu` costs it nothing. Its per-index pattern, tone and duration do
+vary, and `corpus-check` asserts the resulting digests are distinct rather than trusting that they are.
+`smallRemoteBytes` and `localBytes` are accumulated from the same walk that produces the entries and were
+already findings rather than arguments. rclone's `out/seed-expect.cjs` already refused an unregistered seed
+reference. `corpusProblems` matches by key and not by position, so nothing depends on the order these
+programs emit. Byte totals are ~48 entries of ~40 KB beside a 105 MB fixture — four orders of magnitude
+below the exact-integer boundary — and every byte figure the corrections touch is now checked with
+`Number.isSafeInteger` rather than `Number.isFinite`.
+
+**THE COPIES ARE NOW PINNED AS COPIES.** Three new tests assert that the five `gen-corpus.sh` copies are one
+program but for the split line, and that the three dataplane copies of `corpus.cjs` and of `expect.cjs` are
+one program in code with only comment text differing. §6.12 exists because one loop corrected `scan.cjs` and
+left five shell siblings untouched; these assertions are what stops that happening to this tranche.
+
+**MUTATION PROOF, measured against the final bytes of both trees, with the working tree restored
+byte-identical after the swap** — `git hash-object` over all six changed gates reproduced exactly after the
+revert, and both suites returned to their full pass counts:
+
+| Suite | Platform | against merge base `4a762d5` | against this tree |
+|---|---|---|---|
+| `projection-gate-embedded-programs.ts` | Windows, Node 22, Git `bash` | **49 passed, 15 failed** | **64 passed, 0 failed** |
+| `projection-gate-mount-programs.ts` | the gates' own pinned alpine, busybox 1.36.1 | **7 passed, 2 failed** | **9 passed, 0 failed** |
+
+All **seventeen** failures are the defect cases. **Seven new cases pass against BOTH trees and are the
+controls** — the happy-path output of each program, and the three copy-identity assertions — which is what
+makes them controls rather than more of the same. One correction has **no dedicated case and is recorded as
+such**: #5, the size taken from the bytes that were digested, whose disagreement branch requires a file to
+change length between two syscalls and cannot be provoked offline without inventing a race the gate does not
+run. It was reviewed and is asserted only by the control that the honest path still publishes the same size.
+
+**WHAT WAS RUN ON THE HOST, AND ON WHICH BYTES.** On an isolated checkout at
+`/mnt/user/appdata/catalog-phase1-heredoc-audit-4` on the same Unraid host (7.2.3, kernel 6.12.54, Docker
+27.5.1, Node 22.18.0 on the host), verified **byte-identical to the committed tree by `sha256sum` over all
+1,576 tracked files** at the moment the sequence started — combined digest `8c204d2e4fb8…`, **zero differing
+files**. `node_modules` was taken from the previous audit checkout, whose `package-lock.json` hashes
+identically.
+
+**ONE FILE MOVED AFTER THAT POINT, AND IT IS THIS ONE.** The runs below were being written up while they
+ran, so `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` is not byte-identical to the copy on the host — no gate
+reads it, and it executes nothing. The claim that matters is stated over the files that *are* executed:
+**the combined digest over the other 1,575 tracked files is `1ba5247851e3…` on both sides, zero differing**,
+which is the same figure before the sequence, during it and in the committed tree. Saying "byte-identical"
+without naming the exception would be the kind of unchecked claim this loop exists to remove.
+
+**A FIRST SEQUENCE WAS STARTED AND DISCARDED, AND NAMING IT IS THE POINT.** It was launched against an
+earlier checkout whose combined digest was `d2d7eb83c105…`. While its first gate was running, reviewing the
+diff found a 137-character line inside the path-lifecycle heredoc — longer than any line that gate has ever
+carried, whose own maximum is 113 — and wrapping it changed **executed bytes** under a run already in
+flight. The sequence was stopped, the gate was sent `TERM` so its own trap cleanup ran, the host was
+confirmed back at its production baseline, the tree was re-synced and re-verified, and **the whole sequence
+was started again from the beginning**. Nothing from the first sequence is reported below. A loop that
+quietly kept a run taken against bytes it then changed would be reporting evidence for bytes that were never
+shipped, which is the failure §6.13 recorded for the same reason.
+
+**EVERY GATE WHOSE EXECUTABLE BYTES THIS LOOP CHANGED, THREE CONSECUTIVE FRESH TIMES.** Six gates, eighteen
+runs, run in one sequence with nothing else on the host:
+
+| Gate | Result | On record |
+|---|---|---|
+| `go:path-lifecycle-gate:three` | **3/3, 85 assertions, 0 failed, 0 skipped** each | §6.9: 85 |
+| `go:rclone-comparison-gate:three` | **3/3, 70 assertions, 0 failed, 0 skipped** each | §6.3: 70 |
+| `go:three-server-concurrency-gate:three` | **3/3, 64 assertions, 0 failed, 0 skipped** each | §6.3: 64 |
+| `go:jellyfin-dataplane-gate:three` | **3/3, 366 / 366 / 366 assertions, 0 failed, 0 skipped** | §6.3: 366 |
+| `go:emby-dataplane-gate:three` | **3/3, 395 / 395 / 394 assertions, 0 failed, 0 skipped** | §6.3: 395 / 394 / 394; §6.12: 394 / 395 / 395; §6.13: 395 / 394 / 395 — **this count varies by run and has on every loop** |
+| `go:plex-dataplane-gate:three` | **3/3, 414 / 414 / 414 assertions, 0 failed, 0 skipped** | §6.3: 414 / 412 / 414; §6.13: 414 / 414 / 414 |
+
+**EVERY ASSERTION COUNT IS THE ONE ALREADY ON RECORD FOR THAT GATE. This loop moved none of them.** The one
+figure that is not constant — Emby's — is not constant on any previous loop either, and the three values
+seen here are drawn from the same {394, 395} the three previous records carry.
+
+**THE CORRECTION IS VISIBLE IN THE HOST OUTPUT, WHICH IS WHAT MAKES IT MORE THAN A CLAIM.** The generator's
+closing line used to echo the count it had been ASKED for. Across the eighteen runs it now reports a count of
+files it opened and found non-empty, and the two values are exactly the two `CORPUS_COUNT` literals:
+
+```
+      9   generated 47 corpus files      (the three dataplane gates, CORPUS_COUNT=47)
+      6   generated 48 corpus files      (three-server and rclone, CORPUS_COUNT=48)
+```
+
+**AND NOT ONE OF THE NEW REFUSALS FIRED.** Every corrected program ran at every call site in all eighteen
+runs and rejected nothing: no `gen-corpus:` diagnostic, no "is not a whole number", no "anchor or plain",
+no "no probe plan", no "not a sha256", no "budget over nothing". The corpora published were 50 entries
+(plex), 51 (emby and jellyfin) and 50 (the shared three-server corpus), each clearing its own
+`corpus-check --min-entries` floor. **A correction that refuses bad input has to be shown not to refuse good
+input, and eighteen runs across six gates is that demonstration.**
+
+**THE BYTES DID NOT MOVE UNDER THE SEQUENCE.** The combined digest over the 1,575 executed tracked files was
+re-taken after the last run and is `1ba5247851e3…` — identical to the figure before the first run.
+
+**THE HOST WAS LEFT AS IT WAS FOUND.** Its container, network, volume and catalog-mountpoint counts were
+sampled **before and after every one of the six gates** and were identical at all twelve samples:
+**26 running / 42 total, 17 networks, 45 volumes, 0 mountpoints** under `/mnt/user/appdata/catalog*` — the
+same figures §6.13 recorded. Afterwards: zero leftover gate containers, zero leftover gate networks, zero
+mountpoints, and the isolated checkout removed. No production media, service, Compose project, secret or
+unrelated network was touched.
+
+**AND IT CLOSES NOTHING.** No gate in this loop contacted a provider, and none could: the corrections are to
+programs that describe a synthetic corpus, and the endpoints they are described against are the same
+deterministic fakes §6.10 already says close nothing. **No real provider endpoint and no operator corpus
+exists at either approved path.** §6.1's rows are unchanged, Phase 1 remains open on exactly the ground
+§6.10 names, and nothing here is evidence about a real provider.
+
 ### 6.4 The gates that did not exist — now none of them
 
 **A GATE THAT HAS NOT BEEN WRITTEN CANNOT BE RUN, AND SAYING SO IS NOT THE SAME AS SAYING IT FAILED.**

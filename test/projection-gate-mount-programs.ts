@@ -231,6 +231,101 @@ test('THE BASELINE STILL ACCEPTS A READ-ONLY REGULAR FILE AND REFUSES EVERY OTHE
 });
 
 // ---------------------------------------------------------------------------------------------------------
+// `out/gen-corpus.sh` — the ~50-entry corpus generator, which writes to a hard-coded `/work`
+// ---------------------------------------------------------------------------------------------------------
+//
+// WHY IT IS HERE AND NOT IN THE OFFLINE SUITE. Its argument validation runs before it touches a path, so the
+// sibling suite covers that; everything below the first encode writes to `/work/media` and `/work/remote`,
+// which are the directories its gate bind-mounts. Creating `/work` on a developer's machine to satisfy a
+// test is modifying the machine to fit the measurement, so the encoding path is measured here — in the
+// gates' own pinned image, under the busybox `sh` that actually runs it rather than under bash.
+
+const GEN_CORPUS_GATES = [
+  'deploy/projection-plex-dataplane-gate.sh',
+  'deploy/projection-emby-dataplane-gate.sh',
+  'deploy/projection-jellyfin-dataplane-gate.sh',
+  'deploy/projection-three-server-concurrency-gate.sh',
+  'deploy/projection-rclone-comparison-gate.sh',
+] as const;
+
+/**
+ * The shipped generator, a stub encoder, and `/work` — built inside the container.
+ *
+ * THE ENCODER IS A STUB AND THAT IS THE POINT. What is under test is what the generator does with the
+ * encoder's OUTCOME, not ffmpeg. `bytes` decides whether the stub leaves a file with content or an empty
+ * one, which is the case the merge base could not tell apart from success.
+ */
+function genCorpusFixture(gate: string, bytes: 'some' | 'none', argv: string): string {
+  const dir = scratch();
+  writeFileSync(join(dir, 'gen-corpus.sh'), `${heredoc(gate, 'out/gen-corpus.sh')}\n`, 'utf8');
+  writeFileSync(join(dir, 'case.sh'), [
+    'set -u',
+    'mkdir -p /work/media /work/remote',
+    "printf '#!/bin/sh\\nout=\"\"\\nfor a in \"$@\"; do out=\"$a\"; done\\n' > /ff",
+    bytes === 'some'
+      ? `printf 'printf %s > "$out"\\n' 'AAAA' >> /ff`
+      : 'printf \': > "$out"\\n\' >> /ff',
+    'chmod +x /ff',
+    `sh /w/gen-corpus.sh ${argv} /ff`,
+    'status=$?',
+    'echo "GENERATOR EXITED $status"',
+    'echo "MEDIA $(ls /work/media | wc -l) REMOTE $(ls /work/remote | wc -l)"',
+    'exit $status',
+    '',
+  ].join('\n'), 'utf8');
+  return dir;
+}
+
+test('THE CORPUS GENERATOR STILL GENERATES, and now says how many files it VERIFIED', () => {
+  requireDocker();
+  for (const gate of GEN_CORPUS_GATES) {
+    const run = runInImage(genCorpusFixture(gate, 'some', '3 1'), 'case.sh');
+    assertEq(run.code, 0, `${gate}: an honest generation must pass: ${run.out}`);
+    assert(/generated 3 corpus files/.test(run.out), `${gate}: and count what it made: ${run.out}`);
+    // ONE LOCAL AND TWO REMOTE, OR THE REVERSE ON THE COMPARISON GATE, WHICH PUTS ITS LOCAL ENTRIES LAST.
+    // Either way three files exist; asserting the split per gate would be asserting the one line they are
+    // allowed to differ on, which the sibling suite already pins.
+    assert(/MEDIA [12] REMOTE [12]/.test(run.out), `${gate}: and write three files: ${run.out}`);
+  }
+});
+
+test('AN ENCODER THAT EXITED 0 AND WROTE NOTHING NOW FAILS, where the generator counted it as generated',
+  () => {
+    // THE DEFECT, MEASURED. The generator never looked at what the encoder left. Against the merge base a
+    // stub that exits 0 having created three EMPTY files produced `generated 3 corpus files` and EXIT 0, and
+    // the zero-byte entries then failed their digest comparison forty steps later inside a gate whose
+    // subject is a media server. The claim and the artefact disagreed and only the claim was read.
+    requireDocker();
+    for (const gate of GEN_CORPUS_GATES) {
+      const run = runInImage(genCorpusFixture(gate, 'none', '3 1'), 'case.sh');
+      assert(run.code !== 0, `${gate}: an empty corpus entry must fail the generation: ${run.out}`);
+      assert(/left no bytes in/.test(run.out), `${gate}: and name the file: ${run.out}`);
+      assert(!/generated 3 corpus files/.test(run.out),
+        `${gate}: and must not also claim it generated them: ${run.out}`);
+      // AND IT MUST STOP AT THE FIRST ONE rather than encode forty-seven more into a corpus it has already
+      // proved is not fit to be one.
+      assert(/MEDIA 1 REMOTE 0|MEDIA 0 REMOTE 1/.test(run.out),
+        `${gate}: and stop at the first bad file rather than generate the rest: ${run.out}`);
+    }
+  });
+
+test('THE BUSYBOX SHELL REFUSES A COUNT THAT IS NOT A COUNT, which is the shell the gates actually use',
+  () => {
+    // THE OFFLINE SUITE RUNS THIS UNDER BASH. `[` is a builtin whose failure message and status differ
+    // between bash and busybox ash, and the defect was that a `[` failure in a `while` CONDITION is exempt
+    // from `set -e` — a property of the SHELL. Measuring it in only one shell would leave the claim resting
+    // on the one that does not ship.
+    requireDocker();
+    for (const argv of ['"" 1', 'abc 1', '0 0', '2 4']) {
+      const run = runInImage(genCorpusFixture(GEN_CORPUS_GATES[0], 'some', argv), 'case.sh');
+      assert(run.code !== 0, `${argv}: must be refused under busybox sh: ${run.out}`);
+      assert(/gen-corpus:/.test(run.out), `${argv}: and named: ${run.out}`);
+      assert(/MEDIA 0 REMOTE 0/.test(run.out), `${argv}: and nothing generated: ${run.out}`);
+      assert(!/generated/.test(run.out), `${argv}: and no corpus claimed: ${run.out}`);
+    }
+  });
+
+// ---------------------------------------------------------------------------------------------------------
 // Wiring
 // ---------------------------------------------------------------------------------------------------------
 

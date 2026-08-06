@@ -183,12 +183,40 @@ cat > "$WORK/expect.cjs" <<'EXPECT'
 // IT TAKES (key, size, sha) TRIPLES rather than one entry, so the barrier covers the lifecycle entry AND the
 // bystander together. A barrier that waited for only one of the two published entries would release while
 // the library was still half-scanned, and the very first inventory would then be a partial one.
+//
+// A PARTIAL TRIPLE IS FATAL, AND SO IS AN EMPTY BARRIER.
+//
+// THE DEFECT THIS CLOSES. `index + 2 < rest.length` walked whole triples and SILENTLY DROPPED a trailing
+// remainder, so seven arguments produced two entries and said nothing about the seventh. The sibling
+// copies of this program in the three dataplane gates refuse a remainder outright — `rest.length % 5`;
+// this one, alone, absorbed it. The entry it drops is the entry the barrier below then never waits for,
+// which is the failure the comment above says this program exists to prevent.
+//
+// AND NO ARGUMENTS AT ALL WROTE `[]`. A barrier driven against an empty expectation is satisfied by an
+// empty library: it releases immediately and the first inventory is taken of nothing.
 const { writeFileSync } = require('node:fs');
 const [, , out, ...rest] = process.argv;
+const die = (message) => { console.error(message); process.exit(1); };
+if (rest.length === 0) die('a scan barrier over no entries releases immediately and proves nothing');
+if (rest.length % 3 !== 0) {
+  die('an expectation is key size sha, and a partial one names a file whose entry the barrier would never '
+    + 'wait for');
+}
 const entries = [];
-for (let index = 0; index + 2 < rest.length; index += 3) {
-  entries.push({ key: rest[index], sizeBytes: Number(rest[index + 1]), sha256: rest[index + 2],
-    kind: 'local', anchor: true });
+const seen = new Set();
+for (let index = 0; index < rest.length; index += 3) {
+  const [key, size, sha] = rest.slice(index, index + 3);
+  const sizeBytes = Number(size);
+  if (!Number.isSafeInteger(sizeBytes) || sizeBytes <= 0) {
+    die(`"${key}" was given the size ${JSON.stringify(size)}, which is not a positive whole number of `
+      + 'bytes');
+  }
+  if (!/^[0-9a-f]{64}$/.test(String(sha))) {
+    die(`"${key}" was given the digest ${JSON.stringify(sha)}, which is not a sha256`);
+  }
+  if (seen.has(key)) die(`"${key}" is named twice; the barrier would wait for one entry and report two`);
+  seen.add(key);
+  entries.push({ key, sizeBytes, sha256: sha, kind: 'local', anchor: true });
 }
 writeFileSync(out, `${JSON.stringify(entries, null, 2)}\n`);
 EXPECT
