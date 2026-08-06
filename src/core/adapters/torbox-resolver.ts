@@ -237,6 +237,181 @@ export function classifyStatus(status: number): 'ok' | 'auth' | 'unknown-ref' | 
   return 'terminal';
 }
 
+
+// ---------------------------------------------------------------------------------------------------------
+// The operator's endpoint file, and the effective endpoint the gate builds from it
+// ---------------------------------------------------------------------------------------------------------
+
+/**
+ * What an operator is asked to write, and NOTHING MORE.
+ *
+ * THE OPERATOR DOES NOT ENCODE CONTAINER TOPOLOGY. The resolver's address depends on a network namespace the
+ * gate creates, so asking an operator to write `resolverUrl` means asking them to predict something they
+ * cannot see — and the first attempt at this documented an address that could not have worked. They supply
+ * the two things only they know: what to call the endpoint, and which CDN origins their account is served
+ * from. Everything else is derived.
+ */
+export interface OperatorEndpointFile {
+  readonly id: string;
+  readonly allowedOrigins: readonly string[];
+  readonly allowInsecureHttp?: boolean;
+  readonly allowPrivateAddresses?: boolean;
+}
+
+/** The complete description the daemon and the generic preflight both consume. */
+export interface EffectiveEndpoint {
+  readonly id: string;
+  readonly resolverUrl: string;
+  readonly allowedOrigins: readonly string[];
+  readonly allowInsecureHttp: false;
+  readonly allowPrivateAddresses: false;
+  readonly loopbackResolver: true;
+}
+
+/** A boring name: it reaches configuration, source strings and reports. */
+const ENDPOINT_ID_SHAPE = /^[a-z0-9][a-z0-9-]{0,30}$/;
+
+/**
+ * Every field an operator endpoint file may carry. Anything else is refused rather than ignored.
+ *
+ * REFUSED, NOT IGNORED, AND THE DIFFERENCE IS THE POINT. A file carrying `loopbackResolver: true` or
+ * `directBaseUrl` is one where somebody believed they were configuring something. Silently dropping it would
+ * leave them believing it, and the belief would be about the exact authority this design keeps narrow.
+ */
+const ALLOWED_OPERATOR_FIELDS = new Set(['id', 'allowedOrigins', 'allowInsecureHttp', 'allowPrivateAddresses']);
+
+/** Fields the GATE owns. An operator supplying one is refused by name, so the refusal teaches. */
+const GATE_OWNED_FIELDS: readonly (readonly [string, string])[] = Object.freeze([
+  ['resolverUrl', 'the gate constructs the resolver URL, because its address depends on a network namespace '
+    + 'the gate creates and an operator cannot predict it'],
+  ['directBaseUrl', 'a TorBox run always resolves; a direct base URL would bypass the resolver, and with it '
+    + 'the process that holds the API key'],
+  ['loopbackResolver', 'the narrow loopback authority is the gate\'s to grant, and only for the resolver it '
+    + 'started itself'],
+  ['tokenFile', 'the gate decides which secret the daemon receives, and it is never the TorBox key'],
+  ['maxConnections', 'transport limits are the gate\'s, not the corpus\''],
+  ['resolutionDeadlineMs', 'deadlines are the gate\'s'],
+  ['refreshCooldownMs', 'cooldowns are the gate\'s'],
+]);
+
+/**
+ * Everything wrong with an operator endpoint file, as sentences an operator can act on.
+ *
+ * IT VALIDATES THE FILE AS IT WAS WRITTEN, not as a parsed shape, because the interesting failures are
+ * fields that should not be there at all.
+ */
+export function operatorEndpointProblems(raw: unknown): readonly string[] {
+  const problems: string[] = [];
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return ['the endpoint description is not a JSON object'];
+  }
+  const record = raw as Record<string, unknown>;
+
+  for (const [field, why] of GATE_OWNED_FIELDS) {
+    if (field in record) problems.push(`"${field}" must not appear: ${why}`);
+  }
+  for (const key of Object.keys(record)) {
+    if (key.startsWith('_comment')) continue;
+    if (ALLOWED_OPERATOR_FIELDS.has(key)) continue;
+    if (GATE_OWNED_FIELDS.some(([field]) => field === key)) continue;
+    // AN UNKNOWN FIELD IS REFUSED. A transport option this gate has never heard of is one it cannot reason
+    // about, and quietly dropping it would let a future field arrive with nobody deciding whether it is safe.
+    problems.push(`"${key}" is not a field this gate understands, and it will not be silently ignored`);
+  }
+
+  if (typeof record.id !== 'string' || !ENDPOINT_ID_SHAPE.test(record.id)) {
+    problems.push('"id" must be a plain lower-case slug; it reaches configuration, source strings and '
+      + 'reports, so it must not be able to carry an account name or a URL');
+  }
+
+  // THE FIXTURE SWITCHES MUST BE ABSENT OR FALSE. Present-and-true is somebody asking for a relaxation that
+  // has no place in a run carrying a real credential.
+  for (const field of ['allowInsecureHttp', 'allowPrivateAddresses'] as const) {
+    const value = record[field];
+    if (value !== undefined && value !== false) {
+      problems.push(`"${field}" must be absent or false; it is a fixture switch and has no place in a run `
+        + 'that carries a real credential');
+    }
+  }
+
+  const origins = record.allowedOrigins;
+  if (!Array.isArray(origins) || origins.length === 0) {
+    problems.push('"allowedOrigins" must be a non-empty array of https CDN origins. The daemon refuses any '
+      + 'link whose origin is not listed, so a run with none can never read a byte');
+  } else {
+    for (const origin of origins) {
+      if (typeof origin !== 'string') { problems.push('an allowed origin is not a string'); continue; }
+      const value = origin.trim();
+      if (value === '' || value === '*' || value.includes('*')) {
+        problems.push('an allowed origin is empty or a wildcard; an unbounded allowlist is how a signed URL '
+          + 'becomes a server-side request forgery');
+        continue;
+      }
+      if (!value.startsWith('https://')) {
+        problems.push('an allowed origin is not https; a real run will not carry an entitlement in the clear');
+        continue;
+      }
+      let parsed: URL;
+      try { parsed = new URL(value); } catch { problems.push('an allowed origin is not a URL'); continue; }
+      if (parsed.username !== '' || parsed.password !== '') {
+        problems.push('an allowed origin carries userinfo');
+      }
+      if ((parsed.pathname !== '' && parsed.pathname !== '/') || parsed.search !== '' || parsed.hash !== '') {
+        problems.push('an allowed origin carries a path, query or fragment; an origin is scheme, host and '
+          + 'port and nothing else');
+      }
+      // A LOOPBACK OR PRIVATE CDN ORIGIN IS NOT A CDN. The resolver's own origin is added by the gate; an
+      // operator naming one is either confused or pointing the data plane at their own host.
+      if (isLoopbackOrPrivateHost(parsed.hostname)) {
+        problems.push('an allowed origin names a loopback or private address; the gate adds the resolver '
+          + 'origin itself, and a CDN is never on this host');
+      }
+    }
+  }
+  return problems;
+}
+
+/** Literal loopback, RFC1918, link-local and the metadata address, by literal only. */
+function isLoopbackOrPrivateHost(host: string): boolean {
+  const value = host.replace(/^\[|\]$/g, '').toLowerCase();
+  if (value === 'localhost' || value.endsWith('.localhost')) return true;
+  if (/^127\./.test(value) || value === '::1') return true;
+  if (/^10\./.test(value)) return true;
+  if (/^192\.168\./.test(value)) return true;
+  if (/^172\.(1[6-9]|2[0-9]|3[01])\./.test(value)) return true;
+  if (/^169\.254\./.test(value)) return true;
+  if (/^(fc|fd|fe80)/.test(value)) return true;
+  return false;
+}
+
+/** The loopback resolver origin for a port. Literal, because the narrow authority accepts nothing else. */
+export const resolverOriginFor = (port: number): string => `http://127.0.0.1:${port}`;
+
+/**
+ * The endpoint description the daemon and the generic preflight both consume.
+ *
+ * ONE CONSTRUCTION, TWO CONSUMERS, AND THAT IS THE REPAIR. The gate used to hand the operator's MINIMAL file
+ * straight to the generic preflight — which refuses an endpoint naming neither a resolver nor a direct base,
+ * so the first fully populated real run would have died before contacting anything. Building the effective
+ * endpoint once and giving it to both means what is validated is exactly what runs.
+ *
+ * THE RESOLVER ORIGIN COMES FIRST AND THE SWITCHES ARE HARD-CODED FALSE. The daemon checks every URL it
+ * dials against this allowlist, including the resolver's own, so omitting it makes the daemon refuse to
+ * start; and the two fixture switches are not passed through from the operator file at any value.
+ */
+export function effectiveEndpoint(operator: OperatorEndpointFile, resolverPort: number): EffectiveEndpoint {
+  const origin = resolverOriginFor(resolverPort);
+  const cdn = operator.allowedOrigins.map((entry) => entry.trim()).filter((entry) => entry !== origin);
+  return {
+    id: operator.id,
+    resolverUrl: `${origin}/resolve`,
+    allowedOrigins: [origin, ...cdn],
+    allowInsecureHttp: false,
+    allowPrivateAddresses: false,
+    loopbackResolver: true,
+  };
+}
+
 // ---------------------------------------------------------------------------------------------------------
 // Redaction
 // ---------------------------------------------------------------------------------------------------------

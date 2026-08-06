@@ -1,10 +1,7 @@
 {
   "_comment_purpose": "TEMPLATE — CONTAINS NO REAL VALUES. Every REPLACE-ME must be replaced; the gate refuses the file while any remain. This describes the four protected inputs a real TorBox run needs, and the one command sequence that runs it.",
-
   "_comment_status": "THE REAL-ACCOUNT RUN IS UNPROVEN. No TorBox account has ever been contacted by this repository. Everything below is executable and its offline equivalent has run 3/3 on a real Unraid host, but until an operator places these files and the run passes, nothing here is evidence about TorBox.",
-
   "_comment_where": "Place the real files under a 0700 directory. The default the gate looks in, and the ONLY place it ever looks, is /mnt/user/appdata/catalog/secrets/real-provider/. The gate never searches the filesystem for anything that might be a credential, never reads one from the environment, and never prompts. Override the directory with PROJECTION_REAL_PROVIDER_INPUT_DIR if your install differs.",
-
   "_comment_files": "FOUR FILES, ALL MODE 0600. Two of them hold secrets and they MUST BE DIFFERENT VALUES: `torbox-credential` is your API key and only the resolver ever sees it; `credential` is the gate secret the daemon presents to the resolver. The gate FAILS if they are equal.",
   "files": {
     "torbox-credential": "Your TorBox API key and nothing else. WHY THIS MATTERS MORE THAN A USUAL TOKEN: TorBox authenticates requestdl with a ?token= QUERY PARAMETER, so the request URL is itself a bearer credential. Anything that logs a request URL publishes this key. The resolver never logs, stores or returns one, refuses any credential file whose mode has group or other bits set, and this key is never mounted into the daemon container at all.",
@@ -12,7 +9,6 @@
     "objects.json": "1-3 objects you are legally entitled to. See deploy/real-provider-objects.template.json for the field shape. Each `ref` is a TorBox stable reference, described below. TREAT THIS FILE AS A SECRET: a reference identifies an item in your account.",
     "endpoint.json": "See endpointShape below. You supply the CDN origins; the gate supplies the resolver URL and origin itself, so you cannot get that part wrong."
   },
-
   "_comment_ref": "THE STABLE REFERENCE FORMAT. `torbox:<kind>:<providerId>:<fileId>` — the minimum TorBox's own endpoints need, and deliberately nothing else. No name, hash, size or category: each would be one more field to keep out of logs forever, and none is needed to fetch bytes.",
   "stableReferenceFormat": "torbox:<torrent|webdl|usenet>:<itemId>:<fileId>",
   "stableReferenceExamples": [
@@ -21,8 +17,7 @@
     "torbox:usenet:REPLACE-ME-ITEM-ID:REPLACE-ME-FILE-ID"
   ],
   "_comment_ids": "Both ids are plain non-negative integers. The item id is the torrent/web/usenet id TorBox shows for the item; the file id is the index of the file within it. Take both from your own TorBox dashboard — this gate never lists your account.",
-
-  "_comment_endpoint": "WHAT YOU WRITE IN endpoint.json. You supply `id` and the CDN origins. YOU DO NOT WRITE THE RESOLVER URL: the gate constructs it and prepends its origin to the allowlist itself, because the resolver's address depends on a network namespace the gate creates. An earlier version of this template asked operators to write it, and the address it told them to write could not have worked.",
+  "_comment_endpoint": "WHAT YOU WRITE IN endpoint.json — AND IT IS ONLY THESE FOUR FIELDS. You supply id and the CDN origins. You do NOT write resolverUrl, directBaseUrl, loopbackResolver, tokenFile or any transport tuning: the gate owns topology and the narrow loopback authority, and it REFUSES an endpoint file that supplies any of them rather than ignoring it — a file carrying loopbackResolver:true is one where somebody believed they were configuring the authority, and silently dropping it would leave them believing it. The gate validates this file and builds the complete description the preflight and the daemon both consume, so what is checked is exactly what runs.",
   "endpointShape": {
     "id": "torbox",
     "allowedOrigins": [
@@ -31,11 +26,9 @@
     "allowInsecureHttp": false,
     "allowPrivateAddresses": false
   },
-  "_comment_origins_hard": "FINDING THE RIGHT CDN ORIGINS IS THE ONE STEP THAT NEEDS CARE. TorBox mints links on hosts that can differ by account and region, and the daemon refuses any link whose origin is not listed — which is the behaviour you want, but it means a first run can fail closed on a host you did not anticipate. Resolve one object by hand first and list exactly the origin it returns. Every entry must be https. Do NOT widen this to a wildcard; an unbounded allowlist is how a signed URL becomes an SSRF.",
-
+  "_comment_origins_hard": "FINDING THE RIGHT CDN ORIGINS IS THE ONE STEP THAT NEEDS CARE. TorBox mints links on hosts that can differ by account and region, and the daemon refuses any link whose origin is not listed — which is the behaviour you want, but it means a first run can fail closed on a host you did not anticipate. Resolve one object by hand first and list exactly the origin it returns. EVERY ENTRY MUST BE https, must be scheme+host+port with no path, query, fragment or userinfo, and must not be a loopback, private, link-local or metadata address. Wildcards are refused: an unbounded allowlist is how a signed URL becomes a server-side request forgery.",
   "_comment_topology": "HOW THE PIECES ARE ARRANGED, AND WHY YOU DO NOT ARRANGE THEM YOURSELF. The daemon runs in a container; the resolver runs in a SECOND container that JOINS THE DAEMON'S NETWORK NAMESPACE. They then share one loopback, so the daemon reaches the resolver at 127.0.0.1 and nothing else on the network can reach it at all — the resolver is never published to a host port, because anything that could reach it could mint CDN links for your account. Starting the resolver on the host instead does NOT work: inside the daemon's container 127.0.0.1 is the container, not your host.",
   "_comment_authority": "The daemon is given a narrow `loopbackResolver` authority that permits the RESOLVER REQUEST ONLY to reach a literal 127.0.0.0/8 or ::1 address. It is not `allowPrivateAddresses`, which is test-only and would also authorise every RFC1918 destination; both fixture switches above stay false in a real run and the gate sets neither.",
-
   "_comment_run": "THE COMMAND SEQUENCE, FROM A CLEAN UNRAID CHECKOUT. Nothing takes a secret as an argument; the gate starts and stops the resolver for you.",
   "commands": {
     "1-preflight-secrets": "npx tsx src/ops/torbox-resolver-cli.ts preflight --credential <dir>/torbox-credential --gate-secret <dir>/credential",
@@ -44,6 +37,6 @@
     "_comment_skip": "Steps 2 and 3 exit 77, before building an image or sending a packet, until all four files exist. That is the correct outcome on a machine you have not prepared and must never be read as a pass.",
     "offline-equivalent": "npm run go:torbox-mount-gate:three   — the same path end to end against this repository's own TorBox fixture, needing no credential and contacting nothing"
   },
-
-  "_comment_never": "WHAT THIS ADAPTER WILL NEVER DO, whatever it is asked: create, control, edit, delete or download a provider job; request a permalink; list or export your account; follow a redirect; or set redirect=true. The only verb is GET, on the three requestdl paths, and the only effect is that TorBox opens an existing file's link for a while."
+  "_comment_never": "WHAT THIS ADAPTER WILL NEVER DO, whatever it is asked: create, control, edit, delete or download a provider job; request a permalink; list or export your account; follow a redirect; or set redirect=true. The only verb is GET, on the three requestdl paths, and the only effect is that TorBox opens an existing file's link for a while.",
+  "_comment_failclosed": "A FULLY POPULATED BUT MALFORMED CORPUS FAILS BEFORE ANYTHING IS BUILT OR CONTACTED. Every input check — secret modes, endpoint shape, object manifest, the daemon configuration and the register plan — runs before the Compose check, the /dev/fuse probe, the image build, the database and any packet. A typo costs you two seconds, not a container build."
 }

@@ -1,4 +1,5 @@
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -891,6 +892,261 @@ async function main(): Promise<void> {
       'and the gate must FAIL if the key ever appears there');
     assert(/they must differ/.test(gate),
       'and the two secrets must be required to differ');
+  });
+
+  // -------------------------------------------------------------------------------------------------------
+  // THE POPULATED-INPUT PATH, EXERCISED FOR REAL
+  // -------------------------------------------------------------------------------------------------------
+  //
+  // WHY THESE TESTS EXIST AND WHY THEY ARE NOT STATIC. Every earlier test of the real gate read the shell
+  // script and matched strings in it. That is why a P1 defect survived a whole review cycle: the gate handed
+  // the operator's documented MINIMAL endpoint file straight to the generic preflight, which refuses an
+  // endpoint naming neither a resolverUrl nor a directBaseUrl. The gate skips while inputs are absent and
+  // the offline gate passes, so nothing ever ran the populated path — and the first real run would have died
+  // before contacting anything.
+  //
+  // These build a synthetic but COMPLETE operator corpus in a temporary directory, at the real modes, and run
+  // the actual CLIs the shell gate runs, in the same order, with the same arguments. Nothing is mocked and
+  // nothing is inspected as text.
+
+  interface Corpus {
+    readonly dir: string;
+    readonly credential: string;
+    readonly gateSecret: string;
+    readonly objects: string;
+    readonly endpoint: string;
+  }
+
+  /** A complete operator corpus, exactly as `deploy/torbox-resolver.template.json` documents it. */
+  function operatorCorpus(over: { endpoint?: unknown; objects?: unknown } = {}): Corpus {
+    const dir = mkdtempSync(join(tmpdir(), 'tbop-'));
+    const credential = join(dir, 'torbox-credential');
+    const gateSecret = join(dir, 'credential');
+    const objects = join(dir, 'objects.json');
+    const endpoint = join(dir, 'endpoint.json');
+
+    writeFileSync(credential, 'torbox-api-key-not-a-real-one-0001');
+    writeFileSync(gateSecret, 'gate-secret-not-a-real-one-000002');
+    writeFileSync(objects, JSON.stringify(over.objects ?? [{
+      label: 'object-1',
+      ref: REF_TORRENT,
+      sizeBytes: 8 * 1024 * 1024,
+      // A REAL-SHAPED DIGEST. 64 hex characters is exactly the shape the redaction scrubber calls "a long
+      // opaque string that may be a credential", and masking it wrongly is the second defect these tests
+      // caught: every correctly written manifest was refused by its own preflight.
+      probeDigests: [{ offset: 1, length: 65_536, sha256: '9f2c4e1b7a3d0568cf91be24707d3a86e5b0c1d4f8a2937be6c05d17a4b39e82' }],
+    }]), 'utf8');
+    writeFileSync(endpoint, JSON.stringify(over.endpoint ?? {
+      id: 'torbox',
+      allowedOrigins: ['https://cdn.example.invalid'],
+      allowInsecureHttp: false,
+      allowPrivateAddresses: false,
+    }), 'utf8');
+
+    if (process.platform !== 'win32') {
+      for (const file of [credential, gateSecret, objects, endpoint]) chmodSync(file, 0o600);
+    }
+    return { dir, credential, gateSecret, objects, endpoint };
+  }
+
+  const runCli = (script: string, args: readonly string[]): { code: number; out: string } => {
+    const result = spawnSync('npx', ['tsx', join(HERE, '..', script), ...args],
+      { encoding: 'utf8', shell: true });
+    return { code: result.status ?? -1, out: `${result.stdout}${result.stderr}` };
+  };
+
+  const buildEffective = (corpus: Corpus, port = 8140): { code: number; out: string; path: string } => {
+    const path = join(corpus.dir, 'effective.json');
+    const result = runCli('src/ops/torbox-resolver-cli.ts',
+      ['effective-endpoint', '--endpoint', corpus.endpoint, '--resolver-port', String(port), '--out', path]);
+    return { ...result, path };
+  };
+
+  const genericPreflight = (corpus: Corpus, endpointPath: string): { code: number; out: string } =>
+    runCli('src/ops/projection-real-provider-cli.ts',
+      ['preflight', '--objects', corpus.objects, '--credential', corpus.gateSecret,
+        '--endpoint', endpointPath]);
+
+  await test('THE DOCUMENTED MINIMAL ENDPOINT SURVIVES THE WHOLE PRE-NETWORK PATH', async () => {
+    // THE REGRESSION. A complete corpus written exactly as the template documents it must reach the
+    // deliberate no-network boundary with everything green.
+    const corpus = operatorCorpus();
+
+    const secrets = runCli('src/ops/torbox-resolver-cli.ts',
+      ['preflight', '--credential', corpus.credential, '--gate-secret', corpus.gateSecret]);
+    assert(secrets.code === 0, `the secret preflight refused a valid corpus: ${secrets.out.slice(0, 200)}`);
+
+    const effective = buildEffective(corpus);
+    assert(effective.code === 0, `the effective endpoint could not be built: ${effective.out.slice(0, 300)}`);
+
+    const built = JSON.parse(readFileSync(effective.path, 'utf8')) as Record<string, unknown>;
+    assert(built.resolverUrl === 'http://127.0.0.1:8140/resolve', 'the resolver URL is a loopback literal');
+    assert(built.loopbackResolver === true, 'the narrow authority is granted');
+    assert(built.allowInsecureHttp === false && built.allowPrivateAddresses === false,
+      'and neither fixture switch is set');
+    const origins = built.allowedOrigins as string[];
+    assert(origins[0] === 'http://127.0.0.1:8140',
+      'the resolver origin is first: the daemon checks every url it dials against this list, its own '
+      + 'resolver included, so omitting it makes the daemon refuse to start');
+    assert(origins.includes('https://cdn.example.invalid'), 'and the operator CDN origin survives');
+
+    const preflight = genericPreflight(corpus, effective.path);
+    assert(preflight.code === 0,
+      `the generic preflight refused a valid corpus: ${preflight.out.slice(0, 300)}`);
+    assert(/nothing was contacted/i.test(preflight.out),
+      'and it must say it contacted nothing, which is the boundary this test stops at');
+  });
+
+  await test('THE OLD DIRECT CALL — OPERATOR FILE STRAIGHT TO THE GENERIC PREFLIGHT — STILL FAILS', async () => {
+    // THE DEFECT ITSELF, PINNED. If somebody reinstates the shortcut, this fails and names it.
+    const corpus = operatorCorpus();
+    const direct = genericPreflight(corpus, corpus.endpoint);
+    assert(direct.code !== 0,
+      'the operator MINIMAL endpoint was accepted by the generic preflight; the effective-endpoint step '
+      + 'that exists to build a usable one has become optional, and a real run would depend on which '
+      + 'path the gate happened to take');
+    assert(/neither a resolverUrl nor a directBaseUrl/.test(direct.out),
+      `and the refusal must be the one that broke the real run; got: ${direct.out.slice(0, 200)}`);
+  });
+
+  await test('A VALID sha256 DIGEST IS NOT MISTAKEN FOR A LEAKED CREDENTIAL', async () => {
+    // THE SECOND DEFECT THIS PATH EXPOSED. 64 hex characters match the scrubber's "long opaque string"
+    // rule, so every correctly written objects.json -- with the digests the gate REQUIRES -- was refused by
+    // its own preflight. That broke the generic real-provider gate too, not only TorBox.
+    const corpus = operatorCorpus();
+    const effective = buildEffective(corpus);
+    const preflight = genericPreflight(corpus, effective.path);
+    assert(!/long opaque string/.test(preflight.out),
+      `a required sha256 digest was read as a leaked credential: ${preflight.out.slice(0, 200)}`);
+    assert(preflight.code === 0, 'and the manifest is accepted');
+
+    // ...AND THE SCRUBBER STILL BITES ON A REAL LEAK. Masking the digest must not have blinded it.
+    const leaky = operatorCorpus({
+      objects: [{
+        label: 'object-1', ref: REF_TORRENT, sizeBytes: 8 * 1024 * 1024,
+        note: 'https://api.torbox.app/v1/api/torrents/requestdl?token=SECRETVALUE&torrent_id=1',
+        probeDigests: [{ offset: 1, length: 65_536, sha256: 'a'.repeat(64) }],
+      }],
+    });
+    const leakyEffective = buildEffective(leaky);
+    const leakyPreflight = genericPreflight(leaky, leakyEffective.path);
+    assert(leakyPreflight.code !== 0, 'a manifest carrying a signed URL was accepted');
+  });
+
+  await test('EVERY FIELD THE GATE OWNS IS REFUSED IN AN OPERATOR ENDPOINT FILE', async () => {
+    // REFUSED, NOT IGNORED. A file carrying `loopbackResolver: true` is one where somebody believed they
+    // were configuring the narrow authority. Silently dropping it would leave them believing it.
+    const base = { id: 'torbox', allowedOrigins: ['https://cdn.example.invalid'] };
+    for (const [field, value] of [
+      ['resolverUrl', 'http://127.0.0.1:9999/resolve'],
+      ['directBaseUrl', 'https://cdn.example.invalid/objects'],
+      ['loopbackResolver', true],
+      ['tokenFile', '/etc/passwd'],
+      ['maxConnections', 999],
+      ['resolutionDeadlineMs', 1],
+      ['refreshCooldownMs', 1],
+    ] as const) {
+      const corpus = operatorCorpus({ endpoint: { ...base, [field]: value } });
+      const built = buildEffective(corpus);
+      assert(built.code !== 0, `an operator endpoint carrying "${field}" was accepted`);
+      assert(built.out.includes(field), `and the refusal must name "${field}" so it teaches`);
+    }
+  });
+
+  await test('AN UNKNOWN TRANSPORT FIELD IS REFUSED RATHER THAN SILENTLY DROPPED', async () => {
+    const corpus = operatorCorpus({
+      endpoint: { id: 'torbox', allowedOrigins: ['https://cdn.example.invalid'], proxyUrl: 'http://evil' },
+    });
+    const built = buildEffective(corpus);
+    assert(built.code !== 0, 'an unknown transport field was silently ignored');
+    assert(/proxyUrl/.test(built.out), 'and the refusal must name it');
+  });
+
+  await test('A FIXTURE SWITCH SET TRUE IN AN OPERATOR FILE IS REFUSED', async () => {
+    for (const field of ['allowInsecureHttp', 'allowPrivateAddresses'] as const) {
+      const corpus = operatorCorpus({
+        endpoint: { id: 'torbox', allowedOrigins: ['https://cdn.example.invalid'], [field]: true },
+      });
+      const built = buildEffective(corpus);
+      assert(built.code !== 0, `"${field}": true was accepted in a real corpus`);
+    }
+  });
+
+  await test('EVERY BAD ORIGIN SHAPE IS REFUSED', async () => {
+    for (const [what, origins] of [
+      ['an empty list', []],
+      ['a wildcard', ['*']],
+      ['a partial wildcard', ['https://*.torbox.app']],
+      ['plaintext', ['http://cdn.example.invalid']],
+      ['an empty string', ['']],
+      ['a path', ['https://cdn.example.invalid/objects']],
+      ['a query', ['https://cdn.example.invalid?a=b']],
+      ['userinfo', ['https://user:pass@cdn.example.invalid']],
+      ['a loopback CDN', ['https://127.0.0.1']],
+      ['localhost', ['https://localhost']],
+      ['RFC1918', ['https://10.0.0.5']],
+      ['the metadata address', ['https://169.254.169.254']],
+      ['a non-string', [42]],
+    ] as const) {
+      const corpus = operatorCorpus({ endpoint: { id: 'torbox', allowedOrigins: origins } });
+      const built = buildEffective(corpus);
+      assert(built.code !== 0, `an allowlist containing ${what} was accepted`);
+    }
+  });
+
+  await test('AN INVALID ENDPOINT ID IS REFUSED', async () => {
+    for (const id of ['', 'Has Spaces', 'UPPER', 'https://x', '../etc', 'a'.repeat(40), 42]) {
+      const corpus = operatorCorpus({ endpoint: { id, allowedOrigins: ['https://cdn.example.invalid'] } });
+      const built = buildEffective(corpus);
+      assert(built.code !== 0, `the endpoint id ${JSON.stringify(id)} was accepted`);
+    }
+  });
+
+  await test('A MALFORMED ENDPOINT FILE FAILS CLOSED WITHOUT CONTACTING ANYTHING', async () => {
+    for (const raw of ['not json', '[]', 'null', '"a string"', '123']) {
+      const dir = mkdtempSync(join(tmpdir(), 'tbop-bad-'));
+      const endpoint = join(dir, 'endpoint.json');
+      writeFileSync(endpoint, raw, 'utf8');
+      const built = runCli('src/ops/torbox-resolver-cli.ts',
+        ['effective-endpoint', '--endpoint', endpoint, '--resolver-port', '8140',
+          '--out', join(dir, 'out.json')]);
+      assert(built.code !== 0, `the endpoint file ${JSON.stringify(raw)} was accepted`);
+      assert(!/api\.torbox\.app/.test(built.out), 'and nothing was contacted');
+    }
+  });
+
+  await test('THE EFFECTIVE ENDPOINT NEVER CARRIES A SECRET OR A REFERENCE INTO A REPORT', async () => {
+    const corpus = operatorCorpus();
+    const built = buildEffective(corpus);
+    assert(built.code === 0, 'setup');
+    assert(findSecretShapes(built.out, 'stdout').length === 0,
+      `the effective-endpoint output leaked: ${built.out.slice(0, 150)}`);
+    // The effective endpoint file legitimately carries the resolver URL, which is a loopback literal and no
+    // secret at all -- but it must carry nothing else.
+    const text = readFileSync(built.path, 'utf8');
+    assert(!text.includes('torbox-api-key'), 'the effective endpoint carries the TorBox credential');
+    assert(!text.includes('gate-secret-not'), 'or the gate secret');
+    assert(!text.includes(REF_TORRENT), 'or a stable reference');
+  });
+
+  await test('THE GATE FEEDS THE EFFECTIVE ENDPOINT TO BOTH CONSUMERS, NOT THE OPERATOR FILE', () => {
+    // The shell must not have kept a second path to the same decision. Two derivations of one thing is how
+    // a gate validates a shape it does not run -- which is precisely the defect being repaired.
+    const gate = repoFile('deploy/projection-torbox-real-gate.sh');
+    assert(/effective-endpoint/.test(gate), 'the gate builds an effective endpoint');
+    assert(/--endpoint "\$EFFECTIVE_ENDPOINT"/.test(gate),
+      'and the generic preflight is given it rather than the operator file');
+    assert(/config\.cjs" "\$EFFECTIVE_ENDPOINT"/.test(gate),
+      'and so is the daemon configuration');
+    // THE OPERATOR FILE MAY REACH EXACTLY ONE PLACE: the validator that turns it into an effective
+    // endpoint. Anywhere else is the defect coming back.
+    const operatorFileUses = gate.split('\n')
+      .filter((line) => line.includes('$ENDPOINT_FILE') && line.includes('--endpoint'));
+    assert(operatorFileUses.length === 1,
+      `the operator endpoint file is passed to ${operatorFileUses.length} commands; only `
+      + 'effective-endpoint may receive it');
+    assert(/effective-endpoint/.test(gate.slice(0, gate.indexOf(operatorFileUses[0] as string) + 200)),
+      'and the one command that receives it must be effective-endpoint');
   });
 
   await test('this suite runs in the aggregate', () => {

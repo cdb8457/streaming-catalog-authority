@@ -1,6 +1,9 @@
+import { readFileSync, writeFileSync } from 'node:fs';
 import { createResolverService, readSecretFile, CredentialError } from './torbox-resolver-service.js';
-import { readFileSync } from 'node:fs';
-import { findSecretShapes } from '../core/adapters/torbox-resolver.js';
+import {
+  effectiveEndpoint, findSecretShapes, operatorEndpointProblems,
+  type OperatorEndpointFile,
+} from '../core/adapters/torbox-resolver.js';
 
 // The TorBox resolver service, from the command line.
 //
@@ -13,6 +16,9 @@ import { findSecretShapes } from '../core/adapters/torbox-resolver.js';
 //
 //   preflight  --credential F --gate-secret F
 //                checks both files exist, are regular, are non-empty and are mode 0600 — and CONTACTS NOTHING
+//   effective-endpoint --endpoint F --resolver-port N --out F
+//                validates the operator's MINIMAL endpoint file, refuses every field the gate owns, and
+//                emits the complete description the preflight and the daemon both consume — CONTACTS NOTHING
 //
 // THERE IS NO --api-origin FLAG, AND THAT IS DELIBERATE. The argv check below refuses ANY url on the
 // command line, with no exceptions — because an exception for "it is only an origin" is one more thing
@@ -134,6 +140,43 @@ switch (command) {
     break;
   }
 
+  case 'effective-endpoint': {
+    // THE REPAIR FOR THE DEFECT REVIEW FOUND, AND IT IS ONE CONSTRUCTION WITH TWO CONSUMERS.
+    //
+    // The gate used to hand the operator's MINIMAL endpoint file straight to the generic preflight, which
+    // refuses an endpoint naming neither a resolverUrl nor a directBaseUrl. The gate skipped while inputs
+    // were absent and the offline gate passed, so nothing noticed -- but the first fully populated real run
+    // would have died at preflight before contacting anything.
+    //
+    // This validates what the operator wrote, refuses every field the GATE owns, and emits the complete
+    // description. The preflight and the daemon configuration are then built from the SAME file, so what is
+    // validated is exactly what runs.
+    const endpointPath = need('endpoint');
+    const port = Number(need('resolver-port'));
+    if (!Number.isInteger(port) || port <= 0 || port > 65_535) fail('--resolver-port is not a port');
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(endpointPath, 'utf8'));
+    } catch {
+      fail('the endpoint description is not valid JSON');
+    }
+    const problems = operatorEndpointProblems(parsed);
+    if (problems.length > 0) {
+      console.error('torbox-resolver: the endpoint description is not usable:');
+      for (const problem of problems) console.error(`  - ${problem}`);
+      console.error('  Nothing was contacted. See deploy/torbox-resolver.template.json for the shape.');
+      process.exit(1);
+    }
+    const effective = effectiveEndpoint(parsed as OperatorEndpointFile, port);
+    writeFileSync(need('out'), `${JSON.stringify(effective, null, 2)}
+`);
+    console.log(`  the operator's endpoint is usable; built an effective endpoint for ${effective.id}`);
+    console.log(`  with ${effective.allowedOrigins.length} allowed origin(s): the loopback resolver, plus `
+      + `${effective.allowedOrigins.length - 1} operator CDN origin(s)`);
+    break;
+  }
+
   default:
-    fail(`unknown command: ${command || '(none)'} — expected serve or preflight`);
+    fail(`unknown command: ${command || '(none)'} — expected serve, preflight or effective-endpoint`);
 }

@@ -312,8 +312,19 @@ async function main(): Promise<void> {
       const problems = [...inputProblems({ objects, credential, endpoint, realEndpoint })];
 
       // The manifest itself must not carry anything unprintable, because the gate prints labels from it.
-      const raw = readFileSync(need(args, 'objects'), 'utf8');
-      for (const leak of findLeaks(raw.replace(/"ref"\s*:\s*"[^"]*"/g, '"ref":"<redacted>"'), 'objects')) {
+      // THE STRUCTURAL FIELDS ARE MASKED BEFORE THE SCAN, and getting this wrong made every valid manifest
+      // fail. A sha256 is 64 hex characters, which is exactly the shape the scrubber calls "a long opaque
+      // string that may be a credential" -- so a correctly written objects.json, with the digests the gate
+      // REQUIRES, was refused by its own preflight. The digests are not secrets: they are validated by their
+      // own shape check above, and the whole point of recording them is that they get compared.
+      //
+      // The ref stays masked because it IS sensitive, and masking is the right treatment for both: what the
+      // scan is looking for is a URL or a credential somewhere it does not belong, not a field the schema
+      // put there.
+      const raw = readFileSync(need(args, 'objects'), 'utf8')
+        .replace(/"ref"\s*:\s*"[^"]*"/g, '"ref":"<redacted>"')
+        .replace(/"sha256"\s*:\s*"[0-9a-fA-F]{64}"/g, '"sha256":"<digest>"');
+      for (const leak of findLeaks(raw, 'objects')) {
         problems.push(`the object manifest carries ${leak.kind} outside its ref field`);
       }
 

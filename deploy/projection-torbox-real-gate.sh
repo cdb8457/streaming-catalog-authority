@@ -97,12 +97,6 @@ if [ -n "$missing" ]; then
 fi
 echo "  four operator inputs are present; this run WILL contact TorBox"
 
-if ! docker run --rm --device /dev/fuse:/dev/fuse "$VERIFY_IMAGE" test -c /dev/fuse >/dev/null 2>&1; then
-  echo "SKIPPED (status ${GATE_SKIP_STATUS}): no /dev/fuse is reachable from a container on this host." >&2
-  echo "      It is not a pass and must not be reported as one." >&2
-  exit "$GATE_SKIP_STATUS"
-fi
-
 mkdir -p "$WORK/manifest" "$WORK/cache" "$WORK/mnt" "$WORK/out" "$WORK/inputs"
 chmod 755 "$GATE_ROOT" "$WORK"
 chmod 700 "$WORK/inputs"
@@ -153,35 +147,33 @@ writeFileSync(out, JSON.stringify({ objects: objects.length }, null, 2) + '\n');
 REGISTER
 
 cat > "$WORK/config.cjs" <<'CONFIG'
-// The daemon config, built from the operator's endpoint description.
+// The daemon config, built from the EFFECTIVE endpoint -- the same validated file the preflight consumed.
+//
+// THIS SCRIPT DOES NO REASONING ABOUT ORIGINS OR SWITCHES ANY MORE, and that is the repair. It used to
+// derive the resolver URL and filter the allowlist itself, in parallel with what the preflight was given.
+// Two derivations of one thing is how a gate validates a shape it does not run: the preflight was handed
+// the operator's MINIMAL file, which names no resolver at all, and would have refused it. Now the effective
+// endpoint is built and validated once, and both consumers read that.
 //
 // THE DAEMON IS GIVEN THE GATE SECRET AND NOTHING ELSE. `tokenFile` names the gate secret, which authorises
 // the daemon to ASK the resolver for access material. The TorBox API key never appears here and is never
 // mounted into this container.
-//
-// `loopbackResolver` IS THE NARROW PRODUCTION AUTHORITY, and it is not allowPrivateAddresses. It permits the
-// RESOLVER REQUEST ONLY to reach a literal 127.0.0.0/8 or ::1 address. It does not permit RFC1918,
-// link-local, the metadata address, a DNS name that resolves to loopback, a CDN URL, or directBaseUrl.
 const { readFileSync, writeFileSync } = require('node:fs');
-const [, , endpointPath, out, resolverPort] = process.argv;
-const endpoint = JSON.parse(readFileSync(endpointPath, 'utf8'));
+const [, , effectivePath, out] = process.argv;
+const endpoint = JSON.parse(readFileSync(effectivePath, 'utf8'));
 
-const resolverUrl = 'http://127.0.0.1:' + resolverPort + '/resolve';
-const resolverOrigin = 'http://127.0.0.1:' + resolverPort;
-
-// THE OPERATOR'S CDN ORIGINS, PLUS THE RESOLVER'S OWN. The daemon checks every url it dials against this
-// list -- including the resolver's -- so omitting the resolver origin makes it refuse to start.
-const cdnOrigins = (endpoint.allowedOrigins ?? []).filter((origin) => origin !== resolverOrigin);
-for (const origin of cdnOrigins) {
-  if (!origin.startsWith('https://')) {
-    console.error('endpoint.json allowlists a non-https CDN origin; a real run will not carry an '
-      + 'entitlement over plaintext');
+// A LAST ASSERTION BEFORE THE DAEMON SEES IT. These are guaranteed by the builder; restating them here costs
+// nothing and means a future change to either side cannot quietly disagree with the other.
+for (const [field, expected] of [['allowInsecureHttp', false], ['allowPrivateAddresses', false],
+  ['loopbackResolver', true]]) {
+  if (endpoint[field] !== expected) {
+    console.error('the effective endpoint has ' + field + ' = ' + String(endpoint[field])
+      + ', which a real run never sets');
     process.exit(1);
   }
 }
-if (cdnOrigins.length === 0) {
-  console.error('endpoint.json names no CDN origin. The daemon refuses any link whose origin is not '
-    + 'listed, so a run with none can never read a byte');
+if (!String(endpoint.resolverUrl).startsWith('http://127.0.0.1:')) {
+  console.error('the effective endpoint resolver is not a literal loopback address');
   process.exit(1);
 }
 
@@ -193,10 +185,9 @@ writeFileSync(out, JSON.stringify({
   perEndpointMaxInflight: 2,
   endpoints: [{
     id: endpoint.id,
-    resolverUrl,
-    allowedOrigins: [resolverOrigin, ...cdnOrigins],
+    resolverUrl: endpoint.resolverUrl,
+    allowedOrigins: endpoint.allowedOrigins,
     tokenFile: '/var/lib/projectiond/inputs/gate-secret',
-    // NEITHER FIXTURE SWITCH IS SET, AND A REAL RUN NEVER SETS THEM.
     allowInsecureHttp: false,
     allowPrivateAddresses: false,
     loopbackResolver: true,
@@ -313,15 +304,51 @@ console.log(String(hits));
 SCAN
 
 # ----------------------------------------------------------------------------------------------------------
-step "PREFLIGHT — input shape and credential permissions, CONTACTING NOTHING"
+step "PREFLIGHT — every input check that needs no Docker, BEFORE any image, database or packet"
 # ----------------------------------------------------------------------------------------------------------
+# THE ORDER IS THE POINT. A fully populated but malformed corpus must fail closed having built nothing and
+# contacted nothing: an operator whose endpoint file has a typo should learn that in two seconds, not after a
+# container image is built and a database is started. Every check below is pure file inspection.
+
+# 1. THE SECRETS: present, regular, non-empty, mode 0600.
 npx tsx src/ops/torbox-resolver-cli.ts preflight \
   --credential "$REL/inputs/torbox-credential" --gate-secret "$REL/inputs/gate-secret" \
   || die "the operator's secret files are not usable; nothing was contacted"
-npx tsx src/ops/projection-real-provider-cli.ts preflight \
-  --objects "$OBJECTS_FILE" --credential "$REL/inputs/gate-secret" --endpoint "$ENDPOINT_FILE" \
-  || die "the operator's object manifest or endpoint description is not usable; nothing was contacted"
 
+# 2. THE ENDPOINT: validate what the operator wrote, refuse every field the GATE owns, and build the
+#    complete description. THIS IS THE FIX FOR THE DEFECT REVIEW FOUND -- the generic preflight below used to
+#    be handed the operator's MINIMAL file, which names no resolver at all, so the first fully populated real
+#    run would have died here. One construction, two consumers.
+EFFECTIVE_ENDPOINT="$REL/out/effective-endpoint.json"
+npx tsx src/ops/torbox-resolver-cli.ts effective-endpoint \
+  --endpoint "$ENDPOINT_FILE" --resolver-port "${RESOLVER_PORT}" --out "$EFFECTIVE_ENDPOINT" \
+  || die "the operator's endpoint description is not usable; nothing was contacted"
+
+# 3. THE CORPUS AND THE CREDENTIAL, against the endpoint that will ACTUALLY be used.
+npx tsx src/ops/projection-real-provider-cli.ts preflight \
+  --objects "$OBJECTS_FILE" --credential "$REL/inputs/gate-secret" --endpoint "$EFFECTIVE_ENDPOINT" \
+  || die "the operator's object manifest is not usable; nothing was contacted"
+
+# 4. THE DAEMON CONFIGURATION, built now rather than later, so a configuration this gate would refuse is
+#    found before anything is started.
+node "$REL/config.cjs" "$EFFECTIVE_ENDPOINT" "$WORK/config.json" \
+  || die "the effective endpoint could not be turned into a daemon configuration"
+
+# 5. THE REGISTER PLAN, which parses the object manifest and writes a 0600 script. Still no Docker.
+node "$REL/register.cjs" "$REL/out/register.json" "$OBJECTS_FILE" "$EFFECTIVE_ENDPOINT"
+echo "  every input check passed, and NOTHING has been built, started or contacted"
+
+# ----------------------------------------------------------------------------------------------------------
+step "host and Compose checks — the first steps that need Docker at all"
+# ----------------------------------------------------------------------------------------------------------
+# THE /dev/fuse PROBE MOVED HERE, BEHIND THE FILE CHECKS. It is a docker run, and a fully populated but
+# malformed corpus should fail closed having started no container at all -- an operator with a typo in
+# endpoint.json learns that in two seconds rather than after a container has been pulled and run.
+if ! docker run --rm --device /dev/fuse:/dev/fuse "$VERIFY_IMAGE" test -c /dev/fuse >/dev/null 2>&1; then
+  echo "SKIPPED (status ${GATE_SKIP_STATUS}): no /dev/fuse is reachable from a container on this host." >&2
+  echo "      It is not a pass and must not be reported as one." >&2
+  exit "$GATE_SKIP_STATUS"
+fi
 docker compose -f "$COMPOSE_FILE" config >/dev/null || die "the gate's Compose file is not valid"
 npx tsx src/ops/projection-host-preflight-cli.ts propagation --path "$GATE_ROOT" --require
 npx tsx src/ops/projection-host-preflight-cli.ts traversal --path "$GATE_ROOT" --path "$WORK"
@@ -337,7 +364,7 @@ docker network create "$NETWORK" >/dev/null 2>&1 || true
 # ----------------------------------------------------------------------------------------------------------
 step "publishing a generation whose sources are the operator's TorBox stable references"
 # ----------------------------------------------------------------------------------------------------------
-node "$REL/register.cjs" "$REL/out/register.json" "$OBJECTS_FILE" "$ENDPOINT_FILE"
+# The register script was written during preflight, before anything was built.
 bash "$WORK/out/register.sh"
 npx tsx src/ops/projection-publish-cli.ts --manifest-dir "$REL/manifest" > "$WORK/out/publish.json"
 test "$(node "$REL/jq.cjs" outcome < "$WORK/out/publish.json")" = "published" \
@@ -346,9 +373,7 @@ test "$(node "$REL/jq.cjs" outcome < "$WORK/out/publish.json")" = "published" \
 # ----------------------------------------------------------------------------------------------------------
 step "mounting — the daemon gets the GATE SECRET only, never the TorBox key"
 # ----------------------------------------------------------------------------------------------------------
-node "$REL/config.cjs" "$ENDPOINT_FILE" "$WORK/config.json" "${RESOLVER_PORT}" \
-  || die "the endpoint description could not be turned into a daemon configuration"
-
+# The daemon configuration was built during preflight, from the effective endpoint.
 # ONLY THE GATE SECRET IS MOUNTED. A separate directory is built for the daemon so the TorBox key is not
 # merely unreferenced in its container — it is not present in it.
 mkdir -p "$WORK/daemon-inputs"
