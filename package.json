@@ -109,6 +109,7 @@
     "test:projection-host-preflight": "tsx test/projection-host-preflight.ts",
     "test:projection-lease-gates": "tsx test/projection-lease-gates.ts",
     "test:projection-gate-embedded-programs": "tsx test/projection-gate-embedded-programs.ts",
+    "test:projection-gate-mount-programs": "tsx test/projection-gate-mount-programs.ts",
     "ops:projection-contract-export": "tsx src/ops/projection-contract-export-cli.ts",
     "ops:projection-register": "tsx src/ops/projection-register-cli.ts",
     "ops:projection-publish": "tsx src/ops/projection-publish-cli.ts",

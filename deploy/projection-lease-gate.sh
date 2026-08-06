@@ -100,18 +100,45 @@ chmod 755 "$GATE_ROOT" "$WORK"
 chmod 777 "$WORK/cache" "$WORK/mnt" "$WORK/out"
 
 cat > "$WORK/jq.cjs" <<'JQ'
+// One field out of a JSON document on stdin, for shells that have no jq.
+//
+// THE DECODE IS SET ON THE STREAM, NOT DONE PER CHUNK. `raw += chunk` coerces each Buffer with its own
+// `toString()`, so a multi-byte character split across a read boundary becomes two U+FFFD replacement
+// characters -- silently, exit 0, with a value that is no longer the value the document carried. Measured on
+// an 800 KB document of two-byte characters: 24 replacement characters and a wrong answer, reported as a
+// success. `setEncoding` decodes with a StringDecoder that holds the partial sequence across the boundary.
+// Today's fixtures are ASCII, so this is latent. The operator corpus Phase 1 closes against is NOT GUARANTEED
+// to be ASCII -- no such corpus exists yet, so nothing here claims to have measured one -- and every gate reads
+// its verdicts through this program.
 let raw = '';
+process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => { raw += chunk; });
 process.stdin.on('end', () => {
-  const value = JSON.parse(raw)[process.argv[2]];
+  const document = JSON.parse(raw);
+  // AND A DOCUMENT THAT IS NOT AN OBJECT ANSWERS '' FOR EVERY FIELD, which is the shape of a field that is
+  // merely absent. A caller comparing that to an expected value fails for the wrong reason, and one testing
+  // it for emptiness passes. Neither may read a scalar as an answer.
+  if (document === null || typeof document !== 'object' || Array.isArray(document)) {
+    console.error('jq: the document on stdin is not an object, so no field of it can be read');
+    process.exit(2);
+  }
+  const value = document[process.argv[2]];
   console.log(value === undefined ? '' : String(value));
 });
 JQ
 
 cat > "$WORK/sha.cjs" <<'SHA'
+// The digest of a whole file. AN OBJECT THAT YIELDED NO BYTES IS NOT AN OBJECT THAT DIGESTS TO
+// e3b0c442...b855 -- that value is the answer to "there was nothing here", and a gate comparing it against
+// another empty read would call the two equal.
 const { createHash } = require('node:crypto');
 const { readFileSync } = require('node:fs');
-console.log(createHash('sha256').update(readFileSync(process.argv[2])).digest('hex'));
+const bytes = readFileSync(process.argv[2]);
+if (bytes.length === 0) {
+  console.error('sha: the object is empty, so there is nothing to digest');
+  process.exit(3);
+}
+console.log(createHash('sha256').update(bytes).digest('hex'));
 SHA
 
 # EVERY EMBEDDED SCRIPT IS A FILE IN A QUOTED HEREDOC, not an inline `node -e "..."` spanning lines.
@@ -137,6 +164,10 @@ cat > "$WORK/objects.cjs" <<'OBJECTS'
 const { readFileSync } = require('node:fs');
 const objects = JSON.parse(readFileSync(process.argv[2], 'utf8'));
 const object = objects.find((entry) => entry.ref === process.argv[3]);
+// THE SIBLING COPY IN THE DATAPLANE GATES NAMES THIS AND THIS ONE DID NOT. An unmatched ref left `object`
+// undefined and the next line raised a TypeError -- fail-closed, but reported as a crash in a helper rather
+// than as "the endpoint is not serving the object this gate registered", which is what it means.
+if (!object) { console.error('no such object'); process.exit(1); }
 if (process.argv[4] === 'sha256') console.log(object.sha256);
 else if (process.argv[4] === 'size') console.log(object.size);
 else console.log(object.probes.map((p) => [p.position, p.offset, p.length, p.sha256].join(':')).join(' '));
@@ -497,7 +528,11 @@ while [ "$i" -le 20 ]; do
   # single-flight, which is what G25 is about.
   offset=$(( i * 4 * 1024 * 1024 ))
   (
-    if dd if="$target" bs=65536 skip=$(( offset / 65536 )) count=1 of=/dev/null 2>/dev/null; then
+    # `dd` EXITS 0 FOR A READ THAT LANDED PAST EOF, measured in the gate's own pinned image: a block beyond
+    # the end of the object returns no bytes and reports success. A reader that demanded nothing is not one
+    # of the twenty concurrent demands this phase counts, so the BYTE COUNT decides, not dd's status.
+    if [ "$(dd if="$target" bs=65536 skip=$(( offset / 65536 )) count=1 2>/dev/null | wc -c | tr -d ' ')" \
+         -gt 0 ]; then
       echo ok > "/out/stampede-$i.done"
     else
       echo fail > "/out/stampede-$i.done"
@@ -525,7 +560,23 @@ sleep 1
 counters counters-g25-after.json
 
 STARTED="$(find "$WORK/out" -name 'stampede-*.started' | wc -l | tr -d ' ')"
-echo "  $STARTED reader(s) started"
+# EVERY READER RECORDED AN OUTCOME AND NOBODY READ ONE. `--opens` was counted from the `.started` files,
+# which the loop writes unconditionally the instant it launches each background job -- so the denominator of
+# the single-flight claim counted LAUNCHES, and the `ok`/`fail` each reader wrote when its read finished was
+# never opened by anything. Twenty readers that all failed still asserted twenty concurrent opens, and G25
+# would then be measuring one resolution against twenty demands that were never made.
+# `|| true` ON THE GREP AND NOWHERE ELSE. This file runs under `set -euo pipefail`, and `grep` exits 1 when it
+# matches nothing — which is precisely the case this check exists to catch. Without it the gate dies AT THE
+# ASSIGNMENT, before the diagnostic below can say which readers failed: still fail-closed, but reported as a
+# nameless non-zero exit rather than as the thing that went wrong. The zero it produces is then judged, not
+# swallowed.
+DONE_OK="$( { grep -lx ok "$WORK/out/stampede-"*.done 2>/dev/null || true; } | wc -l | tr -d ' ')"
+DONE_ANY="$(find "$WORK/out" -name 'stampede-*.done' | wc -l | tr -d ' ')"
+echo "  $STARTED reader(s) started, $DONE_ANY finished, $DONE_OK returned bytes"
+test "$DONE_ANY" = "$STARTED" \
+  || die "$STARTED stampede reader(s) started but $DONE_ANY recorded an outcome, so the concurrent demand this phase counts was not the demand that ran"
+test "$DONE_OK" = "$STARTED" \
+  || die "$(( STARTED - DONE_OK )) of $STARTED stampede reader(s) returned no bytes, so they placed no demand and may not be counted as opens"
 lease g25-stampede --before "$REL/out/counters-g25-before.json" \
   --after "$REL/out/counters-g25-after.json" --opens "$STARTED"
 

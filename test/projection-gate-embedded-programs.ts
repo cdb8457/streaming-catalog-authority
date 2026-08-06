@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import {
   chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync,
@@ -795,6 +796,341 @@ test('THE POINTER FIELD THIS RELIES ON IS THE CONTRACT\'S, not a name invented h
   assert(!heredoc(LEASE_GATE, 'identity.cjs').includes('readdirSync'),
     'and no longer walks the manifest directory looking for something that starts with generation-');
 });
+
+// ---------------------------------------------------------------------------------------------------------
+// `jq.cjs` — ELEVEN gates, and every verdict any of them reads out of a JSON document comes through it
+// ---------------------------------------------------------------------------------------------------------
+//
+// This is the most-copied program in the tranche and the least examined: `field()` is defined as `node
+// jq.cjs "$1"` in all eleven gates, and `test "$(field outcome < …)" = "published"` is how a gate learns
+// whether its own publish succeeded.
+
+const JQ_GATES = [
+  'deploy/projection-emby-dataplane-gate.sh',
+  'deploy/projection-jellyfin-dataplane-gate.sh',
+  'deploy/projection-lease-gate.sh',
+  'deploy/projection-path-lifecycle-gate.sh',
+  'deploy/projection-plex-dataplane-gate.sh',
+  'deploy/projection-publisher-mount-gate.sh',
+  'deploy/projection-rclone-comparison-gate.sh',
+  'deploy/projection-real-provider-gate.sh',
+  'deploy/projection-three-server-concurrency-gate.sh',
+  'deploy/projection-torbox-mount-gate.sh',
+  'deploy/projection-torbox-real-gate.sh',
+] as const;
+
+/** Run a program that reads stdin, with the payload delivered as BYTES rather than as a string. */
+function runNodeStdin(script: string, args: readonly string[], input: Buffer): Run {
+  const result = spawnSync(process.execPath, [script, ...args], { input, maxBuffer: 1 << 28 });
+  return {
+    code: result.status ?? -1,
+    out: `${(result.stdout ?? Buffer.alloc(0)).toString('utf8')}`
+      + `${(result.stderr ?? Buffer.alloc(0)).toString('utf8')}`,
+  };
+}
+
+test('THE ELEVEN COPIES OF jq.cjs ARE ONE PROGRAM, so one correction cannot fix ten of them', () => {
+  const bodies = JQ_GATES.map((gate) => heredoc(gate, 'jq.cjs'));
+  for (const [index, body] of bodies.entries()) {
+    assertEq(body, bodies[0] as string,
+      `${JQ_GATES[index]} carries a jq.cjs that differs from the other ten`);
+  }
+});
+
+test('A FIELD IS READ OUT OF AN ORDINARY DOCUMENT, which is the control the cases below are measured against',
+  () => {
+    const { script } = extract(JQ_GATES[0], 'jq.cjs');
+    const run = runNodeStdin(script, ['outcome'], Buffer.from('{"outcome":"published","additions":3}'));
+    assertEq(run.code, 0, `an ordinary read must succeed: ${run.out}`);
+    assertEq(run.out.trim(), 'published', 'and answer with the field');
+  });
+
+test('A MULTI-BYTE VALUE SPLIT ACROSS A READ BOUNDARY SURVIVES, where it used to come back corrupted', () => {
+  // THE DEFECT, MEASURED. `raw += chunk` coerces each Buffer with its own `toString()`, so a character
+  // whose bytes land on either side of a 64 KiB read boundary decodes as two U+FFFD replacement characters.
+  // The merge-base program answered a payload of this shape with 24 of them and exit 0 — a wrong value
+  // reported as a success.
+  //
+  // THE ALIGNMENT IS THE WHOLE FIXTURE, AND MY FIRST DRAFT HAD IT BACKWARDS. Two-byte characters starting at
+  // an EVEN offset never straddle a 65 536-byte boundary, so the padded document I wrote first came back
+  // perfect from the DEFECTIVE program and the test passed against the very bytes it was written to catch —
+  // caught only by running it against the merge base. The pad is therefore chosen to put the first character
+  // on an ODD offset, and that offset is asserted rather than assumed.
+  const { script } = extract(JQ_GATES[0], 'jq.cjs');
+  const title = 'é'.repeat(400_000);
+  const build = (pad: string): Buffer => Buffer.from(JSON.stringify({ p: pad, title }), 'utf8');
+  const firstCharOffset = (buffer: Buffer): number => buffer.indexOf(Buffer.from('é', 'utf8'));
+  let payload = build('');
+  if (firstCharOffset(payload) % 2 === 0) payload = build('x');
+  assert(firstCharOffset(payload) % 2 === 1,
+    'the multi-byte run must start on an odd offset or no read boundary can fall inside a character');
+  assert(payload.length > 8 * 65_536, 'the payload must span several read boundaries to prove anything');
+  const run = runNodeStdin(script, ['title'], payload);
+  assertEq(run.code, 0, `the read must succeed: ${run.out.slice(0, 200)}`);
+  const answer = run.out.replace(/\r?\n$/, '');
+  assertEq((answer.match(/�/g) ?? []).length, 0,
+    'no character may be replaced: a value that decoded wrongly is not the value the document carried');
+  assert(answer === title, 'and the answer is the value verbatim');
+});
+
+test('A DOCUMENT THAT IS NOT AN OBJECT IS REFUSED rather than answering nothing for every field', () => {
+  // '' is the shape of a field that is merely ABSENT. A caller testing for emptiness reads a scalar
+  // document as "the field is not set" and carries on.
+  const { script } = extract(JQ_GATES[0], 'jq.cjs');
+  for (const document of ['null', '42', '"published"', '[1,2]']) {
+    const run = runNodeStdin(script, ['outcome'], Buffer.from(document));
+    assert(run.code !== 0, `${document} must be refused rather than read as a field: ${run.out}`);
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// `sha.cjs` — EIGHT gates in three forms, and the value every byte-level claim is compared against
+// ---------------------------------------------------------------------------------------------------------
+
+const SHA_RANGE_GATES = [
+  'deploy/projection-emby-dataplane-gate.sh',
+  'deploy/projection-jellyfin-dataplane-gate.sh',
+  'deploy/projection-plex-dataplane-gate.sh',
+] as const;
+const SHA_STREAM_GATES = [
+  'deploy/projection-rclone-comparison-gate.sh',
+  'deploy/projection-three-server-concurrency-gate.sh',
+] as const;
+const SHA_SYNC_GATES = [
+  'deploy/projection-lease-gate.sh',
+  'deploy/projection-path-lifecycle-gate.sh',
+  'deploy/projection-publisher-mount-gate.sh',
+] as const;
+
+/** The digest of the empty string — the answer a read that returned nothing used to give. */
+const EMPTY_DIGEST = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+
+/** A deterministic object to digest, and the directory it sits in. */
+function shaFixture(gate: string): { dir: string; script: string; bytes: Buffer } {
+  const { dir, script } = extract(gate, 'sha.cjs');
+  const bytes = Buffer.alloc(100_000);
+  for (let i = 0; i < bytes.length; i += 1) bytes[i] = (i * 31 + 7) & 0xff;
+  writeFileSync(join(dir, 'object.bin'), bytes);
+  return { dir, script, bytes };
+}
+
+test('EACH FORM OF sha.cjs IS ONE PROGRAM ACROSS ITS GATES, so one correction cannot fix some of them', () => {
+  for (const group of [SHA_RANGE_GATES, SHA_STREAM_GATES, SHA_SYNC_GATES]) {
+    const bodies = group.map((gate) => heredoc(gate, 'sha.cjs'));
+    for (const [index, body] of bodies.entries()) {
+      assertEq(body, bodies[0] as string, `${group[index]} carries a sha.cjs that differs from its siblings`);
+    }
+  }
+});
+
+test('THE HONEST ANSWERS DID NOT MOVE — whole object and in-range window, against the standard library', () => {
+  // NOTHING HERE RECOMPUTES WHAT THE PROGRAM COMPUTES. The expectation comes from `node:crypto` over the
+  // same bytes, which is the same authority the gate's own comparison rests on.
+  for (const gate of [...SHA_RANGE_GATES, ...SHA_STREAM_GATES, ...SHA_SYNC_GATES]) {
+    const { dir, script, bytes } = shaFixture(gate);
+    const whole = runNode(script, ['./object.bin'], dir);
+    assertEq(whole.code, 0, `${gate}: an ordinary whole-object digest must succeed: ${whole.out}`);
+    assertEq(whole.out.trim(), createHash('sha256').update(bytes).digest('hex'),
+      `${gate}: and be the digest of those bytes`);
+    if (!(SHA_RANGE_GATES as readonly string[]).includes(gate)) continue;
+    const ranged = runNode(script, ['./object.bin', '1000', '4096'], dir);
+    assertEq(ranged.code, 0, `${gate}: an in-range window must succeed: ${ranged.out}`);
+    assertEq(ranged.out.trim(), createHash('sha256').update(bytes.subarray(1000, 1000 + 4096)).digest('hex'),
+      `${gate}: and be the digest of that window`);
+  }
+});
+
+test('A WINDOW PAST THE END OF THE OBJECT IS REFUSED, where it used to answer with the EMPTY digest', () => {
+  // THE DEFECT, MEASURED, AND WHY THE DIRECTION MATTERS. The merge-base program answered `e3b0c442…b855`
+  // and exit 0 for a 100 000-byte object read at offset 5 000 000. The gate computes its EXPECTATION with
+  // this program and then has the daemon serve the same window, so a window neither side can satisfy
+  // degrades BOTH to that one value and `--expect-sha` compares it against itself. An unfailable assertion
+  // is worse than an absent one: it reads as evidence.
+  for (const gate of SHA_RANGE_GATES) {
+    const { dir, script } = shaFixture(gate);
+    const past = runNode(script, ['./object.bin', '5000000', '4096'], dir);
+    assert(past.code !== 0, `${gate}: a window past EOF must be refused: ${past.out}`);
+    assert(!past.out.includes(EMPTY_DIGEST), `${gate}: and must never print the empty digest: ${past.out}`);
+    // AND THE HALF-SATISFIED ONE TOO, which is the quieter of the two: the expectation silently becomes a
+    // digest of however many bytes happened to exist.
+    const short = runNode(script, ['./object.bin', '99000', '4096'], dir);
+    assert(short.code !== 0, `${gate}: a window running past EOF must be refused: ${short.out}`);
+  }
+});
+
+test('AN OFFSET OR LENGTH THAT IS NOT A SAFE INTEGER IS NAMED, not raised as a stack trace from a stream', () => {
+  // THE EXIT CODE ALONE DOES NOT BITE HERE and this test says so rather than pretending otherwise: the
+  // merge-base program also exited non-zero for every one of these, because NaN reached `createReadStream`
+  // and came back as an ERR_OUT_OF_RANGE throw. What was missing is a statement about the ARGUMENT. So what
+  // is asserted is that the program names its own refusal instead of dying inside the standard library —
+  // measured against the merge base, which fails this and passed on status alone.
+  for (const gate of SHA_RANGE_GATES) {
+    const { dir, script } = shaFixture(gate);
+    for (const argv of [['./object.bin', 'abc', '10'], ['./object.bin', '0', 'abc'],
+      ['./object.bin', '0', '0'], ['./object.bin', '-1', '10'], ['./object.bin', '0', '']]) {
+      const run = runNode(script, argv, dir);
+      assert(run.code !== 0, `${gate}: ${JSON.stringify(argv)} must be refused: ${run.out}`);
+      assert(!run.out.includes(EMPTY_DIGEST), `${gate}: and must not print a digest: ${run.out}`);
+      assert(run.out.startsWith('sha: '),
+        `${gate}: ${JSON.stringify(argv)} must be refused by name rather than thrown from a stream: ${run.out}`);
+      assert(!/ERR_OUT_OF_RANGE|at Object\.<anonymous>/.test(run.out),
+        `${gate}: and not as an uncaught exception: ${run.out}`);
+    }
+  }
+});
+
+test('TWO SAFE OFFSETS THAT SUM PAST THE BOUNDARY ARE REFUSED BEFORE THE STREAM, not diagnosed as a short read',
+  () => {
+    // THE CUMULATIVE-OVERFLOW CLASS, WHICH THE PREVIOUS LOOP ALREADY CORRECTED IN `cacheceiling.cjs` AND
+    // WHICH MY FIRST CORRECTION HERE REINTRODUCED. `start` and `length` are each checked for safety
+    // individually, and MAX_SAFE_INTEGER with a length of 2 passes both while `start + length - 1` is
+    // already approximate.
+    //
+    // AND THE EXIT CODE ALONE DOES NOT BITE, so this asserts the DIAGNOSIS. Without the cumulative check the
+    // program opens the stream anyway, reads nothing, and reports "N bytes were asked for … and the object
+    // yielded 0" — which blames the object for an arithmetic fault and would send an operator to look at the
+    // wrong thing. A window whose end cannot be represented exactly is refused before anything is opened.
+    for (const gate of SHA_RANGE_GATES) {
+      const { dir, script } = shaFixture(gate);
+      for (const argv of [
+        ['./object.bin', String(Number.MAX_SAFE_INTEGER), '2'],
+        ['./object.bin', String(Number.MAX_SAFE_INTEGER - 10), '1000'],
+      ]) {
+        const run = runNode(script, argv, dir);
+        assert(run.code !== 0, `${gate}: ${JSON.stringify(argv)} must be refused: ${run.out}`);
+        assert(/exact-integer boundary/.test(run.out),
+          `${gate}: and must name the arithmetic rather than report a short read: ${run.out}`);
+        assert(!/yielded/.test(run.out),
+          `${gate}: the object must not be blamed for an offset that cannot be represented: ${run.out}`);
+        assert(!run.out.includes(EMPTY_DIGEST), `${gate}: and no digest is printed: ${run.out}`);
+      }
+    }
+  });
+
+test('AN OBJECT THAT YIELDED NO BYTES IS REFUSED BY EVERY FORM, empty file and unreadable path alike', () => {
+  for (const gate of [...SHA_RANGE_GATES, ...SHA_STREAM_GATES, ...SHA_SYNC_GATES]) {
+    const { dir, script } = shaFixture(gate);
+    writeFileSync(join(dir, 'empty.bin'), Buffer.alloc(0));
+    const empty = runNode(script, ['./empty.bin'], dir);
+    assert(empty.code !== 0, `${gate}: an empty object must be refused: ${empty.out}`);
+    assert(!empty.out.includes(EMPTY_DIGEST),
+      `${gate}: and the empty digest must never be printed as an answer: ${empty.out}`);
+    const missing = runNode(script, ['./nothing-here.bin'], dir);
+    assert(missing.code !== 0, `${gate}: an unreadable object must be refused: ${missing.out}`);
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// `out/seekprobe.sh` — the rclone comparison gate's forward-seek, backward-seek and whole-object claim
+// ---------------------------------------------------------------------------------------------------------
+//
+// THIS ONE IS RUN ON BOTH SIDES OF ITS OWN COMPARISON. The gate runs the program inside the mount and again
+// outside it and compares line for line; only the third line is checked against a value recorded elsewhere.
+
+const RCLONE_GATE = 'deploy/projection-rclone-comparison-gate.sh';
+
+function seekprobeFixture(): { dir: string; script: string } {
+  const { dir, script } = extract(RCLONE_GATE, 'out/seekprobe.sh');
+  // THE FILL MUST NOT REPEAT ON A BLOCK BOUNDARY, and my first draft did: `(i * 17 + 3) & 0xff` has a period
+  // of 256, so every 64 KiB block of it is byte-identical to every other and the "the two seeks read
+  // different bytes" case failed against a correct program. A counter-mode LCG has no period inside a fixture
+  // this size, so two blocks differ because the OBJECT differs and not because the reads did.
+  const bytes = Buffer.alloc(200_000);
+  let state = 0x2545f491;
+  for (let i = 0; i < bytes.length; i += 1) {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    bytes[i] = (state >>> 24) & 0xff;
+  }
+  writeFileSync(join(dir, 'object.bin'), bytes);
+  return { dir, script };
+}
+
+test('THE THREE READS STILL ANSWER, and the forward and backward seeks are DIFFERENT reads', () => {
+  if (!bashAvailable) throw new Error('bash is required to execute the shipped helper');
+  const { dir, script } = seekprobeFixture();
+  const run = runBash(script, ['./object.bin', '2'], dir);
+  assertEq(run.code, 0, `an in-range probe must succeed: ${run.out}`);
+  const lines = run.out.trim().split('\n').map((line) => line.trim()).filter(Boolean);
+  assertEq(lines.length, 3, `three reads, three digests: ${run.out}`);
+  assert(lines[0] !== lines[1],
+    'a forward seek into the middle and a backward seek to the start must not return the same bytes');
+  assert(!lines.includes(EMPTY_DIGEST), `and none of them is the empty digest: ${run.out}`);
+});
+
+test('A SEEK PAST THE END IS REFUSED, where it used to answer the EMPTY digest on BOTH sides at once', () => {
+  // THE DEFECT, MEASURED IN THE GATE'S OWN PINNED IMAGE: `dd` reports success for a block that lands past
+  // EOF, its status is lost to the pipe either way, and `dd | sha256sum` therefore answered `e3b0c442…b855`
+  // for a read that produced nothing. Because the CALLER runs this same program inside the mount and
+  // outside it, both sides answer with that one value and the two seek assertions compare it against
+  // itself. The whole-object line would still have caught a total failure; the two seek lines — which are
+  // what this step exists to prove — would not.
+  if (!bashAvailable) throw new Error('bash is required to execute the shipped helper');
+  const { dir, script } = seekprobeFixture();
+  const run = runBash(script, ['./object.bin', '64'], dir);
+  assert(run.code !== 0, `a block past the end of the object must be refused: ${run.out}`);
+  assert(!run.out.includes(EMPTY_DIGEST), `and the empty digest must not be printed: ${run.out}`);
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// `out/baseline.sh` — five gates, and the statement that a projected file is a read-only regular file
+// ---------------------------------------------------------------------------------------------------------
+
+const BASELINE_GATES = [
+  'deploy/projection-emby-dataplane-gate.sh',
+  'deploy/projection-jellyfin-dataplane-gate.sh',
+  'deploy/projection-plex-dataplane-gate.sh',
+  'deploy/projection-three-server-concurrency-gate.sh',
+] as const;
+
+test('THE FOUR DATAPLANE COPIES OF baseline.sh ARE ONE PROGRAM, and the rclone one differs by ONE field', () => {
+  const bodies = BASELINE_GATES.map((gate) => heredoc(gate, 'out/baseline.sh'));
+  for (const [index, body] of bodies.entries()) {
+    assertEq(body, bodies[0] as string,
+      `${BASELINE_GATES[index]} carries a baseline.sh that differs from the other three`);
+  }
+  // THE FIFTH IS NOT BYTE-IDENTICAL AND THAT IS DELIBERATE — it reports no inode. Pinning the ONE line
+  // they differ on is what keeps "it is a different program on purpose" from turning into "it drifted".
+  const rclone = heredoc(RCLONE_GATE, 'out/baseline.sh');
+  assertEq(rclone, (bodies[0] as string).replace(' inode=%i', ''),
+    'the rclone copy must differ from the dataplane copies only in dropping the inode field');
+});
+
+test('A BASELINE OVER NO TARGETS IS REFUSED, where it used to report success having looked at nothing', () => {
+  // THE DEFECT, MEASURED IN THE GATE'S OWN PINNED IMAGE: no arguments, no output, exit 0. `for target in
+  // "$@"` runs its body zero times and the script falls off the end, so every property the program exists
+  // to establish is reported as holding for a set it never opened. The callers pass shell-expanded paths.
+  if (!bashAvailable) throw new Error('bash is required to execute the shipped helper');
+  for (const gate of [...BASELINE_GATES, RCLONE_GATE]) {
+    const { dir, script } = extract(gate, 'out/baseline.sh');
+    const run = runBash(script, [], dir, UNPRIVILEGED_UID);
+    assert(run.code !== 0, `${gate}: a baseline over nothing must be refused: ${run.out}`);
+    // THE MESSAGE IS ASSERTED, NOT ONLY THE STATUS. Run as root the program refuses for a different reason
+    // entirely, and a test that read only the exit code would pass on a host where this case never ran.
+    assert(run.out.includes('no targets were named'),
+      `${gate}: and must refuse for THAT reason rather than another: ${run.out}`);
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// `objects.cjs` — three forms across six gates, and the endpoint's own account of what it is serving
+// ---------------------------------------------------------------------------------------------------------
+
+test('AN OBJECT THE ENDPOINT IS NOT SERVING IS NAMED BY EVERY FORM, not raised as a TypeError in a helper',
+  () => {
+    const guarded = [
+      ['deploy/projection-emby-dataplane-gate.sh', ['./objects.json', 'missing-ref', 'sha256']],
+      ['deploy/projection-lease-gate.sh', ['./objects.json', 'missing-ref', 'sha256']],
+      ['deploy/projection-publisher-mount-gate.sh', ['./objects.json', 'sha256']],
+    ] as const;
+    for (const [gate, argv] of guarded) {
+      const { dir, script } = extract(gate, 'objects.cjs');
+      writeFileSync(join(dir, 'objects.json'), '[]', 'utf8');
+      const run = runNode(script, argv, dir);
+      assert(run.code !== 0, `${gate}: an unmatched ref must be refused: ${run.out}`);
+      assert(!/TypeError/.test(run.out),
+        `${gate}: and must say what is wrong rather than crash in a property read: ${run.out}`);
+    }
+  });
 
 // ---------------------------------------------------------------------------------------------------------
 // Wiring

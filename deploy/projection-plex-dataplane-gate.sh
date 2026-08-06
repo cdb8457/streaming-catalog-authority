@@ -191,24 +191,97 @@ chmod 755 "$GATE_ROOT" "$WORK"
 
 
 cat > "$WORK/jq.cjs" <<'JQ'
+// One field out of a JSON document on stdin, for shells that have no jq.
+//
+// THE DECODE IS SET ON THE STREAM, NOT DONE PER CHUNK. `raw += chunk` coerces each Buffer with its own
+// `toString()`, so a multi-byte character split across a read boundary becomes two U+FFFD replacement
+// characters -- silently, exit 0, with a value that is no longer the value the document carried. Measured on
+// an 800 KB document of two-byte characters: 24 replacement characters and a wrong answer, reported as a
+// success. `setEncoding` decodes with a StringDecoder that holds the partial sequence across the boundary.
+// Today's fixtures are ASCII, so this is latent. The operator corpus Phase 1 closes against is NOT GUARANTEED
+// to be ASCII -- no such corpus exists yet, so nothing here claims to have measured one -- and every gate reads
+// its verdicts through this program.
 let raw = '';
+process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => { raw += chunk; });
 process.stdin.on('end', () => {
-  const value = JSON.parse(raw)[process.argv[2]];
+  const document = JSON.parse(raw);
+  // AND A DOCUMENT THAT IS NOT AN OBJECT ANSWERS '' FOR EVERY FIELD, which is the shape of a field that is
+  // merely absent. A caller comparing that to an expected value fails for the wrong reason, and one testing
+  // it for emptiness passes. Neither may read a scalar as an answer.
+  if (document === null || typeof document !== 'object' || Array.isArray(document)) {
+    console.error('jq: the document on stdin is not an object, so no field of it can be read');
+    process.exit(2);
+  }
+  const value = document[process.argv[2]];
   console.log(value === undefined ? '' : String(value));
 });
 JQ
 
 cat > "$WORK/sha.cjs" <<'SHA'
+// The digest of a file, or of one byte range of it.
+//
+// A RANGE THE OBJECT CANNOT SATISFY USED TO DIGEST TO SOMETHING. `createReadStream` past EOF yields no data
+// and then a clean 'end', so this printed the digest of the empty string and exited 0. Measured on a
+// 100-byte file read at offset 5000: e3b0c442...b855, the well-known empty digest, no diagnostic, exit 0.
+// THAT IS NOT A READ THAT FAILED LOUDLY ON ONE SIDE OF A COMPARISON -- the gate computes the EXPECTATION
+// with this same program and then has the daemon serve the same range, so an out-of-range window degrades
+// both sides to the identical empty digest and the seek assertion passes over two reads that returned
+// nothing. A short read does the same thing more quietly: the expectation silently becomes a digest of
+// however many bytes happened to exist. The byte count is now held to what was asked for.
+//
+// AND THE OFFSETS ARE CHECKED AS INTEGERS FIRST. `Number('abc')` is NaN, which reached `createReadStream`
+// and surfaced as an ERR_OUT_OF_RANGE stack trace rather than as a statement about the argument.
 const { createHash } = require('node:crypto');
 const { createReadStream } = require('node:fs');
 const hash = createHash('sha256');
 const start = Number(process.argv[3] ?? 0);
 const length = process.argv[4] === undefined ? Infinity : Number(process.argv[4]);
+if (!Number.isSafeInteger(start) || start < 0) {
+  console.error(`sha: ${JSON.stringify(process.argv[3])} is not a byte offset`);
+  process.exit(3);
+}
+if (length !== Infinity && (!Number.isSafeInteger(length) || length <= 0)) {
+  console.error(`sha: ${JSON.stringify(process.argv[4])} is not a positive byte length`);
+  process.exit(3);
+}
+// AND THE TWO SAFE OFFSETS CAN STILL SUM PAST THE BOUNDARY. `start` and `length` are each checked above and
+// each can be a safe integer while the END of the window is not. This is the cumulative-overflow class
+// `cacheceiling.cjs` was corrected for in the previous loop, where individually safe sizes summed past the
+// boundary. Refused BEFORE the stream opens, so the diagnostic names the arithmetic rather than blaming the
+// object for yielding too few bytes -- which is what the byte-count check further down would report instead.
+//
+// THE TEST CANNOT BE `!Number.isSafeInteger(start + length - 1)`, AND MY FIRST DRAFT WAS EXACTLY THAT.
+// Computing the end is the very thing that loses the information: `MAX_SAFE_INTEGER + 2` ROUNDS to 2**53,
+// and subtracting one lands back on MAX_SAFE_INTEGER, which `isSafeInteger` then calls safe. The overflow is
+// erased by the arithmetic used to detect it. So the bound is rearranged to use only SUBTRACTION from a known
+// value: `start` is a safe non-negative integer, so `MAX_SAFE_INTEGER - start` is exact, and `length - 1` is
+// exact for a safe positive `length`. Nothing is added until the window is known to fit.
+if (length !== Infinity && length - 1 > Number.MAX_SAFE_INTEGER - start) {
+  console.error(`sha: a window of ${length} bytes at offset ${start} ends past the exact-integer boundary, so `
+    + 'its end is approximate and a digest taken over it would not be a digest of the window asked for');
+  process.exit(3);
+}
 const end = length === Infinity ? Infinity : start + length - 1;
+let read = 0;
 createReadStream(process.argv[2], { start, end })
-  .on('data', (chunk) => hash.update(chunk))
-  .on('end', () => console.log(hash.digest('hex')));
+  .on('error', (error) => {
+    console.error(`sha: could not read the object: ${error.code ?? error.message}`);
+    process.exit(3);
+  })
+  .on('data', (chunk) => { read += chunk.length; hash.update(chunk); })
+  .on('end', () => {
+    if (length !== Infinity && read !== length) {
+      console.error(`sha: ${length} bytes were asked for at offset ${start} and the object yielded ${read}; `
+        + 'a digest over a range the object does not have is not a digest of that range');
+      process.exit(3);
+    }
+    if (read === 0) {
+      console.error(`sha: the object yielded no bytes at offset ${start}, so there is nothing to digest`);
+      process.exit(3);
+    }
+    console.log(hash.digest('hex'));
+  });
 SHA
 
 cat > "$WORK/counters.cjs" <<'COUNTERS'
@@ -988,6 +1061,13 @@ step "what an ordinary non-root container sees before any media server is involv
 cat > "$WORK/out/baseline.sh" <<'BASE'
 set -eu
 test "$(id -u)" != "0" || { echo "the verifier is root" >&2; exit 1; }
+# A BASELINE OVER NOTHING IS NOT A BASELINE. `for target in "$@"` over an empty argument list runs its body
+# zero times and falls off the end at exit 0, printing nothing -- so every property this program exists to
+# establish (regular file, not a symlink, not a .strm placeholder, mode 444) is reported as holding for a set
+# it never looked at. Measured in the gate's own pinned image: no arguments, no output, exit 0. The callers
+# pass shell-expanded paths, so the day one of them expands to nothing is the day the check stops running and
+# says so in the same words it uses when it passes.
+test "$#" -gt 0 || { echo "no targets were named, so this baseline established nothing" >&2; exit 1; }
 for target in "$@"; do
   test -f "/mnt/$target"  || { echo "not a regular file: $target" >&2; exit 1; }
   test ! -L "/mnt/$target" || { echo "a media server would see a symlink" >&2; exit 1; }
