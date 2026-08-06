@@ -13,9 +13,15 @@ import {
   atLeast, corpusProblems, corpusSelfProblems, directPlayPath, exactly, findRedactionProblems,
   forcedTranscodePath, hasQueryCredential, isInFlightState, mediaServerAuthHeader, movieLibraryRequest,
   analyseSeekSet, opaqueRef, seekPlanProblems, seekPositionsFor, stripQueryCredentials, withinBudget,
-  type CorpusExpectation, type CorpusObservation, type PacedSample, type SeekDecode, type SeekObservation,
+  PROVIDER_DEMAND_BLOCK_BYTES, providerByteCeilings, providerByteCoherenceProblems, providerByteResults,
+  type CorpusExpectation, type CorpusObservation, type GateResult, type PacedSample, type SeekDecode, type SeekObservation,
   type SoakProbe, type SoakSegment, type TranscodeSessionSampleRecord,
 } from '../src/core/projection/media-server-dataplane.js';
+import {
+  LARGE_FIXTURE_MIN_BYTES, fractionBearingObjects, objectAttribution, objectScanBounds, objectScanVerdicts,
+  scanByteResults,
+} from '../src/core/projection/daemon-read-geometry.js';
+import { plexObjectByteCeiling } from '../src/core/projection/plex-dataplane.js';
 import {
   absolutePath, awaitScanRunning, openPinnedStream, scanIsRunningNow, scanLibrary,
   type GateState, type ItemRecord,
@@ -745,6 +751,115 @@ await test('a budget check records the number even when it passes, and a floor i
   assertEq(exactly('G', 0, 1).verdict, 'fail', 'under is not "within" when the gate says exactly');
   assertEq(atLeast('G', 0, 1).verdict, 'fail', 'zero requests is not a frugal scan, it is an absent one');
   assertEq(atLeast('G', 2, 1).verdict, 'pass', 'and two clears a floor of one');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// The two byte columns — the defect the FIRST UNRAID RUN found
+// ---------------------------------------------------------------------------------------------------------
+
+const verdictOf = (results: readonly GateResult[], suffix: string): GateResult => {
+  const found = results.find((result) => result.gate.endsWith(suffix));
+  if (found === undefined) throw new Error(`no verdict named *${suffix} was emitted`);
+  return found;
+};
+
+await test('A WINDOW THAT ABANDONS NOTHING IS HELD TO EXACTLY WHAT IT ALWAYS WAS', () => {
+  // The whole claim that this split weakens nothing rests on this case, because it is every run of these
+  // gates that has ever happened. Committed equals observed, so the committed ceiling IS the budget.
+  const results = providerByteResults('G', { committed: 5_308_521, observed: 5_308_521, truncatedBodies: 0, rangeRequests: 64, bodiesInFlight: 0 },
+    6_293_511, 'denominators');
+  assertEq(verdictOf(results, '-provider-bytes').verdict, 'pass', 'the passing Unraid re-run still passes');
+  assertEq(verdictOf(results, '-provider-bytes').budget, 6_293_511, 'AT THE UNCHANGED CEILING, not above it');
+  assertEq(verdictOf(results, '-provider-bytes-observed').verdict, 'pass', 'and so does the delivery column');
+  assertEq(verdictOf(results, '-provider-bytes-abandoned').budget, 0,
+    'a window that abandoned no body gets NO abandonment allowance at all');
+  assertEq(verdictOf(results, '-provider-bytes-coherent').verdict, 'pass', 'and the two columns agree');
+
+  const over = providerByteResults('G', { committed: 6_293_512, observed: 6_293_512, truncatedBodies: 0, rangeRequests: 64, bodiesInFlight: 0 },
+    6_293_511, 'denominators');
+  assertEq(verdictOf(over, '-provider-bytes').verdict, 'fail',
+    'ONE BYTE over the budget still fails when nothing was abandoned; the ceiling did not move');
+});
+
+await test('THE EXACT UNRAID FAILURE: a cancelled demand block no longer fails a scan that read LESS than budget', () => {
+  // The measured numbers from the first Jellyfin run on Unraid, verbatim. Committed 6,357,097 against a
+  // 6,293,511 ceiling — but the endpoint WROTE 5,312,437, which is 981,074 bytes UNDER it, and the whole
+  // 1,044,660-byte difference is one demand block the daemon abandoned part-way.
+  const results = providerByteResults('G', {
+    committed: 6_357_097, observed: 5_312_437, truncatedBodies: 1, rangeRequests: 64, bodiesInFlight: 0,
+  }, 6_293_511, 'denominators');
+  assertEq(verdictOf(results, '-provider-bytes-observed').measured, 5_312_437, 'what was actually served');
+  assertEq(verdictOf(results, '-provider-bytes-observed').verdict, 'pass', 'and it is inside the budget');
+  assertEq(verdictOf(results, '-provider-bytes-abandoned').measured, 1_044_660, 'the abandoned remainder');
+  assertEq(verdictOf(results, '-provider-bytes-abandoned').verdict, 'pass',
+    'one abandoned body may leave at most one demand block, and 1,044,660 is well inside 4 MiB');
+  assertEq(verdictOf(results, '-provider-bytes').verdict, 'pass',
+    'so the committed column passes too — on a ceiling raised by exactly the abandonment it can account for');
+  assertEq(verdictOf(results, '-provider-bytes-coherent').verdict, 'pass', 'and the accounting is coherent');
+});
+
+await test('ABANDONMENT IS NOT AN EXCUSE: requesting a whole object and dropping it is still caught', () => {
+  // THE NON-VACUOUS HALF. A daemon that asked for a 100 MB object and abandoned it after 2 MB delivers
+  // almost nothing, so an observed-only check would wave it through. The per-body block bound is what does
+  // not, and this is the case that proves the split did not simply delete an assertion.
+  const results = providerByteResults('G', {
+    committed: 100_000_000, observed: 2_000_000, truncatedBodies: 1, rangeRequests: 64, bodiesInFlight: 0,
+  }, 6_293_511, 'denominators');
+  assertEq(verdictOf(results, '-provider-bytes-observed').verdict, 'pass',
+    'the delivery column alone would have let this through, which is why it is not alone');
+  assertEq(verdictOf(results, '-provider-bytes-abandoned').verdict, 'fail',
+    'ONE abandoned body may not account for 98 MB of committed-but-unwritten payload');
+  assertEq(verdictOf(results, '-provider-bytes').verdict, 'fail',
+    'and the committed ceiling refuses to absorb an abandonment its truncated bodies cannot justify');
+});
+
+await test('A SCAN THAT DOWNLOADS THE OBJECT STILL FAILS, which is the budget\'s entire purpose', () => {
+  const results = providerByteResults('G', {
+    committed: 13_000_000, observed: 13_000_000, truncatedBodies: 0, rangeRequests: 64, bodiesInFlight: 0,
+  }, 6_293_511, 'denominators');
+  assertEq(verdictOf(results, '-provider-bytes-observed').verdict, 'fail',
+    'delivering twice the budget is a download, and the load-bearing column says so');
+  assertEq(verdictOf(results, '-provider-bytes').verdict, 'fail', 'as does the committed one');
+});
+
+await test('the abandonment allowance scales per abandoned body, and never for zero of them', () => {
+  const two = providerByteCeilings({ committed: 9_000_000, observed: 1_000_000, truncatedBodies: 2, rangeRequests: 64, bodiesInFlight: 0 }, 100);
+  assertEq(two.abandonedCeiling, 2 * PROVIDER_DEMAND_BLOCK_BYTES, 'two bodies, two blocks');
+  assertEq(two.abandoned, 8_000_000, 'and the abandonment is the difference between the columns');
+  const none = providerByteCeilings({ committed: 5, observed: 5, truncatedBodies: 0, rangeRequests: 64, bodiesInFlight: 0 }, 100);
+  assertEq(none.abandonedCeiling, 0, 'no body abandoned, no allowance');
+  assertEq(none.committedCeiling, 100, 'so the committed ceiling is the bare budget');
+});
+
+await test('A BROKEN INSTRUMENT IS NOT HEADROOM', () => {
+  // Observed above committed cannot happen and must not quietly raise a ceiling if it does.
+  const impossible = providerByteCeilings({ committed: 10, observed: 40, truncatedBodies: 1, rangeRequests: 64, bodiesInFlight: 0 }, 100);
+  assertEq(impossible.committedCeiling, 100,
+    'a negative abandonment is clamped to zero rather than subtracted from the ceiling');
+  assert(providerByteCoherenceProblems({ committed: 10, observed: 40, truncatedBodies: 1, rangeRequests: 64, bodiesInFlight: 0 }).length > 0,
+    'and it is reported as a broken instrument');
+  assertEq(providerByteResults('G', { committed: 10, observed: 40, truncatedBodies: 1, rangeRequests: 64, bodiesInFlight: 0 }, 100, 'd')
+    .find((r) => r.gate.endsWith('-coherent'))?.verdict, 'fail', 'as a failed assertion, not a thrown error');
+
+  // Bytes lost between the columns with NOTHING abandoned is the other broken shape: it would mean the
+  // endpoint silently dropped a write it never recorded as truncated.
+  assert(providerByteCoherenceProblems({ committed: 100, observed: 90, truncatedBodies: 0, rangeRequests: 64, bodiesInFlight: 0 }).length > 0,
+    'a window that abandoned no body cannot have lost ten bytes between its two columns');
+  assertEq(providerByteCoherenceProblems({ committed: 100, observed: 100, truncatedBodies: 0, rangeRequests: 64, bodiesInFlight: 0 }).length, 0,
+    'and an honest window has no problems at all');
+});
+
+await test('EVERY PER-SERVER GATE ASSERTS BOTH COLUMNS — the drift this defect was', () => {
+  // The defect was not that the reasoning was wrong; it was that G18 and G22 got it and these three did not.
+  // A structural check, so a fourth gate cannot be added with the committed column alone.
+  for (const server of ['jellyfin', 'plex', 'emby']) {
+    const cli = readFileSync(`src/ops/projection-${server}-dataplane-cli.ts`, 'utf8')
+      .replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    assert(cli.includes('providerByteResults'),
+      `the ${server} gate emits both byte columns through the shared emitter`);
+    assert(!/withinBudget\(`\$\{gate\}-provider-bytes`/.test(cli),
+      `and the ${server} gate no longer holds its byte ceiling against the committed column alone`);
+  }
 });
 
 // ---------------------------------------------------------------------------------------------------------
@@ -2096,17 +2211,296 @@ await test('a five-minute consumer cannot be left running by a failing gate', ()
     'and the driver kills it by name when its own deadline fires, since killing `docker run` need not');
 });
 
-await test('the small-object byte budget names its own denominator instead of relaxing the big one', () => {
-  // THE FAILURE THIS PREVENTS. Folding a corpus of tiny entries into the fraction budget would let the large
-  // entries pay for the small ones, and a regression in the large read path — the one the product's whole
-  // argument rests on — would disappear into the average.
+await test('THE FRACTION IS UNCHANGED AT 0.5, and per-object attribution is what stops cross-subsidy now', () => {
+  // THE FAILURE THIS PREVENTS IS THE SAME ONE THE TWO DENOMINATORS EXISTED FOR — one object paying another's
+  // bill — but it is prevented by ATTRIBUTION rather than by pooling the corpus into two lumps. The lumps
+  // were what made the fraction unreachable on the only object it bound.
+  assertEq(MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION, 0.5,
+    'THE HEADLINE BUDGET DID NOT MOVE. The correction was to where it is asserted, not to what it is');
   assert(MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION < 1,
     'an object big enough to have a middle and a tail is identified from a fraction of itself');
-  assert(MEDIA_SERVER_BUDGETS.MAX_SMALL_OBJECT_SCAN_BYTE_MULTIPLIER >= 1,
-    'and one below the single-probe threshold is identified by reading it, because its window IS all of it');
-  const cli = read('src/ops/projection-jellyfin-dataplane-cli.ts');
-  assert(cli.includes('small-bytes'), 'the two denominators are separate flags');
-  assert(/denominators: \$\{remoteBytes\}/.test(cli), 'and the report names both');
+  for (const server of ['jellyfin', 'emby']) {
+    const cli = read(`src/ops/projection-${server}-dataplane-cli.ts`)
+      .replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    assert(cli.includes('scanByteResults'), `the ${server} gate goes through the shared scan rule`);
+    assert(cli.includes('objectAttribution'), `and feeds it the endpoint's own per-object columns`);
+    assert(!/MAX_SMALL_OBJECT_SCAN_BYTE_MULTIPLIER/.test(cli),
+      `and the ${server} gate no longer pools its corpus into two aggregate denominators`);
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// The arithmetic defect: a budget a correct daemon failed half the time
+// ---------------------------------------------------------------------------------------------------------
+
+await test('BOTH LEGITIMATE READ PATTERNS PASS — the coin flip the Unraid runs actually measured', () => {
+  // The two values measured on Unraid for the 8,594,275-byte object, one probe window apart. The OLD ceiling
+  // was 4,297,137 and sat BETWEEN them, so a correct daemon passed or failed by luck.
+  const size = 8_594_275;
+  const bounds = objectScanBounds(size);
+  assertEq(bounds.boundKind, 'block-geometry', 'an 8.6 MB object is below the size the fraction needs');
+  assertEq(bounds.fractionCeiling, undefined, 'so no fraction is asserted on it at all');
+  assert(Math.floor(size * MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION) < 4_821_425,
+    'THE OLD CEILING REALLY DID SIT BELOW THE LARGER PATTERN — this is the defect, asserted');
+  for (const measured of [3_772_849, 4_821_425]) {
+    assert(measured <= bounds.geometryCeiling,
+      `the ${measured}-byte pattern is inside the block geometry, which is what a scan is now held to`);
+  }
+});
+
+await test('A WHOLE-OBJECT READ STILL FAILS, on the small object and on the large one', () => {
+  const small = objectScanBounds(8_594_275);
+  assert(8_594_275 > small.geometryCeiling === false,
+    'the geometry ceiling is generous on a small object, which is exactly why the fraction is asserted '
+    + 'elsewhere rather than here — see the large-object case below, where a download does fail');
+  const large = objectScanBounds(LARGE_FIXTURE_MIN_BYTES);
+  assert(large.fractionCeiling !== undefined, 'the fraction applies at the large-fixture size');
+  assert(LARGE_FIXTURE_MIN_BYTES > (large.fractionCeiling ?? 0),
+    'and a whole-object read of it CLEARLY breaches the fraction');
+  assert(LARGE_FIXTURE_MIN_BYTES > large.geometryCeiling,
+    'and the block geometry too, so a download has nowhere to hide');
+});
+
+await test('THE BOUNDARY IS DERIVED WITH EXPLICIT MARGIN, not fitted to what was measured', () => {
+  const large = objectScanBounds(LARGE_FIXTURE_MIN_BYTES);
+  assert(large.geometryCeiling < (large.fractionCeiling ?? 0),
+    'at the large-fixture size the maximum legitimate geometry sits COMFORTABLY BELOW the fraction — that '
+    + 'is what makes the fraction satisfiable there and unreachable below it');
+  // ...and the margin is real rather than a rounding artefact.
+  assert((large.fractionCeiling ?? 0) - large.geometryCeiling > large.geometryCeiling * 0.25,
+    'with better than a quarter of the envelope in hand');
+  // The tighter of the two is what a single number would have to be, and on this object it is the geometry.
+  assertEq(large.bindingCeiling, large.geometryCeiling,
+    'THE GEOMETRY IS THE TIGHTER BOUND AT THIS SIZE, so asserting only the fraction would be WEAKER than '
+    + 'what came before. Both are asserted; neither replaces the other');
+});
+
+await test('ONE OBJECT CANNOT BORROW ANOTHER\'S BUDGET', () => {
+  // The aggregate is satisfied and one object has still eaten the corpus. This is what an aggregate-only
+  // ceiling could never say, and it is the reason the binding verdicts are per object.
+  const sizes = [8_594_275, 40_000, 40_000];
+  const before = { objectSizes: sizes, objectCommitted: [0, 0, 0], objectObserved: [0, 0, 0] };
+  const after = {
+    objectSizes: sizes,
+    objectCommitted: [90_000_000, 0, 0],
+    objectObserved: [90_000_000, 0, 0],
+  };
+  const verdicts = objectScanVerdicts(before, after);
+  assertEq(verdicts[0]?.geometryWithinBudget, false, 'the greedy object fails on its OWN ceiling');
+  assertEq(verdicts[1]?.geometryWithinBudget, true, 'and its neighbours are not blamed for it');
+  const results = scanByteResults('G', {
+    committed: 90_000_000, observed: 90_000_000, truncatedBodies: 0, rangeRequests: 64, bodiesInFlight: 0,
+  }, before, after, { requireFractionBearingObject: false });
+  const perObject = results.find((r) => r.gate === 'G-provider-bytes-per-object');
+  assertEq(perObject?.verdict, 'fail', 'and the per-object assertion is what fails');
+  assert((perObject?.note ?? '').includes('object #0'), 'naming the object that spent the bytes');
+});
+
+await test('CHANGING THE CORPUS CANNOT SILENTLY DISABLE THE FRACTION', () => {
+  // THE ESCAPE THIS CLOSES. Every per-object assertion is satisfied by a corpus of tiny files — the fraction
+  // simply stops being asserted on anything and no verdict says so. Shrinking the corpus would then retire
+  // the product's central budget while the gate still went green.
+  const sizes = [40_000, 40_000];
+  const quiet = { objectSizes: sizes, objectCommitted: [0, 0], objectObserved: [0, 0] };
+  const window = {
+    committed: 0, observed: 0, truncatedBodies: 0, rangeRequests: 64, bodiesInFlight: 0,
+  };
+  const withoutLarge = scanByteResults('G', window, quiet, quiet, { requireFractionBearingObject: true });
+  assertEq(withoutLarge.find((r) => r.gate === 'G-fraction-bearing-objects')?.verdict, 'fail',
+    'a corpus with no object big enough to carry the fraction FAILS rather than quietly not asserting it');
+
+  const big = [LARGE_FIXTURE_MIN_BYTES, 40_000];
+  const present = { objectSizes: big, objectCommitted: [0, 0], objectObserved: [0, 0] };
+  const withLarge = scanByteResults('G', window, present, present, { requireFractionBearingObject: true });
+  assertEq(withLarge.find((r) => r.gate === 'G-fraction-bearing-objects')?.verdict, 'pass',
+    'and one large object is enough for the claim to have a subject');
+  assertEq(fractionBearingObjects(objectScanVerdicts(present, present)), 1, 'exactly the one');
+});
+
+await test('SIZES COME FROM THE ENDPOINT IN ITS OWN ORDER, so re-ordering the corpus judges nothing wrongly', () => {
+  // Pairing a caller's size list against the endpoint's registration order judges each object against some
+  // other object's length. The attribution reader takes all three columns from the SAME snapshot, so the
+  // orders cannot come apart.
+  const sizes = [40_000, LARGE_FIXTURE_MIN_BYTES];
+  const snapshot = {
+    objectSizes: sizes,
+    objectBytes: [400_000, 1_000_000],
+    objectObserved: [400_000, 1_000_000],
+  };
+  const read_ = objectAttribution(snapshot);
+  assertEq(read_.objectSizes[1], LARGE_FIXTURE_MIN_BYTES, 'the large object is where the endpoint put it');
+  assertEq(read_.objectCommitted[1], 1_000_000, 'and its bytes are the ones beside it');
+  const verdicts = objectScanVerdicts(
+    { objectSizes: sizes, objectCommitted: [0, 0], objectObserved: [0, 0] }, read_,
+  );
+  assertEq(verdicts[1]?.bounds.boundKind, 'block-geometry+byte-fraction',
+    'so the fraction lands on the large object rather than on the 40 KB one');
+  assertEq(verdicts[0]?.bounds.boundKind, 'block-geometry', 'and not on the small one');
+});
+
+await test('JELLYFIN AND EMBY RESOLVE TO THE SAME RULE, AND PLEX\'S GEOMETRY IS UNCHANGED', () => {
+  // The defect was drift between gates that should have agreed. A structural check, so a future gate cannot
+  // quietly grow its own copy.
+  for (const server of ['jellyfin', 'emby']) {
+    const cli = read(`src/ops/projection-${server}-dataplane-cli.ts`);
+    assert(cli.includes("from '../core/projection/daemon-read-geometry.js'"),
+      `the ${server} gate imports the shared geometry rather than restating one`);
+  }
+  // ONE DEFINITION, NOT TWO SPELLINGS OF ONE. The shared module re-exports Plex's function; it does not copy
+  // the arithmetic, so a cap change moves every gate at once.
+  const shared = read('src/core/projection/daemon-read-geometry.ts');
+  assert(/export \{ plexObjectByteCeiling as daemonBlockByteCeiling \}/.test(shared),
+    'the shared ceiling is a re-export of the one definition, not a second one');
+  assert(!/8 \* |const SCAN_CAP/.test(shared), 'and it restates none of the caps');
+  for (const size of [0, 40_000, 8_594_275, LARGE_FIXTURE_MIN_BYTES, 500_000_000]) {
+    assertEq(objectScanBounds(size).geometryCeiling, plexObjectByteCeiling(size),
+      `the shared geometry IS Plex's already-correct geometry at ${size} bytes, unchanged`);
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// Cleanup — the four mountpoints Unraid left behind
+// ---------------------------------------------------------------------------------------------------------
+
+await test('THE CLEANUP UNMOUNTS IN A NAMESPACE THAT PROPAGATES BACK TO THE HOST', () => {
+  // THE DEFECT, AS ARITHMETIC RATHER THAN AS PROSE. The daemon binds its mount point `:rshared`, so the FUSE
+  // mount propagates OUT to the host — that is why the media server beside it can see the namespace. The old
+  // cleanup then unmounted inside a container whose bind of the gate root carried Docker's default
+  // `rprivate`. An unmount in a private namespace is invisible outside it, so it "succeeded" in a namespace
+  // discarded a millisecond later and the host mountpoint survived. Four of them were found on Unraid after
+  // four runs; Docker Desktop never showed it, because there is no host-side mountpoint there to leak.
+  const helper = read('deploy/projection-gate-cleanup.sh');
+  assert(/-v "\$_gate_root:\/gate:rshared"/.test(helper),
+    'the gate root is bound rshared, so the unmount travels back the way the mount came');
+  assert(helper.includes('mountinfo'), 'and it walks the real mount table rather than assuming one path');
+  assert(/PROJECTION_CLEANUP_ATTEMPTS/.test(helper), 'the retry is bounded rather than a while-true');
+  assert(helper.includes('cleanup refused'), 'and a path outside the gate root is refused, not deleted');
+});
+
+await test('THE CLEANUP HELPER REFUSES EVERY PATH THAT IS NOT UNDER THE RUN ROOT', () => {
+  // A helper that takes a path and `rm -rf`s it is one bad variable away from taking something else, so the
+  // guard is executable rather than a comment. Driven through a real shell.
+  const helperPath = join(root, 'deploy/projection-gate-cleanup.sh');
+  const attempt = (gateRoot: string, run: string): { status: number | null; stderr: string } => {
+    const result = spawnSync('bash', ['-c',
+      `. '${helperPath}'; projection_gate_cleanup_run '${gateRoot}' '${run}' alpine`],
+    { encoding: 'utf8' });
+    return { status: result.status, stderr: result.stderr };
+  };
+  for (const [gateRoot, run, why] of [
+    ['/tmp/gate', '/tmp/elsewhere/run-1', 'a run directory outside the gate root'],
+    ['/tmp/gate', '/tmp/gate/../run-1', 'a parent traversal'],
+    ['/tmp/gate', '/tmp/gate', 'the gate root ITSELF, which would take every concurrent run with it'],
+  ] as const) {
+    const refused = attempt(gateRoot, run);
+    assert(refused.status !== 0, `${why} is refused`);
+    assert(refused.stderr.includes('cleanup refused'), `${why} says so on stderr`);
+  }
+  // ...and a well-formed path under the gate root that does not exist is a no-op rather than an error.
+  const ok = attempt('/tmp/gate', '/tmp/gate/run-does-not-exist');
+  assertEq(ok.status, 0, 'a run directory that is already gone is nothing to do, not a failure');
+});
+
+await test('THE UNMOUNT-ONLY HELPER IS GUARDED EXACTLY AS THE CLEANUP ONE IS', () => {
+  // It exists because the cleanup helper also DELETES, and the mid-gate path must not. A second entry point
+  // is a second place for the containment to be forgotten, so it is driven through a real shell too.
+  const helperPath = join(root, 'deploy/projection-gate-cleanup.sh');
+  const attempt = (gateRoot: string, run: string): { status: number | null; stderr: string } => {
+    const result = spawnSync('bash', ['-c',
+      `. '${helperPath}'; projection_gate_unmount_run '${gateRoot}' '${run}' alpine`],
+    { encoding: 'utf8' });
+    return { status: result.status, stderr: result.stderr };
+  };
+  for (const [gateRoot, run, why] of [
+    ['/tmp/gate', '/tmp/elsewhere/run-1', 'a run directory outside the gate root'],
+    ['/tmp/gate', '/tmp/gate/../run-1', 'a parent traversal'],
+    ['/tmp/gate', '/tmp/gate', 'the gate root itself'],
+  ] as const) {
+    const refused = attempt(gateRoot, run);
+    assert(refused.status !== 0, `${why} is refused by the unmount helper`);
+    assert(refused.stderr.includes('unmount refused'), `${why} says so on stderr`);
+  }
+});
+
+await test('STACKED MOUNTS COME OFF INNERMOST FIRST, which is the normal case here', () => {
+  // The kill-and-recover phase deliberately leaves a dead mount with the restarted daemon's live one on top
+  // of it, so by cleanup time the run root routinely carries a STACK. Unmounting the outer one first would
+  // leave the inner mount behind and the run would leak exactly what this helper exists to prevent.
+  const helper = read('deploy/projection-gate-cleanup.sh');
+  assert(/sort -r/.test(helper), 'the mount table is walked in reverse');
+  assert(/mountinfo/.test(helper), 'from the real mount table rather than an assumed path');
+  assert(/stacked/i.test(helper), 'and the reason is recorded where the loop is');
+  // ...and the deletion still only ever names the run directory.
+  assert(helper.includes(String.raw`rm -rf /gate/$_base`), 'the delete is scoped to the run directory basename');
+  assert(!/rm -rf ..gate([^/]|$)/m.test(helper.replace(/$_base/g, String.fromCharCode(88))), 'never the gate root itself');
+});
+
+await test('EVERY GATE ROUTES ITS CLEANUP THROUGH THE ONE HELPER, on every exit path', () => {
+  // Five gates, one cleanup. The failure this prevents is the one that produced the defect: four copies of a
+  // cleanup, of which the fixed one would have been whichever the next person happened to edit.
+  for (const gate of ['jellyfin-dataplane', 'plex-dataplane', 'emby-dataplane',
+    'three-server-concurrency', 'rclone-comparison']) {
+    const source = read(`deploy/projection-${gate}-gate.sh`);
+    assert(source.includes('projection-gate-cleanup.sh'), `${gate} sources the shared cleanup`);
+    assert(source.includes('projection_gate_cleanup_run'), `${gate} calls it`);
+    assert(source.includes('trap cleanup EXIT'),
+      `${gate} runs it on success, on failure and on interrupt — an EXIT trap covers all three`);
+    assert(!/umount -l \/gate\//.test(source),
+      `${gate} no longer carries its own copy of the unmount that did not propagate`);
+  }
+});
+
+await test('THE THREE-RUN WRAPPER CANNOT PASS A SEQUENCE THAT LEFT A MOUNT BEHIND', () => {
+  // The wrapper boundary is the one place a leak compounds: run 2 inherits what run 1 left, and the gate's
+  // own comments say that is how a run passes for the wrong reason. The gate reports its cleanliness at the
+  // end of EVERY run, so a leak is visible in the wrapper's own transcript rather than only on the host.
+  const helper = read('deploy/projection-gate-cleanup.sh');
+  assert(helper.includes('projection_gate_report_cleanliness'), 'there is a report');
+  assert(/NOT VERIFIED on this host \(no findmnt\)/.test(helper),
+    'and on a host that cannot be asked it says so rather than reporting zero — a check that could not run '
+    + 'is not a check that passed, which is how the host preflight treats propagation too');
+  // IT MUST NOT CHANGE THE GATE'S EXIT STATUS. It runs inside an EXIT trap, where a non-zero return would
+  // overwrite the status the gate had already decided — turning a failed run green, or a green one red for a
+  // reason that is not about the data plane.
+  assert(/IT IS A REPORT, NOT AN ASSERTION/.test(helper), 'and it is documented as a report');
+  const reportBody = helper.split('projection_gate_report_cleanliness() {')[1] ?? '';
+  assert(!/\breturn 1\b/.test(reportBody), 'it never returns non-zero from inside the trap');
+});
+
+await test('THE ABANDONMENT ALLOWANCE CANNOT ESCAPE THROUGH A FLOOD OF TRUNCATED BODIES', () => {
+  // A window claiming a million abandoned bodies would grant itself four terabytes of headroom if the
+  // allowance were per-body alone. A body can only be abandoned if it was served, so the count is bounded by
+  // the window's own ranged requests — which the request ceiling separately bounds.
+  const flood = providerByteCeilings({
+    committed: 4_000_000_000, observed: 0, truncatedBodies: 1_000_000, rangeRequests: 2, bodiesInFlight: 0,
+  }, 100);
+  assertEq(flood.abandonedCeiling, 2 * PROVIDER_DEMAND_BLOCK_BYTES,
+    'the allowance is computed from the RANGED REQUESTS, not from the claimed body count');
+  assert(flood.committedCeiling < 4_000_000_000, 'so the committed ceiling cannot absorb the flood');
+  assert(providerByteCoherenceProblems({
+    committed: 10, observed: 0, truncatedBodies: 5, rangeRequests: 2, bodiesInFlight: 0,
+  }).some((problem) => problem.includes('cannot be abandoned unless it was served')),
+    'and the impossible count is named as such rather than silently clamped');
+});
+
+await test('A WINDOW THAT DID NOT SETTLE, OR WHOSE COUNTERS RESET, IS REFUSED RATHER THAN MEASURED', () => {
+  assert(providerByteCoherenceProblems({
+    committed: 100, observed: 40, truncatedBodies: 0, rangeRequests: 4, bodiesInFlight: 1,
+  }).some((problem) => problem.includes('still being written')),
+    'a body mid-write makes the two columns disagree for a reason that is not abandonment');
+  assert(providerByteCoherenceProblems({
+    committed: -5, observed: -5, truncatedBodies: 0, rangeRequests: 0, bodiesInFlight: 0,
+  }).some((problem) => problem.includes('reset')),
+    'a counter that fell describes two processes rather than one interval');
+  assert(providerByteCoherenceProblems({
+    committed: Number.MAX_SAFE_INTEGER + 2, observed: 0, truncatedBodies: 0, rangeRequests: 0,
+    bodiesInFlight: 0,
+  }).some((problem) => problem.includes('safe integer')),
+    'and a column past the safe-integer range is refused before any arithmetic is done on it');
+  // A GAUGE IS NOT A TOTAL. `bodiesInFlight` legitimately falls, so it must not be read as a reset.
+  assertEq(providerByteCoherenceProblems({
+    committed: 10, observed: 10, truncatedBodies: 0, rangeRequests: 4, bodiesInFlight: 0,
+  }).length, 0, 'a settled, coherent window has no problems at all');
 });
 
 await test('a health probe does not spend the budget it is about to measure', () => {

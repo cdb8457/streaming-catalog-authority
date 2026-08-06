@@ -62,4 +62,6 @@ fi
 echo
 echo "$completed of $RUNS consecutive PLEX runs completed, none skipped. On a Linux or Unraid host this is"
 echo "one media server's share of the repetition the acceptance plan asks for; on Windows or Docker Desktop"
-echo "it is not, and must not be reported as Phase 1 closure. Emby is still untouched."
+echo "it is not, and must not be reported as Phase 1 closure. All three media servers have now run three"
+echo "consecutive fresh times on a real Unraid host; G27s three-server half has NO EXECUTABLE"
+echo "GATE AT ALL, no real provider endpoint has ever been contacted, and Phase 1 remains open."

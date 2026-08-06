@@ -61,6 +61,9 @@
 # EVERYTHING IS BOUNDED. Every readiness probe, read, scan, transcode and wait has a hard deadline; a hang
 # fails the gate rather than occupying the machine.
 set -euo pipefail
+# shellcheck source=deploy/projection-gate-cleanup.sh
+. "$(cd "$(dirname "$0")" && pwd)/projection-gate-cleanup.sh"
+
 export MSYS_NO_PATHCONV=1
 
 IMAGE="${PROJECTIOND_IMAGE:-projectiond:phase1-local}"
@@ -114,11 +117,13 @@ cleanup() {
   docker rm -f "$EMBY_CONTAINER" >/dev/null 2>&1 || true
   docker rm -f "$MOUNT_CONTAINER" "$RANGE_CONTAINER" >/dev/null 2>&1 || true
   docker compose -f "$COMPOSE_FILE" down -v --remove-orphans >/dev/null 2>&1 || true
-  if [ -n "${WORK:-}" ] && [ -d "$WORK" ]; then
-    docker run --rm --privileged -v "$GATE_ROOT:/gate" "$VERIFY_IMAGE" \
-      sh -c "umount -l /gate/$(basename "$WORK")/mnt 2>/dev/null; rm -rf /gate/$(basename "$WORK")" >/dev/null 2>&1 || true
+  # THE UNMOUNT PROPAGATES BACK TO THE HOST, which the inline version that used to be here did not:
+  # it unmounted inside a container whose bind of the gate root was `rprivate`, so the host mountpoint
+  # survived every run. See `deploy/projection-gate-cleanup.sh`.
+  if [ -n "${WORK:-}" ]; then
+    projection_gate_cleanup_run "$GATE_ROOT" "$WORK" "$VERIFY_IMAGE" || true
+    projection_gate_report_cleanliness "$GATE_ROOT" "$WORK" || true
   fi
-  rm -rf "$WORK" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -546,6 +551,37 @@ test "${SOAK_DURATION_INT:-0}" -gt 300 \
   || die "the soak source decodes as ${SOAK_DURATION}s, which is not longer than the five minutes the gates need"
 echo "  the soak source is $SOAK_SIZE bytes and decodes as ${SOAK_DURATION}s"
 
+# ----------------------------------------------------------------------------------------------------------
+# THE LARGE FIXTURE, AND WHY THE BYTE-FRACTION CLAIM IS UNTESTABLE WITHOUT IT.
+#
+# `MAX_SCAN_BYTE_FRACTION` is 0.5 and it carries the product's whole argument: a media server can IDENTIFY an
+# object without downloading it. On a SMALL object that claim cannot be tested at all — the daemon serves a
+# 4 MiB demand block for a one-byte read, so identifying an 8.6 MB object costs several MiB whatever the
+# daemon does, and a 0.5 ceiling over it is unreachable BY CONSTRUCTION.
+#
+# THE JELLYFIN GATE LEARNED THAT ON UNRAID and this gate carried the identical defect: the corpus scan was
+# held to 0.5 of the soak source's length, and the daemon's two legitimate read patterns for an object that
+# size straddle the ceiling — one probe window apart. A budget a correct daemon fails half the time is not a
+# budget. Both gates now go through the SAME shared rule in `daemon-read-geometry`.
+#
+# `LARGE_MIN_BYTES` is 94 MiB — the size at which the daemon's own per-object block envelope sits comfortably
+# below half the object and a whole-object read clearly breaches it. Same figure, same generator, as the
+# three-server gate: not a second fixture sized to a second rule.
+LARGE_FILE="Projection Large Fixture (2026).mp4"
+LARGE_REF="obj-projection-large"
+LARGE_MIN_BYTES=98566144
+step "generating the large fixture (>= ${LARGE_MIN_BYTES} bytes), on which the byte fraction is testable"
+ffmpeg_run -hide_banner -loglevel error -y \
+  -f lavfi -i "testsrc2=size=640x480:rate=24:duration=105" \
+  -f lavfi -i "sine=frequency=277:duration=105" \
+  -c:v mpeg4 -b:v 8M -minrate 8M -maxrate 8M -bufsize 16M \
+  -c:a aac -b:a 64k -shortest -movflags +faststart "/work/remote/$LARGE_FILE"
+LARGE_SIZE="$(wc -c < "$WORK/remote/$LARGE_FILE" | tr -d ' ')"
+LARGE_SHA="$(node "$REL/sha.cjs" "$REL/remote/$LARGE_FILE")"
+test "$LARGE_SIZE" -ge "$LARGE_MIN_BYTES" \
+  || die "the large fixture is $LARGE_SIZE bytes, under the 94 MiB the byte-fraction claim needs to be testable"
+echo "  the large fixture is $LARGE_SIZE bytes"
+
 LOCAL_SIZE="$(wc -c < "$WORK/media/$LOCAL_FILE" | tr -d ' ')"
 REMOTE_SIZE="$(wc -c < "$WORK/remote/$REMOTE_FILE" | tr -d ' ')"
 test "$LOCAL_SIZE" -gt 3145728  || die "the local media is under 3 MiB, so the full probe plan would not apply"
@@ -611,6 +647,7 @@ docker run -d --name "$RANGE_CONTAINER" --network "$NETWORK" --network-alias fak
   --file-object "${REMOTE_REF}=/remote/${REMOTE_FILE}" \
   --file-object "${MIDSCAN_REF}=/remote/${MIDSCAN_FILE}" \
   --file-object "${SOAK_REF}=/remote/${SOAK_FILE}" \
+  --file-object "${LARGE_REF}=/remote/${LARGE_FILE}" \
   "${CORPUS_OBJECT_FLAGS[@]}" --emit /out/objects.json >/dev/null
 
 echo "  waiting for the endpoint to come up"
@@ -951,9 +988,27 @@ register version --key soak-source --size "$SOAK_SIZE" --mtime 2026-06-01T10:00:
 register entry --item "$SOAK_ITEM" --version-key soak-source --path "$SOAK_PATH" \
   --source "http-range:vault:${SOAK_REF}"
 
+# THE LARGE FIXTURE IS PUBLISHED THE SAME WAY, and for the one reason given where it was generated: it is the
+# only entry in this corpus on which `MAX_SCAN_BYTE_FRACTION` is a claim a ceiling can constrain. The budget
+# phase below asserts that an object this size was actually present, so removing this block fails the gate
+# rather than quietly retiring the fraction.
+LARGE_SIZE_AT_ENDPOINT="$(node "$REL/objects.cjs" "$REL/out/objects.json" "$LARGE_REF" size)"
+LARGE_SHA_AT_ENDPOINT="$(node "$REL/objects.cjs" "$REL/out/objects.json" "$LARGE_REF" sha256)"
+test "$LARGE_SIZE_AT_ENDPOINT" = "$LARGE_SIZE" || die "the endpoint disagrees with the large fixture about its size"
+test "$LARGE_SHA_AT_ENDPOINT" = "$LARGE_SHA"   || die "the endpoint is not serving the large fixture the gate hashed"
+LARGE_PROBES="$(node "$REL/objects.cjs" "$REL/out/objects.json" "$LARGE_REF" probes)"
+LARGE_PROBE_FLAGS=""
+for probe in $LARGE_PROBES; do LARGE_PROBE_FLAGS="$LARGE_PROBE_FLAGS --probe $probe"; done
+LARGE_ITEM="ffffffff-7777-4777-8777-ffffffffffff"
+LARGE_PATH="Movies/Projection Large Fixture (2026)/$LARGE_FILE"
+# shellcheck disable=SC2086
+register version --key large-fixture --size "$LARGE_SIZE" --mtime 2026-06-01T11:00:00.000Z $LARGE_PROBE_FLAGS
+register entry --item "$LARGE_ITEM" --version-key large-fixture --path "$LARGE_PATH" \
+  --source "http-range:vault:${LARGE_REF}"
+
 publish > "$WORK/out/publish-corpus.json"
 test "$(field outcome < "$WORK/out/publish-corpus.json")" = "published" || die "the corpus was not published"
-test "$(field additions < "$WORK/out/publish-corpus.json")" = "$(( CORPUS_COUNT + 1 ))" \
+test "$(field additions < "$WORK/out/publish-corpus.json")" = "$(( CORPUS_COUNT + 2 ))" \
   || die "the corpus generation added $(field additions < "$WORK/out/publish-corpus.json") entries, not $(( CORPUS_COUNT + 1 ))"
 
 echo "  waiting for the corpus to be admitted"
@@ -971,9 +1026,10 @@ test "$ready" -eq 1 || { docker logs "$MOUNT_CONTAINER" 2>&1 | tail -30 >&2; die
 CORPUS_TOTAL="$(node "$REL/expect.cjs" "$REL/out/expected-corpus.json" "$REL/out/corpus-expected.json" \
   "$LOCAL_FILE"  "$LOCAL_SIZE"  "$LOCAL_SHA"  local      anchor \
   "$REMOTE_FILE" "$REMOTE_SIZE" "$REMOTE_SHA" http-range anchor \
+  "$LARGE_FILE"  "$LARGE_SIZE"  "$LARGE_SHA"  http-range anchor \
   "$SOAK_FILE"   "$SOAK_SIZE"   "$SOAK_SHA"   http-range anchor)"
 echo "  the corpus is $CORPUS_TOTAL entries"
-drive corpus-check --expect-file "$REL/out/expected-corpus.json" --min-entries 50 --min-remote 39
+drive corpus-check --expect-file "$REL/out/expected-corpus.json" --min-entries 51 --min-remote 40
 
 SMALL_REMOTE_BYTES="$(field smallRemoteBytes < "$WORK/out/corpus-totals.json")"
 REMOTE_CORPUS_ENTRIES="$(field remoteEntries < "$WORK/out/corpus-totals.json")"
@@ -989,7 +1045,8 @@ drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/c
 # whole length by construction and a sub-1.0 budget over it could never pass.
 drive budget --before "$REL/out/counters-before-corpus.json" --after "$REL/out/counters-after-corpus.json" \
   --gate EM9b-corpus-scan --entries "$(( REMOTE_CORPUS_ENTRIES + 1 ))" \
-  --bytes "$SOAK_SIZE" --small-bytes "$SMALL_REMOTE_BYTES" --min-range 1
+  --bytes "$SOAK_SIZE" --small-bytes "$SMALL_REMOTE_BYTES" --min-range 1 \
+  --require-large-object true
 
 # ----------------------------------------------------------------------------------------------------------
 step "a repeat scan of the ~50-entry corpus, with zero churn"
@@ -1233,9 +1290,29 @@ test "$ready" -eq 1 || { wait "$KILL_PID" || true; die "the stream never became 
 echo "  SIGKILL"
 docker kill --signal=KILL "$MOUNT_CONTAINER" >/dev/null
 docker rm -f "$MOUNT_CONTAINER" >/dev/null 2>&1 || true
-# A stale mount must not go on answering as if nothing happened.
-docker run --rm --privileged -v "$GATE_ROOT:/gate" "$VERIFY_IMAGE" \
-  sh -c "umount -l /gate/$(basename "$WORK")/mnt 2>/dev/null" >/dev/null 2>&1 || true
+# NOTHING IS UNMOUNTED HERE, AND THE REAL HOST IS WHY.
+#
+# There used to be a `umount -l` at this point, "so a stale mount does not go on answering". It never did
+# anything: it ran inside a container whose bind of the gate root carried Docker's default `rprivate`, so
+# the unmount happened in a namespace that was discarded immediately. On Docker Desktop that was invisible.
+#
+# MAKING IT WORK BROKE THE GATE, WHICH IS THE FINDING. Routed through the propagating helper it genuinely
+# detached the mount — and the MEDIA SERVER IS STILL RUNNING at this point, holding `$WORK/mnt` as an
+# `rslave` bind. A lazy unmount of the master detaches the slave copy too, and the media server can never
+# get it back: the run failed at the very next assertion with "the media server's own mount cannot be
+# READ". The dead mount is not what breaks recovery; removing it is.
+#
+# WHAT ACTUALLY MAKES RECOVERY WORK is that the restarted daemon mounts again at the same path and the new
+# mount STACKS over the dead one, so the media server's slave view resolves to the live namespace. That is
+# also what a real operator restart looks like, and this gate exists to measure that rather than to tidy
+# up before measuring it.
+#
+# THE STALE MOUNT IS NOT LEAKED, IT IS DEFERRED. Cleanup removes the media server FIRST and only then walks
+# every mountpoint under the run root, stacked ones included, and verifies the count reached zero.
+#
+# AND THE ASSERTION THIS COMMENT USED TO JUSTIFY IS STILL MADE, harder: the gate reads real bytes back
+# through the media server's own mount after the remount, so a dead namespace fails here whatever is or is
+# not mounted underneath it.
 
 echo "  restarting and remounting through the ordinary daemon start"
 start_daemon

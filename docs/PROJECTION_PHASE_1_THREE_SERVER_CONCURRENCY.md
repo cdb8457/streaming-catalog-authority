@@ -488,13 +488,14 @@ rather than a review.
   servers, so the endpoint sees the daemon and never the server behind a byte. Every byte is attributed to a
   corpus **object**; no byte is attributed to a **server**, and a gate that reported "Jellyfin cost N bytes"
   would be inventing a number. What is per-server is the catalogue evidence and the overlap evidence.
-- **G22**, the rclone/WebDAV comparison control, is **NOT RUN** for tranche purposes. A gate for it now
-  exists — `deploy/projection-rclone-comparison-gate.sh`, described in
-  `docs/PROJECTION_PHASE_1_RCLONE_COMPARISON.md` — and has been run on Docker Desktop only, which §6 of the
-  acceptance plan says closes nothing. It reuses this gate's observer, overlap analysis, floors and barrier
-  rather than reimplementing them.
-- **G27's three-server half** is not run.
-- **Phase 1 remains open.**
+- **G22**, the rclone/WebDAV comparison control, **HISTORICALLY read `NOT RUN`** for tranche purposes: a gate
+  for it existed — `deploy/projection-rclone-comparison-gate.sh`, described in
+  `docs/PROJECTION_PHASE_1_RCLONE_COMPARISON.md` — and **had been run on Docker Desktop only**, which §6 of
+  the acceptance plan says closes nothing. **It has since run 3/3 on a real Unraid host.** It reuses this
+  gate's observer, overlap analysis, floors and barrier rather than reimplementing them.
+- **G27's three-server half HAS SINCE RUN** — 3/3 fresh Unraid runs, 85 assertions each. It is a separate
+  gate (`deploy/projection-path-lifecycle-gate.sh`) and closes nothing this document claims.
+- **Phase 1 remains open**, on one ground: no real provider endpoint has ever been contacted.
 
 Two further limits worth stating in full rather than leaving to be inferred:
 

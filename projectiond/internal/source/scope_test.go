@@ -26,24 +26,24 @@ func TestPrivateAddressOverrideCannotReachMetadataOrNonRoutableAddresses(t *test
 		"224.0.0.1",       // multicast
 		"ff02::1",         // IPv6 link-local multicast
 	} {
-		if failure := permissive.checkIP(parseIP(t, address)); failure == nil {
+		if failure := permissive.checkIP(parseIP(t, address), false); failure == nil {
 			t.Fatalf("%s must be refused even with the private-address switch on", address)
 		}
 	}
 	// What the switch IS for: loopback and RFC1918, and nothing else.
 	for _, address := range []string{"127.0.0.1", "::1", "10.0.0.5", "192.168.1.9", "172.16.0.3"} {
-		if failure := permissive.checkIP(parseIP(t, address)); failure != nil {
+		if failure := permissive.checkIP(parseIP(t, address), false); failure != nil {
 			t.Fatalf("%s should be permitted by the private-address switch: %v", address, failure)
 		}
 	}
 	// And with the switch off, those go back to being refused.
 	strict := EgressPolicy{}
 	for _, address := range []string{"127.0.0.1", "10.0.0.5"} {
-		if failure := strict.checkIP(parseIP(t, address)); failure == nil {
+		if failure := strict.checkIP(parseIP(t, address), false); failure == nil {
 			t.Fatalf("%s must be refused without the switch", address)
 		}
 	}
-	if failure := strict.checkIP(parseIP(t, "93.184.216.34")); failure != nil {
+	if failure := strict.checkIP(parseIP(t, "93.184.216.34"), false); failure != nil {
 		t.Fatalf("a public address must be reachable: %v", failure)
 	}
 }

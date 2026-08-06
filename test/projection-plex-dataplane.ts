@@ -16,6 +16,7 @@ import {
   PLEX_AIR_GAPPED_TESTED_PATHS, PLEX_LARGE_FIXTURE, PLEX_READ_GEOMETRY,
   PLEX_REJECTS_UNRECOGNISED_HOST_HEADER, PLEX_SCAN_ENVELOPE, PLEX_SEEK_IS_AN_OFFSET_RESTART,
   PLEX_SEGMENT_CONTAINER, PLEX_SERVER_PREFS, PLEX_GATE6_COMPATIBLE_BLOCKS,
+  PLEX_TRANSCODER_THROTTLE_BUFFER_SECONDS,
   PLEX_INSTRUMENTED_SCAN_WINDOWS, plexHighestCorpusScanRatio, plexHighestMeasuredPerEntry,
   plexInstrumentedWindowCounts, plexObjectByteCeiling,
   plexLargeFixtureMinBytes, plexScanByteCeiling, plexScanRequestCeilings, plexSeekByteCeiling,
@@ -545,11 +546,98 @@ await test('a throttled, paced Plex encoder is measurable and meets the floors',
   assertEq(liveness.presentSamples, 38, 'a session existed throughout');
   assertEq(liveness.liveSamples, 38, 'and was never reported complete');
   assertEq(liveness.advances, 37, 'the encoder produced new output at every step but the first');
-  assert(liveness.advances >= PLEX_ENCODER_FLOORS.MIN_OFFSET_ADVANCES, 'which clears the floor');
+  assert(liveness.advanceGapSeconds <= PLEX_ENCODER_FLOORS.MAX_ADVANCE_GAP_SECONDS,
+    `the longest silence, ${liveness.advanceGapSeconds}s, is inside the ceiling`);
   assert(liveness.workingSpanSeconds >= PLEX_ENCODER_FLOORS.MIN_WORKING_SPAN_SECONDS,
     `working span ${liveness.workingSpanSeconds}s clears the floor`);
   assert(liveness.throttledSamples >= PLEX_ENCODER_FLOORS.MIN_THROTTLED_SAMPLES, 'and throttling was seen');
   assertEq(liveness.producedSpanSeconds, 296, 'the media it produced across the window');
+  assertEq(liveness.offsetTimeline.length, 38, 'and every sample is in the recorded timeline');
+});
+
+await test('THE BURSTY ENCODER THE OLD COUNT FAILED — few, large bursts, alive the whole way', () => {
+  // THIS IS THE UNRAID RUN, AS A FIXTURE. Six advances across a three-hundred-second window, each a large
+  // burst roughly fifty seconds apart, throttled throughout. The retired floor of 8 on the COUNT rejected
+  // exactly this: a correct, live, throttled encoder on fast hardware. Rejecting it was the defect.
+  const bursts = [0, 50, 100, 150, 200, 250, 296];
+  const samples: PlexEncoderSample[] = [];
+  for (let t = 0; t <= 296; t += 8) {
+    const produced = bursts.filter((b) => b <= t).length * 50;
+    samples.push({
+      wallMs: t * 1_000, present: true, complete: false, throttled: true, maxOffsetAvailable: produced,
+    });
+  }
+  const liveness = analysePlexEncoderLiveness(samples);
+  assert(liveness.advances <= 7, `few bursts, exactly the shape that failed: ${liveness.advances}`);
+  assert(liveness.advanceGapSeconds <= PLEX_ENCODER_FLOORS.MAX_ADVANCE_GAP_SECONDS,
+    `but no silence longer than the throttle contract allows: ${liveness.advanceGapSeconds}s`);
+  assert(liveness.workingSpanSeconds >= PLEX_ENCODER_FLOORS.MIN_WORKING_SPAN_SECONDS,
+    'and it worked across the window');
+  assert(liveness.throttledSamples >= PLEX_ENCODER_FLOORS.MIN_THROTTLED_SAMPLES, 'while being throttled');
+});
+
+await test('A STALLED ENCODER FAILS — one long silence, whatever its burst count', () => {
+  // Alive at the start, then nothing for two hundred seconds while the job is still incomplete. The burst
+  // count looks healthy and would have PASSED the retired floor; the gap is what refuses it.
+  const samples: PlexEncoderSample[] = [];
+  for (let t = 0; t <= 96; t += 8) {
+    samples.push({
+      wallMs: t * 1_000, present: true, complete: false, throttled: true, maxOffsetAvailable: 10 + t,
+    });
+  }
+  for (let t = 104; t <= 296; t += 8) {
+    samples.push({
+      wallMs: t * 1_000, present: true, complete: false, throttled: true, maxOffsetAvailable: 106,
+    });
+  }
+  const liveness = analysePlexEncoderLiveness(samples);
+  assert(liveness.advances > 8, 'plenty of advances — the retired count floor would have PASSED this');
+  assert(liveness.advanceGapSeconds > PLEX_ENCODER_FLOORS.MAX_ADVANCE_GAP_SECONDS,
+    `but the silence of ${liveness.advanceGapSeconds}s is what the gap ceiling refuses`);
+  assertEq(liveness.completedByEnd, false, 'and the job never completed, so the trailing gap is held');
+});
+
+await test('AN ENCODER THAT DIED MID-WINDOW FAILS ON THE TRAILING GAP ALONE', () => {
+  // Healthy for the first half, then gone. The working span clears its floor, the burst count is high, and
+  // every decoded-output assertion in the gate would still pass. Only the trailing silence exposes it — and
+  // the retired count floor could not see it at all.
+  const samples: PlexEncoderSample[] = [];
+  for (let t = 0; t <= 144; t += 8) {
+    samples.push({
+      wallMs: t * 1_000, present: true, complete: false, throttled: true, maxOffsetAvailable: 10 + t,
+    });
+  }
+  for (let t = 152; t <= 296; t += 8) {
+    samples.push({
+      wallMs: t * 1_000, present: true, complete: false, throttled: true, maxOffsetAvailable: 154,
+    });
+  }
+  const liveness = analysePlexEncoderLiveness(samples);
+  assert(liveness.workingSpanSeconds >= PLEX_ENCODER_FLOORS.MIN_WORKING_SPAN_SECONDS,
+    'the working span PASSES, which is why it cannot be the only assertion');
+  assert(liveness.advances > 8, 'and so would the retired count floor');
+  assert(liveness.advanceGapSeconds > PLEX_ENCODER_FLOORS.MAX_ADVANCE_GAP_SECONDS,
+    'the trailing gap is the only thing that refuses it');
+});
+
+await test('A COMPLETED JOB IS NOT HELD TO A CADENCE IT NO LONGER OWES', () => {
+  // An encoder that finished the file has nothing left to produce. Holding the trailing gap against it would
+  // fail every correct run whose encoder got ahead and finished, which on fast hardware is most of them.
+  const samples: PlexEncoderSample[] = [];
+  for (let t = 0; t <= 144; t += 8) {
+    samples.push({
+      wallMs: t * 1_000, present: true, complete: false, throttled: true, maxOffsetAvailable: 10 + t,
+    });
+  }
+  for (let t = 152; t <= 296; t += 8) {
+    samples.push({
+      wallMs: t * 1_000, present: true, complete: true, throttled: false, maxOffsetAvailable: 154,
+    });
+  }
+  const liveness = analysePlexEncoderLiveness(samples);
+  assertEq(liveness.completedByEnd, true, 'the server marked it complete');
+  assert(liveness.advanceGapSeconds <= PLEX_ENCODER_FLOORS.MAX_ADVANCE_GAP_SECONDS,
+    'so the trailing silence is not counted against it');
 });
 
 await test('an encoder that raced to the end and exited FAILS the floors, which is the point of them', () => {
@@ -565,7 +653,9 @@ await test('an encoder that raced to the end and exited FAILS the floors, which 
   const liveness = analysePlexEncoderLiveness(burst);
   assertEq(liveness.advances, 0, 'the offset never moved again');
   assertEq(liveness.throttledSamples, 0, 'and nothing was ever throttled');
-  assert(liveness.advances < PLEX_ENCODER_FLOORS.MIN_OFFSET_ADVANCES, 'so the advance floor refuses it');
+  assertEq(liveness.workingSpanSeconds, 0, 'a single burst has no span');
+  assert(liveness.workingSpanSeconds < PLEX_ENCODER_FLOORS.MIN_WORKING_SPAN_SECONDS,
+    'so the span floor refuses it');
   assert(liveness.throttledSamples < PLEX_ENCODER_FLOORS.MIN_THROTTLED_SAMPLES,
     'and so does the throttle floor');
 });
@@ -585,17 +675,23 @@ await test('samples with no session are not counted as encoder liveness', () => 
   assertEq(liveness.liveSamples, 0, 'so nothing was live');
   assertEq(liveness.advances, 0, 'and nothing advanced');
   assertEq(liveness.workingSpanSeconds, 0, 'with no span to report');
+  assertEq(liveness.advanceGapSeconds, 0, 'and no gap either — an absence is not a stall');
 });
 
-await test('the encoder floors sit well BELOW the measured behaviour, on purpose', () => {
-  // A threshold pinned to an observed value fails on a loaded machine, and a gate that fails when nothing is
-  // wrong gets disabled and then gets deleted. The probe produced four advances in ninety seconds with a
-  // sixty-seven-second working span; scaled to five minutes that is roughly a dozen across two hundred and
-  // fifty. The floors are eight and one hundred and twenty.
-  assert(PLEX_ENCODER_FLOORS.MIN_OFFSET_ADVANCES < 13, 'the advance floor has headroom');
+await test('THE LIVENESS CEILING IS DERIVED FROM THE THROTTLE CONTRACT, NOT FROM A RUN', () => {
+  // The defect this closes is a threshold fitted to whichever run was in front of somebody. The retired
+  // floor of 8 on the advance COUNT failed on Unraid at 7 and at 6, on runs where the encoder was
+  // demonstrably alive — 38 throttled samples and a 192 s working span against a floor of 120.
+  assertEq(PLEX_ENCODER_FLOORS.MAX_ADVANCE_GAP_SECONDS, 2 * PLEX_TRANSCODER_THROTTLE_BUFFER_SECONDS,
+    'the ceiling is TWO throttle buffers, computed from the server\'s own configured quantity');
+  assert(!('MIN_OFFSET_ADVANCES' in PLEX_ENCODER_FLOORS),
+    'and the count floor is GONE rather than lowered — lowering it would have been the fitted threshold');
+  // The probe recorded in the module had a largest gap of 42 s. The ceiling must sit well above it, or it is
+  // the same mistake in a different unit.
+  assert(PLEX_ENCODER_FLOORS.MAX_ADVANCE_GAP_SECONDS > 42 * 2,
+    'with better than a factor of two over the slowest gap ever measured');
   assert(PLEX_ENCODER_FLOORS.MIN_WORKING_SPAN_SECONDS
-    < MEDIA_SERVER_SOAK.MIN_TRANSCODE_SECONDS * 0.6, 'and so does the span floor');
-  assert(PLEX_ENCODER_FLOORS.MIN_OFFSET_ADVANCES > 1, 'while still refusing a single burst');
+    < MEDIA_SERVER_SOAK.MIN_TRANSCODE_SECONDS * 0.6, 'and the span floor keeps its headroom');
 });
 
 // ---------------------------------------------------------------------------------------------------------
@@ -1077,7 +1173,11 @@ await test('three passing runs are counted, and the message is guarded by the CO
   assertEq(result.status, 0, 'three runs pass');
   assert(/3 of 3 consecutive PLEX runs completed, none skipped/.test(result.stdout), 'and are counted');
   assert(/must not be reported as Phase 1 closure/.test(result.stdout), 'while saying what it is not');
-  assert(/Emby is still untouched/.test(result.stdout), 'and naming the media server still untouched');
+  // IT NAMED EMBY AS UNTOUCHED UNTIL EMBY RAN THREE TIMES ON UNRAID, at which point the sentence became
+  // false. What it must still refuse is the reading that three green runs here closed the tranche.
+  assert(/All three media servers have now run three/.test(result.stdout),
+    'and says what has actually run');
+  assert(/Phase 1 remains open/.test(result.stdout), 'while refusing the closure reading');
 });
 
 await test('a wrapper asked for zero runs refuses to announce a completed sequence', () => {
@@ -1478,14 +1578,32 @@ await test('redaction-check reads the NDJSON the gate actually writes, not whate
 // ---------------------------------------------------------------------------------------------------------
 
 /** Runs `budget` with a real counter pair and returns the recorded NDJSON verdicts. */
+/**
+ * A counter snapshot that also states its OBSERVED column, which the real endpoint always reports.
+ *
+ * WHY THE FIXTURES NEEDED THIS AND WHY IT IS NOT A FUDGE. Every snapshot below was written to mean "these
+ * bytes were served", back when a committed length was the only byte number the endpoint had. It now has two,
+ * and a fixture that moves the committed column while leaving the observed one at zero is not a quiet window
+ * — it is an endpoint that promised bytes and wrote none, which the coherence check correctly refuses. So the
+ * helper writes what the fixtures always MEANT: a fully delivered window, nothing abandoned. A test that is
+ * about truncation states both columns itself and this leaves them alone.
+ */
+function fullyDelivered(snapshot: Record<string, unknown>): Record<string, unknown> {
+  return {
+    observedBytes: snapshot.bytesServed ?? 0,
+    truncatedBodies: 0,
+    ...snapshot,
+  };
+}
+
 function runBudget(argv: readonly string[], before: Record<string, unknown>, after: Record<string, unknown>):
 { status: number; stderr: string; results: Array<{ gate: string; verdict: string; measured?: number; budget?: number }> } {
   const dir = mkdtempSync(join(tmpdir(), 'plex-budget-'));
   const beforePath = join(dir, 'before.json');
   const afterPath = join(dir, 'after.json');
   const resultsPath = join(dir, 'results.json');
-  writeFileSync(beforePath, JSON.stringify(before));
-  writeFileSync(afterPath, JSON.stringify(after));
+  writeFileSync(beforePath, JSON.stringify(fullyDelivered(before)));
+  writeFileSync(afterPath, JSON.stringify(fullyDelivered(after)));
   const run = runCli(['budget', '--before', beforePath, '--after', afterPath,
     '--results', resultsPath, ...argv]);
   const results = existsSync(resultsPath)
@@ -1545,6 +1663,11 @@ await test('PX14\'s EXACT argument shape asserts zero bytes - the assertion that
   // The no-floor record is emitted in the size-free form too, so the report is complete rather than silent.
   assert(warm.results.some((r) => r.gate === 'PX14-rescan-provider-bytes-floor-not-applicable'),
     'and the window records WHY it carries no floor, instead of omitting the subject');
+
+  // THE RE-SCAN BRANCH IS DELIBERATELY NOT ON THE TWO-COLUMN PATH, and it does not need to be: it asserts
+  // EXACTLY ZERO bytes against a window that issued zero ranged requests, and a window with no bodies in it
+  // has nothing to abandon. A committed length can only exist where a request did.
+  assert(GATE.includes('--gate PX14-rescan --entries 1 --windows 0'), 'the re-scan call site is unchanged');
 });
 
 await test('EXECUTION: a clipped block spends the block cap, and an oversized body is refused outright', () => {
@@ -1593,6 +1716,118 @@ await test('EXECUTION: a clipped block spends the block cap, and an oversized bo
     'a single body larger than a demand block fails');
   assertEq(oversized.results.find((r) => r.gate === 'PXcls-oversized-responses')?.measured, 1,
     'and it is reported as the count it was');
+});
+
+await test('EXECUTION: the two byte columns reach the SCAN ceiling through the CLI, not just the pure function', () => {
+  // The wiring, end to end, on the branch the Unraid failure came from. A window that delivered 400,000
+  // bytes of a 40,000-byte object's 440,000 ceiling is legitimate; the same window with a further 4,000,000
+  // bytes COMMITTED and abandoned must not turn it into a failure, and the abandonment must be reported.
+  const sizes = [40_000];
+  const argv = ['--gate', 'PXtwo', '--entries', '1', '--object-sizes', `${sizes[0]}`];
+  const before = { ...QUIET_COUNTERS, objectBytes: [0], objectSizes: sizes };
+
+  const delivered = runBudget(argv, before, {
+    ...QUIET_COUNTERS, bytesServed: QUIET_COUNTERS.bytesServed + 400_000,
+    objectBytes: [400_000], objectSizes: sizes,
+  });
+  assertEq(delivered.results.find((r) => r.gate === 'PXtwo-provider-bytes')?.verdict, 'pass',
+    'a fully delivered window inside its ceiling passes, exactly as it always did');
+
+  const abandoned = runBudget(argv, before, {
+    ...QUIET_COUNTERS, bytesServed: QUIET_COUNTERS.bytesServed + 400_000 + 1_000_000,
+    observedBytes: QUIET_COUNTERS.bytesServed + 400_000, truncatedBodies: 1,
+    // THE WINDOW MUST HAVE SERVED A BODY TO HAVE ABANDONED ONE. An earlier version of this fixture left the
+    // request count untouched, which is a window reporting one truncated body and zero ranged requests — and
+    // the coherence check correctly refuses it, because that is where an unbounded abandonment allowance
+    // would come from.
+    rangeRequests: QUIET_COUNTERS.rangeRequests + 2,
+    objectBytes: [1_400_000], objectSizes: sizes,
+  });
+  assertEq(abandoned.results.find((r) => r.gate === 'PXtwo-provider-bytes-observed')?.measured, 400_000,
+    'the delivery column carries what the endpoint actually wrote');
+  assertEq(abandoned.results.find((r) => r.gate === 'PXtwo-provider-bytes-observed')?.verdict, 'pass',
+    'and it is inside the ceiling');
+  assertEq(abandoned.results.find((r) => r.gate === 'PXtwo-provider-bytes-abandoned')?.measured, 1_000_000,
+    'the abandoned remainder is reported as its own number');
+  assertEq(abandoned.results.find((r) => r.gate === 'PXtwo-provider-bytes')?.verdict, 'pass',
+    'and one abandoned demand block does not fail a scan that read well under budget');
+});
+
+await test('A WARM WINDOW THAT REACHED THE PROVIDER NOT AT ALL CANNOT PASS', () => {
+  // THE UNRAID FAILURE, AS A FIXTURE. One run's PX9 window recorded ZERO provider bytes and ZERO ranged
+  // requests: the before-snapshot already read 6 requests and 11,535,360 bytes for the object, and the
+  // after-snapshot was byte-identical. Every CEILING in that window passed by having had nothing happen in
+  // it. Only the floors caught it, and this is that property asserted rather than assumed.
+  const sizes = [13_981_407];
+  const quiet = { ...QUIET_COUNTERS, objectBytes: [0], objectSizes: sizes };
+  const run = runBudget(
+    ['--gate', 'PXcold', '--entries', '1', '--object-sizes', `${sizes[0]}`, '--min-range', '1'],
+    quiet, { ...quiet },
+  );
+  const verdict = (suffix: string): string | undefined => run.results.find((r) => r.gate === `PXcold${suffix}`)?.verdict;
+  assertEq(verdict('-provider-bytes'), 'pass',
+    'the byte CEILING passes on a window in which nothing happened, which is why it cannot be alone');
+  assertEq(verdict('-provider-bytes-observed'), 'pass', 'and so does the application-write ceiling');
+  assertEq(verdict('-scan-range-requests-floor'), undefined, 'the floor is named for the gate, not the phase');
+  assertEq(verdict('-range-requests-floor'), 'fail',
+    'THE FLOOR IS WHAT REFUSES IT: a scan that reached the provider zero times did not read the entry');
+  assertEq(verdict('-provider-bytes-floor'), 'fail', 'and the byte floor refuses it too');
+  // THE PHASE RECORDS AND EXITS ZERO; `report` is what turns a recorded fail into a non-zero gate. So what
+  // matters is that the FLOORS recorded `fail` while every CEILING recorded `pass` — a window in which
+  // nothing happened satisfies every ceiling, and that asymmetry is the whole reason the floors exist.
+  const failed = run.results.filter((r) => r.verdict === 'fail').map((r) => r.gate);
+  assert(failed.includes('PXcold-range-requests-floor'), 'the request floor is among the failures');
+  assert(failed.includes('PXcold-provider-bytes-floor'), 'and so is the byte floor');
+  assert(!failed.includes('PXcold-provider-bytes'), 'while the byte ceiling is NOT — it passed on nothing');
+});
+
+await test('A WINDOW THAT DID REACH THE PROVIDER CLEARS THE SAME FLOORS', () => {
+  // The control for the test above: the floors are not simply always-fail.
+  const sizes = [13_981_407];
+  const before = { ...QUIET_COUNTERS, objectBytes: [0], objectSizes: sizes };
+  const after = {
+    ...QUIET_COUNTERS,
+    rangeRequests: QUIET_COUNTERS.rangeRequests + 6,
+    bytesServed: QUIET_COUNTERS.bytesServed + 2_097_152,
+    observedBytes: QUIET_COUNTERS.bytesServed + 2_097_152,
+    objectBytes: [2_097_152], objectSizes: sizes,
+  };
+  const run = runBudget(
+    ['--gate', 'PXwarm', '--entries', '1', '--object-sizes', `${sizes[0]}`, '--min-range', '1'],
+    before, after,
+  );
+  assertEq(run.results.find((r) => r.gate === 'PXwarm-range-requests-floor')?.verdict, 'pass',
+    'six ranged requests clear the request floor');
+  assertEq(run.results.find((r) => r.gate === 'PXwarm-provider-bytes-floor')?.verdict, 'pass',
+    'and two probe windows of bytes clear the byte floor');
+  assertEq(run.results.filter((r) => r.verdict === 'fail').map((r) => r.gate)
+    .filter((g) => g.endsWith('-floor')).length, 0, 'and neither floor failed');
+});
+
+await test('THE GATE MAKES THE PX9 WINDOW COLD BY CONSTRUCTION, NOT BY TIMING', () => {
+  // THE ROOT CAUSE. Plex begins its own library-creation scan the instant a library exists, and the gate
+  // cannot prevent that. While the remote anchor was published BEFORE the library existed, that creation
+  // scan identified it and the PX9 window measured a re-scan of an already-catalogued object. Whether the
+  // window saw any provider work at all then depended on which finished first — a race, not a measurement.
+  //
+  // The fix is the contract's own unit of change: seed a generation the creation scan can find that costs
+  // the provider nothing, wait for Plex's own barrier, and publish the remote anchor as a NEW generation
+  // afterwards. An identity that did not exist cannot have been scanned.
+  const seedAt = GATE.indexOf('waiting out Plex\'s OWN library-creation scan');
+  const publishAt = GATE.indexOf('publishing the HTTP Range anchor as a NEW generation');
+  const windowAt = GATE.indexOf('counters-before-scan.json');
+  const libraryAt = GATE.indexOf('drive library --state');
+  assert(libraryAt > 0 && seedAt > libraryAt, 'the creation scan is waited out AFTER the library is made');
+  assert(publishAt > seedAt, 'the remote anchor is published only once that scan has settled');
+  assert(windowAt > publishAt, 'and the measured window opens after the anchor exists');
+  // The seed generation must be local-only, or waiting out the creation scan would itself spend the budget.
+  assert(/the seed generation is local-only, so it must cost nothing/.test(GATE),
+    'and the gate ASSERTS the creation scan cost the provider nothing, rather than assuming it');
+  assert(GATE.includes('SEED_RANGE_DELTA=$(( SEED_COUNTERS_RANGE - BEFORE_LIBRARY_RANGE ))'),
+    'as a DELTA across the creation-scan window, not an absolute counter — the gate makes one ranged '
+    + 'request of its own before this point and an absolute check blamed Plex for it');
+  assert(/register entry --item "\$REMOTE_ITEM"[\s\S]{0,400}publish > "\$WORK\/out\/publish-remote.json"/.test(GATE),
+    'the remote entry is registered and published together, in the later generation');
 });
 
 await test('EXECUTION: per-object verdicts use ENDPOINT-reported sizes, not the caller ordering', () => {
@@ -3196,7 +3431,12 @@ await test('the gate cleans up after itself, media server first', () => {
   assert(cleanup.indexOf('$PLEX_CONTAINER') < cleanup.indexOf('$MOUNT_CONTAINER'),
     'the media server is removed before the daemon: a FUSE mount with a live reader does not unmount '
     + 'cleanly, and a stale one is how the NEXT run passes for the wrong reason');
-  assert(cleanup.includes('umount -l'), 'and a lazy unmount catches whatever is left');
+  // THE UNMOUNT MOVED INTO THE SHARED HELPER, and that is the correction rather than a relocation: the
+  // inline version unmounted inside a container whose bind of the gate root was `rprivate`, so on a host
+  // where the mount really propagates the host mountpoint survived every run. Four of them were found on
+  // Unraid. The helper binds the gate root `:rshared` so the unmount travels back the way the mount came.
+  assert(cleanup.includes('projection_gate_cleanup_run'), 'the shared, propagating cleanup is what runs');
+  assert(GATE.includes('projection-gate-cleanup.sh'), 'and the gate sources it rather than restating it');
   assert(GATE.includes('trap cleanup EXIT'), 'cleanup runs on success and on failure');
 });
 
@@ -3350,8 +3590,8 @@ function runTrafficWindow(options: {
     return path;
   };
   const argv = ['traffic-window',
-    '--before', write('p-before.json', options.provider.before),
-    '--after', write('p-after.json', options.provider.after),
+    '--before', write('p-before.json', fullyDelivered(options.provider.before)),
+    '--after', write('p-after.json', fullyDelivered(options.provider.after)),
     '--gate', 'PXTEST-window', '--object-bytes', '8594275', '--results', join(dir, 'results.json'),
     ...(options.daemon === undefined ? [] : [
       '--daemon-before', write('d-before.json', options.daemon.before),

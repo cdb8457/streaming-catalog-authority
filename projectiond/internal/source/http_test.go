@@ -378,15 +378,15 @@ func TestResolvedHostOutsideTheAllowlistIsNeverContacted(t *testing.T) {
 func TestDialPolicyRefusesLoopbackAndPrivateAddresses(t *testing.T) {
 	policy := EgressPolicy{AllowLoopback: false}
 	for _, address := range []string{"127.0.0.1", "::1", "10.1.2.3", "192.168.5.5", "169.254.169.254", "0.0.0.0"} {
-		if failure := policy.checkIP(parseIP(t, address)); failure == nil {
+		if failure := policy.checkIP(parseIP(t, address), false); failure == nil {
 			t.Fatalf("%s must be refused at dial time", address)
 		}
 	}
-	if failure := policy.checkIP(parseIP(t, "93.184.216.34")); failure != nil {
+	if failure := policy.checkIP(parseIP(t, "93.184.216.34"), false); failure != nil {
 		t.Fatalf("a public address must be permitted: %v", failure)
 	}
 	// The loopback exception exists only for the in-process fake, and it is explicit.
-	if failure := (EgressPolicy{AllowLoopback: true}).checkIP(parseIP(t, "127.0.0.1")); failure != nil {
+	if failure := (EgressPolicy{AllowLoopback: true}).checkIP(parseIP(t, "127.0.0.1"), false); failure != nil {
 		t.Fatalf("the explicit test exception must permit loopback: %v", failure)
 	}
 }

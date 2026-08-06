@@ -7,6 +7,8 @@ import {
   type CorpusExpectation, type GateResult, type SeekObservation, type SoakProbe, type SoakSegment,
   type TranscodeSessionSampleRecord,
 } from '../core/projection/media-server-dataplane.js';
+import { objectAttribution, scanByteResults } from '../core/projection/daemon-read-geometry.js';
+import { providerByteResults } from '../core/projection/media-server-dataplane.js';
 import {
   EMBY_CONSUMER_TOKEN_FILE, EMBY_PINNED_VERSION, EMBY_TRANSCODING_TEMP_PATH,
   PACED_PLAY_DECODE_MARGIN_SECONDS,
@@ -1128,20 +1130,29 @@ async function main(): Promise<void> {
         Math.ceil(entries * MEDIA_SERVER_BUDGETS.MAX_SCAN_RESOLUTION_MULTIPLIER),
         `denominator: ${entries} remote entries`));
       // THE ONE THAT MATTERS. A scanner that downloaded the file to identify it would sit at or above 1.0 of
-      // the object's own length; the budget is a fraction of it, so "it works, it just fetches everything"
-      // cannot pass.
+      // the object's own length, and the fraction says it must not.
       //
-      // TWO DENOMINATORS WHEN THERE ARE TWO KINDS OF OBJECT, and the second is above 1.0 on purpose: below the
-      // contract's single-probe threshold an entry's own probe window IS the whole object, so identifying it
-      // costs its whole length by construction and a sub-1.0 budget over it could never pass. Folding them
-      // together would let the large entries pay for the small ones.
-      const smallBytes = optionalNumber(args, 'small-bytes', 0);
-      const byteBudget = Math.floor(remoteBytes * MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION
-        + smallBytes * MEDIA_SERVER_BUDGETS.MAX_SMALL_OBJECT_SCAN_BYTE_MULTIPLIER);
-      record(args, withinBudget(`${gate}-provider-bytes`, delta('bytesServed'), byteBudget,
-        `denominators: ${remoteBytes} bytes in objects above the single-probe threshold at `
-        + `x${MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION}, and ${smallBytes} bytes below it at `
-        + `x${MEDIA_SERVER_BUDGETS.MAX_SMALL_OBJECT_SCAN_BYTE_MULTIPLIER}`));
+      // THE TWO AGGREGATE DENOMINATORS THAT USED TO BE HERE ARE GONE, and their removal is the correction.
+      // They were `MAX_SCAN_BYTE_FRACTION x (bytes above the single-probe threshold)` plus
+      // `MAX_SMALL_OBJECT_SCAN_BYTE_MULTIPLIER x (bytes below it)` — one pooled number over a whole corpus, so
+      // one object could still spend another's allowance, and on the only object where the fraction actually
+      // bound it landed between the daemon's two legitimate read patterns. Per-object attribution replaces
+      // the pooling and the block geometry replaces the unreachable fraction; the fraction itself is
+      // unchanged and is asserted where it is testable.
+      // THE SAME SHARED RULE THE JELLYFIN GATE USES, from the same module, for the same reason: an aggregate
+      // fraction over a corpus of small objects is unreachable by construction, and the Unraid run that
+      // exposed it failed on an 8,594,275-byte object whose two legitimate read patterns straddled the
+      // ceiling. `MAX_SCAN_BYTE_FRACTION` is unchanged; where it is asserted is what moved.
+      for (const result of scanByteResults(gate, {
+        committed: delta('bytesServed'),
+        observed: delta('observedBytes'),
+        truncatedBodies: delta('truncatedBodies'),
+        rangeRequests: delta('rangeRequests'),
+        bodiesInFlight: after.bodiesInFlight ?? 0,
+      }, objectAttribution(before), objectAttribution(after),
+      { requireFractionBearingObject: args.flags.get('require-large-object') === 'true' })) {
+        record(args, result);
+      }
       record(args, withinBudget(`${gate}-http-429`, delta('served429'), MEDIA_SERVER_BUDGETS.MAX_HTTP_429));
       record(args, withinBudget(`${gate}-full-body-on-range`, delta('fullBodyServed'),
         MEDIA_SERVER_BUDGETS.MAX_FULL_BODY_SERVED));
@@ -1171,9 +1182,16 @@ async function main(): Promise<void> {
       const multiplier = optionalNumber(args, 'max-object-multiplier', 3);
       const delta = (key: string): number => (after[key] ?? 0) - (before[key] ?? 0);
 
-      record(args, withinBudget(`${gate}-provider-bytes`, delta('bytesServed'),
-        Math.floor(objectBytes * multiplier),
-        `denominator: the object's own ${objectBytes} bytes, read at most ${multiplier}x over the window`));
+      for (const result of providerByteResults(gate, {
+        committed: delta('bytesServed'),
+        observed: delta('observedBytes'),
+        truncatedBodies: delta('truncatedBodies'),
+        rangeRequests: delta('rangeRequests'),
+        bodiesInFlight: after.bodiesInFlight ?? 0,
+      }, Math.floor(objectBytes * multiplier),
+      `denominator: the object's own ${objectBytes} bytes, read at most ${multiplier}x over the window`)) {
+        record(args, result);
+      }
       record(args, withinBudget(`${gate}-range-requests`, delta('rangeRequests'),
         optionalNumber(args, 'max-range-requests', 4096),
         'a ranged read per window the daemon needed, and a ceiling a runaway read-ahead would blow'));

@@ -1334,8 +1334,23 @@ async function main(): Promise<void> {
   await test('the three-run wrapper says what three green runs here are and are not', () => {
     assert(THREE.includes('closes NEITHER G18 NOR any of G7-G13'),
       'the closing message must refuse the reading that three green runs on this host closed anything');
-    assert(THREE.includes('No run of this gate has ever happened on Linux or Unraid'),
+    // IT MUST SAY WHERE THEY DID HAPPEN, AND THAT SENTENCE HAS CHANGED BECAUSE THE FACT DID. It used to read
+    // "No run of this gate has ever happened on Linux or Unraid"; three consecutive fresh Unraid runs made
+    // that false, and a wrapper that went on printing it would be the exact failure this repository exists to
+    // prevent — a document disagreeing with what runs. What it must NOT do is round the new fact up.
+    assert(THREE.includes('HAS now run on a real Unraid host'),
       'and it must say where they did happen');
+    assert(THREE.includes('Phase 1 remains open'),
+      'while refusing the reading that this closed the tranche');
+    // IT USED TO NAME THE GATES THAT COULD NOT BE RUN AT ALL, so "not run" was never confused with "run
+    // and failed". That list was G24-G27; all four have since been written and run 3/3 on Unraid, so the
+    // list is empty and the wrapper must say THAT true thing rather than keep a claim which has expired.
+    assert(/G27s three-server half has run 3\/3 on a real Unraid host/.test(THREE),
+      'and recording that the last missing gate has since been written and run');
+    assert(!/G27s three-server half has no executable gate/.test(THREE),
+      'and no longer claiming otherwise, which was true only until that gate existed');
+    assert(!/G24-G2[67] have no executable gate/.test(THREE),
+      'and no longer claiming that of the lease gates, which exist and have run');
     assert(THREE.includes('a run that inherited the previous one'),
       'the whole value of the repetition is that no run can inherit what the previous one left behind');
     assert(THREE.includes('COLD'),
@@ -1604,7 +1619,9 @@ async function main(): Promise<void> {
     for (const name of ['$PLEX_CONTAINER', '$JF_CONTAINER', '$EMBY_CONTAINER']) {
       assert(cleanup.includes(name), `${name} must be removed on the way out`);
     }
-    assert(cleanup.includes('umount -l'), 'and a stale mount must be forced away');
+    assert(cleanup.includes('projection_gate_cleanup_run'),
+      'and a stale mount must be forced away through the shared helper, which unmounts in a namespace\n'
+      + 'that propagates back to the host — the inline version did not, and left four mountpoints on Unraid');
     assert(GATE.includes('trap cleanup EXIT'), 'the cleanup must run on failure as well as on success');
   });
 

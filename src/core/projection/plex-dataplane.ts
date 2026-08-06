@@ -1286,10 +1286,43 @@ export interface PlexEncoderLiveness {
   readonly liveSamples: number;
   /** Samples in which the server said the encoder was being throttled by the client's pace. */
   readonly throttledSamples: number;
-  /** How many times `maxOffsetAvailable` was seen to INCREASE. Each one is fresh encoder output. */
+  /**
+   * How many times `maxOffsetAvailable` was seen to INCREASE. Each one is fresh encoder output.
+   *
+   * RECORDED, NOT ASSERTED, AND THE DEMOTION IS A FINDING. It was a floor of 8 and it failed twice on a real
+   * Unraid host at 7 and 6 — while `throttledSamples` read 38 and `workingSpanSeconds` read 192 against a
+   * floor of 120, so the encoder was demonstrably alive and working the whole time. The count is a function
+   * of BURST SIZE, not of liveness: Plex holds the encoder to a bounded lead and then stops until the client
+   * drains, so faster hardware produces the same media in FEWER, LARGER bursts and scores LOWER. A number
+   * that falls as the machine gets faster is not a liveness measure. See `advanceGapSeconds`.
+   */
   readonly advances: number;
   /** Wall seconds between the first and the last of those increases. */
   readonly workingSpanSeconds: number;
+  /**
+   * The LONGEST wall gap the encoder went without producing new output, in seconds.
+   *
+   * THIS IS WHAT REPLACED THE ADVANCE COUNT, and it is derived from the server's own throttle contract rather
+   * than from any run. Plex bounds the encoder's lead over the client — `TranscoderThrottleBuffer`, sixty
+   * seconds by default — so a job that is still incomplete and has produced nothing for substantially longer
+   * than that buffer has stalled, whatever its burst size. The count could not say that; this can.
+   *
+   * IT INCLUDES THE TRAILING GAP, from the last advance to the end of the window, and that is the half that
+   * closes the real hole. An encoder that advanced healthily for two minutes and then died at the halfway
+   * point has a perfectly good working span and a perfectly good burst count; only the trailing silence
+   * exposes it. The trailing gap is held ONLY while the job is still incomplete — an encoder that finished
+   * the file has nothing left to produce, and holding it to a cadence afterwards would fail correct runs.
+   */
+  readonly advanceGapSeconds: number;
+  /** Whether the server had marked the job complete at the last sample in which it existed. */
+  readonly completedByEnd: boolean;
+  /**
+   * Every sample that carried an offset, as `wallMs:offset`, in order.
+   *
+   * THE TIMELINE IS THE EVIDENCE. Both floors above are statements about a shape over time, and a verdict
+   * that reported only the derived number would leave the next person re-running the gate to see the shape.
+   */
+  readonly offsetTimeline: readonly string[];
   /** Media seconds of output the encoder produced, from its first reported offset to its last. */
   readonly producedSpanSeconds: number;
   /** Samples in which the server's own decision for this job was a video transcode. */
@@ -1336,17 +1369,39 @@ export function analysePlexEncoderLiveness(samples: readonly PlexEncoderSample[]
   let previousOffset: number | undefined;
   let lowestOffset: number | undefined;
   let highestOffset: number | undefined;
+  // THE GAP IS MEASURED FROM THE FIRST SAMPLE THAT CARRIED AN OFFSET, not from the first advance. A job that
+  // is present and reporting an offset but has not moved yet is already silent, and the silence counts.
+  let previousProgressMs: number | undefined;
+  let advanceGapMs = 0;
+  const offsetTimeline: string[] = [];
   for (const sample of present) {
     const offset = sample.maxOffsetAvailable;
     if (offset === undefined || !Number.isFinite(offset)) continue;
+    offsetTimeline.push(`${sample.wallMs}:${offset}`);
     lowestOffset = lowestOffset === undefined ? offset : Math.min(lowestOffset, offset);
     highestOffset = highestOffset === undefined ? offset : Math.max(highestOffset, offset);
     if (previousOffset !== undefined && offset > previousOffset) {
       advances += 1;
       if (firstAdvanceMs === undefined) firstAdvanceMs = sample.wallMs;
       lastAdvanceMs = sample.wallMs;
+      if (previousProgressMs !== undefined) {
+        advanceGapMs = Math.max(advanceGapMs, sample.wallMs - previousProgressMs);
+      }
+      previousProgressMs = sample.wallMs;
+    } else if (previousProgressMs === undefined) {
+      previousProgressMs = sample.wallMs;
     }
     previousOffset = offset;
+  }
+
+  // THE TRAILING GAP, and it is only held while the job is INCOMPLETE. An encoder that finished the file has
+  // nothing left to produce; requiring it to keep advancing afterwards would fail every correct run whose
+  // encoder got ahead of the client and finished, which on fast hardware is most of them.
+  const lastWithOffset = [...present].reverse().find((sample) =>
+    sample.maxOffsetAvailable !== undefined && Number.isFinite(sample.maxOffsetAvailable));
+  const completedByEnd = lastWithOffset?.complete === true;
+  if (!completedByEnd && previousProgressMs !== undefined && lastWithOffset !== undefined) {
+    advanceGapMs = Math.max(advanceGapMs, lastWithOffset.wallMs - previousProgressMs);
   }
 
   return {
@@ -1355,6 +1410,9 @@ export function analysePlexEncoderLiveness(samples: readonly PlexEncoderSample[]
     liveSamples: present.filter((sample) => sample.complete !== true).length,
     throttledSamples: present.filter((sample) => sample.throttled === true).length,
     advances,
+    advanceGapSeconds: advanceGapMs / 1_000,
+    completedByEnd,
+    offsetTimeline,
     workingSpanSeconds: (firstAdvanceMs === undefined || lastAdvanceMs === undefined)
       ? 0 : (lastAdvanceMs - firstAdvanceMs) / 1_000,
     producedSpanSeconds: (lowestOffset === undefined || highestOffset === undefined)
@@ -1375,9 +1433,41 @@ export function analysePlexEncoderLiveness(samples: readonly PlexEncoderSample[]
  * threshold pinned to the observed value is a threshold that fails on a loaded machine, and a gate that fails
  * when nothing is wrong gets disabled and then gets deleted.
  */
+/**
+ * `TranscoderThrottleBuffer`: the lead, in seconds of media, Plex allows the encoder over the client before
+ * it stops it. Sixty is the server's own default and the gate does not change it.
+ *
+ * IT IS THE DENOMINATOR OF THE LIVENESS CEILING BELOW, which is why it is a named binding rather than a
+ * sentence. A ceiling derived from it moves if the gate ever configures the throttle differently; a literal
+ * would not, and the two would disagree silently.
+ */
+export const PLEX_TRANSCODER_THROTTLE_BUFFER_SECONDS = 60;
+
 export const PLEX_ENCODER_FLOORS = Object.freeze({
-  /** Distinct moments at which the encoder was seen to have produced NEW output. */
-  MIN_OFFSET_ADVANCES: 8,
+  /**
+   * The longest the encoder may go without producing new output, while the job is still incomplete.
+   *
+   * WHAT THIS REPLACED, AND WHY THE THING IT REPLACED WAS NOT MEASURING LIVENESS. There was a floor of EIGHT
+   * on the COUNT of distinct moments the offset advanced. It failed on a real Unraid host twice, at 7 and at
+   * 6, on runs where `throttledSamples` was 38 and the working span was 192 seconds against a floor of 120 —
+   * an encoder that was demonstrably alive and working almost the whole window. The count is a function of
+   * BURST SIZE: Plex holds the encoder to a bounded lead and then stops it until the client drains, so the
+   * same media on faster hardware arrives in fewer, larger bursts and scores LOWER. A number that falls as
+   * the machine gets faster cannot be a liveness floor, and raising or lowering the 8 would have been fitting
+   * a threshold to whichever run was in front of me.
+   *
+   * WHY A GAP IS THE RIGHT SHAPE AND WHERE THE NUMBER COMES FROM. The throttle contract says the encoder
+   * resumes when the client has drained below the buffer, so with a client consuming at roughly 1x the
+   * encoder must produce again within about one buffer. TWO buffers is the ceiling: the margin is a whole
+   * buffer wide, and it is a multiple of the server's own configured quantity rather than of an observation.
+   * The ninety-second probe recorded in `analysePlexEncoderLiveness` had a largest gap of 42 s, well inside
+   * it, on hardware slower than the tranche-closing host.
+   *
+   * WHAT IT STILL REFUSES. A stalled encoder — one long silence — fails on the gap. An encoder that died
+   * halfway fails on the TRAILING gap, which the count could not see at all and the working span cannot
+   * either. A single burst fails `MIN_WORKING_SPAN_SECONDS`, because one advance has no span.
+   */
+  MAX_ADVANCE_GAP_SECONDS: 2 * PLEX_TRANSCODER_THROTTLE_BUFFER_SECONDS,
   /** Wall seconds between the first and last of those moments. */
   MIN_WORKING_SPAN_SECONDS: 120,
   /**

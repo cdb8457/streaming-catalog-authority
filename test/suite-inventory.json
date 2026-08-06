@@ -397,11 +397,27 @@
       "group": "offline"
     },
     {
+      "file": "projection-path-lifecycle.ts",
+      "group": "offline"
+    },
+    {
+      "file": "projection-real-provider.ts",
+      "group": "offline"
+    },
+    {
+      "file": "torbox-resolver.ts",
+      "group": "offline"
+    },
+    {
       "file": "projection-rclone-comparison.ts",
       "group": "offline"
     },
     {
       "file": "projection-host-preflight.ts",
+      "group": "offline"
+    },
+    {
+      "file": "projection-lease-gates.ts",
       "group": "offline"
     },
     {

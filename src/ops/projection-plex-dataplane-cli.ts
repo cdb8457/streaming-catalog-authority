@@ -3,11 +3,11 @@ import {
   MEDIA_SERVER_BUDGETS, MEDIA_SERVER_DEADLINES_MS, MEDIA_SERVER_SOAK, SEEK_PLAN_FRACTIONS,
   TRANSCODE_SOURCE_VIDEO_CODEC, TRANSCODE_TARGET_VIDEO_CODEC, analysePacedPlayback, analyseSeekSet,
   analyseTranscodeSoak, atLeast, corpusProblems, corpusSelfProblems, exactly, findRedactionProblems,
-  opaqueRef, seekPlanProblems, seekPositionsFor, withinBudget,
+  opaqueRef, providerByteResults, seekPlanProblems, seekPositionsFor, withinBudget,
   type GateResult, type SeekDecode, type SoakProbe,
 } from '../core/projection/media-server-dataplane.js';
 import {
-  PLEX_ENCODER_FLOORS, PLEX_GATE6_COMPATIBLE_BLOCKS, PLEX_LARGE_FIXTURE, PLEX_READ_GEOMETRY,
+  PLEX_ENCODER_FLOORS, PLEX_TRANSCODER_THROTTLE_BUFFER_SECONDS, PLEX_GATE6_COMPATIBLE_BLOCKS, PLEX_LARGE_FIXTURE, PLEX_READ_GEOMETRY,
   PLEX_SCAN_ENVELOPE, analysePlexEncoderLiveness, plexHighestMeasuredPerEntry,
   plexInstrumentedWindowCounts, plexObjectByteCeiling, plexScanByteCeiling, plexScanRequestCeilings,
   plexSeekByteCeiling,
@@ -1022,9 +1022,19 @@ async function main(): Promise<void> {
         // while they pass is unattributed bytes — which the partition catches first and names as such.
         //
         // It is kept anyway, at the honest value, because attribution is not available on every window.
-        record(args, withinBudget(`${gate}-provider-bytes`, delta('bytesServed'), plexScanByteCeiling(sizes),
-          `${sizes.length} remote objects, each at most the per-class maximum for its own length`
-          + (perObject ? '; implied by the per-object verdicts above, which are what bind' : '')));
+        // BOTH COLUMNS — see `providerByteResults`. The committed column is what the endpoint undertook to
+        // serve, and a demand block the daemon abandons part-way is counted there in full.
+        for (const result of providerByteResults(gate, {
+          committed: delta('bytesServed'),
+          observed: delta('observedBytes'),
+          truncatedBodies: delta('truncatedBodies'),
+          rangeRequests: delta('rangeRequests'),
+          bodiesInFlight: counterValue(after, 'bodiesInFlight'),
+        }, plexScanByteCeiling(sizes),
+        `${sizes.length} remote objects, each at most the per-class maximum for its own length`
+          + (perObject ? '; implied by the per-object verdicts above, which are what bind' : ''))) {
+          record(args, result);
+        }
         // A FLOOR SUMMED FROM PER-OBJECT TERMS — WHICH MAKES IT AN AGGREGATE, NOT A PER-OBJECT ASSERTION.
         //
         // AN EARLIER VERSION OF THIS COMMENT CLAIMED CROSS-SUBSIDY WAS RULED OUT HERE. THAT WAS FALSE. The
@@ -1196,13 +1206,20 @@ async function main(): Promise<void> {
       // `1.2 x object x 10` was both loose and unstable — on a small fixture it sat a hair above the
       // arithmetic floor, and on a large one it would have meant nothing.
       const seekBudget = args.flags.get('seek-ceiling') === 'true';
-      record(args, withinBudget(`${gate}-provider-bytes`, delta('bytesServed'),
-        seekBudget ? plexSeekByteCeiling(events) : Math.floor(objectBytes * multiplier * events),
-        seekBudget
-          ? `${events} seeks, each an encoder restart of at most `
-            + `${PLEX_READ_GEOMETRY.DEMAND_BLOCKS_PER_OPEN} demand blocks of `
-            + `${PLEX_READ_GEOMETRY.CHUNK_BYTES} bytes, plus one session setup allowance`
-          : `denominator: the object's own ${objectBytes} bytes, read at most ${multiplier}x over the window`));
+      for (const result of providerByteResults(gate, {
+        committed: delta('bytesServed'),
+        observed: delta('observedBytes'),
+        truncatedBodies: delta('truncatedBodies'),
+        rangeRequests: delta('rangeRequests'),
+        bodiesInFlight: counterValue(after, 'bodiesInFlight'),
+      }, seekBudget ? plexSeekByteCeiling(events) : Math.floor(objectBytes * multiplier * events),
+      seekBudget
+        ? `${events} seeks, each an encoder restart of at most `
+          + `${PLEX_READ_GEOMETRY.DEMAND_BLOCKS_PER_OPEN} demand blocks of `
+          + `${PLEX_READ_GEOMETRY.CHUNK_BYTES} bytes, plus one session setup allowance`
+        : `denominator: the object's own ${objectBytes} bytes, read at most ${multiplier}x over the window`)) {
+        record(args, result);
+      }
       record(args, withinBudget(`${gate}-range-requests`, delta('rangeRequests'),
         optionalNumber(args, 'max-range-requests', 4096)));
 
@@ -1592,9 +1609,28 @@ async function main(): Promise<void> {
         Math.round((liveness.presentSamples / Math.max(1, liveness.samples)) * 1000) / 1000,
         MEDIA_SERVER_SOAK.MIN_SESSION_PRESENT_SAMPLE_FRACTION,
         'without a session the numbers below are an absence dressed as a measurement'));
-      record(args, atLeast(`PX20-encoder-output-advances:${handle}`, liveness.advances,
-        PLEX_ENCODER_FLOORS.MIN_OFFSET_ADVANCES,
-        'distinct moments at which the encoder had produced NEW output'));
+      // THE LIVENESS ASSERTION, AS A GAP RATHER THAN A COUNT. See `MAX_ADVANCE_GAP_SECONDS`: the count of
+      // advances measured burst size, fell as the hardware got faster, and failed twice on Unraid at 7 and 6
+      // while the encoder was demonstrably alive. The gap is bounded by the server's own throttle contract.
+      record(args, withinBudget(`PX20-encoder-advance-gap-seconds:${handle}`,
+        Math.round(liveness.advanceGapSeconds), PLEX_ENCODER_FLOORS.MAX_ADVANCE_GAP_SECONDS,
+        `the longest wall silence between two moments of new encoder output, including the trailing silence `
+        + `to the end of the window (job ${liveness.completedByEnd ? 'COMPLETE' : 'still incomplete'} at the `
+        + `last sample, so the trailing gap ${liveness.completedByEnd ? 'is not held' : 'is held'}). Derived `
+        + `from TranscoderThrottleBuffer=${PLEX_TRANSCODER_THROTTLE_BUFFER_SECONDS}s at 2x, not from any run`));
+      // THE COUNT IS STILL REPORTED, because it is what every previous run record carries and a reader
+      // tracing this change needs to see it move. It is asserted on by nothing.
+      record(args, {
+        gate: `PX20-encoder-output-advances-recorded:${handle}`, verdict: 'pass',
+        measured: liveness.advances,
+        note: `${liveness.advances} distinct moments of new output. RECORDED, ASSERTED BY NOTHING: it counts `
+          + 'bursts, and a faster encoder produces the same media in fewer of them',
+      });
+      // AND THE TIMELINE THE TWO ASSERTIONS ABOVE ARE STATEMENTS ABOUT.
+      record(args, {
+        gate: `PX20-encoder-offset-timeline:${handle}`, verdict: 'pass',
+        note: `wallMs:offset — ${liveness.offsetTimeline.join(' ')}`,
+      });
       record(args, atLeast(`PX20-encoder-working-span-seconds:${handle}`,
         Math.round(liveness.workingSpanSeconds), PLEX_ENCODER_FLOORS.MIN_WORKING_SPAN_SECONDS,
         'wall seconds between the first and last of those moments'));

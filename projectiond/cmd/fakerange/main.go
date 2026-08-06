@@ -70,6 +70,21 @@ func main() {
 	// So the bound is a flag, and that gate passes something comfortably under ten seconds. Zero keeps the
 	// package default.
 	maxHold := flag.Duration("max-hold", 0, "how long a held ranged request may block; 0 keeps the default")
+	// THE EXPIRING-LEASE MODE, WHICH G24-G26 ARE ABOUT.
+	//
+	// A non-zero TTL puts the endpoint in RESOLVER mode as far as a gate is concerned: a stable objectRef must
+	// first be resolved into a short-lived access URL, and that URL starts answering 401 once it lapses. Zero
+	// keeps the package default and the direct path every other gate uses.
+	//
+	// THE GATE DOES NOT RELY ON THIS TTL TO TIME THE LAPSE. It sets a TTL long enough that nothing expires by
+	// accident and then causes the lapse deliberately, through /control/expire-leases, between two reads it
+	// controls. A window whose verdict depends on which of two things happened first is the defect this
+	// repository has already paid for twice.
+	leaseTTL := flag.Duration("lease-ttl", 0, "how long a resolved access URL stays valid; 0 keeps the default")
+	token := flag.String("token-file", "", "file holding the bearer credential the resolver requires")
+	// Where FaultDisallowedHost points. A gate proving the daemon NEVER CONTACTED a disallowed origin has to
+	// point the fault at an origin it is itself listening on; the unroutable default would only prove DNS failed.
+	disallowed := flag.String("disallowed-host-url", "", "the access URL the disallowed-host fault hands back")
 	var objects objectList
 	var files fileList
 	flag.Var(&objects, "object", "ref:size, repeatable — bytes from the deterministic content function")
@@ -80,8 +95,23 @@ func main() {
 		fail("at least one --object ref:size or --file-object ref=path is required")
 	}
 
+	// THE CREDENTIAL COMES FROM A FILE, NEVER FROM ARGV. A token on a command line is visible in `ps` to every
+	// process on the host and lands in any shell history that recorded the invocation.
+	secret := ""
+	if *token != "" {
+		raw, readErr := os.ReadFile(*token)
+		if readErr != nil {
+			fail("cannot read --token-file: " + readErr.Error())
+		}
+		secret = strings.TrimSpace(string(raw))
+		if secret == "" {
+			fail("--token-file is empty, which would make the resolver accept anything")
+		}
+	}
+
 	server, err := fakeprovider.New(fakeprovider.Options{
 		Addr: *addr, LeasePrefix: *leasePrefix, PublicBaseURL: *publicBase, MaxHold: *maxHold,
+		LeaseTTL: *leaseTTL, Token: secret, DisallowedHostURL: *disallowed,
 	})
 	if err != nil {
 		fail(err.Error())

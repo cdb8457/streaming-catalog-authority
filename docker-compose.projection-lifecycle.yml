@@ -1,0 +1,41 @@
+# Projection Phase 1 — a real, migrated PostgreSQL for the PATH LIFECYCLE gate (G27's three-server half).
+#
+# WHY A SEVENTH DATABASE COMPOSE FILE. `docker-compose.yml` is the development stack and binds 5432.
+# `docker-compose.projection-publisher.yml` binds 5470, `…-jellyfin.yml` 5480, `…-plex.yml` 5490,
+# `…-emby.yml` 5500, `…-three.yml` 5510. This one has to be startable BESIDE all six — the point of running a
+# gate three times in a row is that a previous run, or another gate, or an installation, must not be able to
+# lend it state. So it takes its own project name, its own network, its own port, and throwaway storage.
+#
+# NEITHER THE DAEMON NOR ANY OF THE THREE MEDIA SERVERS IS HERE, and on this gate that omission is load-
+# bearing in a way it is not elsewhere. `deploy/projection-path-lifecycle-gate.sh` starts ONE projectiond and
+# THREE media servers over the SAME mount, and then deliberately FORGES an artifact the publisher would never
+# emit — a successor that moves a carried entry's path — in order to watch the daemon refuse it. Writing that
+# into a Compose file would read as a deployment somebody should copy. It is a measurement rig, and forging
+# an illegal generation is not a thing anybody should do on purpose except to prove it is refused.
+
+name: projection-lifecycle-gate
+
+services:
+  postgres:
+    # PINNED BY DIGEST, like every other external image this gate touches. A moving tag would mean three
+    # consecutive runs were three runs of possibly different things, which is not what the repetition is for.
+    image: postgres:16@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20
+    environment:
+      POSTGRES_DB: catalog
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "${PROJECTION_LIFECYCLE_GATE_PG_PORT:-5550}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d catalog"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    tmpfs:
+      # Throwaway, and it says so in the only way that cannot be forgotten: its storage does not survive the
+      # container. Three consecutive runs mean three runs from nothing, or they mean very little.
+      - /var/lib/postgresql/data
+
+networks:
+  default:
+    name: projection-lifecycle-gate

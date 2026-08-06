@@ -40,10 +40,18 @@ type EndpointConfig struct {
 	// 127.0.0.1 and 169.254.169.254. A provider that wants plaintext is a bad provider; a provider that can
 	// steer the daemon at the host's own metadata service is a vulnerability. They need separate switches.
 	AllowPrivateAddresses bool
-	MaxConnections        int
-	ResolutionDeadline    time.Duration
-	RefreshCooldown       time.Duration
-	RequestTimeout        time.Duration
+	// LoopbackResolver authorises the RESOLVER REQUEST ONLY to reach a literal 127.0.0.0/8 or ::1 address.
+	//
+	// It exists because a provider adapter keeps its API key out of this daemon by running as a
+	// loopback-only resolver process beside it. It is NOT AllowPrivateAddresses: it does not authorise
+	// RFC1918, link-local, the metadata address, or a DNS name that resolves to loopback, and it is never
+	// applied to a CDN URL or to DirectBaseURL. Default false, so an endpoint that says nothing gets the
+	// strict behaviour.
+	LoopbackResolver   bool
+	MaxConnections     int
+	ResolutionDeadline time.Duration
+	RefreshCooldown    time.Duration
+	RequestTimeout     time.Duration
 }
 
 // Lease is EPHEMERAL ACCESS MATERIAL: a short-lived URL and the headers that go with it.

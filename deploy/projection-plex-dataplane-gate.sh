@@ -45,6 +45,9 @@
 # fails the gate rather than occupying the machine.
 
 set -euo pipefail
+# shellcheck source=deploy/projection-gate-cleanup.sh
+. "$(cd "$(dirname "$0")" && pwd)/projection-gate-cleanup.sh"
+
 export MSYS_NO_PATHCONV=1
 
 IMAGE="${PROJECTIOND_IMAGE:-projectiond:phase1-local}"
@@ -117,11 +120,13 @@ cleanup() {
   docker rm -f "$PLEX_CONTAINER" >/dev/null 2>&1 || true
   docker rm -f "$MOUNT_CONTAINER" "$RANGE_CONTAINER" >/dev/null 2>&1 || true
   docker compose -f "$COMPOSE_FILE" down -v --remove-orphans >/dev/null 2>&1 || true
-  if [ -n "${WORK:-}" ] && [ -d "$WORK" ]; then
-    docker run --rm --privileged -v "$GATE_ROOT:/gate" "$VERIFY_IMAGE" \
-      sh -c "umount -l /gate/$(basename "$WORK")/mnt 2>/dev/null; rm -rf /gate/$(basename "$WORK")" >/dev/null 2>&1 || true
+  # THE UNMOUNT PROPAGATES BACK TO THE HOST, which the inline version that used to be here did not:
+  # it unmounted inside a container whose bind of the gate root was `rprivate`, so the host mountpoint
+  # survived every run. See `deploy/projection-gate-cleanup.sh`.
+  if [ -n "${WORK:-}" ]; then
+    projection_gate_cleanup_run "$GATE_ROOT" "$WORK" "$VERIFY_IMAGE" || true
+    projection_gate_report_cleanliness "$GATE_ROOT" "$WORK" || true
   fi
-  rm -rf "$WORK" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -777,15 +782,27 @@ FOURTH_ITEM="dddddddd-4444-4444-8444-dddddddddddd"
 register root --id media --kind local
 register root --id vault --kind http-range
 register version --key local-one --size "$LOCAL_SIZE" --mtime 2026-06-01T10:00:00.000Z
-
-PROBE_FLAGS=""
-for probe in $REMOTE_PROBES; do PROBE_FLAGS="$PROBE_FLAGS --probe $probe"; done
-# shellcheck disable=SC2086
-register version --key remote-two --size "$REMOTE_SIZE" --mtime 2026-06-01T10:00:00.000Z $PROBE_FLAGS
-
 register entry --item "$LOCAL_ITEM"  --version-key local-one  --path "$LOCAL_PATH"  --source "local:media:$LOCAL_FILE"
-register entry --item "$REMOTE_ITEM" --version-key remote-two --path "$REMOTE_PATH" --source "http-range:vault:${REMOTE_REF}"
-echo "  one local and one HTTP Range stable source registered"
+
+# GENERATION 1 IS THE LOCAL ENTRY ALONE, AND THE REMOTE ANCHOR IS DELIBERATELY NOT IN IT.
+#
+# THE DEFECT THIS CLOSES, WHICH ONLY A REAL HOST COULD SHOW. Plex begins its OWN library-creation scan the
+# instant a library exists, and this gate cannot prevent that. When the remote anchor was already published,
+# that creation scan identified it -- and the PX9 window, which opens afterwards, measured a re-scan of an
+# object Plex had already catalogued. On one Unraid run the window recorded ZERO provider bytes and ZERO
+# ranged requests: every ceiling in it passed by having had nothing happen, and only the FLOORS caught it.
+# The evidence is unambiguous -- the counters snapshot taken BEFORE the window already read 6 requests and
+# 11,535,360 bytes for that object, and the snapshot after it was byte-identical.
+#
+# So the window was never cold; it was a RACE against Plex's creation scan, and the runs that passed were the
+# ones where the snapshot happened to be taken before that scan finished its provider work.
+#
+# THE FIX IS THE CONTRACT'S OWN UNIT OF CHANGE, and it is the one G18 already uses: seed a generation the
+# creation scan can find that COSTS THE PROVIDER NOTHING -- a local passthrough entry contacts no endpoint at
+# all -- wait for Plex's own barrier to say that scan settled, and only then publish the remote anchor as a
+# NEW generation. The object identity does not exist while the creation scan is running, so no scan can have
+# touched it, and the window is cold BY CONSTRUCTION rather than by timing.
+echo "  one local stable source registered; the HTTP Range anchor is published later, on purpose"
 
 # ----------------------------------------------------------------------------------------------------------
 step "publishing generation 1"
@@ -908,13 +925,12 @@ done
 BASE
 docker run --rm --user 65534:65534 --cap-drop ALL --security-opt no-new-privileges \
   -v "$WORK/mnt:/mnt:rslave" -v "$WORK/out:/out:ro" "$VERIFY_IMAGE" \
-  sh /out/baseline.sh "$LOCAL_PATH" "$REMOTE_PATH"
+  sh /out/baseline.sh "$LOCAL_PATH"
 
-# The expectations the driver compares Plex's answers against, recorded outside the mount. Both are ANCHORS:
-# entries whose BYTES are read back and digest-compared, not merely catalogued.
-node "$REL/expect.cjs" "$REL/out/expected.json" - \
-  "$LOCAL_FILE"  "$LOCAL_SIZE"  "$LOCAL_SHA"  local      anchor \
-  "$REMOTE_FILE" "$REMOTE_SIZE" "$REMOTE_SHA" http-range anchor >/dev/null
+# THE SEED EXPECTATION: the local entry alone, which is all generation 1 contains. It is what Plex's own
+# library-creation scan will find, and finding it costs the provider nothing.
+node "$REL/expect.cjs" "$REL/out/seed-expected.json" - \
+  "$LOCAL_FILE"  "$LOCAL_SIZE"  "$LOCAL_SHA"  local      anchor >/dev/null
 
 # ----------------------------------------------------------------------------------------------------------
 step "starting a REAL, UNCLAIMED Plex Media Server with the projected mount as its library root"
@@ -995,10 +1011,71 @@ esac
 echo "  the media server will be addressed by its address, not by its container name"
 
 drive prefs --state "$STATE"
+# THE PROVIDER BASELINE, TAKEN BEFORE THE LIBRARY EXISTS.
+#
+# It is a DELTA that matters, not the absolute counter. The gate has already made one ranged request of
+# its own by this point — the endpoint self-check that asserts a 206 — and an absolute comparison would
+# blame Plex for it. The first version of this assertion did exactly that and failed the run it was
+# written to protect.
+drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-before-library.json"
+BEFORE_LIBRARY_RANGE="$(field rangeRequests < "$WORK/out/counters-before-library.json")"
+
 drive library --state "$STATE" --mount-path /media/projection/Movies --name "Projection Movies"
 
 # ----------------------------------------------------------------------------------------------------------
-step "the first real library scan"
+step "waiting out Plex's OWN library-creation scan, against a generation that costs the provider nothing"
+# ----------------------------------------------------------------------------------------------------------
+# Plex starts scanning the moment the library exists. Nothing here can stop that, so the gate makes it
+# HARMLESS instead: the only thing published so far is a LOCAL passthrough entry, which contacts no endpoint,
+# and this waits for Plex's own barrier to report that scan settled before anything remote is published.
+drive scan --state "$STATE" --expect-file "$REL/out/seed-expected.json" \
+  --out "$REL/out/items-seed.json" --label seed \
+  || { docker logs "$PLEX_CONTAINER" 2>&1 | tail -30 >&2; die "Plex never settled after its own library-creation scan"; }
+
+drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-after-seed.json"
+SEED_COUNTERS_RANGE="$(field rangeRequests < "$WORK/out/counters-after-seed.json")"
+SEED_RANGE_DELTA=$(( SEED_COUNTERS_RANGE - BEFORE_LIBRARY_RANGE ))
+test "$SEED_RANGE_DELTA" -eq 0 \
+  || die "the library-creation scan reached the provider $SEED_RANGE_DELTA time(s); the seed generation is local-only, so it must cost nothing"
+echo "  Plex's creation scan settled, and it cost the provider zero ranged requests"
+
+# ----------------------------------------------------------------------------------------------------------
+step "publishing the HTTP Range anchor as a NEW generation, which nothing has ever scanned"
+# ----------------------------------------------------------------------------------------------------------
+PROBE_FLAGS=""
+for probe in $REMOTE_PROBES; do PROBE_FLAGS="$PROBE_FLAGS --probe $probe"; done
+# shellcheck disable=SC2086
+register version --key remote-two --size "$REMOTE_SIZE" --mtime 2026-06-01T10:00:00.000Z $PROBE_FLAGS
+register entry --item "$REMOTE_ITEM" --version-key remote-two --path "$REMOTE_PATH" --source "http-range:vault:${REMOTE_REF}"
+
+publish > "$WORK/out/publish-remote.json"
+test "$(field outcome < "$WORK/out/publish-remote.json")" = "published" \
+  || die "the remote anchor generation was not published"
+test "$(field additions < "$WORK/out/publish-remote.json")" = "1" \
+  || die "the remote anchor generation added $(field additions < "$WORK/out/publish-remote.json") entries, not 1"
+
+echo "  waiting for the daemon to admit the remote anchor"
+ready=0
+for _ in $(seq 1 240); do
+  if docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" test -f "/mnt/$REMOTE_PATH" >/dev/null 2>&1; then
+    ready=1; break
+  fi
+  sleep 0.5
+done
+test "$ready" -eq 1 || { docker logs "$MOUNT_CONTAINER" 2>&1 | tail -30 >&2; die "the remote anchor never became visible"; }
+
+# ...and it is an ordinary read-only file to a non-root container, exactly as the local one is.
+docker run --rm --user 65534:65534 --cap-drop ALL --security-opt no-new-privileges \
+  -v "$WORK/mnt:/mnt:rslave" -v "$WORK/out:/out:ro" "$VERIFY_IMAGE" \
+  sh /out/baseline.sh "$REMOTE_PATH"
+
+# The full expectation for the scan below: both anchors, entries whose BYTES are read back and digest-compared.
+node "$REL/expect.cjs" "$REL/out/expected.json" - \
+  "$LOCAL_FILE"  "$LOCAL_SIZE"  "$LOCAL_SHA"  local      anchor \
+  "$REMOTE_FILE" "$REMOTE_SIZE" "$REMOTE_SHA" http-range anchor >/dev/null
+
+# ----------------------------------------------------------------------------------------------------------
+step "the first real library scan OF THE REMOTE ANCHOR — a window nothing has warmed"
 # ----------------------------------------------------------------------------------------------------------
 drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-before-scan.json"
 drive scan --state "$STATE" --expect-file "$REL/out/expected.json" --out "$REL/out/items-1.json" --label scan1
@@ -1519,8 +1596,29 @@ test "$ready" -eq 1 || { wait "$KILL_PID" || true; die "the stream never became 
 echo "  SIGKILL"
 docker kill --signal=KILL "$MOUNT_CONTAINER" >/dev/null
 docker rm -f "$MOUNT_CONTAINER" >/dev/null 2>&1 || true
-docker run --rm --privileged -v "$GATE_ROOT:/gate" "$VERIFY_IMAGE" \
-  sh -c "umount -l /gate/$(basename "$WORK")/mnt 2>/dev/null" >/dev/null 2>&1 || true
+# NOTHING IS UNMOUNTED HERE, AND THE REAL HOST IS WHY.
+#
+# There used to be a `umount -l` at this point, "so a stale mount does not go on answering". It never did
+# anything: it ran inside a container whose bind of the gate root carried Docker's default `rprivate`, so
+# the unmount happened in a namespace that was discarded immediately. On Docker Desktop that was invisible.
+#
+# MAKING IT WORK BROKE THE GATE, WHICH IS THE FINDING. Routed through the propagating helper it genuinely
+# detached the mount — and the MEDIA SERVER IS STILL RUNNING at this point, holding `$WORK/mnt` as an
+# `rslave` bind. A lazy unmount of the master detaches the slave copy too, and the media server can never
+# get it back: the run failed at the very next assertion with "the media server's own mount cannot be
+# READ". The dead mount is not what breaks recovery; removing it is.
+#
+# WHAT ACTUALLY MAKES RECOVERY WORK is that the restarted daemon mounts again at the same path and the new
+# mount STACKS over the dead one, so the media server's slave view resolves to the live namespace. That is
+# also what a real operator restart looks like, and this gate exists to measure that rather than to tidy
+# up before measuring it.
+#
+# THE STALE MOUNT IS NOT LEAKED, IT IS DEFERRED. Cleanup removes the media server FIRST and only then walks
+# every mountpoint under the run root, stacked ones included, and verifies the count reached zero.
+#
+# AND THE ASSERTION THIS COMMENT USED TO JUSTIFY IS STILL MADE, harder: the gate reads real bytes back
+# through the media server's own mount after the remount, so a dead namespace fails here whatever is or is
+# not mounted underneath it.
 
 echo "  restarting and remounting through the ordinary daemon start"
 start_daemon

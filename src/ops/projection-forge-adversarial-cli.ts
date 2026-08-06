@@ -98,9 +98,25 @@ switch (mode) {
   }
   // A carried entry at a different path. v1 has no relocation: a corrected path is a delete and an add.
   case 'relocate-path': {
-    const [first, ...rest] = current.entries;
-    if (first === undefined) fail('there are no entries to relocate');
-    publish(successor([{ ...first, path: `${first.path}.relocated` }, ...rest]));
+    // THE ENTRY AND ITS DESTINATION CAN BOTH BE NAMED, and where they are not, the old behaviour is kept
+    // exactly: relocate the first entry to a suffixed path. The selectors exist because G27's gate publishes
+    // more than one entry — a lifecycle entry and a bystander that must survive the whole sequence untouched
+    // — so "the first one" stopped being a description of anything in particular. A forge that silently
+    // moved the wrong entry would still produce a refusal, and the gate would then record a pass for a
+    // successor it never meant to build.
+    const wanted = flag('path');
+    const moved = wanted === undefined
+      ? current.entries[0]
+      : current.entries.find((entry) => entry.path === wanted);
+    if (moved === undefined) {
+      fail(wanted === undefined
+        ? 'there are no entries to relocate'
+        : 'no published entry has the path named by --path, so nothing would have been relocated');
+    }
+    const destination = flag('to') ?? `${moved.path}.relocated`;
+    if (destination === moved.path) fail('--to names the path the entry already has, which moves nothing');
+    publish(successor(current.entries.map((entry) =>
+      (entry === moved ? { ...entry, path: destination } : entry))));
     break;
   }
   // Bytes that are not a manifest at all, published under a pointer that names them honestly.

@@ -71,10 +71,27 @@ func OriginOf(target *url.URL) Origin {
 // EgressPolicy is the endpoint's allowlist plus the address policy applied at dial time.
 type EgressPolicy struct {
 	Allowed []Origin
-	// AllowLoopback exists for the in-process fake endpoint. It is the ONLY way a loopback, private or
-	// link-local address is ever dialled, it is set from its own configuration switch rather than inferred
-	// from anything else, and production configuration leaves it off.
+	// AllowLoopback exists for the in-process fake endpoint. It is a TEST authority: it permits loopback AND
+	// RFC1918 private unicast, and production configuration leaves it off.
 	AllowLoopback bool
+	// LiteralLoopbackResolver is the PRODUCTION authority for one specific arrangement, and it is not the
+	// same permission as AllowLoopback.
+	//
+	// WHY IT HAD TO EXIST SEPARATELY. A provider adapter can only hold its API key out of this daemon by
+	// running as a loopback-only resolver process beside it, which the daemon reaches at
+	// `http://127.0.0.1:PORT`. Reaching that requires dialling loopback. The only existing way to permit
+	// that was AllowPrivateAddresses -- a switch whose own documentation calls it test-only and which also
+	// authorises every RFC1918 destination. Turning it on in production to reach a resolver on the same host
+	// would silently widen CDN egress across the operator's entire private network, which is the opposite of
+	// what the arrangement is for.
+	//
+	// WHAT IT PERMITS, EXHAUSTIVELY: dialling a LITERAL 127.0.0.0/8 or ::1 address, on the client that talks
+	// to the RESOLVER ENDPOINT ONLY. It does not permit RFC1918, link-local, the metadata address, the
+	// unspecified address, multicast, or a DNS NAME THAT RESOLVES TO LOOPBACK -- that last one is a fact
+	// about a DNS answer rather than about the URL, and it can change between the check and the dial. It is
+	// never set on the policy the data plane uses, so no CDN URL and no directBaseUrl can reach loopback
+	// however the provider answers.
+	LiteralLoopbackResolver bool
 }
 
 func (p EgressPolicy) permits(o Origin) bool {
@@ -93,7 +110,11 @@ func (p EgressPolicy) CheckURL(target *url.URL, allowInsecureHTTP bool) *Failure
 	switch target.Scheme {
 	case "https":
 	case "http":
-		if !allowInsecureHTTP {
+		// PLAINTEXT TO A LITERAL LOOPBACK ADDRESS IS THE ONE EXCEPTION, and only under the narrow production
+		// authority. That connection never reaches a network interface, so the eavesdropper TLS defends
+		// against has no wire to sit on; requiring a certificate authority for a socket nothing off-host can
+		// address would buy nothing. Every other plaintext destination is still refused.
+		if !allowInsecureHTTP && !(p.LiteralLoopbackResolver && isLiteralLoopbackHost(target.Hostname())) {
 			return Fail(CondTLSVerifyFailed, ClassTerminal, "plaintext endpoint refused")
 		}
 	default:
@@ -108,6 +129,17 @@ func (p EgressPolicy) CheckURL(target *url.URL, allowInsecureHTTP bool) *Failure
 	return nil
 }
 
+// isLiteralLoopbackHost is true only for an address literal that IS loopback.
+//
+// A NAME IS NOT AN ADDRESS, and that distinction is the whole safety of the narrow authority. `localhost`,
+// `resolver.internal` and anything else that merely RESOLVES to 127.0.0.1 return false here: what they
+// resolve to is a DNS answer, it is controlled by whoever runs the name, and it can differ between the check
+// and the dial. Only a literal cannot change its mind.
+func isLiteralLoopbackHost(host string) bool {
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
 // DialContext is the second half of the defence, and it is the half an allowlist alone cannot provide.
 //
 // AN ALLOWLISTED NAME IS NOT AN ALLOWLISTED ADDRESS. DNS is controlled by whoever runs the name, so
@@ -120,6 +152,10 @@ func (p EgressPolicy) DialContext(base *net.Dialer) func(context.Context, string
 		if err != nil {
 			return nil, Fail(CondAccessURLNotAllowed, ClassTerminal, "unparseable address")
 		}
+		// Whether the HOST AS WRITTEN was a loopback literal is decided here, before any lookup, and carried
+		// into the per-address check. Deciding it from the resolved address instead would authorise exactly
+		// the DNS-rebind case the narrow authority exists to exclude.
+		literalLoopback := isLiteralLoopbackHost(host)
 		resolver := net.DefaultResolver
 		addrs, err := resolver.LookupIPAddr(ctx, host)
 		if err != nil {
@@ -127,7 +163,7 @@ func (p EgressPolicy) DialContext(base *net.Dialer) func(context.Context, string
 		}
 		var lastErr error
 		for _, addr := range addrs {
-			if failure := p.checkIP(addr.IP); failure != nil {
+			if failure := p.checkIP(addr.IP, literalLoopback); failure != nil {
 				// One bad address poisons the whole name: a round-robin that sometimes points at localhost is
 				// not a destination this daemon is willing to reach on any of its addresses.
 				return nil, failure
@@ -156,7 +192,7 @@ func (p EgressPolicy) DialContext(base *net.Dialer) func(context.Context, string
 // unspecified, multicast and anything else non-routable stay refused whatever it is set to, because no test
 // fixture has ever needed them and a switch that quietly widens past its own name is how a test convenience
 // becomes a server-side request forgery.
-func (p EgressPolicy) checkIP(ip net.IP) *Failure {
+func (p EgressPolicy) checkIP(ip net.IP, literalLoopbackHost bool) *Failure {
 	switch {
 	case ip.IsUnspecified():
 		return Fail(CondAccessURLNotAllowed, ClassTerminal, "resolved to an unspecified address")
@@ -169,8 +205,16 @@ func (p EgressPolicy) checkIP(ip net.IP) *Failure {
 		if p.AllowLoopback {
 			return nil
 		}
+		// THE NARROW PRODUCTION AUTHORITY, and note that it requires BOTH conditions: the switch, and a host
+		// that was written as a loopback literal. A name that resolved here is refused even with the switch
+		// on, which is what stops the authority from becoming a DNS-rebind hole.
+		if p.LiteralLoopbackResolver && literalLoopbackHost {
+			return nil
+		}
 		return Fail(CondAccessURLNotAllowed, ClassTerminal, "resolved to a loopback address")
 	case ip.IsPrivate():
+		// DELIBERATELY NOT REACHED BY LiteralLoopbackResolver. Widening a loopback-resolver permission to
+		// RFC1918 is the exact conflation this authority was split out to avoid.
 		if p.AllowLoopback {
 			return nil
 		}
@@ -224,25 +268,45 @@ func ValidateEndpoint(cfg EndpointConfig) (EgressPolicy, error) {
 		if err != nil {
 			return policy, fmt.Errorf("endpoint %s has an unusable allowlist entry: %w", cfg.ID, err)
 		}
+		// A PLAINTEXT ALLOWLIST ENTRY IS REFUSED, with one narrow exception: a literal loopback origin under
+		// the loopback-resolver authority. Without the exception an operator would have to set
+		// allowInsecureHttp to name their own resolver -- and that switch relaxes plaintext for EVERY origin
+		// on the list, including the CDN. Requiring the broad switch to express the narrow need is exactly
+		// the conflation this authority was split out to remove.
 		if origin.Scheme == "http" && !cfg.AllowInsecureHTTP {
-			return policy, fmt.Errorf("endpoint %s allowlists a plaintext origin without allowInsecureHttp", cfg.ID)
+			if !(cfg.LoopbackResolver && isLiteralLoopbackHost(origin.Host)) {
+				return policy, fmt.Errorf("endpoint %s allowlists a plaintext origin without allowInsecureHttp", cfg.ID)
+			}
 		}
 		policy.Allowed = append(policy.Allowed, origin)
 	}
 	if cfg.ResolverURL == "" && cfg.DirectBaseURL == "" {
 		return policy, fmt.Errorf("endpoint %s has neither a resolver nor a direct base URL", cfg.ID)
 	}
-	for _, raw := range []string{cfg.ResolverURL, cfg.DirectBaseURL} {
-		if raw == "" {
+	// THE RESOLVER URL IS CHECKED UNDER THE RESOLVER POLICY, EVERYTHING ELSE UNDER THE DATA POLICY.
+	//
+	// The two differ in exactly one bit, and only the resolver's own URL is allowed to benefit from it. A
+	// directBaseUrl names the PROVIDER, which is never on this host, so a loopback one is a
+	// misconfiguration rather than an architecture -- it is checked strictly and stays refused.
+	resolverPolicy := ResolverPolicy(policy, cfg)
+	for _, entry := range []struct {
+		raw    string
+		policy EgressPolicy
+	}{
+		{cfg.ResolverURL, resolverPolicy},
+		{cfg.DirectBaseURL, policy},
+	} {
+		if entry.raw == "" {
 			continue
 		}
-		parsed, err := url.Parse(raw)
+		parsed, err := url.Parse(entry.raw)
 		if err != nil {
 			return policy, fmt.Errorf("endpoint %s has an unparseable URL", cfg.ID)
 		}
-		// The resolver's own URL is held to the same policy as anything it later hands back. It is the one
-		// request that carries the long-lived credential, so it is the last place to be lax.
-		if failure := policy.CheckURL(parsed, cfg.AllowInsecureHTTP); failure != nil {
+		// The resolver's own URL is held to the same policy as anything it later hands back, save for the one
+		// narrow loopback authority. It is the request that carries the long-lived credential, so it is the
+		// last place to be lax.
+		if failure := entry.policy.CheckURL(parsed, cfg.AllowInsecureHTTP); failure != nil {
 			return policy, fmt.Errorf("endpoint %s: %s", cfg.ID, failure.Detail)
 		}
 	}
@@ -250,6 +314,20 @@ func ValidateEndpoint(cfg EndpointConfig) (EgressPolicy, error) {
 		return policy, fmt.Errorf("endpoint %s has a negative duration", cfg.ID)
 	}
 	return policy, nil
+}
+
+// ResolverPolicy is the data policy plus, where configured, the narrow literal-loopback authority.
+//
+// IT IS A SEPARATE VALUE ON PURPOSE. Handing the same policy to both clients is how a permission meant for
+// one request reaches every other one; the resolver's client gets this, the data plane keeps the strict
+// original, and neither can be mistaken for the other at a call site.
+//
+// THE ALLOWLIST IS UNCHANGED AND STILL APPLIES. This authority decides only whether a loopback ADDRESS may be
+// dialled. The resolver's origin must still appear in AllowedOrigins like anything else, so an operator who
+// has not named it gets a refusal rather than an implicit exception.
+func ResolverPolicy(base EgressPolicy, cfg EndpointConfig) EgressPolicy {
+	base.LiteralLoopbackResolver = cfg.LoopbackResolver
+	return base
 }
 
 // DefaultDialer is the base dialer every endpoint's guarded dialer wraps.

@@ -1015,11 +1015,14 @@ async function main(): Promise<void> {
     assert(cleanup.length > 100, 'the cleanup function was found');
     const serversAt = cleanup.indexOf('PLEX_CONTAINER');
     const mountAt = cleanup.indexOf('MOUNT_CONTAINER');
-    const unmountAt = cleanup.indexOf('umount -l');
+    // THE UNMOUNT IS THE SHARED HELPER'S NOW, and the move is the correction. The inline `umount -l` ran
+    // inside a container whose bind of the gate root carried Docker's default `rprivate` propagation, so on a
+    // host where the mount genuinely propagates the host mountpoint survived — four were found on Unraid.
+    const unmountAt = cleanup.indexOf('projection_gate_cleanup_run');
     const networkAt = cleanup.indexOf('docker network rm');
     assert(serversAt >= 0 && mountAt > serversAt,
       'the media servers go first: a FUSE mount with a live reader does not unmount cleanly');
-    assert(unmountAt > mountAt, 'then the mount is force-unmounted');
+    assert(unmountAt > mountAt, 'then the mount is force-unmounted, through the propagating helper');
     assert(networkAt > unmountAt, 'and the network last, when nothing is attached to it');
     assert(GATE.includes('trap cleanup EXIT'), 'and it runs on every exit path');
   });
