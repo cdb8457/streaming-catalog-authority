@@ -1,4 +1,5 @@
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1147,6 +1148,401 @@ async function main(): Promise<void> {
       + 'effective-endpoint may receive it');
     assert(/effective-endpoint/.test(gate.slice(0, gate.indexOf(operatorFileUses[0] as string) + 200)),
       'and the one command that receives it must be effective-endpoint');
+  });
+
+  // -------------------------------------------------------------------------------------------------------
+  // THE SCRIPTS THE GATES WRITE AT RUN TIME, LIFTED OUT AND EXECUTED
+  // -------------------------------------------------------------------------------------------------------
+  //
+  // WHY THIS SECTION EXISTS. Everything these gates do to an operator's corpus before a container exists is
+  // done by small `.cjs` programs embedded in the shell script as heredocs. Nothing had ever RUN one: the
+  // tests above them matched strings in the surrounding shell, which is how a gate acquires a program that
+  // is wrong in a way no assertion can see. Each test below extracts the shipped program and executes it.
+
+  /** The exact program the gate writes at run time, lifted out of its heredoc. */
+  function heredoc(gatePath: string, name: string): string {
+    const text = repoFile(gatePath);
+    const opener = `cat > "$WORK/${name}" <<'`;
+    const start = text.indexOf(opener);
+    assert(start !== -1, `${gatePath} does not write ${name}`);
+    const delimiterEnd = text.indexOf("'", start + opener.length);
+    const delimiter = text.slice(start + opener.length, delimiterEnd);
+    const bodyStart = text.indexOf('\n', delimiterEnd) + 1;
+    const bodyEnd = text.indexOf(`\n${delimiter}\n`, bodyStart);
+    assert(bodyEnd !== -1, `${gatePath} never closes the heredoc for ${name}`);
+    return text.slice(bodyStart, bodyEnd);
+  }
+
+  /** That program, on disk in a scratch directory, ready to run. */
+  function extract(gatePath: string, name: string): { dir: string; script: string } {
+    const dir = mkdtempSync(join(tmpdir(), 'tbgate-'));
+    const script = join(dir, name);
+    writeFileSync(script, `${heredoc(gatePath, name)}\n`, 'utf8');
+    return { dir, script };
+  }
+
+  const runNode = (script: string, args: readonly string[]): { code: number; out: string } => {
+    const result = spawnSync(process.execPath, [script, ...args], { encoding: 'utf8' });
+    return { code: result.status ?? -1, out: `${result.stdout}${result.stderr}` };
+  };
+
+  await test('THE REGISTER PLAN PUTS NO STABLE REFERENCE IN ARGV, WHICH THE 0600 SHELL FILE NEVER DID', () => {
+    // THE DEFECT, IN ITS OWN WORDS. All three gates wrote their register COMMANDS into a 0600 shell file and
+    // then ran it, each carrying a comment saying that kept the reference "out of every process listing
+    // taken while the gate runs". It did not, and could not: a mode protects the FILE. The commands built
+    // from it still spent their whole lives in the process table carrying
+    // `--source http-range:<id>:torbox:<kind>:<item>:<file>`, which `ps` shows to every user on the host —
+    // and a TorBox reference identifies an item in the operator's account.
+    //
+    // `batch --file` takes the corpus as ONE PATH. The reference reaches a 0600 file and stops there.
+    const gates = [
+      ['deploy/projection-torbox-real-gate.sh', true],
+      ['deploy/projection-torbox-mount-gate.sh', false],
+      ['deploy/projection-real-provider-gate.sh', true],
+    ] as const;
+
+    for (const [gatePath, takesEndpoint] of gates) {
+      const { dir, script } = extract(gatePath, 'register.cjs');
+      const objectsPath = join(dir, 'objects.json');
+      const endpointPath = join(dir, 'endpoint.json');
+      writeFileSync(objectsPath, JSON.stringify([
+        { label: 'object-1', ref: REF_TORRENT, sizeBytes: 8 * 1024 * 1024 },
+        { label: 'object-2', ref: REF_WEBDL, sizeBytes: 4 * 1024 * 1024 },
+      ]), 'utf8');
+      writeFileSync(endpointPath, JSON.stringify({ id: 'torbox' }), 'utf8');
+
+      const out = join(dir, 'register.json');
+      const run = runNode(script, takesEndpoint ? [out, objectsPath, endpointPath] : [out, objectsPath]);
+      assert(run.code === 0, `${gatePath}: register.cjs failed: ${run.out.slice(0, 300)}`);
+
+      // NO SHELL SCRIPT IS PRODUCED ANY MORE, because running one is what put the reference in argv.
+      assert(!existsSync(join(dir, 'register.sh')),
+        `${gatePath}: a register.sh is still emitted, and running it is what leaked the reference`);
+
+      const batchPath = join(dir, 'register-batch.json');
+      assert(existsSync(batchPath), `${gatePath}: no 0600 batch file was written`);
+      if (process.platform !== 'win32') {
+        assert((statSync(batchPath).mode & 0o077) === 0,
+          `${gatePath}: the batch file carrying the references is readable by group or other`);
+      }
+
+      // THE BATCH FILE IS THE ONE PLACE THE REFERENCE APPEARS, and it is in the shape `batch --file` reads.
+      const batch = JSON.parse(readFileSync(batchPath, 'utf8')) as {
+        versions: { key: string; size: number; mtime: string }[];
+        entries: { item: string; versionKey: string; path: string; sources: string[] }[];
+      };
+      assert(batch.versions.length === 2 && batch.entries.length === 2,
+        `${gatePath}: the batch file does not describe both objects`);
+      assert(batch.entries[0]?.sources[0]?.endsWith(REF_TORRENT) === true,
+        `${gatePath}: the first entry does not carry its stable reference`);
+      assert(batch.entries.every((entry) => entry.versionKey === batch.versions[
+        batch.entries.indexOf(entry)]?.key),
+      `${gatePath}: an entry names a version the batch does not register`);
+
+      // AND NOTHING ELSE register.cjs WROTE CARRIES IT. The summary the shell reads must be safe to echo.
+      const summary = readFileSync(out, 'utf8');
+      assert(!summary.includes(REF_TORRENT) && !summary.includes(REF_WEBDL),
+        `${gatePath}: the register summary carries a stable reference`);
+      assert(/"rootId"/.test(summary), `${gatePath}: the shell has no way to learn the root id`);
+
+      // THE SHELL MUST INVOKE THE PATH FORM. This is the one part argv is built by, so it is checked where
+      // it is written: nothing may run the generated script, and the batch must arrive as --file.
+      const gate = repoFile(gatePath);
+      assert(!/bash "\$WORK\/out\/register\.sh"/.test(gate),
+        `${gatePath}: the gate still executes a generated register script`);
+      assert(/batch --file "\$REL\/out\/register-batch\.json"/.test(gate),
+        `${gatePath}: the gate does not register through the path form`);
+      assert(!/register entry|register version|' entry --| version --key/.test(
+        gate.split('REGISTER')[2] ?? ''),
+      `${gatePath}: a per-row register invocation survives outside the batch file`);
+    }
+  });
+
+  await test('THE REAL GATE MEASURES REACHABILITY AT THE TRANSPORT, SO A 404 CANNOT PASS FOR A REFUSAL', async () => {
+    // THE FALSE-POSITIVE GATE. The real gate asserted that the resolver is unreachable from the gate network
+    // with `wget -q -O /dev/null http://<daemon>:<port>/resolve`, and treated a non-zero exit as proof. But
+    // wget exits non-zero for a refused connection AND for every HTTP error status — and this resolver
+    // answers 404 to a GET. So a resolver that WAS reachable produced exactly the exit code the gate read as
+    // "unreachable". The assertion could not fail, and it guards a credential oracle.
+    const { script } = extract('deploy/projection-torbox-real-gate.sh', 'probe-reachable.cjs');
+
+    // A listener that answers exactly as the resolver answers a stranger. THIS IS THE CASE THE OLD
+    // INSTRUMENT COULD NOT SEE.
+    const server = createServer((_req, res) => { res.writeHead(404); res.end(); });
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve); });
+    const port = (server.address() as AddressInfo).port;
+
+    const reachable = runNode(script, ['127.0.0.1', String(port)]);
+    assert(reachable.code === 0,
+      `a reachable listener answering 404 must be reported REACHABLE, got exit ${reachable.code}`);
+
+    await new Promise<void>((resolve) => { server.close(() => resolve()); });
+
+    // The same port with nothing behind it: a refusal, which is the only outcome that is proof.
+    const refused = runNode(script, ['127.0.0.1', String(port)]);
+    assert(refused.code === 1,
+      `a closed port must be reported REFUSED, got exit ${refused.code}`);
+
+    // AND A MEASUREMENT THAT DID NOT HAPPEN IS NOT A PASS. Folding an unresolvable name into "unreachable"
+    // would restore the same unfalsifiable pass by another route.
+    const unresolvable = runNode(script, ['no-such-host.invalid.', '9']);
+    assert(unresolvable.code === 2,
+      `a name that does not resolve must be INCONCLUSIVE, got exit ${unresolvable.code}`);
+
+    // And the gate must act on all three, rather than on truthiness.
+    const gate = repoFile('deploy/projection-torbox-real-gate.sh');
+    assert(!/wget[^\n]*RESOLVER_PORT/.test(gate),
+      'the gate still tests reachability with an HTTP client whose exit code cannot tell 404 from refused');
+    assert(/probe-reachable\.cjs/.test(gate), 'the gate must use the transport probe');
+    assert(/could not be determined/.test(gate),
+      'and must refuse to report the property as proven when it could not measure it');
+  });
+
+  await test('THE REAL GATE READS PAST 90% AND BACKWARDS AT EVERY OPERATOR OBJECT SIZE', () => {
+    // THE DEFECT. The gate clamped a fixed 64 KiB window back inside the object, so for anything under about
+    // 728 KiB the "past 90%" read silently happened well BELOW 90%, and for an object of 64 KiB or less it
+    // happened at offset ZERO — where it became byte-for-byte identical to the backward read and the
+    // distinct-windows check FAILED A CORRECT MOUNT. The operator supplies these sizes, so both cases are
+    // reachable by anyone who ever populates this gate.
+    const oldClamp = (offset: number, length: number, size: number): number =>
+      Math.max(0, Math.min(offset, size - length));
+    assert(oldClamp(Math.floor(65_536 * 0.91), 65_536, 65_536) === 0,
+      'the old arithmetic must be shown to collapse the tail read onto offset zero');
+    assert(oldClamp(Math.floor(100_000 * 0.91), 65_536, 100_000) < Math.floor(100_000 * 0.9),
+      'and to pull it below the 90% line it is named for');
+
+    const { script } = extract('deploy/projection-torbox-real-gate.sh', 'verify.cjs');
+    for (const size of [4_096, 65_536, 65_537, 100_000, 800_000, 8 * 1024 * 1024]) {
+      const dir = mkdtempSync(join(tmpdir(), 'tbverify-'));
+      const mount = join(dir, 'mnt');
+      mkdirSync(mount);
+      // REAL BYTES, DISTINCT AT EVERY OFFSET, so a mount serving one buffer for every window would be caught
+      // rather than accidentally satisfied.
+      writeFileSync(join(mount, 'object-1.bin'), objectBytes(`size-${size}`, 0, size));
+      const objectsPath = join(dir, 'objects.json');
+      writeFileSync(objectsPath, JSON.stringify([
+        { label: 'object-1', ref: REF_TORRENT, sizeBytes: size },
+      ]), 'utf8');
+      const out = join(dir, 'reads.json');
+
+      const run = runNode(script, [objectsPath, mount, out]);
+      assert(run.code === 0,
+        `an object of ${size} bytes failed verification: ${run.out.slice(0, 300)}`);
+
+      const record = JSON.parse(readFileSync(out, 'utf8')) as {
+        problems: number;
+        results: { kind: string; offset?: number; bytes: number; expected?: number;
+          pastNinetyPercent?: boolean; match: boolean }[];
+      };
+      assert(record.problems === 0, `an object of ${size} bytes reported ${record.problems} problem(s)`);
+
+      const tail = record.results.find((entry) => entry.kind === 'tail');
+      const back = record.results.find((entry) => entry.kind === 'backward');
+      assert(tail !== undefined && back !== undefined, `${size}: both windows must be recorded`);
+      assert(tail.offset !== undefined && tail.offset >= Math.floor(size * 0.9),
+        `${size}: the tail read started at ${tail.offset}, which is not past 90%`);
+      assert(tail.pastNinetyPercent === true, `${size}: the record does not claim the property it has`);
+      assert(tail.bytes === tail.expected && back.bytes === back.expected,
+        `${size}: a window returned short`);
+      assert((back.offset ?? -1) + (back.expected ?? 0) <= tail.offset,
+        `${size}: the backward window overlaps the tail window, so distinctness proves nothing`);
+    }
+  });
+
+  // -------------------------------------------------------------------------------------------------------
+  // The documents an operator would actually follow
+  // -------------------------------------------------------------------------------------------------------
+
+  await test('EVERY FILE PHASE 50 §8 TELLS AN OPERATOR TO PLACE IS ONE THE GATE ACTUALLY READS', () => {
+    // THE DEFECT. §8 named the gate secret `gate-secret`; the gate has only ever read `credential`. A corpus
+    // assembled from that table looks complete to its author and skips with 77 for ever, and the skip
+    // message names a file they believe they placed.
+    const gate = repoFile('deploy/projection-torbox-real-gate.sh');
+    const required = [...gate.matchAll(
+      /^(?:TORBOX_CREDENTIAL|GATE_SECRET|OBJECTS_FILE|ENDPOINT_FILE)="\$INPUT_DIR\/([^"]+)"$/gm,
+    )].map((match) => match[1] as string);
+    assert(required.length === 4, `the gate requires ${required.length} inputs, not 4`);
+
+    const doc = repoFile('docs/PHASE_50_TORBOX_RESOLVER.md');
+    const section = doc.slice(doc.indexOf('## 8.'));
+    assert(section.length > 0, 'PHASE_50 has no §8');
+    for (const name of required) {
+      assert(section.includes(`\`${name}\``), `§8 never names \`${name}\`, which the gate requires`);
+    }
+    assert(!/\|\s*`gate-secret`\s*\|/.test(section),
+      'the §8 table still names `gate-secret`, a file the gate never reads');
+  });
+
+  await test('THE ENDPOINT FIELDS §8 PRESCRIBES ARE THE ONES THE VALIDATOR ACCEPTS', async () => {
+    // THE SECOND DOC DEFECT. §8 told the operator to write a `resolverUrl` "pointing at the loopback
+    // resolver". The validator refuses that field BY NAME, because the resolver's address depends on a
+    // namespace the gate creates. So the documented corpus could not have got past step 2 of the gate's own
+    // preflight — and the refusal names a field the document told them to write.
+    //
+    // THE AUTHORITY HERE IS THE EXECUTED VALIDATOR, not the prose: each field is refused by a real run
+    // before the document is checked for mentioning it.
+    const section = repoFile('docs/PHASE_50_TORBOX_RESOLVER.md');
+    const eight = section.slice(section.indexOf('## 8.'));
+    const endpointRow = eight.split('\n').find((line) => line.includes('`endpoint.json`')) ?? '';
+    assert(endpointRow !== '', '§8 has no endpoint.json row');
+
+    for (const [field, value] of [
+      ['resolverUrl', 'http://127.0.0.1:8140/resolve'],
+      ['directBaseUrl', 'https://cdn.example.invalid/objects'],
+      ['loopbackResolver', true],
+      ['tokenFile', '/dev/null'],
+    ] as const) {
+      const corpus = operatorCorpus({
+        endpoint: { id: 'torbox', allowedOrigins: ['https://cdn.example.invalid'], [field]: value },
+      });
+      const built = buildEffective(corpus);
+      assert(built.code !== 0, `the validator accepted "${field}"; this test's authority is gone`);
+      assert(!endpointRow.includes(`\`${field}\``),
+        `§8 tells an operator to write \`${field}\` in endpoint.json, and the validator refuses it by name`);
+    }
+
+    // AND THE SHAPE IT DOES PRESCRIBE MUST SURVIVE THE WHOLE PRE-NETWORK PATH.
+    const good = operatorCorpus();
+    const effective = buildEffective(good);
+    assert(effective.code === 0, `the documented shape was refused: ${effective.out.slice(0, 200)}`);
+    assert(genericPreflight(good, effective.path).code === 0,
+      'and it must reach the deliberate no-network boundary green');
+  });
+
+  await test('THE TWO REAL GATES DO NOT SHARE AN APPROVED DIRECTORY, BECAUSE THEIR SCHEMAS EXCLUDE EACH OTHER',
+    () => {
+      // THE DEFECT. Both gates read `credential`, `objects.json` and `endpoint.json`, and both read them
+      // from `…/secrets/real-provider`. Their endpoint schemas are mutually exclusive — the generic gate
+      // refuses a file naming NEITHER `resolverUrl` nor `directBaseUrl`, and the TorBox gate refuses one
+      // naming EITHER. So an operator who prepared for one turned the other's honest `SKIPPED (77)` into a
+      // hard failure, and the two could never be prepared at the same time. `credential` did not even mean
+      // the same thing in the two places.
+      const torbox = /^INPUT_DIR="\$\{PROJECTION_TORBOX_INPUT_DIR:-([^}]*)\}"$/m
+        .exec(repoFile('deploy/projection-torbox-real-gate.sh'));
+      const generic = /^INPUT_DIR="\$\{PROJECTION_REAL_PROVIDER_INPUT_DIR:-([^}]*)\}"$/m
+        .exec(repoFile('deploy/projection-real-provider-gate.sh'));
+      assert(torbox !== null && generic !== null, 'both gates must declare an approved input directory');
+      assert(torbox[1] !== generic[1],
+        `both real gates still read ${String(torbox[1])}, and their endpoint schemas cannot both be met`);
+
+      // THE REASON, EXECUTED IN BOTH DIRECTIONS.
+      const torboxShaped = operatorCorpus();
+      assert(genericPreflight(torboxShaped, torboxShaped.endpoint).code !== 0,
+        'a TorBox-shaped endpoint must be refused by the generic preflight');
+      const genericShaped = operatorCorpus({
+        endpoint: {
+          id: 'provider',
+          directBaseUrl: 'https://cdn.example.invalid/objects',
+          allowedOrigins: ['https://cdn.example.invalid'],
+        },
+      });
+      assert(buildEffective(genericShaped).code !== 0,
+        'and a generic-shaped endpoint must be refused by the TorBox validator');
+    });
+
+  await test('A WHOLE-OBJECT DIGEST IS STREAMED, SO AN OPERATOR MAY RECORD ONE FOR AN OBJECT OF ANY SIZE',
+    () => {
+      // THE DEFECT. Every window this gate reads is 64 KiB except one: the WHOLE-OBJECT read taken whenever
+      // an operator records a `sha256`. It allocated the whole object in a single buffer. `probeDigests`
+      // exist for the large-object case but nothing makes them compulsory, so a 40 GB film with a recorded
+      // sha256 is a configuration the validator accepts — and the run would die on `Buffer.alloc(40e9)`,
+      // with a message about a typed array length, after TorBox had already served the bytes.
+      const { script } = extract('deploy/projection-torbox-real-gate.sh', 'verify.cjs');
+      const dir = mkdtempSync(join(tmpdir(), 'tbwhole-'));
+      const mount = join(dir, 'mnt');
+      mkdirSync(mount);
+
+      // LARGER THAN ONE CHUNK, so the loop that stitches chunks together is actually exercised: a digest
+      // computed one 1 MiB chunk at a time must equal the digest of the whole file.
+      const size = 5 * 1024 * 1024 + 12_345;
+      const bytes = objectBytes('whole-object', 0, size);
+      writeFileSync(join(mount, 'object-1.bin'), bytes);
+      const whole = createHash('sha256').update(bytes).digest('hex');
+
+      const objectsPath = join(dir, 'objects.json');
+      writeFileSync(objectsPath, JSON.stringify([
+        { label: 'object-1', ref: REF_TORRENT, sizeBytes: size, sha256: whole },
+      ]), 'utf8');
+      const out = join(dir, 'reads.json');
+      const run = runNode(script, [objectsPath, mount, out]);
+      assert(run.code === 0, `a streamed whole-object digest failed: ${run.out.slice(0, 300)}`);
+
+      const record = JSON.parse(readFileSync(out, 'utf8')) as {
+        problems: number; results: { kind: string; bytes: number; match: boolean }[];
+      };
+      const wholeRead = record.results.find((entry) => entry.kind === 'whole');
+      assert(wholeRead !== undefined && wholeRead.match, 'the whole-object digest did not match');
+      assert(wholeRead.bytes === size, `the whole object read ${wholeRead.bytes} of ${size} bytes`);
+      assert(record.problems === 0, `${record.problems} problem(s) on a correct object`);
+
+      // AND A WRONG DIGEST STILL FAILS. Streaming must not have turned the comparison into a formality.
+      writeFileSync(objectsPath, JSON.stringify([
+        { label: 'object-1', ref: REF_TORRENT, sizeBytes: size, sha256: 'b'.repeat(64) },
+      ]), 'utf8');
+      assert(runNode(script, [objectsPath, mount, join(dir, 'bad.json')]).code !== 0,
+        'a wrong whole-object digest was accepted');
+
+      // THE ALLOCATION IS BOUNDED BY THE CHUNK, which is the property the size independence rests on.
+      const source = heredoc('deploy/projection-torbox-real-gate.sh', 'verify.cjs');
+      assert(/Buffer\.allocUnsafe\(Math\.min\(length, READ_CHUNK\)\)/.test(source),
+        'the read buffer is not bounded by the chunk size, so a large object still allocates whole');
+      assert(!/Buffer\.alloc\(length\)/.test(source), 'a whole-window allocation survives');
+    });
+
+  await test('EACH THREE-RUN WRAPPER REPORTS ITS OWN GATE, NOT A VERBATIM COPY OF ANOTHER ONE\'S', () => {
+    // THE DEFECT. Three wrappers — real-provider, torbox-mount and torbox-real — shipped the PATH LIFECYCLE
+    // wrapper's header word for word, telling a reader that the sequence turns on three fresh media-server
+    // config directories and on set differences between three real media servers' inventories. None of those
+    // three gates has a media server anywhere in it.
+    //
+    // AND THE WORSE HALF, WHICH IS NOT A COMMENT. The REAL TorBox wrapper's CLOSING MESSAGE was the OFFLINE
+    // gate's, word for word. Three successful runs against an operator's own TorBox account would have ended
+    // by telling them the provider was a fixture, the credential was 32 random bytes the gate generated, and
+    // no real TorBox account had ever been contacted — at the exact moment that stopped being true, about the
+    // one run this whole tranche is waiting on. It is checked here by RUNNING the wrapper, through the seam
+    // it documents for exactly this purpose.
+    const drive = (script: string, commandVar: string, runsVar: string): string => {
+      const dir = mkdtempSync(join(tmpdir(), 'tbwrap-'));
+      const stub = join(dir, 'stub.sh');
+      writeFileSync(stub, '#!/usr/bin/env bash\nexit 0\n');
+      const result = spawnSync('bash', [join(HERE, '..', 'deploy', script)], {
+        encoding: 'utf8',
+        env: { ...process.env, [commandVar]: stub, [runsVar]: '1' },
+      });
+      assert(result.status === 0, `${script} did not complete: ${String(result.stderr).slice(0, 200)}`);
+      return `${result.stdout}${result.stderr}`;
+    };
+
+    const offline = drive('projection-torbox-mount-gate-three.sh',
+      'PROJECTION_TORBOX_GATE_COMMAND', 'PROJECTION_TORBOX_GATE_RUNS');
+    assert(/IT CLOSES NOTHING ABOUT ANY REAL PROVIDER/.test(offline),
+      'the OFFLINE wrapper must still refuse to be read as a real run');
+    assert(/projection-torbox-real-gate\.sh/.test(offline),
+      'and must point at the TorBox real gate rather than the generic one');
+
+    const real = drive('projection-torbox-real-gate-three.sh',
+      'PROJECTION_TORBOX_REAL_GATE_COMMAND', 'PROJECTION_TORBOX_REAL_GATE_RUNS');
+    const flat = real.replace(/\s+/g, ' ');
+    assert(!/the credential was 32 random bytes the gate generated/.test(flat),
+      'the REAL wrapper still tells a successful real run that its credential was generated by the gate');
+    assert(!/A real TorBox account has never been contacted\./.test(
+      flat.slice(flat.indexOf('WHAT THIS DOES AND DOES NOT CLOSE'))),
+    'the REAL wrapper still claims, on success, that no TorBox account was ever contacted');
+    assert(/These runs CONTACTED TORBOX/.test(flat),
+      'and it must say plainly that they did');
+    assert(/does not close/i.test(flat) && /section 6\.1/.test(flat),
+      'while still refusing to be read as Phase 1 closure');
+
+    // AND NO WRAPPER MAY DESCRIBE MACHINERY ITS GATE DOES NOT HAVE.
+    for (const script of ['projection-torbox-mount-gate-three.sh', 'projection-torbox-real-gate-three.sh',
+      'projection-real-provider-gate-three.sh']) {
+      const text = repoFile(`deploy/${script}`);
+      const header = text.slice(0, text.indexOf('set -uo pipefail'));
+      assert(!/THREE fresh media-server config directories/.test(header),
+        `${script} still claims three fresh media-server config directories; it has no media server`);
+      assert(!/PATH LIFECYCLE gate \(G27/.test(header),
+        `${script} still titles itself as the path-lifecycle gate`);
+    }
   });
 
   await test('this suite runs in the aggregate', () => {

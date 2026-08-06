@@ -614,6 +614,15 @@ bounds the body, terminalises a second refresh and enforces both the allowlist a
 Then: `npm run go:real-provider-gate` to preflight and run once, and
 `npm run go:real-provider-gate:three` for the three consecutive fresh runs the plan requires.
 
+**THE TORBOX GATE READS A DIFFERENT DIRECTORY, AND IT HAS TO.** `deploy/projection-torbox-real-gate.sh`
+takes its four inputs from `…/secrets/real-provider/torbox/` (`PROJECTION_TORBOX_INPUT_DIR`), because its
+`endpoint.json` schema is the **inverse** of the one above: this gate requires exactly one of `resolverUrl`
+or `directBaseUrl`, and that one **refuses both** — the resolver's address depends on a network namespace
+the gate creates, so the operator cannot write it. Both gates read the same three FILENAMES, so while they
+shared one directory, preparing either turned the other's honest `SKIPPED (77)` into a hard failure and
+neither could be prepared without breaking the other. `credential` also means different things in the two:
+here the token sent to the provider, there the gate secret the daemon presents to the loopback resolver.
+
 ### 6.4 The gates that did not exist — now none of them
 
 **A GATE THAT HAS NOT BEEN WRITTEN CANNOT BE RUN, AND SAYING SO IS NOT THE SAME AS SAYING IT FAILED.**

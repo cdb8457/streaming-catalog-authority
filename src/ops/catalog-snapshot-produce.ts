@@ -397,13 +397,94 @@ export function makePublishable(fd: number, surface: SnapshotModeSurface = realM
  * Exported so a suite can drive it directly with two independently completed temporaries, which is exactly
  * the shape of two concurrent producers.
  */
-export function publishTemporary(temporary: string, destination: string, overwrite: boolean): void {
+/**
+ * A REPLACING RENAME, RETRIED ON WINDOWS AND NOWHERE ELSE.
+ *
+ * THE DEFECT THIS EXISTS FOR, MEASURED RATHER THAN GUESSED. On Windows a replacing rename returns
+ * `ERROR_ACCESS_DENIED` — surfaced by libuv as `EPERM` — whenever ANY other handle is open on the
+ * destination, including one a virus scanner opened microseconds ago precisely because this process had just
+ * written the file. Under concurrent load `test/external-snapshot-produce.ts` hit it in **6 of 72 runs**, on
+ * three different destination names, and the operator-visible result was a produce that deleted its own
+ * finished snapshot and reported one opaque sentence. It is transient: the next attempt succeeds.
+ *
+ * WHY THE RETRY IS PLATFORM-GATED, AND WHY THAT IS NOT TIMIDITY. On POSIX `rename(2)` over an existing file
+ * cannot fail because somebody has it open — the name is swapped, the old inode lives until the last handle
+ * closes. So `EPERM`, `EACCES` and `EBUSY` there are real statements: a directory without write permission,
+ * a destination that is a mount point, a sticky-bit refusal. Retrying those would turn a permanent, correct
+ * refusal into ten of them and then the same failure a third of a second later, which is worse than useless
+ * because it makes a diagnosable error look intermittent.
+ *
+ * THE BUDGET IS THE MEASUREMENT, NOT A GUESS, AND THE FIRST ONE WAS WRONG. A fifth of a second looked
+ * obviously generous and fixed nothing: re-running the same 72-instance load with it still failed 5 times.
+ * Instrumenting the loop showed why — every one of the six EPERMs DID clear, but on attempts 29, 32 and 45,
+ * which is 0.6 to 0.9 seconds. Three seconds is therefore a little over three times the worst window
+ * actually observed, and 60 further runs at that budget produced no failure and no give-up. A publish still
+ * refused after three seconds is refused, and now says which errno refused it.
+ */
+const PUBLISH_REPLACE_ATTEMPTS = 150;
+const PUBLISH_REPLACE_PAUSE_MS = 20;
+
+/** The codes Windows returns for "somebody else has the destination open for an instant". */
+const WINDOWS_TRANSIENT_REPLACE = new Set(['EPERM', 'EACCES', 'EBUSY']);
+
+/** A synchronous pause. `publishTemporary` is synchronous, and making it async would change every caller. */
+function pauseSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Stands in for the platform and the replacing rename, so BOTH branches can be proved on any host.
+ *
+ * WHY THIS SEAM HAD TO EXIST, IN THIS MODULE'S OWN WORDS. The mode surface beside it was added because "a
+ * test that could only exercise its own host's branch would leave the other one covered by nothing but a
+ * reading of the code". The retry is win32-only by design, so on a Linux CI host it is exactly that
+ * unreachable branch — and the NEGATIVE half matters more than the positive one: that a POSIX `EPERM` is
+ * still terminal and is NOT retried a hundred and fifty times is the property that keeps a real permission
+ * refusal diagnosable, and no amount of running this suite on Linux would ever demonstrate it.
+ */
+export interface SnapshotReplaceSurface {
+  readonly platform: string;
+  readonly rename: (from: string, to: string) => void;
+  /** Stubbed by a suite so proving the exhaustion path costs no wall-clock. */
+  readonly pause?: (ms: number) => void;
+}
+
+const REAL_REPLACE: SnapshotReplaceSurface = {
+  platform: process.platform,
+  rename: (from: string, to: string) => { renameSync(from, to); },
+};
+
+function replaceWithRetry(temporary: string, destination: string,
+  surface: SnapshotReplaceSurface): void {
+  const pause = surface.pause ?? pauseSync;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      surface.rename(temporary, destination);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      const transient = surface.platform === 'win32'
+        && typeof code === 'string' && WINDOWS_TRANSIENT_REPLACE.has(code);
+      if (!transient || attempt >= PUBLISH_REPLACE_ATTEMPTS) throw err;
+      pause(PUBLISH_REPLACE_PAUSE_MS);
+    }
+  }
+}
+
+export function publishTemporary(temporary: string, destination: string, overwrite: boolean,
+  replace: SnapshotReplaceSurface = REAL_REPLACE): void {
   if (overwrite) {
     try {
-      renameSync(temporary, destination);
-    } catch {
+      replaceWithRetry(temporary, destination, replace);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      // THE CODE IS NAMED, as it already is on both flush failures above. The bare `catch` this replaces
+      // discarded it, so every way a replacing publish can fail — a read-only directory, a destination that
+      // is a directory, a full disk, a scanner holding the file — arrived as one sentence that told an
+      // operator nothing and gave a reader nothing to reproduce from.
+      const named = typeof code === 'string' && /^[A-Z]{1,16}$/.test(code) ? ` (${code})` : '';
       try { unlinkSync(temporary); } catch { /* the publish already failed; a leftover temp is not a second failure */ }
-      throw new SnapshotProducePathError('the snapshot could not be moved into place');
+      throw new SnapshotProducePathError(`the snapshot could not be moved into place${named}`);
     }
     return;
   }

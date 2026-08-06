@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, openSync, readFileSync, readSync, closeSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname } from 'node:path';
 import { request as httpsRequest } from 'node:https';
 import { request as httpRequest } from 'node:http';
@@ -274,18 +275,35 @@ Promise<{ url: string; headers: Record<string, string> }> {
 // Reads through the mount
 // ---------------------------------------------------------------------------------------------------------
 
-function readWindow(path: string, offset: number, length: number): { bytes: Buffer; elapsedMs: number } {
+/**
+ * The largest buffer any read here allocates, whatever window it was asked for.
+ *
+ * WHY A WINDOW IS NOT ALLOCATED WHOLE. This used to `Buffer.alloc(length)` and then read into it, which is
+ * fine for the 64 KiB probe windows and is a crash for the one window that is not bounded: the WHOLE-OBJECT
+ * read taken whenever an operator supplies `sha256`. Nothing stops that being a 40 GB film — `probeDigests`
+ * exist for exactly that case but are not compulsory — and a 40 GB allocation fails with a message about a
+ * typed array length, halfway through a run, after the provider has already been charged for the bytes. The
+ * digest is streamed instead, so the memory cost of reading an object is the same whatever its size.
+ */
+const READ_CHUNK_BYTES = 1024 * 1024;
+
+/** Reads a window through the mount and digests it as it goes, never holding more than one chunk. */
+function digestWindow(path: string, offset: number, length: number):
+{ bytesRead: number; sha256: string; elapsedMs: number } {
   const started = Date.now();
   const fd = openSync(path, 'r');
   try {
-    const buffer = Buffer.alloc(length);
+    const hash = createHash('sha256');
+    const buffer = Buffer.allocUnsafe(Math.min(length, READ_CHUNK_BYTES));
     let filled = 0;
     while (filled < length) {
-      const got = readSync(fd, buffer, filled, length - filled, offset + filled);
+      const want = Math.min(buffer.length, length - filled);
+      const got = readSync(fd, buffer, 0, want, offset + filled);
       if (got === 0) break;
+      hash.update(buffer.subarray(0, got));
       filled += got;
     }
-    return { bytes: buffer.subarray(0, filled), elapsedMs: Date.now() - started };
+    return { bytesRead: filled, sha256: hash.digest('hex'), elapsedMs: Date.now() - started };
   } finally {
     closeSync(fd);
   }
@@ -388,43 +406,45 @@ async function main(): Promise<void> {
 
         // The approved probe windows, in the order the operator gave them.
         for (const probe of object.probeDigests ?? []) {
-          const got = readWindow(path, probe.offset, probe.length);
+          const got = digestWindow(path, probe.offset, probe.length);
           reads.push({
             label: object.label, kind: 'probe', offset: probe.offset, length: probe.length,
-            bytesRead: got.bytes.length, sha256: sha256Of(got.bytes), elapsedMs: got.elapsedMs,
+            bytesRead: got.bytesRead, sha256: got.sha256, elapsedMs: got.elapsedMs,
           });
-          bytesTotal += got.bytes.length;
+          bytesTotal += got.bytesRead;
         }
 
         // PAST 90% OF THE OBJECT, which is where a container index often lives and where an implementation
         // that can only stream forward from zero falls over.
         const tailOffset = Math.floor(object.sizeBytes * 0.91);
         const tailLength = Math.min(TAIL_WINDOW_BYTES, object.sizeBytes - tailOffset);
-        const tail = readWindow(path, tailOffset, tailLength);
+        const tail = digestWindow(path, tailOffset, tailLength);
         reads.push({
           label: object.label, kind: 'tail', offset: tailOffset, length: tailLength,
-          bytesRead: tail.bytes.length, sha256: sha256Of(tail.bytes), elapsedMs: tail.elapsedMs,
+          bytesRead: tail.bytesRead, sha256: tail.sha256, elapsedMs: tail.elapsedMs,
         });
-        bytesTotal += tail.bytes.length;
+        bytesTotal += tail.bytesRead;
 
         // AND THEN BACKWARDS. This read is deliberately at a LOWER offset than the one just performed: it is
         // the seek a player makes when somebody scrubs back, and it is what a forward-only implementation
         // gets wrong while passing every sequential test.
         const backLength = Math.min(TAIL_WINDOW_BYTES, Math.max(1, tailOffset));
-        const back = readWindow(path, 0, backLength);
+        const back = digestWindow(path, 0, backLength);
         reads.push({
           label: object.label, kind: 'backward', offset: 0, length: backLength,
-          bytesRead: back.bytes.length, sha256: sha256Of(back.bytes), elapsedMs: back.elapsedMs,
+          bytesRead: back.bytesRead, sha256: back.sha256, elapsedMs: back.elapsedMs,
         });
-        bytesTotal += back.bytes.length;
+        bytesTotal += back.bytesRead;
 
         if (object.sha256 !== undefined) {
-          const whole = readWindow(path, 0, object.sizeBytes);
+          // STREAMED, NOT ALLOCATED. An operator is allowed to record a whole-object digest for an object of
+          // any size, and this is the one read whose length the gate does not choose.
+          const whole = digestWindow(path, 0, object.sizeBytes);
           reads.push({
             label: object.label, kind: 'whole', offset: 0, length: object.sizeBytes,
-            bytesRead: whole.bytes.length, sha256: sha256Of(whole.bytes), elapsedMs: whole.elapsedMs,
+            bytesRead: whole.bytesRead, sha256: whole.sha256, elapsedMs: whole.elapsedMs,
           });
-          bytesTotal += whole.bytes.length;
+          bytesTotal += whole.bytesRead;
         }
         console.log(`  ${object.label}: ${reads.filter((r) => r.label === object.label).length} read(s)`);
       }
