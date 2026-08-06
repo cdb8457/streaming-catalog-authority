@@ -592,11 +592,16 @@ filenames, and runs **before** the report is printed.
 
 | Run | Mode | Result |
 |---|---|---|
-| `npm run go:real-provider-gate:fake` | offline fixture | **33 assertions, 0 failed, 2 skipped** — 3/3 consecutive fresh runs on the real Unraid host, `evidence/real-provider-fake-three.log` |
+| `npm run go:real-provider-gate:fake` | offline fixture | **33 assertions, 0 failed, 3 skipped** — 3/3 consecutive fresh runs on the real Unraid host, `evidence/rp-fake-three.log`. **HISTORICALLY 2 skipped**; the third is `RP3-egress-allowlist`, corrected from a fabricated pass to an honest skip — see §6.11 |
 | `npm run go:real-provider-gate` | real | **SKIPPED (77)** — no operator corpus exists at the approved path |
-| `npm run test:projection-real-provider` | offline | **60 adversarial tests** |
+| `npm run test:projection-real-provider` | offline | **74 adversarial tests** (was 60) |
 
-**THE 3/3 FAKE SEQUENCE CLOSES NOTHING.** It proves the gate evaluates every assertion and can fail. The two
+**AND THE SEQUENCE ABOVE WAS NOT REPRODUCIBLE AT THE MERGE THAT RECORDED IT.** At `01af2d3` this gate could
+not complete **run 1 of 3** on the very host this table names: it died in its own preflight negative control,
+because the rule that control assumes had never existed. §6.11 records what it was. The 3/3 above is the
+sequence measured **after** that fix, on an isolated checkout of the same host.
+
+**THE 3/3 FAKE SEQUENCE CLOSES NOTHING.** It proves the gate evaluates every assertion and can fail. The
 skips are the TLS assertions, which skip against a plaintext fixture and are asserted against a real endpoint
 — that is how the report distinguishes the two, and a skip is never a pass. **No product code was changed:**
 the adapter already refuses redirects, accepts only `206`, requires an exact `Content-Range`, checks the total,
@@ -622,6 +627,64 @@ the gate creates, so the operator cannot write it. Both gates read the same thre
 shared one directory, preparing either turned the other's honest `SKIPPED (77)` into a hard failure and
 neither could be prepared without breaking the other. `credential` also means different things in the two:
 here the token sent to the provider, there the gate secret the daemon presents to the loopback resolver.
+
+### 6.11 The credential-free heredoc audit — what executing the gates' own embedded programs found
+
+**THE GATES' MEASUREMENTS ARE MADE BY SMALL PROGRAMS EMBEDDED IN THE SHELL SCRIPTS AS HEREDOCS, AND ALMOST
+NONE OF THEM HAD EVER BEEN RUN BY A TEST.** `test/torbox-resolver.ts` had begun extracting three of them and
+executing them against fixtures; an inventory of every heredoc written into the run directory across all
+`deploy/projection-*gate*.sh` found **131**, of which **3** had executable coverage. The rest were held only
+by string-matching the surrounding shell — which is how a gate acquires a measurement that is wrong in a way
+no assertion can see. This audit extended the technique to the security- and correctness-critical remainder.
+**Every defect below was found by RUNNING the shipped program, and every one is proved by a test that fails
+against `01af2d3` and passes after the fix.**
+
+| # | Where | What was wrong | How it presented |
+|---|---|---|---|
+| 1 | `endpointProblems`, via the real-provider gate's own preflight negative control | **No rule refused an unedited template.** `deploy/real-provider-endpoint.template.json` is structurally valid by construction, so preflight answered "PREFLIGHT PASSED — the inputs are well formed" over an endpoint whose id, base URL and allowlist were all still `REPLACE-ME` | **The gate could not complete run 1 of 3 on the Unraid host at the merge base.** Its fake-mode control dies if the template is accepted, and it was. An operator who filled in credential and objects but not the endpoint got a green preflight and a run aimed at `REPLACE-ME.example.invalid` |
+| 2 | `scan.cjs` — **3 gates, 6 call sites** | The credential-leak measurement reported **`0`** without having looked, three ways: a needle under 8 characters skipped the walk entirely; any file over **64 MiB** was skipped; a root that did not exist was walked in silence. It also decoded the haystack as `latin1` while the needle was `utf8`, so a non-ASCII secret could never match itself | This is the only measurement behind **"no access material reached disk"** (`RP6-no-lease-on-disk`) and behind the TorBox gates' "neither secret reached anything this run wrote". In the real gates both needles are **operator-supplied**. The same secret was found in a 32 MiB file and invisible in a 64 MiB one |
+| 3 | `observations.cjs` — real-provider gate | `cleanup: { mountpoints: 0, containers: 0, runDirectories: 0 }` and `disallowedOriginContacts: 0` were **literals**. The verdict layer that consumes them is falsifiable and well tested, so **four RP6 assertions and one RP3 assertion were handed a constant they could never fail against** | Worse than unmeasured: the record was written **before** the EXIT trap, while the mount container was still running by design, so `containers: 0` was **false**. `RP3-egress-allowlist` passed under a note claiming it was "observed at a listener the gate stands up" — this gate stands up no such listener; that sentence belongs to the lease gate |
+| 4 | `probe-resolver.cjs` — both TorBox gates | `http.request` applies **no default timeout** in Node, and none was set | A resolver that accepted the connection and never answered left the gate **hung, not failed** — no assertion, no cleanup, no report. The transport probe shipped beside it already bounded itself at 3 s |
+| 5 | `cleanupResults` / the gate's success path | **This run's own directory and mounts were asserted by nothing.** Every verdict is read out of the run directory, so `RP6-run-directories` deliberately excluded the only directory that could have leaked — while being named as though it did not. The EXIT trap's `projection_gate_report_cleanliness` is a REPORT by construction: its own comment explains that a non-zero return there would overwrite the gate's exit status | **A successful gate could print `cleanup: 1 mountpoint left behind` and still exit 0** — the report-versus-assertion gap §6.5 exists to close, reappearing inside the gate meant to close it. §6.5 records four dangling mountpoints from exactly this, each answering `Transport endpoint is not connected`, and warns that a stale mount is how the NEXT run inherits a namespace and passes for the wrong reason |
+| 6 | `verify.cjs` — TorBox **mount** gate | It still clamps a fixed 64 KiB window back inside the object — the arithmetic the **real** gate's copy was corrected away from. Below 655,360 bytes the "past 90%" read happens **below** 90%; at 65,536 or less it lands on offset **zero**, identical to the backward read, failing a correct mount | **LATENT, not live**: this gate's corpus is its own and is 8 MiB. Recorded as a divergence the earlier correction left behind, and closed by a **refusal** rather than new arithmetic, because the cold pass depends on the shifted offsets staying where they are |
+
+**HOW #5 IS CLOSED, AND WHY THE ORDER MATTERS.** The line that counted other runs' leftovers is renamed
+`RP6-foreign-run-directories` and says in its own note what it does **not** cover. This run's own directory
+and mounts became a new, harder assertion — `RP7-own-run-directory-removed` and `RP7-own-mountpoints-removed`,
+decided in the module like every other verdict and driven through a `real_provider cleanup` phase. It runs
+**after** the report is printed and **after** the evidence is copied out from under the run directory, so
+requiring that directory to be gone cannot cost the operator the results that justify the verdict; and it is
+reached only when every earlier phase succeeded, so it cannot mask an earlier failure. **The EXIT trap is
+unchanged for every failure path**, where it must stay a report for the reason its own comment gives. The
+mountpoint half keeps §6.0's three-valued treatment — a host that cannot enumerate its mounts skips it loudly
+— while the directory half is unconditional, because every host can answer whether a directory exists.
+
+**AND PRESERVING THE EVIDENCE IS PART OF THAT PRECONDITION, NOT A COURTESY BESIDE IT.** The step that asserts
+the run directory is gone is the step that deletes it, and the run directory is the only place the verdict
+evidence exists. The first version of it copied both artifacts with `|| true` and then printed "evidence kept"
+unconditionally — so a copy that failed for any reason (a full disk, a read-only gate root, a results file the
+verdict never wrote) destroyed the only record of why the run passed, said it had kept it, and exited 0. That
+is the same class of defect as reporting a measurement never taken, applied to the thing that justifies every
+other measurement. Both artifacts must now exist, be non-empty, copy successfully, and compare **byte-identical**
+to what the run wrote; any of those failing ends the run non-zero **before** anything is deleted. The shipped
+`copy_evidence` function is extracted and executed by the offline suite against all four cases.
+
+**WHAT THE FIXES DO NOT DO.** No threshold moved, no hard failure became a skip, and no redaction was
+loosened — the leak scan still prints a bare count and never a filename, a line or the needle. The one
+verdict that changed character is `RP3-egress-allowlist`, and it changed **from a pass the gate wrote for
+itself to a skip that says so**: the gate has no listener on the excluded origin and now declines to claim
+one, while **G26 continues to assert the allowlist in full** against a listener `deploy/projection-lease-gate.sh`
+really does stand up. That is the third skip in §6.10's table.
+
+**WHAT WAS RUN.** On an isolated checkout at `/mnt/user/appdata/catalog-phase1-heredoc-audit` on the same
+Unraid host: `npm run go:torbox-mount-gate:three` **3/3, exit 0**; the real-provider gate in fake mode
+**3/3, 33 assertions, 0 failed, 3 skipped**; and `deploy/projection-torbox-real-gate.sh` **SKIPPED (77)**,
+having contacted nothing. Every run reported `cleanup: 0 mountpoints and no run directory left under the gate
+root`, both gate roots were left empty, and the host's container, network, volume and mountpoint counts were
+identical before and after (26 running / 42 total, 17, 45, 0).
+
+**AND IT CLOSES NOTHING.** No real provider endpoint was contacted, no operator corpus exists at either
+approved path, and Phase 1 remains open on exactly that ground.
 
 ### 6.4 The gates that did not exist — now none of them
 

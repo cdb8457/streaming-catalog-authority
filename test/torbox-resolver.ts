@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:http';
-import { spawnSync } from 'node:child_process';
+import { createServer, type RequestListener } from 'node:http';
+import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -1543,6 +1543,217 @@ async function main(): Promise<void> {
       assert(!/PATH LIFECYCLE gate \(G27/.test(header),
         `${script} still titles itself as the path-lifecycle gate`);
     }
+  });
+
+  await test('NEITHER TORBOX GATE\'S LEAK SCAN CAN REPORT "NO LEAK" WITHOUT HAVING LOOKED', () => {
+    // THE DEFECT, IN THE ONE MEASUREMENT THAT STANDS BEHIND "NEITHER SECRET REACHED DISK". Both gates search
+    // everything the run wrote for the exact bytes of the TorBox credential and of the gate secret, and both
+    // used the same program. It reported `0` — which the shell compares against 0 and passes — in three
+    // situations where it had not searched at all:
+    //
+    //   a needle under 8 bytes skipped the walk outright;
+    //   any file over 64 MiB was skipped, so a secret in a large log was invisible;
+    //   a root that did not exist was walked in silence.
+    //
+    // In the REAL gate both needles are operator-supplied, so the first of those is reachable by anyone who
+    // ever populates it. All three are executed below against each shipped copy.
+    for (const gatePath of [
+      'deploy/projection-torbox-real-gate.sh',
+      'deploy/projection-torbox-mount-gate.sh',
+    ]) {
+      const { dir, script } = extract(gatePath, 'scan.cjs');
+      const root = join(dir, 'out');
+      mkdirSync(root);
+      const secretFile = join(dir, 'secret');
+      // STDOUT AND STDERR KEPT APART, because the whole point is that a refusal must not put a number on
+      // stdout for `$(...)` to capture and `test -eq 0` to accept.
+      const runScan = (args: readonly string[]): { code: number; out: string; err: string } => {
+        const result = spawnSync(process.execPath, [script, ...args], { encoding: 'utf8' });
+        return { code: result.status ?? -1, out: result.stdout ?? '', err: result.stderr ?? '' };
+      };
+
+      // A REAL LEAK IS FOUND, and only a count reaches stdout.
+      writeFileSync(secretFile, `${GATE}\n`);
+      writeFileSync(join(root, 'resolver.log'), `POST /resolve authorization: Bearer ${GATE}\n`);
+      const found = runScan([secretFile, root]);
+      assert(found.code === 0 && found.out.trim() === '1',
+        `${gatePath}: a planted gate-secret leak was not found: "${found.out.trim()}"`);
+      assert(!found.out.includes(GATE) && !found.err.includes(GATE),
+        `${gatePath}: the scan printed the secret it searched for`);
+      assert(!found.out.includes('resolver.log') && !found.err.includes('resolver.log'),
+        `${gatePath}: the scan named the file it found it in`);
+
+      // AND A CLEAN RUN IS STILL A ZERO, so the refusals below are about decisiveness rather than noise.
+      writeFileSync(join(root, 'resolver.log'), 'POST /resolve 401\n');
+      assert(runScan([secretFile, root]).out.trim() === '0',
+        `${gatePath}: a clean run did not report 0`);
+
+      // 1. A SECRET TOO SHORT TO BE DECISIVE IS REFUSED RATHER THAN REPORTED AS ZERO.
+      writeFileSync(secretFile, 'short12\n');
+      writeFileSync(join(root, 'resolver.log'), 'authorization: Bearer short12\n');
+      const short = runScan([secretFile, root]);
+      assert(short.code !== 0,
+        `${gatePath}: a 7-byte secret present verbatim reported "${short.out.trim()}" instead of failing`);
+      assert(short.out.trim() === '',
+        `${gatePath}: a refused scan still put "${short.out.trim()}" on stdout for the shell to capture`);
+
+      // 2. A LARGE FILE IS SEARCHED. The same value at 64 MiB + 4 KiB used to be skipped entirely.
+      writeFileSync(secretFile, `${GATE}\n`);
+      const big = Buffer.alloc(64 * 1024 * 1024 + 4096, 0x2e);
+      big.write(`authorization: Bearer ${GATE}`, 33 * 1024 * 1024);
+      writeFileSync(join(root, 'resolver.log'), big);
+      const large = runScan([secretFile, root]);
+      assert(large.code === 0 && large.out.trim() === '1',
+        `${gatePath}: a secret in a ${big.length}-byte file was not found`);
+
+      // 3. A ROOT THAT DOES NOT EXIST IS A FAILURE, because its zero would prove nothing.
+      const missing = runScan([secretFile, join(dir, 'no-such-directory')]);
+      assert(missing.code !== 0 && missing.out.trim() === '',
+        `${gatePath}: a root that does not exist reported "${missing.out.trim()}"`);
+    }
+
+    // AND BOTH GATES MUST ACT ON THE FAILURE RATHER THAN ON THE NUMBER. A `$(...)` capture of a failed
+    // program yields the empty string, and `test "" -eq 0` is a shell error rather than a refusal — so the
+    // call sites are checked where they are written.
+    for (const gatePath of [
+      'deploy/projection-torbox-real-gate.sh',
+      'deploy/projection-torbox-mount-gate.sh',
+      'deploy/projection-real-provider-gate.sh',
+    ]) {
+      const gate = repoFile(gatePath);
+      for (const [, assignment] of gate.matchAll(/^([A-Z_]+="\$\(node "\$REL\/scan\.cjs"[^\n]*)$/gm)) {
+        assert(/\\$/.test(assignment as string),
+          `${gatePath}: a scan.cjs call site does not continue into a failure branch: ${assignment}`);
+      }
+      const sites = [...gate.matchAll(/node "\$REL\/scan\.cjs"/g)].length;
+      const guarded = [...gate.matchAll(/could not be made decisive/g)].length;
+      assert(sites > 0 && sites === guarded,
+        `${gatePath}: ${sites} scan call site(s) but ${guarded} guarded against a non-decisive scan`);
+    }
+  });
+
+  await test('THE RESOLVER PROBE IS BOUNDED, SO A RESOLVER THAT NEVER ANSWERS CANNOT HANG THE GATE', async () => {
+    // THE DEFECT. `http.request` applies no default timeout in Node. Both TorBox gates probed the loopback
+    // resolver with one and waited for a response for ever — so a resolver that accepted the connection and
+    // then stalled left the gate hung rather than failed. A gate that hangs is worse than one that fails,
+    // because nothing reports a hang: no assertion runs, no cleanup runs, and the operator sees a cursor.
+    //
+    // The TRANSPORT probe shipped beside this one already bounded itself at 3 s, which is how the omission
+    // was visible at all. Proved below by running the shipped program against a listener that accepts and
+    // never responds.
+    // THE PROBE MUST BE RUN ASYNCHRONOUSLY. `spawnSync` blocks this process's event loop, so an in-process
+    // listener could never answer the child and every case would look like the hung one — which would make
+    // this test pass for the wrong reason and prove nothing about the deadline.
+    const runProbe = (script: string, port: number): Promise<{ code: number | null; signal: string | null }> =>
+      new Promise((resolve) => {
+        const child = spawn(process.execPath, [script, String(port)], { stdio: 'ignore' });
+        const killer = setTimeout(() => child.kill('SIGKILL'), 30_000);
+        child.on('exit', (code, signal) => { clearTimeout(killer); resolve({ code, signal }); });
+      });
+
+    const listening = async (handler: RequestListener): Promise<
+    { port: number; close: () => Promise<void> }> => {
+      const server = createServer(handler);
+      await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve); });
+      return {
+        port: (server.address() as AddressInfo).port,
+        close: () => new Promise<void>((resolve) => { server.close(() => resolve()); }),
+      };
+    };
+
+    for (const gatePath of [
+      'deploy/projection-torbox-real-gate.sh',
+      'deploy/projection-torbox-mount-gate.sh',
+    ]) {
+      const { script } = extract(gatePath, 'probe-resolver.cjs');
+
+      // A 401 IS THE HEALTHY ANSWER: the probe presents no credential on purpose.
+      const refusing = await listening((_req, res) => { res.writeHead(401); res.end(); });
+      assert((await runProbe(script, refusing.port)).code === 0,
+        `${gatePath}: a resolver answering 401 must be reported healthy`);
+      await refusing.close();
+
+      // ANYTHING ELSE IS NOT. A resolver that answered an unauthenticated POST is worth failing over.
+      const permissive = await listening((_req, res) => { res.writeHead(200); res.end('{}'); });
+      assert((await runProbe(script, permissive.port)).code !== 0,
+        `${gatePath}: a resolver answering an unauthenticated POST 200 must fail the probe`);
+      const closedPort = permissive.port;
+      await permissive.close();
+
+      // A CLOSED PORT FAILS RATHER THAN HANGS.
+      assert((await runProbe(script, closedPort)).code !== 0,
+        `${gatePath}: a closed port must fail the probe`);
+
+      // THE CASE THE OLD PROBE COULD NOT SURVIVE: accepted, and never answered.
+      const stalling = await listening(() => { /* deliberately never responds */ });
+      const started = Date.now();
+      const result = await runProbe(script, stalling.port);
+      const elapsed = Date.now() - started;
+      await stalling.close();
+      assert(result.signal === null,
+        `${gatePath}: the probe had to be killed after ${elapsed}ms; it applies no deadline of its own`);
+      assert(result.code !== 0,
+        `${gatePath}: a resolver that never answered was reported healthy`);
+      assert(elapsed < 20_000,
+        `${gatePath}: the probe took ${elapsed}ms to give up, which is not a bound worth having`);
+    }
+  });
+
+  await test('THE MOUNT GATE REFUSES A CORPUS ON WHICH ITS "PAST 90%" READ WOULD NOT BE PAST 90%', () => {
+    // THE DIVERGENCE. The REAL gate's `verify.cjs` was corrected to COMPUTE its windows, because an operator
+    // chooses those sizes — see the test above. The MOUNT gate's copy still CLAMPS a fixed 64 KiB window back
+    // inside the object, which is the arithmetic that correction replaced:
+    //
+    //   below 655,360 bytes the clamp pulls the "past 90%" read BELOW 90%;
+    //   at 65,536 bytes or less it pulls it to offset ZERO, where it becomes byte-for-byte identical to the
+    //   backward read and the distinct-windows check FAILS A CORRECT MOUNT.
+    //
+    // THIS GATE'S CORPUS IS ITS OWN AND IS 8 MiB, so the defect is LATENT here rather than live — which is
+    // exactly why it survived the correction to its sibling. The cold pass depends on the shifted offsets
+    // staying where they are, so the fix is a refusal rather than new arithmetic: the gate now declines a
+    // corpus on which the window would not be what it is named, instead of reading below 90% in silence.
+    const oldClamp = (offset: number, length: number, size: number): number =>
+      Math.max(0, Math.min(offset, size - length));
+    assert(oldClamp(Math.floor(65_536 * 0.91), 65_536, 65_536) === 0,
+      'the old arithmetic must be shown to collapse the tail read onto offset zero');
+    assert(oldClamp(Math.floor(100_000 * 0.91), 65_536, 100_000) < Math.floor(100_000 * 0.9),
+      'and to pull it below the 90% line it is named for');
+
+    const { script } = extract('deploy/projection-torbox-mount-gate.sh', 'verify.cjs');
+    const SHIFT = 131_072;
+
+    const runAt = (size: number): { code: number; out: string } => {
+      const dir = mkdtempSync(join(tmpdir(), 'tbmountverify-'));
+      const mount = join(dir, 'mnt');
+      mkdirSync(mount);
+      writeFileSync(join(mount, 'object-1.bin'), objectBytes(`size-${size}`, 0, size));
+      const objectsPath = join(dir, 'objects.json');
+      writeFileSync(objectsPath, JSON.stringify([{
+        label: 'object-1', ref: REF_TORRENT, sizeBytes: size,
+        probeDigests: [{ offset: 0, length: 65_536, sha256: '0'.repeat(64) }],
+      }]), 'utf8');
+      return runNode(script, [objectsPath, mount, join(dir, 'reads.json'), String(SHIFT)]);
+    };
+
+    // THE SIZES THE OLD ARITHMETIC READ BELOW 90% ON ARE NOW REFUSED BY NAME rather than measured wrongly.
+    for (const size of [65_536, 100_000, 655_359]) {
+      const run = runAt(size);
+      assert(run.code !== 0,
+        `an object of ${size} bytes was accepted, and its "past 90%" read would not have been past 90%`);
+      assert(/past 90%|not past 90/.test(run.out),
+        `${size}: the refusal must name the property it could not honour, got: ${run.out.slice(0, 200)}`);
+    }
+
+    // AND THE CORPUS THE GATE ACTUALLY SHIPS STILL PASSES, so the refusal is a floor and not a wall.
+    const good = runAt(8 * 1024 * 1024);
+    assert(good.code === 0, `the gate's own 8 MiB corpus was refused: ${good.out.slice(0, 300)}`);
+
+    // THE SHIPPED CORPUS MUST STAY ABOVE THAT FLOOR, or the gate acquires the defect back by a corpus edit.
+    const gate = repoFile('deploy/projection-torbox-mount-gate.sh');
+    const declared = /^TB_SIZE=\$\(\((\d+) \* 1024 \* 1024\)\)$/m.exec(gate);
+    assert(declared !== null, 'the mount gate must declare its corpus size in one readable place');
+    assert(Number(declared[1]) * 1024 * 1024 >= 655_360,
+      `the shipped corpus is ${String(declared[1])} MiB, below the floor its own verify step now enforces`);
   });
 
   await test('this suite runs in the aggregate', () => {

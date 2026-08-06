@@ -105,12 +105,18 @@ cat > "$WORK/probe-resolver.cjs" <<'PROBE'
 //
 // A 401 IS THE HEALTHY ANSWER. The probe presents no credential on purpose: a resolver that answered
 // anything else to an unauthenticated request would be a resolver worth failing the gate over.
+//
+// AND IT IS BOUNDED, BECAUSE `http.request` IS NOT. Node applies no default timeout, so a resolver that
+// accepted the connection and never answered left this probe waiting for ever — and a gate that hangs is
+// worse than one that fails, because nothing reports a hang. Proved by running it against a listener that
+// accepts and never responds: it sat there until an external timeout killed it.
 const http = require('node:http');
 const port = Number(process.argv[2]);
 const req = http.request(
-  { host: '127.0.0.1', port, path: '/resolve', method: 'POST' },
-  (res) => process.exit(res.statusCode === 401 ? 0 : 1),
+  { host: '127.0.0.1', port, path: '/resolve', method: 'POST', timeout: 5000 },
+  (res) => { res.resume(); process.exit(res.statusCode === 401 ? 0 : 1); },
 );
+req.on('timeout', () => { req.destroy(); process.exit(1); });
 req.on('error', () => process.exit(1));
 req.end();
 PROBE
@@ -211,8 +217,32 @@ for (const object of objects) {
     expected: probe.length, match: ok, digestChecked: !cold, elapsedMs: got.elapsedMs });
 
   // 2. PAST 90%.
+  //
+  // THE CLAMP BELOW SILENTLY STOPS MEANING "PAST 90%" ON A SMALL ENOUGH OBJECT, so the precondition is
+  // asserted rather than assumed. `clampOffset` pulls the offset back to `size - 65536` to keep the window
+  // inside the object; that is at or beyond 90% of the object only while `0.1 * size >= 65536`, i.e. from
+  // 655,360 bytes up. Below that the read named "past 90%" happens below 90%, and at 65,536 bytes or less it
+  // lands on offset ZERO, where it becomes byte-for-byte identical to the backward read and the
+  // distinct-windows check FAILS A CORRECT MOUNT.
+  //
+  // THIS GATE'S OWN CORPUS IS 8 MiB AND HAS NEVER REACHED ANY OF THAT — the defect is latent here, and it is
+  // fixed by construction rather than by arithmetic because this gate's cold pass depends on the shifted
+  // offsets staying exactly where they are. The sibling real gate, whose sizes an OPERATOR chooses, computes
+  // the windows instead of clamping them. Here the corpus is the gate's, so the gate refuses a corpus that
+  // would make the window a lie.
+  if (object.sizeBytes < 655360) {
+    console.error('verify: object ' + object.label + ' is ' + object.sizeBytes + ' bytes; below 655360 the '
+      + '"past 90%" window clamps below 90% and can collide with the backward window. Refusing to report a '
+      + 'read as past 90% when it would not be.');
+    process.exit(2);
+  }
   const tailOffset = clampOffset(Math.floor(object.sizeBytes * 0.91) + shift, 65536, object.sizeBytes);
   const tailLength = Math.min(65536, object.sizeBytes - tailOffset);
+  if (tailOffset < Math.floor(object.sizeBytes * 0.9)) {
+    console.error('verify: the tail window for ' + object.label + ' starts at ' + tailOffset
+      + ', which is not past 90% of ' + object.sizeBytes);
+    process.exit(2);
+  }
   const tail = windowAt(path, tailOffset, tailLength);
   const tailOk = tail.bytes.length === tailLength;
   if (!tailOk) problems += 1;
@@ -221,7 +251,15 @@ for (const object of objects) {
     sha256: createHash('sha256').update(tail.bytes).digest('hex') });
 
   // 3. BACKWARDS, to an offset lower than the one just read.
-  const back = windowAt(path, clampOffset(shift, 65536, object.sizeBytes), 65536);
+  const backOffset = clampOffset(shift, 65536, object.sizeBytes);
+  // AND THE TWO WINDOWS MUST BE DISJOINT, or the distinctness check below compares overlapping bytes and
+  // proves nothing about the mount either way.
+  if (backOffset + 65536 > tailOffset) {
+    console.error('verify: the backward window for ' + object.label + ' ends at ' + (backOffset + 65536)
+      + ', past where the tail window starts (' + tailOffset + '); their distinctness would prove nothing');
+    process.exit(2);
+  }
+  const back = windowAt(path, backOffset, 65536);
   const backOk = back.bytes.length === 65536;
   if (!backOk) problems += 1;
   results.push({ label: object.label, kind: cold ? 'backward-cold' : 'backward', bytes: back.bytes.length,
@@ -243,11 +281,59 @@ VERIFY
 cat > "$WORK/scan.cjs" <<'SCAN'
 // Searches everything the run wrote for either secret. The needle arrives as a FILE PATH so it never enters
 // argv, and only a COUNT is printed -- never a match, never a line, never a filename.
-const { readFileSync, readdirSync, statSync, existsSync } = require('node:fs');
+//
+// THREE WAYS THIS PRINTED "NO LEAK" WITHOUT LOOKING, each found by RUNNING it rather than reading it:
+//
+//   - a needle shorter than 8 bytes skipped the walk entirely and printed 0. It is now REFUSED — the scan
+//     exits non-zero and prints no count at all, and the call site treats that as a gate failure;
+//   - any file larger than 64 MiB was skipped, so a secret written into a large log was invisible. The same
+//     value in a 32 MiB file was found and in a 64 MiB file was not;
+//   - a root that did not exist was walked in silence, so a misspelled path also printed 0.
+//
+// A ZERO THAT MEANS "DID NOT LOOK" IS INDISTINGUISHABLE FROM ONE THAT MEANS "DID NOT LEAK", and this is the
+// only measurement behind "neither secret reached disk". So the scan now FAILS CLOSED: it exits non-zero
+// rather than printing a number it cannot stand behind, and the gate treats that as a failure.
+//
+// THE COMPARISON IS ON BYTES, NOT ON DECODED TEXT. The haystack used to be decoded as latin1 while the needle
+// was decoded as utf8, so a secret carrying any non-ASCII byte could never have matched itself.
+const { openSync, readSync, closeSync, readFileSync, readdirSync, statSync, existsSync } = require('node:fs');
 const { join } = require('node:path');
 const [, , secretPath, ...roots] = process.argv;
-const needle = readFileSync(secretPath, 'utf8').trim();
+const needle = Buffer.from(readFileSync(secretPath, 'utf8').trim(), 'utf8');
+
+// A SHORT NEEDLE WOULD MATCH BY CHANCE, and a false positive here reads as a leak that did not happen. It is
+// REFUSED rather than skipped, because skipping it printed a zero that read as proof.
+if (needle.length < 8) {
+  console.error('scan: the secret is under 8 bytes, so a search for it could not be decisive; refusing to '
+    + 'report a count that would read as proof of no leak');
+  process.exit(2);
+}
+
+// READ IN BOUNDED CHUNKS, CARRYING ENOUGH TAIL THAT A NEEDLE STRADDLING A BOUNDARY IS STILL FOUND. There is
+// no size ceiling any more: memory is bounded by the chunk rather than by refusing to look at large files.
+const CHUNK = 4 * 1024 * 1024;
+const overlap = needle.length - 1;
+const buffer = Buffer.allocUnsafe(CHUNK + overlap);
+const containsNeedle = (path, size) => {
+  const fd = openSync(path, 'r');
+  try {
+    let carried = 0;
+    let position = 0;
+    while (position < size) {
+      const got = readSync(fd, buffer, carried, CHUNK, position);
+      if (got === 0) break;
+      position += got;
+      const filled = carried + got;
+      if (buffer.subarray(0, filled).includes(needle)) return true;
+      carried = Math.min(overlap, filled);
+      buffer.copy(buffer, 0, filled - carried, filled);
+    }
+    return false;
+  } finally { closeSync(fd); }
+};
+
 let hits = 0;
+let examined = 0;
 const walk = (dir) => {
   if (!existsSync(dir)) return;
   for (const name of readdirSync(dir)) {
@@ -255,13 +341,20 @@ const walk = (dir) => {
     let info;
     try { info = statSync(full); } catch { continue; }
     if (info.isDirectory()) { walk(full); continue; }
-    if (info.size > 64 * 1024 * 1024) continue;
-    let text;
-    try { text = readFileSync(full, 'latin1'); } catch { continue; }
-    if (text.includes(needle)) hits += 1;
+    let found;
+    // AN UNREADABLE FILE IS NOT AN EXAMINED ONE, so it cannot pad the count below out of a failure.
+    try { found = containsNeedle(full, info.size); } catch { continue; }
+    examined += 1;
+    if (found) hits += 1;
   }
 };
-if (needle.length >= 8) { for (const root of roots) walk(root); }
+for (const root of roots) walk(root);
+
+// A SCAN THAT OPENED NOTHING IS NOT A SCAN THAT FOUND NOTHING.
+if (examined === 0) {
+  console.error('scan: no file under any given root could be examined, so a zero here would prove nothing');
+  process.exit(3);
+}
 console.log(String(hits));
 SCAN
 
@@ -520,8 +613,13 @@ step "NEITHER SECRET, AND NO REFERENCE, REACHED ANYTHING THIS RUN WROTE"
 # ----------------------------------------------------------------------------------------------------------
 # "We do not log it" is a claim; this is a measurement. Both secrets are high-entropy values this run
 # generated, so a search for their exact bytes across everything written is decisive.
-CRED_HITS="$(node "$REL/scan.cjs" "$REL/inputs/torbox-credential" "$WORK/out" "$WORK/manifest" "$WORK/cache")"
-GATE_HITS="$(node "$REL/scan.cjs" "$REL/inputs/gate-secret" "$WORK/out" "$WORK/manifest" "$WORK/cache")"
+# AND A SCAN THAT COULD NOT BE DECISIVE IS A FAILURE, NOT A ZERO. `scan.cjs` exits non-zero when the secret
+# is too short to search for, or when it could not examine a single file — both of which used to print `0`
+# and be recorded as proof that nothing leaked.
+CRED_HITS="$(node "$REL/scan.cjs" "$REL/inputs/torbox-credential" "$WORK/out" "$WORK/manifest" "$WORK/cache")" \
+  || die "the TorBox-credential leak scan could not be made decisive; a count from it would prove nothing"
+GATE_HITS="$(node "$REL/scan.cjs" "$REL/inputs/gate-secret" "$WORK/out" "$WORK/manifest" "$WORK/cache")" \
+  || die "the gate-secret leak scan could not be made decisive; a count from it would prove nothing"
 test "$CRED_HITS" -eq 0 || die "the TorBox credential reached $CRED_HITS file(s) this run wrote"
 test "$GATE_HITS" -eq 0 || die "the gate secret reached $GATE_HITS file(s) this run wrote"
 
@@ -530,7 +628,8 @@ test "$GATE_HITS" -eq 0 || die "the gate secret reached $GATE_HITS file(s) this 
 for container in "$MOUNT_CONTAINER" "$RESOLVER_CONTAINER" "$FIXTURE_CONTAINER"; do
   docker logs "$container" > "$WORK/out/log-$container.txt" 2>&1 || true
 done
-LOG_CRED="$(node "$REL/scan.cjs" "$REL/inputs/torbox-credential" "$WORK/out")"
+LOG_CRED="$(node "$REL/scan.cjs" "$REL/inputs/torbox-credential" "$WORK/out")" \
+  || die "the container-log leak scan could not be made decisive; a count from it would prove nothing"
 test "$LOG_CRED" -eq 0 || die "the TorBox credential appears in a container log"
 if grep -qE 'torbox:(torrent|webdl|usenet):[0-9]+:[0-9]+' "$WORK/out/log-$RESOLVER_CONTAINER.txt"; then
   die "the resolver logged a stable reference"
