@@ -41,10 +41,15 @@ MOUNT_CONTAINER="projection-tbr-mount-$$"
 RESOLVER_CONTAINER="projection-tbr-resolver-$$"
 
 GATE_ROOT="$PWD/.projection-torbox-real-gate"
+REL_GATE_ROOT=".projection-torbox-real-gate"
 REL=".projection-torbox-real-gate/run-$$"
 WORK="$GATE_ROOT/run-$$"
 
 GATE_SKIP_STATUS=77
+
+# SET ONLY WHEN THE SUCCESS-PATH CLEANUP HAS RUN AND BEEN ASSERTED. Until then the EXIT trap is the only
+# thing that cleans up, which is what every failure path relies on.
+CLEANED=0
 
 # THE APPROVED PATH, AND THE ONLY PLACE THIS GATE EVER LOOKS. It does not search the filesystem for anything
 # that might be a credential, does not read one from the environment, and does not prompt.
@@ -67,11 +72,26 @@ export ADMIN_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:${PG_PORT}/c
 export DATABASE_URL="postgresql://app:app@127.0.0.1:${PG_PORT}/catalog"
 export PROJECTION_TORBOX_GATE_PG_PORT="$PG_PORT"
 
+# THE TRAP IS THE FAILURE PATH'S CLEANUP, AND IT CAN ONLY EVER REPORT.
+#
+# `projection_gate_report_cleanliness` explains why in its own comment: a non-zero return from an EXIT trap
+# overwrites the gate's exit status, so it would turn a failing run into a passing one. That left THIS gate —
+# the only one that ever contacts TorBox, and the one Phase 1 closes on — with no assertion at all about its
+# own leftovers: it could print `cleanup: 1 mountpoint left behind` and still exit 0. That is the
+# report-versus-assertion gap §6.5 of the acceptance plan exists to close, and the generic real-provider gate
+# closed it for itself and not for this one. So on the SUCCESS path this gate now cleans up explicitly,
+# ASSERTS the result through the same `real_provider cleanup` verdict, and sets CLEANED. The trap below is
+# unchanged for every path that leaves through `die`, where it must stay a report.
 cleanup() {
   docker rm -f "$RESOLVER_CONTAINER" >/dev/null 2>&1 || true
   docker rm -f "$MOUNT_CONTAINER" >/dev/null 2>&1 || true
   docker compose -f "$COMPOSE_FILE" down -v --remove-orphans >/dev/null 2>&1 || true
   docker network rm "$NETWORK" >/dev/null 2>&1 || true
+  if [ "${CLEANED:-0}" = "1" ]; then
+    # Already done and already ASSERTED. Repeating the report here would print a second, weaker statement
+    # about the same thing.
+    return 0
+  fi
   if [ -n "${WORK:-}" ]; then
     projection_gate_cleanup_run "$GATE_ROOT" "$WORK" "$VERIFY_IMAGE" || true
     projection_gate_report_cleanliness "$GATE_ROOT" "$WORK" || true
@@ -248,10 +268,39 @@ CONFIG
 
 cat > "$WORK/verify.cjs" <<'VERIFY'
 // Reads each object THROUGH THE MOUNT and compares against the digests the OPERATOR recorded outside it.
-const { openSync, readSync, closeSync, readFileSync, writeFileSync } = require('node:fs');
+const { openSync, readSync, closeSync, readFileSync, writeFileSync, lstatSync } = require('node:fs');
 const { createHash } = require('node:crypto');
 const [, , objectsPath, mountDir, out] = process.argv;
 const objects = JSON.parse(readFileSync(objectsPath, 'utf8'));
+
+// EVERY READ IS BOUNDED, BECAUSE A GATE THAT HANGS NEVER REPORTS.
+//
+// This program is the only place in this gate where a REAL provider is on the other end of a system call, and
+// it had no deadline of any kind: it recorded `elapsedMs` on every window and asserted nothing against it. A
+// CDN that accepted the connection and then stalled left the gate waiting, with no assertion, no cleanup and
+// no report — the same defect the resolver probe beside it was corrected for, in the one path that actually
+// carries provider bytes. `real-provider.ts` already names the ceiling (`MOUNT_READ_DEADLINE_MS`) and the
+// generic gate asserts it; this one now does too.
+//
+// IT IS THE SECOND OF TWO BOUNDS AND NOT THE ONLY ONE. A `readSync` already blocked inside the kernel cannot
+// be interrupted from here, so the gate ALSO runs this program under `timeout`; this check is what turns a
+// slow-but-finite read into a named failure instead of a number nobody looks at.
+//
+// THE SEAM CAN ONLY TIGHTEN, NEVER LOOSEN, WHICH IS WHY IT IS SAFE TO HAVE ONE. The offline suite executes
+// these shipped bytes and needs the deadline to bite; it cannot make an ordinary local read take two minutes
+// and it must not be reduced to string-matching the constant. So the environment may LOWER the ceiling and
+// can do nothing else: anything absent, unparseable, or at or above the built-in falls back to the built-in,
+// and a run that asks for an hour gets two minutes. A negative value is accepted precisely because it is
+// below every possible elapsed time and therefore bites deterministically rather than racing a fast disk.
+const DEADLINE_CEILING_MS = 120000;
+// AN EMPTY STRING IS ABSENT, NOT ZERO. `Number('')` is 0, so an exported-but-unset variable would silently
+// become the tightest possible deadline and fail every run — the opposite of a seam that can only tighten
+// SAFELY. Absent and blank both mean "the built-in".
+const requestedRaw = process.env.PROJECTION_GATE_READ_DEADLINE_MS;
+const requestedDeadline = requestedRaw === undefined || requestedRaw.trim() === ''
+  ? Number.NaN : Number(requestedRaw);
+const READ_DEADLINE_MS = Number.isFinite(requestedDeadline) && requestedDeadline < DEADLINE_CEILING_MS
+  ? requestedDeadline : DEADLINE_CEILING_MS;
 
 // THE WINDOW LENGTH GIVES WAY, NEVER THE OFFSET — and that is the repair.
 //
@@ -302,6 +351,33 @@ let problems = 0;
 for (const object of objects) {
   const path = mountDir + '/' + object.label + '.bin';
 
+  // LOOKUP AND STAT, BEFORE ANY READ — the half of "an ordinary regular file" that reading cannot prove.
+  //
+  // WHAT WENT UNASSERTED. This gate's whole claim is that a TorBox object becomes an ORDINARY FILE, and the
+  // only thing that had ever looked at the inode was a shell `ls /mnt/*.bin` used to decide the mount had
+  // appeared. Nothing checked the file's TYPE, so a symlink or a directory entry that happened to be
+  // readable would have passed; and nothing checked its SIZE, so a mount publishing every entry at the
+  // wrong length — the exact drift G7 asserts against on the media-server gates — was invisible here as
+  // long as the windows read through it still digested correctly. `lstat`, not `stat`, because `stat`
+  // follows a symlink and would answer for the target rather than for what is in the namespace.
+  let info;
+  try {
+    info = lstatSync(path);
+  } catch (error) {
+    problems += 1;
+    results.push({ label: object.label, kind: 'stat', match: false,
+      note: 'the object could not be looked up through the mount at all (' + error.code + ')' });
+    continue;
+  }
+  const regular = info.isFile();
+  const sizeAgrees = info.size === object.sizeBytes;
+  if (!regular || !sizeAgrees) problems += 1;
+  results.push({ label: object.label, kind: 'stat', match: regular && sizeAgrees,
+    regularFile: regular, size: info.size, expectedSize: object.sizeBytes });
+  // A SIZE THAT DISAGREES MAKES EVERY WINDOW BELOW MEANINGLESS, because the offsets are computed from the
+  // manifest size. Reading on would produce digests against windows of a different object.
+  if (!regular || !sizeAgrees) continue;
+
   // THE OPERATOR'S APPROVED WINDOWS, against digests recorded outside the mount before the run.
   for (const probe of object.probeDigests ?? []) {
     const got = windowAt(path, probe.offset, probe.length);
@@ -348,6 +424,16 @@ for (const object of objects) {
       note: 'the object is too small to hold two disjoint windows; distinctness is not asserted' });
   }
 }
+// AND EVERY READ FINISHED INSIDE THE DEADLINE. Recorded per window above and asserted here, once, so the
+// failure names the window rather than leaving a large number in a file for a reader to notice.
+const slow = results.filter((entry) => typeof entry.elapsedMs === 'number'
+  && entry.elapsedMs > READ_DEADLINE_MS);
+for (const entry of slow) {
+  problems += 1;
+  results.push({ label: entry.label, kind: 'deadline', match: false, of: entry.kind,
+    elapsedMs: entry.elapsedMs, budgetMs: READ_DEADLINE_MS });
+}
+
 writeFileSync(out, JSON.stringify({ results, problems }, null, 2) + '\n');
 console.log('  ' + results.length + ' read(s), ' + problems + ' problem(s)');
 process.exit(problems === 0 ? 0 : 1);
@@ -612,9 +698,13 @@ step "starting the resolver INSIDE the daemon's network namespace — no host po
 #
 # NOTE WHAT IS NOT PASSED: no --fixture-mode, so no origin override and no plaintext CDN link. This resolver
 # is pinned to the official TorBox origin and will refuse anything else.
+# THE CHECKOUT IS MOUNTED READ-ONLY. This is the one container on the host that holds the TorBox API key, and
+# it has no reason to be able to write to the repository it runs out of — the daemon beside it gets `:ro` on
+# everything for the same reason. It writes nothing: the run directory it reads its programs from is bound
+# separately and the only file it opens for writing is none.
 docker run -d --name "$RESOLVER_CONTAINER" \
   --network "container:$MOUNT_CONTAINER" \
-  -v "$PWD:/workspace" -w /workspace \
+  -v "$PWD:/workspace:ro" -w /workspace \
   -v "$WORK/inputs:/inputs:ro" \
   -e npm_config_update_notifier=false \
   "$NODE_IMAGE" ./node_modules/.bin/tsx src/ops/torbox-resolver-cli.ts serve \
@@ -662,25 +752,85 @@ test "$ready" -eq 1 || { logs_tail "$MOUNT_CONTAINER"; die "the mount never beca
 # ----------------------------------------------------------------------------------------------------------
 step "READING THE OPERATOR'S TORBOX OBJECTS AS ORDINARY FILES"
 # ----------------------------------------------------------------------------------------------------------
-node "$REL/verify.cjs" "$OBJECTS_FILE" "$WORK/mnt" "$REL/out/reads.json" \
-  || { logs_tail "$MOUNT_CONTAINER"; logs_tail "$RESOLVER_CONTAINER"; die "reads through the mount failed"; }
+# THE OUTER BOUND. `verify.cjs` asserts its own recorded elapsed times, but a `readSync` already blocked in
+# the kernel against a CDN that accepted the connection and then stalled cannot be interrupted from inside the
+# process that issued it. Without something above it, this step — the ONLY one in this gate where a real
+# provider is on the other end of a system call — could hang for ever, and a gate that hangs reports nothing
+# at all. `timeout` is required rather than optional: a host that cannot bound this read must not be told the
+# property was proven.
+command -v timeout >/dev/null 2>&1 \
+  || die "this host has no \`timeout\`, so the read through the mount could not be bounded. A gate that \
+cannot bound the one step that talks to a real provider must not report that step as proven"
+# IT IS SET ABOVE EVERY BOUNDED RUN, NOT NEAR ONE. This is the HANG detector; the per-window deadline inside
+# `verify.cjs` is what fails a slow read, and it must be the thing that fires first or a legitimate maximal
+# corpus would be killed here and reported as a hang. §2 allows 3 objects, each of which may carry several
+# approved windows plus a whole-object digest, and each window is separately bounded at 120 s — so the worst
+# BOUNDED run is minutes rather than seconds, and this ceiling sits an order of magnitude above it.
+READ_TIMEOUT_S="${PROJECTION_TORBOX_REAL_GATE_READ_TIMEOUT_S:-3600}"
+set +e
+timeout "$READ_TIMEOUT_S" node "$REL/verify.cjs" "$OBJECTS_FILE" "$WORK/mnt" "$REL/out/reads.json"
+read_status=$?
+set -e
+if [ "$read_status" -eq 124 ]; then
+  logs_tail "$MOUNT_CONTAINER"; logs_tail "$RESOLVER_CONTAINER"
+  die "the reads through the mount did not finish inside ${READ_TIMEOUT_S}s and were killed. A read that \
+never returns is a failure, not a run still in progress"
+fi
+if [ "$read_status" -ne 0 ]; then
+  logs_tail "$MOUNT_CONTAINER"; logs_tail "$RESOLVER_CONTAINER"
+  die "reads through the mount failed"
+fi
 
 # ----------------------------------------------------------------------------------------------------------
 step "the mount is READ-ONLY, checked as the unprivileged uid a media server runs as"
 # ----------------------------------------------------------------------------------------------------------
 TARGET="$(docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" sh -c 'ls /mnt/*.bin | head -1')"
-refused() { docker run --rm --user 65534:65534 --cap-drop ALL -v "$WORK/mnt:/mnt:rslave" \
-  "$VERIFY_IMAGE" sh -c "$1" >/dev/null 2>&1 && echo no || echo yes; }
-test "$(refused "echo x >> '$TARGET'")" = yes    || die "the mount accepted a write"
-test "$(refused "touch /mnt/created.bin")" = yes || die "the mount accepted a file creation"
-test "$(refused "rm -f '$TARGET'")" = yes        || die "the mount accepted an unlink"
-test "$(refused "chmod 777 '$TARGET'")" = yes    || die "the mount accepted a chmod"
+# AN EMPTY TARGET MAKES THREE OF THE FOUR REFUSALS BELOW VACUOUS. `echo x >> ''`, `rm -f ''` and `chmod 777 ''`
+# all fail for having no operand, which the probe below would read as "the mount refused it" — three passes
+# against a path that was never named. The listing that produced it is asserted rather than assumed.
+case "$TARGET" in
+  /mnt/*.bin) : ;;
+  *) die "no object could be listed through the mount, so the read-only refusals below would be asserted \
+against no path at all" ;;
+esac
+# THREE-VALUED, FOR THE REASON `probe-reachable.cjs` IS. This used to be `docker run … && echo no || echo yes`,
+# which reports a REFUSAL for every non-zero exit — including the ones that mean the measurement never
+# happened. `docker run` returns 125 when the daemon refuses the run, 126 when the entrypoint is not
+# executable and 127 when it is not found, so a broken image, a missing device or a Docker outage produced
+# exactly the exit code the gate read as "the mount refused the write". All four assertions could pass without
+# the mount being consulted once, which is the same unfalsifiable pass the `wget` reachability probe was
+# corrected for. Now: 0 is ACCEPTED and fails the gate, 125/126/127 is UNMEASURED and fails the gate loudly,
+# and anything else is the refusal the kernel actually returned.
+mount_refuses() {
+  set +e
+  docker run --rm --user 65534:65534 --cap-drop ALL -v "$WORK/mnt:/mnt:rslave" \
+    "$VERIFY_IMAGE" sh -c "$2" >/dev/null 2>&1
+  _status=$?
+  set -e
+  case "$_status" in
+    0) die "the mount accepted $1" ;;
+    125|126|127) die "the mount's refusal of $1 could not be measured: the probe container itself failed \
+(exit $_status). A gate that could not take the measurement must not report the property as proven" ;;
+    *) : ;;
+  esac
+}
+mount_refuses "a write"           "echo x >> '$TARGET'"
+mount_refuses "a file creation"   "touch /mnt/created.bin"
+mount_refuses "an unlink"         "rm -f '$TARGET'"
+mount_refuses "a chmod"           "chmod 777 '$TARGET'"
 
 # ----------------------------------------------------------------------------------------------------------
 step "NO SECRET AND NO REFERENCE REACHED ANYTHING THIS RUN WROTE"
 # ----------------------------------------------------------------------------------------------------------
+# THE CAPTURE IS ASSERTED, BECAUSE EVERY CHECK BELOW READS WHAT IT WROTE. `docker logs … || true` meant a
+# capture that failed for any reason left an EMPTY file, and an empty file contains no secret and no
+# reference — so both the leak scan and the reference grep would have reported the property proven over a
+# file the run never managed to write. That is the same "a zero that means did not look" defect `scan.cjs`
+# itself was corrected for, one layer up from it.
 for container in "$MOUNT_CONTAINER" "$RESOLVER_CONTAINER"; do
-  docker logs "$container" > "$WORK/out/log-$container.txt" 2>&1 || true
+  docker logs "$container" > "$WORK/out/log-$container.txt" 2>&1 \
+    || die "the log of $container could not be captured, so nothing below could examine it and a clean \
+result from this step would mean only that there was nothing to look at"
 done
 # AND A SCAN THAT COULD NOT BE DECISIVE IS A FAILURE, NOT A ZERO. `scan.cjs` exits non-zero when the secret
 # is too short to search for, or when it could not examine a single file — both of which used to print `0`
@@ -691,9 +841,45 @@ GATE_HITS="$(node "$REL/scan.cjs" "$REL/inputs/gate-secret" "$WORK/out" "$WORK/m
   || die "the gate-secret leak scan could not be made decisive; a count from it would prove nothing"
 test "$CRED_HITS" -eq 0 || die "the TorBox credential reached $CRED_HITS file(s) this run wrote"
 test "$GATE_HITS" -eq 0 || die "the gate secret reached $GATE_HITS file(s) this run wrote"
-if grep -qE 'torbox:(torrent|webdl|usenet):[0-9]+:[0-9]+' "$WORK/out/log-$RESOLVER_CONTAINER.txt"; then
-  die "the resolver logged a stable reference"
-fi
+# BOTH LOGS, NOT ONE. This step's own heading says no reference reached anything this run wrote, and the
+# check behind it looked at exactly one file: the resolver's. The DAEMON holds the same reference — it is the
+# `objectRef` it POSTs on every resolution and the source string it carries for the whole run — and its log
+# was never examined for it at all. The other files this run writes carry the reference BY CONSTRUCTION (the
+# register batch and the published manifest are what put it into the product), so the logs are exactly the
+# right scope: the two places it must never appear and the two places it plausibly could.
+for container in "$MOUNT_CONTAINER" "$RESOLVER_CONTAINER"; do
+  if grep -qE 'torbox:(torrent|webdl|usenet):[0-9]+:[0-9]+' "$WORK/out/log-$container.txt"; then
+    die "a stable reference was logged by $container"
+  fi
+done
+
+# THE PROVIDER WAS ACTUALLY CONTACTED, AND EXACTLY AS OFTEN AS IT SHOULD HAVE BEEN.
+#
+# WHAT NEITHER HALF OF THIS WAS ASSERTED BY. Nothing in this gate required a resolution to have HAPPENED.
+# Every ceiling here is satisfied by a run that contacted nothing — that is why the generic gate asserts a
+# positive byte count — and while the digest comparison makes a fabricated pass very hard, "hard" is not an
+# assertion. And nothing bounded how often the daemon resolved: a data plane that re-minted access material
+# for every window would have read the same correct bytes and passed, while spending the operator's metered
+# rate limit once per read and holding a fresh signed URL per read.
+#
+# THE RESOLVER ALREADY EMITS EXACTLY THE RIGHT LINE, and it carries a verb, a kind and an attempt count and
+# nothing else — no reference, no URL, no token. Counting it costs no new instrumentation and no new place for
+# a secret to land. One resolution per OBJECT is the whole budget: TorBox opens a link for three hours, the
+# adapter treats it as good for two, and this run is seconds long, so every read after the first must be
+# served from the lease the first one established. That is the single-flight and lease-caching contract
+# G24-G26 prove against the fake endpoint, observed here against the real one.
+RESOLUTIONS="$(grep -cE 'torbox-resolver: resolved a (torrent|webdl|usenet) reference in [0-9]+ attempt' \
+  "$WORK/out/log-$RESOLVER_CONTAINER.txt" || true)"
+OBJECT_COUNT="$(node "$REL/jq.cjs" objects < "$WORK/out/register.json")"
+test "$RESOLUTIONS" -ge 1 \
+  || die "the resolver never resolved anything, so TorBox was never contacted and every assertion above is \
+about bytes that came from somewhere else"
+test "$RESOLUTIONS" -le "$OBJECT_COUNT" \
+  || die "the daemon resolved $RESOLUTIONS time(s) for $OBJECT_COUNT object(s); access material is valid for \
+hours and every read after the first must reuse it, so more than one resolution per object is a resolution \
+storm against a metered endpoint"
+echo "  the provider was contacted: $RESOLUTIONS resolution(s) for $OBJECT_COUNT object(s), and every"
+echo "  subsequent read reused the lease rather than minting a fresh signed URL"
 # THE TORBOX KEY WAS NEVER IN THE DAEMON'S CONTAINER AT ALL, which is stronger than it not being logged.
 if docker exec "$MOUNT_CONTAINER" ls /var/lib/projectiond/inputs/torbox-credential >/dev/null 2>&1; then
   die "the TorBox credential is present inside the daemon container"
@@ -705,3 +891,58 @@ echo
 echo "TORBOX REAL-PROVIDER GATE PASSED."
 echo "  The operator's objects were read as ordinary read-only files through a FUSE mount, resolved by a"
 echo "  loopback-only resolver that holds the TorBox API key the daemon never sees."
+
+# ----------------------------------------------------------------------------------------------------------
+step "CLEANUP — a success condition of this run, not a report about it"
+# ----------------------------------------------------------------------------------------------------------
+# THE ORDER IS THE POINT, AND PRESERVING THE EVIDENCE IS PART OF THE PRECONDITION RATHER THAN A COURTESY.
+#
+# The report above is already printed. This step is about to DELETE the run directory, and that directory is
+# the only place this run's evidence has ever existed: `reads.json` is the entire record of what was read
+# through the mount and how long each window took. A passing run of this gate previously left NOTHING behind
+# — every artifact justifying the verdict was removed by the EXIT trap — so "3/3 consecutive runs" was a
+# claim with no reproducible substrate.
+#
+# SO EVERY STEP OF THE COPY IS CHECKED, exactly as the generic real-provider gate's is: the source must exist
+# and be non-empty, the copy must succeed, and the copy must be byte-identical to what the run wrote. Any of
+# those failing ends the run non-zero BEFORE anything is deleted.
+#
+# `reads.json` IS SAFE TO KEEP. It carries operator-chosen labels, window geometry, byte counts, elapsed
+# times and match booleans — no reference, no URL, no filename and no digest of anything but a window the
+# operator already recorded outside the mount.
+EVIDENCE_DIR="$GATE_ROOT/evidence"
+mkdir -p "$EVIDENCE_DIR" \
+  || die "the evidence directory could not be created, and the run directory is about to be deleted; \
+refusing to destroy the only copy of this run's evidence"
+
+copy_evidence() {
+  test -s "$WORK/$1" \
+    || die "the run wrote no $1, so there is no evidence to preserve and nothing to stand behind"
+  cp "$WORK/$1" "$EVIDENCE_DIR/$2" \
+    || die "$1 could not be copied out of the run directory, which is about to be deleted"
+  cmp -s "$WORK/$1" "$EVIDENCE_DIR/$2" \
+    || die "the preserved copy of $1 does not match what the run wrote"
+}
+
+copy_evidence "out/reads.json" "reads-$$.json"
+echo "  evidence kept at $REL_GATE_ROOT/evidence/reads-$$.json"
+
+# AND NOW THE ASSERTION THE EXIT TRAP CANNOT MAKE. It is reached only when every phase before it succeeded, so
+# it cannot mask an earlier failure; and it runs after the evidence is out, so requiring the run directory to
+# be gone cannot cost the operator the record that justifies the verdict. The mountpoint half keeps §6.0's
+# three-valued treatment — a host that cannot enumerate its mounts skips it loudly — while the directory half
+# is unconditional, because every host can answer whether a directory exists.
+projection_gate_cleanup_run "$GATE_ROOT" "$WORK" "$VERIFY_IMAGE" || true
+
+OWN_MOUNTS_LEFT="$(projection_gate_mounts_under "$WORK")"
+OWN_DIR_PRESENT=false
+[ -d "$WORK" ] && OWN_DIR_PRESENT=true
+
+if npx tsx src/ops/projection-real-provider-cli.ts cleanup \
+  --mountpoints "$OWN_MOUNTS_LEFT" --run-directory-present "$OWN_DIR_PRESENT"; then
+  # THE TRAP HAS NOTHING LEFT TO DO, and saying so keeps its report from contradicting this assertion.
+  CLEANED=1
+else
+  die "the run cleaned up after itself incompletely; a gate that leaves its run directory or a mountpoint \
+behind is how the NEXT run inherits a namespace and passes for the wrong reason"
+fi

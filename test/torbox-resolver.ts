@@ -1,4 +1,6 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync,
+} from 'node:fs';
 import { createServer, type RequestListener } from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -1754,6 +1756,335 @@ async function main(): Promise<void> {
     assert(declared !== null, 'the mount gate must declare its corpus size in one readable place');
     assert(Number(declared[1]) * 1024 * 1024 >= 655_360,
       `the shipped corpus is ${String(declared[1])} MiB, below the floor its own verify step now enforces`);
+  });
+
+  // -------------------------------------------------------------------------------------------------------
+  // THE REAL RUN — what the first genuine TorBox run exposed in the gate that was supposed to measure it
+  // -------------------------------------------------------------------------------------------------------
+  //
+  // EVERY TEST BELOW PINS A DEFECT FOUND BY RUNNING THIS GATE AGAINST A REAL TORBOX ACCOUNT, and every one of
+  // them fails against `6c900f4` and passes after. They share one shape: the gate made a claim in a step
+  // heading or a comment, and the measurement underneath either could not fail, was never taken, or was taken
+  // over the wrong scope. None of them moves a threshold.
+
+  await test('THE REAL GATE STATS THE OBJECT, SO AN ORDINARY FILE IS PROVED AND NOT ASSUMED', () => {
+    // THE DEFECT. This gate's whole claim is that a TorBox object becomes an ORDINARY FILE, and nothing had
+    // ever looked at the inode: the only `stat`-shaped thing in the run was a shell `ls /mnt/*.bin` used to
+    // decide the mount had appeared. So a namespace publishing entries at the wrong LENGTH — the drift G7
+    // asserts against on every media-server gate — passed here as long as the windows still digested, and a
+    // SYMLINK out of the mount passed outright, because `openSync` follows one.
+    const { script } = extract('deploy/projection-torbox-real-gate.sh', 'verify.cjs');
+    const SIZE_ON_DISK = 800_000;
+
+    const stage = (build: (mount: string) => void, declaredSize: number): { code: number; out: string;
+      record: { problems: number; results: { kind: string; match: boolean; size?: number }[] } | undefined } => {
+      const dir = mkdtempSync(join(tmpdir(), 'tbstat-'));
+      const mount = join(dir, 'mnt');
+      mkdirSync(mount);
+      build(mount);
+      const objectsPath = join(dir, 'objects.json');
+      writeFileSync(objectsPath, JSON.stringify([
+        { label: 'object-1', ref: REF_TORRENT, sizeBytes: declaredSize },
+      ]), 'utf8');
+      const out = join(dir, 'reads.json');
+      const run = runNode(script, [objectsPath, mount, out]);
+      return { ...run, record: existsSync(out)
+        ? JSON.parse(readFileSync(out, 'utf8')) as never : undefined };
+    };
+
+    // A CORRECT MOUNT STILL PASSES, and records the stat it took.
+    const good = stage((mount) => {
+      writeFileSync(join(mount, 'object-1.bin'), objectBytes('stat-ok', 0, SIZE_ON_DISK));
+    }, SIZE_ON_DISK);
+    assert(good.code === 0, `a correct object was refused: ${good.out.slice(0, 300)}`);
+    assert(good.record?.results.some((entry) => entry.kind === 'stat' && entry.match) === true,
+      'a passing run must record the stat it took, or the assertion is unreadable from the evidence');
+
+    // A LENGTH THAT DISAGREES WITH THE MANIFEST FAILS. It is LARGER on disk than declared on purpose: a
+    // shorter file already failed the byte counts, so only the larger case proves the stat is what caught it.
+    const wrongSize = stage((mount) => {
+      writeFileSync(join(mount, 'object-1.bin'), objectBytes('stat-big', 0, SIZE_ON_DISK + 4096));
+    }, SIZE_ON_DISK);
+    assert(wrongSize.code !== 0,
+      'an object published at a length the manifest does not declare was accepted');
+    assert(wrongSize.record?.results.some((entry) => entry.kind === 'stat' && !entry.match) === true,
+      'and the failure was not attributed to the stat');
+
+    // A SYMLINK IS NOT AN ORDINARY FILE, even when reading through it returns exactly the right bytes.
+    if (process.platform !== 'win32') {
+      const symlinked = stage((mount) => {
+        const real = join(mount, 'elsewhere.dat');
+        writeFileSync(real, objectBytes('stat-ok', 0, SIZE_ON_DISK));
+        symlinkSync(real, join(mount, 'object-1.bin'));
+      }, SIZE_ON_DISK);
+      assert(symlinked.code !== 0,
+        'a symlink whose target held exactly the right bytes was accepted as an ordinary file');
+    }
+  });
+
+  await test('THE REAL GATE\'S READS ARE BOUNDED, SO A STALLED CDN FAILS IT RATHER THAN HANGING IT', () => {
+    // THE DEFECT, AND IT IS THE ONE §6.11 RECORDED FOR THE RESOLVER PROBE, IN THE READ PATH INSTEAD. This
+    // program is the only place in this gate where a real provider sits behind a system call, and it had no
+    // deadline of any kind: it recorded `elapsedMs` on every window and asserted nothing against it. A CDN
+    // that accepted the connection and then stalled left the gate waiting for ever — no assertion, no
+    // cleanup, no report — and a gate that hangs is worse than one that fails, because nothing reports a hang.
+    const { script } = extract('deploy/projection-torbox-real-gate.sh', 'verify.cjs');
+    const dir = mkdtempSync(join(tmpdir(), 'tbdead-'));
+    const mount = join(dir, 'mnt');
+    mkdirSync(mount);
+    writeFileSync(join(mount, 'object-1.bin'), objectBytes('deadline', 0, 800_000));
+    const objectsPath = join(dir, 'objects.json');
+    writeFileSync(objectsPath, JSON.stringify([
+      { label: 'object-1', ref: REF_TORRENT, sizeBytes: 800_000 },
+    ]), 'utf8');
+
+    const runWith = (deadline: string | undefined): { code: number; out: string } => {
+      const env = { ...process.env };
+      if (deadline === undefined) delete env.PROJECTION_GATE_READ_DEADLINE_MS;
+      else env.PROJECTION_GATE_READ_DEADLINE_MS = deadline;
+      const result = spawnSync(process.execPath, [script, objectsPath, mount, join(dir, 'reads.json')],
+        { encoding: 'utf8', env });
+      return { code: result.status ?? -1, out: `${result.stdout}${result.stderr}` };
+    };
+
+    // WITH THE CEILING LOWERED BELOW ANY POSSIBLE READ, every window is over its deadline and the run fails.
+    // This executes the SHIPPED bytes; it does not read the constant out of them. The value is negative so
+    // that it bites deterministically: a local 64 KiB read can genuinely take 0 ms, and a 0 ms budget would
+    // then be a race against the page cache rather than a test.
+    const tight = runWith('-1');
+    assert(tight.code !== 0,
+      'with the deadline at zero the shipped verify program still reported no problems, so it asserts '
+      + 'nothing against the elapsed times it records');
+    const tightRecord = JSON.parse(readFileSync(join(dir, 'reads.json'), 'utf8')) as {
+      results: { kind: string; budgetMs?: number }[] };
+    assert(tightRecord.results.some((entry) => entry.kind === 'deadline'),
+      'and the failure was not attributed to a deadline');
+
+    // THE SEAM CAN ONLY TIGHTEN. A run that asks for an hour gets the built-in two minutes, so nothing in an
+    // environment can widen the ceiling a real run is held to.
+    const loosened = runWith(String(60 * 60 * 1000));
+    assert(loosened.code === 0, 'an ordinary read failed under a loosened deadline, which should be capped');
+    const loosenedRecord = JSON.parse(readFileSync(join(dir, 'reads.json'), 'utf8')) as {
+      results: { kind: string; budgetMs?: number }[] };
+    assert(!loosenedRecord.results.some((entry) => entry.kind === 'deadline'),
+      'a loosened deadline must simply be ignored');
+    for (const bad of ['not-a-number', '']) {
+      assert(runWith(bad).code === 0, `an unparseable deadline (${bad}) must fall back, not crash`);
+    }
+    assert(runWith(undefined).code === 0, 'and the gate\'s own run, which sets nothing, must pass');
+
+    // AND THE GATE ITSELF NEVER SETS IT, so the seam cannot be reached by running the gate.
+    const gate = repoFile('deploy/projection-torbox-real-gate.sh');
+    assert(!/PROJECTION_GATE_READ_DEADLINE_MS=/.test(gate),
+      'the gate sets the test seam itself, which would make the deadline configurable by a real run');
+
+    // THE IN-PROCESS DEADLINE CANNOT INTERRUPT A `readSync` ALREADY BLOCKED IN THE KERNEL, so the gate wraps
+    // the step in `timeout` as well, and treats its 124 as a failure rather than as an unknown status.
+    assert(/command -v timeout/.test(gate) && /timeout "\$READ_TIMEOUT_S" node "\$REL\/verify\.cjs"/.test(gate),
+      'the read step is not bounded from outside, so a wedged read still hangs the gate');
+    assert(/read_status" -eq 124/.test(gate),
+      'and a killed read is not distinguished from any other failure');
+  });
+
+  await test('THE REAL GATE\'S READ-ONLY PROBE CANNOT REPORT A REFUSAL IT NEVER MEASURED', () => {
+    // THE DEFECT, AND IT IS THE `wget` DEFECT AGAIN. The four read-only assertions ran
+    // `docker run … && echo no || echo yes` and read EVERY non-zero exit as "the mount refused it". `docker
+    // run` answers 125 when the daemon refuses the run, 126 when the entrypoint is not executable and 127
+    // when it is not found — so a broken image, a missing device or a Docker outage produced exactly the exit
+    // code the gate read as proof that the mount is read-only. All four could pass without the mount being
+    // consulted once.
+    if (process.platform === 'win32') return;
+    const gate = repoFile('deploy/projection-torbox-real-gate.sh');
+    const start = gate.indexOf('mount_refuses() {');
+    assert(start !== -1, 'the gate no longer defines mount_refuses');
+    const body = gate.slice(start, gate.indexOf('\n}\n', start) + 3);
+
+    // The shipped function, executed against a stub `docker` that exits with whatever it is told to.
+    const drive = (dockerExit: number): { code: number; out: string } => {
+      const dir = mkdtempSync(join(tmpdir(), 'tbrefuse-'));
+      const bin = join(dir, 'bin');
+      mkdirSync(bin);
+      writeFileSync(join(bin, 'docker'), `#!/bin/sh\nexit ${dockerExit}\n`);
+      chmodSync(join(bin, 'docker'), 0o755);
+      const harness = join(dir, 'harness.sh');
+      writeFileSync(harness,
+        'set -euo pipefail\n'
+        + 'die() { echo "GATE FAILED: $*" >&2; exit 1; }\n'
+        + 'WORK=/nonexistent\nVERIFY_IMAGE=stub\n'
+        + `${body}\n`
+        + 'mount_refuses "a write" "echo x >> /mnt/object-1.bin"\n'
+        + 'echo REFUSED-AND-CONTINUED\n');
+      const result = spawnSync('bash', [harness], {
+        encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` },
+      });
+      return { code: result.status ?? -1, out: `${result.stdout}${result.stderr}` };
+    };
+
+    // 0 — THE MOUNT ACCEPTED IT. The one outcome that must fail the gate as a data-plane defect.
+    const accepted = drive(0);
+    assert(accepted.code !== 0, 'a mount that ACCEPTED the write was not failed');
+    assert(/accepted a write/.test(accepted.out), 'and the failure did not name what was accepted');
+
+    // 125/126/127 — THE PROBE ITSELF FAILED. Unmeasured, and unmeasured is not a pass.
+    for (const broken of [125, 126, 127]) {
+      const unmeasured = drive(broken);
+      assert(unmeasured.code !== 0,
+        `docker exiting ${broken} was read as the mount refusing the write, which is the defect`);
+      assert(/could not be measured/.test(unmeasured.out),
+        `and exit ${broken} did not say the measurement never happened`);
+    }
+
+    // ANY OTHER NON-ZERO — the refusal the kernel actually returned, which is what the gate is looking for.
+    const refused = drive(1);
+    assert(refused.code === 0 && /REFUSED-AND-CONTINUED/.test(refused.out),
+      'a genuine refusal (exit 1) did not let the gate continue');
+
+    // AND THE OLD INSTRUMENT IS GONE, so the three-valued one cannot be bypassed by the shape beside it.
+    // Matched on the SHAPES rather than on the prose: the comment above the replacement quotes the defect
+    // it replaced, and a test that searched for that sentence would fail on the fix that removed it.
+    assert(!/^refused\(\) \{/m.test(gate),
+      'the two-valued refusal probe is still defined in this gate');
+    assert(!/\$\(refused /.test(gate), 'and something still calls it');
+  });
+
+  await test('THE REAL GATE COUNTS THE RESOLUTIONS THE SHIPPED RESOLVER ACTUALLY LOGS', async () => {
+    // TWO THINGS WERE ASSERTED BY NOTHING, AND THEY ARE OPPOSITE HALVES OF ONE MEASUREMENT.
+    //
+    // Nothing required a resolution to have HAPPENED: every ceiling in this gate is satisfied by a run that
+    // contacted nothing, which is exactly why the generic gate asserts a positive byte count. And nothing
+    // bounded how OFTEN the daemon resolved: a data plane that re-minted access material for every window
+    // would read the same correct bytes, pass, and spend the operator's metered rate limit once per read.
+    //
+    // THE PATTERN IS PINNED TO THE SERVICE'S REAL OUTPUT RATHER THAN TO A STRING SOMEBODY BELIEVED IT EMITS.
+    // A measurement that greps for a log line is only a measurement while that line exists; renaming it would
+    // silently turn the count into a constant zero, and the gate would then fail closed on ">= 1" — but only
+    // if the pattern is proved against what the shipped service really writes. So it is.
+    const gate = repoFile('deploy/projection-torbox-real-gate.sh');
+    const declared = /grep -cE '([^']+)' \\\n\s+"\$WORK\/out\/log-\$RESOLVER_CONTAINER\.txt"/.exec(gate);
+    assert(declared !== null, 'the gate no longer counts resolutions out of the resolver log');
+    const pattern = new RegExp(declared[1] as string);
+
+    const captured: string[] = [];
+    const realLog = console.log;
+    const live = await harness();
+    try {
+      console.log = (...args: unknown[]): void => { captured.push(args.map(String).join(' ')); };
+      const resolved = await askResolver(live.resolverUrl, REF_TORRENT);
+      console.log = realLog;
+      assert(resolved.status === 200, 'the fixture resolution did not succeed');
+    } finally { console.log = realLog; await live.close(); }
+
+    const lines = captured.filter((line) => pattern.test(line));
+    assert(lines.length === 1,
+      `the gate's own pattern matched ${lines.length} of the shipped resolver's ${captured.length} log `
+      + 'line(s) for one successful resolution; the count it computes is therefore not the count of '
+      + 'resolutions');
+    // AND IT MATCHES NOTHING ELSE THE SERVICE SAYS, or a refusal would inflate the count.
+    assert(!captured.filter((line) => !lines.includes(line)).some((line) => pattern.test(line)),
+      'the pattern also matches a line that is not a successful resolution');
+
+    // BOTH BOUNDS ARE PRESENT AND BOTH ARE HARD.
+    assert(/RESOLUTIONS" -ge 1/.test(gate),
+      'the gate does not require that the provider was contacted at all');
+    assert(/RESOLUTIONS" -le "\$OBJECT_COUNT"/.test(gate),
+      'the gate does not bound resolutions to one per object, so a resolution storm would pass');
+  });
+
+  await test('THE REAL GATE FAILS CLOSED ON A LOG IT COULD NOT CAPTURE, AND CHECKS BOTH OF THEM', () => {
+    // TWO DEFECTS IN ONE STEP, BOTH OF THE "A ZERO THAT MEANS DID NOT LOOK" KIND `scan.cjs` WAS CORRECTED FOR.
+    //
+    // The capture was `docker logs … || true`, so a capture that failed left an EMPTY file — and an empty
+    // file holds no secret and no reference, so the leak scan and the reference grep both reported the
+    // property proven over a file the run never managed to write.
+    //
+    // And the reference grep looked at exactly ONE file, the resolver's, under a step heading that says no
+    // reference reached anything this run wrote. The DAEMON holds the same reference: it is the `objectRef`
+    // it POSTs on every resolution and the source string it carries all run, and its log was never examined.
+    const gate = repoFile('deploy/projection-torbox-real-gate.sh');
+    const step = gate.slice(gate.indexOf('NO SECRET AND NO REFERENCE REACHED ANYTHING THIS RUN WROTE'));
+
+    assert(!/docker logs "\$container" > "\$WORK\/out\/log-\$container\.txt" 2>&1 \|\| true/.test(step),
+      'a failed log capture is still swallowed, so every check below it can pass over an empty file');
+    assert(/die "the log of \$container could not be captured/.test(step),
+      'and the gate does not say why a capture it could not take is a failure');
+
+    const grepBlock = /for container in "\$MOUNT_CONTAINER" "\$RESOLVER_CONTAINER"; do\n\s+if grep -qE 'torbox:/
+      .test(step);
+    assert(grepBlock,
+      'the stable-reference check still covers only one container log, while claiming to cover everything '
+      + 'this run wrote');
+  });
+
+  await test('THE REAL GATE ASSERTS ITS OWN CLEANUP AND KEEPS THE EVIDENCE THAT JUSTIFIES IT', () => {
+    // THE DEFECT §6.11 CLOSED FOR THE GENERIC GATE AND NOT FOR THIS ONE. The only statement this gate ever
+    // made about its own leftovers came from `projection_gate_report_cleanliness` inside the EXIT trap, and
+    // that function's own comment explains that it can only ever REPORT: a non-zero return there overwrites
+    // the gate's exit status. So the gate Phase 1 closes on could print "1 mountpoint left behind" and exit
+    // 0 — and §6.5 records four dangling mountpoints from exactly that, each of which is how the NEXT run
+    // inherits a namespace and passes for the wrong reason.
+    //
+    // AND A PASSING RUN LEFT NOTHING BEHIND AT ALL. `reads.json` is the whole record of what was read through
+    // the mount, it lives only in the run directory, and the run directory is deleted — so "three consecutive
+    // runs" was a claim with no substrate.
+    const gate = repoFile('deploy/projection-torbox-real-gate.sh');
+
+    assert(/^CLEANED=0$/m.test(gate) && /CLEANED=1/.test(gate),
+      'the gate has no success-path cleanup state, so the trap is still the only thing that looks');
+    assert(/if \[ "\$\{CLEANED:-0\}" = "1" \]; then/.test(gate),
+      'and the trap would report a second, weaker statement over the assertion');
+    assert(/projection-real-provider-cli\.ts cleanup \\\n\s+--mountpoints "\$OWN_MOUNTS_LEFT" --run-directory-present "\$OWN_DIR_PRESENT"/
+      .test(gate),
+    'the gate does not put its own leftovers through the same verdict every other gate uses');
+    assert(/die "the run cleaned up after itself incompletely/.test(gate),
+      'and an incomplete cleanup does not fail the run');
+
+    // THE COPY IS A PRECONDITION OF THE DELETION, NOT A COURTESY BESIDE IT — the same three failure modes the
+    // generic gate's own copy_evidence has, executed here against THIS gate's shipped copy.
+    if (process.platform === 'win32') return;
+    const start = gate.indexOf('copy_evidence() {');
+    assert(start !== -1, 'the gate no longer preserves its evidence');
+    const body = gate.slice(start, gate.indexOf('\n}\n', start) + 3);
+    assert(gate.indexOf('copy_evidence "out/reads.json"') > start,
+      'the gate defines copy_evidence and never uses it on the one file that records what was read');
+
+    const drive = (build: (work: string, evidence: string) => void): { code: number; out: string } => {
+      const dir = mkdtempSync(join(tmpdir(), 'tbevid-'));
+      const work = join(dir, 'work');
+      const evidence = join(dir, 'evidence');
+      mkdirSync(join(work, 'out'), { recursive: true });
+      mkdirSync(evidence);
+      build(work, evidence);
+      const harness = join(dir, 'harness.sh');
+      writeFileSync(harness,
+        'set -euo pipefail\n'
+        + 'die() { echo "GATE FAILED: $*" >&2; exit 1; }\n'
+        + `WORK=${JSON.stringify(work)}\nEVIDENCE_DIR=${JSON.stringify(evidence)}\n`
+        + `${body}\n`
+        + 'copy_evidence "out/reads.json" "reads-1.json"\n'
+        + 'echo EVIDENCE-KEPT\n');
+      const result = spawnSync('bash', [harness], { encoding: 'utf8' });
+      return { code: result.status ?? -1, out: `${result.stdout}${result.stderr}` };
+    };
+
+    const ok = drive((work) => { writeFileSync(join(work, 'out', 'reads.json'), '{"problems":0}\n'); });
+    assert(ok.code === 0 && /EVIDENCE-KEPT/.test(ok.out), `a good copy failed: ${ok.out.slice(0, 300)}`);
+
+    const missing = drive(() => { /* nothing written */ });
+    assert(missing.code !== 0 && /no out\/reads\.json/.test(missing.out),
+      'a run that wrote no evidence was allowed to delete its run directory and report success');
+
+    const empty = drive((work) => { writeFileSync(join(work, 'out', 'reads.json'), ''); });
+    assert(empty.code !== 0, 'an EMPTY evidence file was preserved and reported as evidence');
+
+    // A DESTINATION THAT DOES NOT EXIST, rather than one whose mode forbids writing: these gates run as root
+    // on the tranche-closing host, and root ignores the mode — so a permission-based case would prove nothing
+    // there and would pass for the wrong reason on the only platform that matters.
+    const unwritable = drive((work, evidence) => {
+      writeFileSync(join(work, 'out', 'reads.json'), '{"problems":0}\n');
+      rmSync(evidence, { recursive: true });
+    });
+    assert(unwritable.code !== 0 && !/EVIDENCE-KEPT/.test(unwritable.out),
+      'a copy that could not be written still announced that the evidence had been kept');
   });
 
   await test('this suite runs in the aggregate', () => {

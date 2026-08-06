@@ -241,6 +241,8 @@ the same and only the second is evidence.
 | G24–G26 **Lease gates** | **RUN — 3/3 consecutive fresh runs on a real Unraid host**, 29 assertions per run, 0 failed, 0 skipped, by `deploy/projection-lease-gate.sh` with a **synthetic reader**. These gates **need no media server**: they are about the daemon's transport resolution, not about a scanner, so no column below applies to them. See §6.8 | — | — |
 | G27 **Path immutability** | **RUN — 3/3 consecutive fresh runs on a real Unraid host**, **85 assertions per run, 0 failed, 0 skipped**, by `deploy/projection-path-lifecycle-gate.sh`. ONE daemon, ONE mount, ONE generation sequence and all three servers reading it, so the three columns to the right are not independent runs of anything — they are the same run observed three ways, which is what G27 asks for. See §6.9. The admission-refusal half remains closed offline by `npm run test:projection-publisher` | **same run** — observed the refusal, the removal and the addition | **same run** — observed the refusal, the removal and the addition |
 
+| **Real provider** (§2's 1–3 operator files) | **RUN — 3/3 consecutive fresh runs on a real Unraid host**, exit 0, none skipped, by `deploy/projection-torbox-real-gate.sh` against a **real TorBox account and a real CDN**. Seven reads per run and zero problems: an ordinary-regular-file `stat` at exactly the manifest size, four operator-approved windows digest-compared against digests recorded outside the mount, one read past 90 % and one backward, all inside a finite deadline; exactly one resolution per object; the mount refusing write, create, unlink and chmod; the resolver refused at the transport from the gate network; neither secret and no stable reference anywhere the run wrote; and this run's own directory and mountpoints asserted gone. **This gate needs no media server** — it is about the HTTP Range adapter against a real endpoint, so no column below applies to it. **HISTORICALLY this row did not exist and every section of this document said no real provider endpoint had ever been contacted.** See §6.15, which also records the six gate defects the run exposed and what it refuses to claim | — | — |
+
 `docs/PROJECTION_PHASE_1_JELLYFIN_DATA_PLANE.md` describes the gate that produced the Jellyfin column. Every
 run of it so far has been on **Windows / Docker Desktop**, which §6 says closes none of G7–G13. The tranche
 still closes on Linux or Unraid, three consecutive times, and on **all three** media servers.
@@ -618,6 +620,15 @@ bounds the body, terminalises a second refresh and enforces both the allowlist a
 
 Then: `npm run go:real-provider-gate` to preflight and run once, and
 `npm run go:real-provider-gate:three` for the three consecutive fresh runs the plan requires.
+
+**AND THE TORBOX GATE HAS SINCE BEEN RUN AGAINST A REAL ACCOUNT — 3/3, AND §6.15 IS THE AUTHORITY ON IT.**
+Everything above this line was written while nothing had ever contacted a provider, and it is left standing
+because the sequence of what was believed when is the record. What is no longer true is the sentence "no real
+provider has been contacted, and Phase 1 remains open on exactly that ground": `npm run go:torbox-real-gate:three`
+completed **three consecutive fresh runs, exit 0, none skipped**, on the real Unraid host, reading an
+operator-supplied TorBox object as an ordinary read-only file through the production mount. **The generic
+gate's own real-mode row below is unchanged and still reads `SKIPPED (77)`** — the two gates take different
+inputs from different directories, and one running is not the other running.
 
 **THE TORBOX GATE READS A DIFFERENT DIRECTORY, AND IT HAS TO.** `deploy/projection-torbox-real-gate.sh`
 takes its four inputs from `…/secrets/real-provider/torbox/` (`PROJECTION_TORBOX_INPUT_DIR`), because its
@@ -1158,6 +1169,140 @@ programs that describe a synthetic corpus, and the endpoints they are described 
 deterministic fakes §6.10 already says close nothing. **No real provider endpoint and no operator corpus
 exists at either approved path.** §6.1's rows are unchanged, Phase 1 remains open on exactly the ground
 §6.10 names, and nothing here is evidence about a real provider.
+
+### 6.15 THE REAL TORBOX RUN — the thing every section above says has never happened
+
+**A REAL TORBOX ACCOUNT HAS NOW BEEN CONTACTED, AND THE OPERATOR'S OWN OBJECT WAS READ AS AN ORDINARY
+READ-ONLY FILE THROUGH THE PRODUCTION MOUNT.** `npm run go:torbox-real-gate:three` completed **3/3
+consecutive fresh runs, exit 0, none skipped**, on the same real Unraid host every other §6.3 sequence ran
+on, from an isolated checkout at `/mnt/user/appdata/catalog-phase1-torbox-real` taken at `6c900f4`. Every
+sentence in §6.10, §6.11, §6.12, §6.13 and §6.14 ending "no real provider endpoint has ever been contacted"
+was true when written and is **false now**. They are left standing, because the sequence of what was believed
+when is the record.
+
+**WHAT WAS SUPPLIED, AND WHAT IS DELIBERATELY NOT WRITTEN DOWN.** The four files §8 of
+`docs/PHASE_50_TORBOX_RESOLVER.md` names, at mode `0600` under a `0700` directory, on the host and never in
+this repository: the TorBox API key, an independent gate secret, a one-object `objects.json` and an
+`endpoint.json` naming one CDN origin. **The item id, the file id, the stable reference, the object's name,
+the CDN hostname and the signed links are not in this document, in the gate's output, in the run's evidence
+or in git**, and that is the contract rather than an oversight — §2 calls this a correctness corpus of 1–3
+files the operator is entitled to, and which files those are is not the repository's business.
+
+What CAN be said about the corpus without saying any of that: **one object, 1,732,948,646 bytes**, selected
+from the item by a policy stated before it was applied — the largest non-infected file whose type is playable
+video, ties broken by the lowest file id, so the choice is deterministic and defensible rather than picked.
+Four windows of 65,536 bytes were digested **outside the mount** by direct HTTPS ranged GETs against the CDN
+before any run, and recorded in `objects.json` in **strictly descending offset order** — 0.91, 0.60, 0.25 and
+0 of the object.
+
+**THE DESCENDING ORDER IS AN ASSERTION, NOT A STYLE.** `verify.cjs` reads the approved windows in manifest
+order, then its own tail window, then its own backward window. An ascending corpus makes every request the
+PROVIDER ever sees go forward, and lands the two reads named "past 90%" and "backward" on windows the
+daemon's probe cache already holds — so the backward seek would be proved against the cache and never against
+the CDN. Descending makes every fetch after the first a genuinely backward-going ranged GET at the provider.
+The first and last windows are also exactly the offsets and lengths `tailWindow` and `backWindow` compute, so
+the two reads the gate previously bounded only by byte count are now digest-compared as well.
+
+**WHAT THE THREE RUNS MEASURED**, identical in all three, from the preserved evidence at
+`.projection-torbox-real-gate/evidence/reads-*.json`:
+
+| | |
+|---|---|
+| reads through the mount | **7 per run, 0 problems** — one `stat`, four approved windows, one past 90 %, one backward |
+| `stat` | an **ordinary regular file** (`lstat`, so a symlink cannot pass) at **exactly** the manifest's 1,732,948,646 bytes |
+| digests | all four windows matched the values recorded outside the mount before the run |
+| past 90 % | offset 1,576,983,267, `pastNinetyPercent: true`, 65,536 bytes |
+| backward | offset 0 after a read at 91 %, 65,536 bytes |
+| slowest window | **808 ms**, across all three runs, against the 120,000 ms deadline the program now asserts |
+| resolutions | **exactly 1 per object**, counted from the resolver's own log line |
+| read-only | write, create, unlink and chmod each refused, probed as uid 65534 with all capabilities dropped |
+| resolver reachability | **REFUSED** at the transport from the gate network — loopback-only, never published |
+| secrets | 0 hits for the API key and 0 for the gate secret across everything the run wrote; 0 stable references in **either** container log; the API key **absent from the daemon container's filesystem** |
+| cleanup | `RP7-own-run-directory-removed` and `RP7-own-mountpoints-removed` **pass**, asserted after the report |
+
+**THE HOST WAS LEFT AS IT WAS FOUND.** Container, network and volume counts were identical before and after
+the sequence — **26 running / 42 total, 17 networks, 45 volumes** — with **0 mountpoints** under the gate
+root, **0 run directories**, and no production media, service, Compose project, secret or unrelated network
+touched. The secrets directory kept `0700`/`0600` throughout; the parent `…/secrets/real-provider` was
+tightened from `0755` to `0700` to match what §6.10 has always said it should be.
+
+**SIX DEFECTS WERE FOUND, ALL SIX IN THE GATE, AND NONE IN THE PRODUCT.** Every one was exposed by running
+this gate against a real account, and every one is pinned by a test in `test/torbox-resolver.ts` that fails
+against `6c900f4` and passes after — **6 failed / 74 passed** at the merge base, **80 passed / 0 failed**
+after, measured on the Linux host because three of the six are skipped on Windows.
+
+| # | What was wrong | How it presented |
+|---|---|---|
+| 1 | **Nothing ever looked at the inode.** The gate's whole claim is that a TorBox object becomes an ORDINARY FILE, and the only `stat`-shaped thing in the run was a shell `ls /mnt/*.bin` used to decide the mount had appeared | A namespace publishing entries at the wrong LENGTH — the drift G7 asserts against on every media-server gate — passed here as long as the windows still digested, and a **symlink** out of the mount passed outright, because `openSync` follows one |
+| 2 | **The read step had no deadline of any kind.** `verify.cjs` recorded `elapsedMs` on every window and asserted nothing against it | This is the ONLY place in this gate where a real provider sits behind a system call. A CDN that accepted the connection and then stalled left the gate **hung, not failed** — no assertion, no cleanup, no report. It is §6.11 #4's defect, in the read path, in the one gate that talks to a real network |
+| 3 | **The four read-only refusals could not fail.** They ran `docker run … && echo no \|\| echo yes` and read EVERY non-zero exit as "the mount refused it" | `docker run` answers **125/126/127** when the daemon refuses the run, the entrypoint is not executable, or it is not found — so a broken image, a missing device or a Docker outage produced exactly the exit code the gate read as proof the mount is read-only. All four could pass without the mount being consulted once. It is §6.11 #4's `wget` defect again |
+| 4 | **The provider was never asserted to have been contacted, and resolutions were unbounded.** No line in the gate required a resolution to have HAPPENED, and none bounded how often one could | Every ceiling here is satisfied by a run that contacted nothing — which is exactly why the generic gate asserts a positive byte count. And a data plane re-minting access material for every window would read the same correct bytes, pass, and spend the operator's metered rate limit once per read |
+| 5 | **`docker logs … \|\| true`, and a reference check over one file.** A capture that failed left an EMPTY file, and the leak scan and reference grep then reported the property proven over a file the run never wrote. The reference grep looked only at the RESOLVER's log | The step's own heading says no reference reached anything this run wrote. The DAEMON holds the same reference — it is the `objectRef` it POSTs and the source string it carries all run — and its log was never examined. Same class as `scan.cjs`'s "a zero that means did not look", one layer up from it |
+| 6 | **No hard cleanup assertion, and no evidence survived a passing run.** The only statement this gate made about its own leftovers came from `projection_gate_report_cleanliness` inside the EXIT trap, which its own comment explains can only REPORT | §6.11 #5 closed this for the GENERIC gate and not for this one — the gate Phase 1 actually closes on could print `cleanup: 1 mountpoint left behind` and exit 0. And `reads.json`, the whole record of what was read, lived only in the run directory the trap deletes: "three consecutive runs" was a claim with no substrate |
+
+**NO THRESHOLD MOVED, NO HARD FAILURE BECAME A SKIP, AND NO REDACTION WAS LOOSENED.** The one new
+configurable is a read-deadline seam the offline suite needs in order to execute the shipped bytes rather
+than string-match a constant, and it **can only tighten**: absent, blank, unparseable, or at or above the
+built-in 120 s all yield the built-in, a request for an hour yields two minutes, and a test asserts the gate
+never sets it. One privilege was reduced: the resolver container — the only place on the host holding the API
+key — now mounts the checkout `:ro`.
+
+**WHAT THE DIRECT-CONTROL CLAUSES OF §6.10 DO AND DO NOT MEAN HERE, STATED RATHER THAN GLOSSED.** The generic
+gate takes ONE direct HTTPS ranged GET per object *outside* the daemon, and reports TLS, redirect refusal,
+`206`, an exact `Content-Range`, size agreement and `Content-Length` agreement from it. **This gate takes no
+such probe**, and the reason is that its purpose is a diagnostic split rather than an extra property: it
+exists so that "the product is broken" and "the provider does not do byte ranges" can be told apart *when a
+read fails*. When the read SUCCEEDS, every one of those properties is entailed, because
+`projectiond/internal/source/http.go` refuses each of the alternatives on every ranged read it makes —
+`CheckRedirect` returns an error so a 3xx is never followed; a `200` is `CondRangeUnsupported` and the body is
+abandoned at the header; a `Content-Range` that does not parse as exactly `bytes <start>-<end>/<total>`, or
+whose window is not the one requested, is `CondRangeMismatch`; a total that disagrees with the manifest is
+`CondSizeDisagrees`; a disagreeing `Content-Length` is `CondRangeMismatch`; a short body is `CondShortBody`;
+and the transport is `MinVersion: tls.VersionTLS12` with the system trust store, with `InsecureSkipVerify`
+appearing nowhere in the shipped daemon. **So the entailment is from refusals the daemon's own tests and the
+offline gates' fault injection already prove, not from a literal the gate wrote for itself** — and it is
+recorded here as an entailment rather than as an observation, because those are different things.
+
+**429s WERE NOT PROVOKED AND ARE NOT ASSERTED**, exactly as §6.10 says. This is a correctness corpus, never a
+load test: three runs of seven windows each is four ranged GETs per run against a metered account.
+
+**THE SEQUENCE RAN THE BYTES THAT ARE COMMITTED, AND THAT IS CHECKABLE RATHER THAN ASSERTED.** `sha256` of
+`deploy/projection-torbox-real-gate.sh` in the committed tree and in the isolated checkout the 3/3 sequence
+ran from are the same value, `be63ac9d5f42…`. An earlier sequence had already passed 3/3 before one comment
+and one default were changed; **it is not the sequence recorded here**, because a gate whose bytes moved after
+its evidence was taken has no evidence, and re-running was cheaper than explaining the gap.
+
+**WHAT WAS RUN, AND WHAT FAILED THAT HAS NOTHING TO DO WITH THIS.**
+
+| Command | Where | Result |
+|---|---|---|
+| `npm run go:torbox-real-gate` | Unraid, isolated checkout | **exit 0**, first real contact, before the six corrections |
+| `npm run go:torbox-real-gate:three` | Unraid, isolated checkout | **3/3, exit 0, none skipped**, against the **final** shipped bytes — 7 reads, 0 problems, 1 resolution, RP7 passing, each run |
+| `npm run go:torbox-real-gate` with an empty input directory | Unraid | **SKIPPED (77)**, having contacted nothing — the negative control still holds after the corrections |
+| `npm run go:torbox-mount-gate` | Unraid | **exit 0** — the offline twin, unchanged by this loop and re-run as a control |
+| `npm run test:torbox-resolver` | Unraid **and** Windows | **80 passed, 0 failed** |
+| the same suite against `6c900f4` | Unraid | **74 passed, 6 failed** — one failure per defect above. On Windows only 5 of the 6 bite, because three of the tests need a POSIX shell and skip there; the Linux figure is the one that counts |
+| `npx tsc --noEmit` | Windows | clean |
+| `npm run test` (full offline suite) | Windows | **339 selected, 339 passed, 0 failed**, 3 docker-group suites not selected |
+| `npm run test` (full offline suite) | Unraid | **307 passed, 32 failed** — and **the same 307/32, the same 32 suites**, on a pristine `6c900f4` checkout of the same host. See below |
+
+**THE HOST'S FULL OFFLINE SUITE FAILS 32 OF 339 SUITES, AND THAT IS RECORDED RATHER THAN ROUNDED OFF.**
+`npm run test` on the Unraid host is **307 passed / 32 failed**, and reporting it as anything else would be
+the exact failure this repository exists to stop. **It is measured against a pristine `6c900f4` checkout of
+the same host, cloned fresh for the comparison and run the same way, and that run is `307 passed / 32 failed`
+too — the SAME 32 suites, compared as sorted sets: zero suites fail only at this tree, and zero fail only at
+the merge base.** So the delta this work makes to that suite is **nothing in either direction**. The causes
+are the host, not the tree: `embedded-postgres` declining to run as root (most of the 32, all DB-backed), a
+sidecar socket directory whose mode the host's umask widens, and one `bash: ./baseline.sh: Permission denied`
+on `fuse.shfs`. The one of the 32 that touches gate bytes at all, `projection-gate-embedded-programs`, is
+**63 passed / 1 failed on both trees — the same single failure.** The same suite on Windows is **339 selected,
+339 passed, 0 failed**, which is why the platform is named beside every figure in the table above.
+
+**WHAT THESE THREE RUNS DO NOT CLOSE.** No media server was in them — G7–G13 are other gates, closed by their
+own sequences. One object is one object: the HTTP Range adapter is shown correct against **this** provider
+for **this** shape of object, and nothing here is a statement about throughput, concurrency, amplification or
+any other quantitative property, all of which are answered against the fake endpoint where the harness
+controls the answers. The offline equivalent, which contacts nothing, remains `npm run go:torbox-mount-gate`.
 
 ### 6.4 The gates that did not exist — now none of them
 
