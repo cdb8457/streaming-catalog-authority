@@ -115,18 +115,45 @@ chmod 777 "$WORK/cache" "$WORK/mnt" "$WORK/out" "$WORK/jf-config" "$WORK/jf-cach
           "$WORK/emby-config" "$WORK/plex-config" "$WORK/plex-transcode"
 
 cat > "$WORK/jq.cjs" <<'JQ'
+// One field out of a JSON document on stdin, for shells that have no jq.
+//
+// THE DECODE IS SET ON THE STREAM, NOT DONE PER CHUNK. `raw += chunk` coerces each Buffer with its own
+// `toString()`, so a multi-byte character split across a read boundary becomes two U+FFFD replacement
+// characters -- silently, exit 0, with a value that is no longer the value the document carried. Measured on
+// an 800 KB document of two-byte characters: 24 replacement characters and a wrong answer, reported as a
+// success. `setEncoding` decodes with a StringDecoder that holds the partial sequence across the boundary.
+// Today's fixtures are ASCII, so this is latent. The operator corpus Phase 1 closes against is NOT GUARANTEED
+// to be ASCII -- no such corpus exists yet, so nothing here claims to have measured one -- and every gate reads
+// its verdicts through this program.
 let raw = '';
+process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => { raw += chunk; });
 process.stdin.on('end', () => {
-  const value = JSON.parse(raw)[process.argv[2]];
+  const document = JSON.parse(raw);
+  // AND A DOCUMENT THAT IS NOT AN OBJECT ANSWERS '' FOR EVERY FIELD, which is the shape of a field that is
+  // merely absent. A caller comparing that to an expected value fails for the wrong reason, and one testing
+  // it for emptiness passes. Neither may read a scalar as an answer.
+  if (document === null || typeof document !== 'object' || Array.isArray(document)) {
+    console.error('jq: the document on stdin is not an object, so no field of it can be read');
+    process.exit(2);
+  }
+  const value = document[process.argv[2]];
   console.log(value === undefined ? '' : String(value));
 });
 JQ
 
 cat > "$WORK/sha.cjs" <<'SHA'
+// The digest of a whole file. AN OBJECT THAT YIELDED NO BYTES IS NOT AN OBJECT THAT DIGESTS TO
+// e3b0c442...b855 -- that value is the answer to "there was nothing here", and a gate comparing it against
+// another empty read would call the two equal.
 const { createHash } = require('node:crypto');
 const { readFileSync } = require('node:fs');
-console.log(createHash('sha256').update(readFileSync(process.argv[2])).digest('hex'));
+const bytes = readFileSync(process.argv[2]);
+if (bytes.length === 0) {
+  console.error('sha: the object is empty, so there is nothing to digest');
+  process.exit(3);
+}
+console.log(createHash('sha256').update(bytes).digest('hex'));
 SHA
 
 cat > "$WORK/watch.cjs" <<'WATCH'

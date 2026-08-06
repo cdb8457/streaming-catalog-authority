@@ -176,21 +176,54 @@ chmod 777 "$WORK/cache" "$WORK/mnt" "$WORK/out" \
 chmod 755 "$GATE_ROOT" "$WORK"
 
 cat > "$WORK/jq.cjs" <<'JQ'
+// One field out of a JSON document on stdin, for shells that have no jq.
+//
+// THE DECODE IS SET ON THE STREAM, NOT DONE PER CHUNK. `raw += chunk` coerces each Buffer with its own
+// `toString()`, so a multi-byte character split across a read boundary becomes two U+FFFD replacement
+// characters -- silently, exit 0, with a value that is no longer the value the document carried. Measured on
+// an 800 KB document of two-byte characters: 24 replacement characters and a wrong answer, reported as a
+// success. `setEncoding` decodes with a StringDecoder that holds the partial sequence across the boundary.
+// Today's fixtures are ASCII, so this is latent. The operator corpus Phase 1 closes against is NOT GUARANTEED
+// to be ASCII -- no such corpus exists yet, so nothing here claims to have measured one -- and every gate reads
+// its verdicts through this program.
 let raw = '';
+process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => { raw += chunk; });
 process.stdin.on('end', () => {
-  const value = JSON.parse(raw)[process.argv[2]];
+  const document = JSON.parse(raw);
+  // AND A DOCUMENT THAT IS NOT AN OBJECT ANSWERS '' FOR EVERY FIELD, which is the shape of a field that is
+  // merely absent. A caller comparing that to an expected value fails for the wrong reason, and one testing
+  // it for emptiness passes. Neither may read a scalar as an answer.
+  if (document === null || typeof document !== 'object' || Array.isArray(document)) {
+    console.error('jq: the document on stdin is not an object, so no field of it can be read');
+    process.exit(2);
+  }
+  const value = document[process.argv[2]];
   console.log(value === undefined ? '' : String(value));
 });
 JQ
 
 cat > "$WORK/sha.cjs" <<'SHA'
+// The digest of a whole file. A READ THAT RETURNED NOTHING IS NOT A DIGEST: an empty or vanished object
+// hashed to e3b0c442...b855 and exited 0, and `createReadStream` with no 'error' listener turned an
+// unreadable one into an uncaught exception rather than a statement. Both are now refused by name.
 const { createHash } = require('node:crypto');
 const { createReadStream } = require('node:fs');
 const hash = createHash('sha256');
+let read = 0;
 createReadStream(process.argv[2])
-  .on('data', (chunk) => hash.update(chunk))
-  .on('end', () => console.log(hash.digest('hex')));
+  .on('error', (error) => {
+    console.error(`sha: could not read the object: ${error.code ?? error.message}`);
+    process.exit(3);
+  })
+  .on('data', (chunk) => { read += chunk.length; hash.update(chunk); })
+  .on('end', () => {
+    if (read === 0) {
+      console.error('sha: the object yielded no bytes, so there is nothing to digest');
+      process.exit(3);
+    }
+    console.log(hash.digest('hex'));
+  });
 SHA
 
 cat > "$WORK/objects.cjs" <<'OBJECTS'
@@ -733,6 +766,13 @@ step "what an ordinary non-root container sees before any media server is involv
 cat > "$WORK/out/baseline.sh" <<'BASE'
 set -eu
 test "$(id -u)" != "0" || { echo "the verifier is root" >&2; exit 1; }
+# A BASELINE OVER NOTHING IS NOT A BASELINE. `for target in "$@"` over an empty argument list runs its body
+# zero times and falls off the end at exit 0, printing nothing -- so every property this program exists to
+# establish (regular file, not a symlink, not a .strm placeholder, mode 444) is reported as holding for a set
+# it never looked at. Measured in the gate's own pinned image: no arguments, no output, exit 0. The callers
+# pass shell-expanded paths, so the day one of them expands to nothing is the day the check stops running and
+# says so in the same words it uses when it passes.
+test "$#" -gt 0 || { echo "no targets were named, so this baseline established nothing" >&2; exit 1; }
 for target in "$@"; do
   test -f "/mnt/$target"  || { echo "not a regular file: $target" >&2; exit 1; }
   test ! -L "/mnt/$target" || { echo "a media server would see a symlink" >&2; exit 1; }

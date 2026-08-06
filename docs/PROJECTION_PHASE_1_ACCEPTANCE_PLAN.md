@@ -823,6 +823,162 @@ G18 or G22, which were already recorded as run on this host. §6.1's rows are un
 **AND IT CLOSES NOTHING.** No real provider endpoint was contacted, no operator corpus exists at either
 approved path, and Phase 1 remains open on exactly that ground.
 
+### 6.13 The third credential-free audit loop — the measurement primitives every verdict is computed from
+
+**THE INVENTORY FIRST, BECAUSE THE PREVIOUS TWO LOOPS EACH FOUND WHAT THEY WERE LOOKING AT AND NOT WHAT THEY
+WERE NOT.** `deploy/projection-*gate*.sh` carries **131 heredoc blocks**, which are **82 distinct programs** —
+the difference is the copies, and the copies are the point: `jq.cjs` is byte-identical in **eleven** gates,
+`leakcheck.sh` in five, `baseline.sh` in four plus a fifth that differs by one field, and `sha.cjs` exists in
+three forms across eight gates. §6.11 executed six programs; §6.12 executed the shared
+leak/cache/published/counters/scan/identity subset. **This loop took the tranche neither of them touched: the
+primitives that turn a read into a number** — the digest helpers, the JSON field reader, the read-only
+baseline, the seek probes and the concurrent-reader harness — **across all eleven gates.**
+
+**EVERY FINDING BELOW WAS PRODUCED BY RUNNING THE SHIPPED BYTES**, the `.sh` helpers in the gates' own
+digest-pinned `alpine@sha256:d9e853e8…` and the `.cjs` helpers under `node`, against fixtures built for the
+purpose. Candidates were found by surveying the inventory; EVERY FINDING RECORDED HERE WAS CONFIRMED BY
+EXECUTING THE SHIPPED BYTES, and the ones that survived reading but not execution are in the "checked and
+found sound" paragraph below. The offline cases live in
+`test/projection-gate-embedded-programs.ts`; the three programs that hard-code `/mnt` and `/out` cannot
+honestly run on a developer's machine and live in the new `test/projection-gate-mount-programs.ts`, which
+declares `requires: ["docker"]` so a host that cannot provide one is **told** rather than reporting a pass.
+
+**LIVE AND LATENT ARE MARKED, AND THE DISTINCTION IS NOT A SOFTENER.** Two of these defects are reachable
+with the gates' own present-day fixtures. The rest are held off today by an assertion or a literal elsewhere
+in the gate — they are defects in the measurement, not in the current run, and calling them "live" would
+overstate what was found exactly as calling them "theoretical" would understate it.
+
+| # | Program | Copies / sites | What it did | Live? |
+|---|---|---|---|---|
+| 1 | `out/verify.sh` (publisher-mount) | 1 / 1 | The step headed **"a seek into each file returns bytes"** ran `dd … \| wc -c` **and nothing at all read the number**. `dd` reports success past EOF and its status is lost to the pipe regardless, so the count *was* the measurement and no one looked at it. Measured in the pinned image: a seek into **a file that does not exist** prints `0`, pipeline status 0, and the phase goes on to report every mutation refused and **exit 0** | **LIVE** |
+| 2 | `out/stampede.sh` and its call site (lease) | 1 / 1 | Twenty concurrent readers each wrote `ok` or `fail` and **nothing ever opened one**: `--opens` was counted from the `.started` files, which the loop writes the instant it launches each job. `dd` exits 0 for a read landing past EOF, so a reader that moved **no bytes** wrote `ok` anyway. Measured: a 1 MiB object against readers seeking 4–80 MiB gives `started=20, ok=20, fail=0`. G25 divides one resolution by that count | **LIVE** |
+| 3 | `sha.cjs`, ranged form | 3 gates / 6 ranged sites | A window at or past EOF **digested to `e3b0c442…b855`, the digest of the empty string, exit 0**. Measured on a 100 000-byte object read at offset 5 000 000. The gate computes its **expectation** with this program and then has the daemon serve the same window, so an unsatisfiable range degrades **both sides to that one value** and `--expect-sha` compares it against itself. A short read did the same thing more quietly | latent — the `> 3 MiB` fixture assertions keep today's windows in range |
+| 4 | `jq.cjs` | **11 gates / 11 sites** | `raw += chunk` coerces each stdin Buffer with its own `toString()`, so a multi-byte character split across a 64 KiB read boundary became **two U+FFFD replacement characters**. Measured on an 800 KB document: **24 of them, exit 0, and a value that is not the value the document carried**. Every gate reads `test "$(field outcome …)" = "published"` through this program. A document that is not an object also answered `''` for **every** field — the shape of a field that is merely absent | latent — today's fixtures are ASCII. **The operator corpus Phase 1 closes against is not guaranteed to be**, and no such corpus exists yet to measure |
+| 5 | `out/seekprobe.sh` (rclone) | 1 / 2 sites | `dd \| sha256sum` answered the empty digest for a read that produced nothing. The caller runs **this same program on both sides of its own comparison**, inside the mount and outside it, so the forward- and backward-seek assertions compare that one value against itself; only the third line is checked against a value recorded elsewhere. Separately, a `SEEK_BLOCK` of `0` makes the "forward seek past the middle" and the "backward seek to the start" **the same read** | latent — the large fixture keeps the block in range and non-zero |
+| 6 | `out/baseline.sh` | 4 + 1 / 6 sites | `for target in "$@"` over an empty argument list runs its body zero times and falls off the end. Measured in the pinned image: **no arguments, no output, exit 0** — every property it exists to establish (regular file, not a symlink, not a `.strm`, mode 444) reported as holding for a set it never opened | latent — the callers' paths carry a literal prefix today |
+| 7 | `objects.cjs`, lease and publisher forms | 2 / 5 sites | The four-gate sibling names an unmatched ref and exits 1; **these two did not**, and reached `object.sha256` on `undefined`. Fail-closed, but as a TypeError inside a helper rather than as "the endpoint is not serving the object this gate registered" | latent — fail-closed either way |
+
+**WHAT THE CORRECTIONS DO, AND WHAT THEY DELIBERATELY DO NOT.** Every one refuses an input the program used
+to absorb: a range the object cannot satisfy, a byte count of zero where bytes were claimed, an empty target
+list, a document that is not an object, a reader that demanded nothing. **NO THRESHOLD MOVED AND NO FAILURE
+BECAME A SKIP.** The publisher-mount seek is asserted at **greater than zero and no more** — a FUSE read may
+legitimately return a short block, and turning that step into an exact-length check would invent a threshold
+the gate never stated. The honest answers are unchanged and are pinned as such: the corrected `sha.cjs` still
+returns the digest `node:crypto` computes over the same bytes and the same window, and that equality is
+asserted rather than assumed.
+
+**ONE OF THESE FIXES ALREADY EXISTED ONE PROCESS DOWNSTREAM, WHICH IS WHY THE PRODUCER MATTERS.**
+`projection-plex-dataplane-cli.ts` says in its own comment that `--object-sizes` "used to `.filter()` out
+anything that was not a finite positive number … and a shell variable that expanded to nothing an empty
+list", and it now makes every such token fatal. `sizelist.cjs`, **the program that produces that flag**,
+still performs exactly that filter — a size that fails to compute is dropped before the CLI can ever refuse
+it. It is recorded here as **examined and not corrected in this loop**: the drop shrinks the ceiling rather
+than widening it, so it is fail-closed on the budget, and correcting a producer whose consumer already
+refuses the bad value deserves its own measurement rather than a ride on this one.
+
+**MUTATION PROOF, measured against the final bytes of both trees, with the working tree restored
+byte-identical after each swap** (the staged `git diff --cached -- deploy/` fingerprint `43ee3c7f90…`
+reproduced after every revert, and each suite returned to its full pass count):
+
+| Suite | Platform | against merge base `1e59255` | against this tree |
+|---|---|---|---|
+| `projection-gate-embedded-programs.ts` | Windows, Node 22, Git `bash` | **33 passed, 9 failed** | **42 passed, 0 failed** |
+| `projection-gate-mount-programs.ts` | Linux, busybox 1.36.1, the gates' own pinned alpine | **4 passed, 2 failed** | **6 passed, 0 failed** |
+
+All **eleven** failures are the defect cases; the controls beside them pass against both trees, which is what
+makes them controls. **Two of the new cases initially passed against the merge base and were rewritten until
+they did not** — the multi-byte fixture had been built with its characters on even offsets, where no read
+boundary can fall inside one, so it came back perfect from the defective program; and the offset-validation
+case passed on exit status alone, because NaN also reaches `createReadStream` and throws. Both now assert the
+thing that actually changed. A third case failed against the *corrected* program for a fixture defect of its
+own — a fill pattern with a period of 256 makes every 64 KiB block identical — and the fixture, not the
+assertion, was corrected.
+
+**AND THE CORRECTIONS THEMSELVES WERE REVIEWED, WHICH FOUND THREE DEFECTS IN THEM.** Two were caught only by
+a second reader and one by re-reading my own diff, and they are recorded because a loop that audits shipped
+programs and exempts its own patches is not applying its method:
+
+- **The cumulative-overflow guard was defeated by the arithmetic it used to detect the overflow.** The ranged
+  `sha.cjs` validated `start` and `length` individually as safe integers and then computed
+  `start + length - 1`, so `MAX_SAFE_INTEGER` with a length of 2 passed both guards — the same
+  individually-safe-but-cumulatively-unsafe class the previous loop corrected in `cacheceiling.cjs`. My first
+  fix tested `!Number.isSafeInteger(start + length - 1)`, which does not work: `MAX_SAFE_INTEGER + 2` **rounds
+  to 2⁵³** and subtracting one lands back on `MAX_SAFE_INTEGER`, which `isSafeInteger` then calls safe. The
+  bound is now expressed with subtraction only — `length - 1 > Number.MAX_SAFE_INTEGER - start`, exact under
+  the preconditions already checked — and nothing is added until the window is known to fit. The regression
+  asserts the **diagnosis**, not just the status: without the check the program opens the stream, reads
+  nothing, and blames the object for yielding too few bytes.
+- **A `|| true` was missing where `pipefail` made its absence fatal.** The new lease-gate check counts the
+  readers that returned bytes with `grep -lx ok …`, and `grep` exits 1 when it matches nothing — which is
+  exactly the case the check exists to catch. Under this file's `set -euo pipefail` the gate died **at the
+  assignment**, before the diagnostic naming the failed readers could run: still fail-closed, but reported as
+  a nameless non-zero exit. The zero it produces is now judged rather than swallowed.
+- **An unsupported certainty in the new comments.** The `jq.cjs` comment asserted that the operator corpus
+  Phase 1 closes against *is* non-ASCII. No such corpus exists, so nothing has measured it; all twelve
+  occurrences now say it is **not guaranteed** to be ASCII.
+
+**WHAT WAS CHECKED AND FOUND SOUND, because a loop that only reports findings is not an audit.** `sha.cjs`'s
+two range-free forms and `alive.sh` fail closed already; `probes.cjs` and `seekprobes.cjs` cannot pass an
+empty probe set, because `transcode-soak-verify` gates `unprobed` at zero and floors the decoded seconds;
+`--object-sizes` refuses an empty or non-numeric token fatally at the consumer; `probe.sh`'s missing
+`pipefail` is harmless because a failed `wget` produces no `206 Partial Content` for `grep` to find and the
+pipeline fails on grep's own status; and the index arithmetic in `probe-seeks.sh` and `probe-soak.sh` differs
+between the two (`${index#0}` versus `sed 's/^seg-0*//'`) but both reach the same number through `Number()`
+at the consumer.
+
+**WHAT WAS RUN ON THE HOST, AND ON WHICH BYTES.** On an isolated checkout at
+`/mnt/user/appdata/catalog-phase1-heredoc-audit-3` on the same Unraid host (7.2.3, kernel 6.12.54, Docker
+27.5.1, Node 22.18.0), verified **byte-identical to the committed tree by `sha256sum` over all 1,576 tracked
+files** — combined digest `d744c43668c9…`, zero differing files.
+
+**THE SEQUENCE WAS SPLIT IN TWO, AND THE REASON IS PART OF THE EVIDENCE.** Reviewing this loop's own
+corrections found three defects in them, two of which changed executable bytes AFTER the first checkout had
+been hashed. The gates whose executable bytes moved — the lease gate and the three dataplane gates — were
+therefore **discarded from the first sequence and run again** against a re-synced, re-verified tree. Every
+other gate drifted only in COMMENT text inside `jq.cjs`, which alters no executed statement, so those runs
+stand as taken. Naming which runs were thrown away is the point: a sequence that quietly kept them would be
+reporting evidence for bytes that were not shipped.
+
+| Gate | Result | On record |
+|---|---|---|
+| `go:torbox-mount-gate:three` | **3/3, exit 0**, none skipped | §6.12: 3/3 |
+| `deploy/projection-torbox-real-gate.sh` | **SKIPPED (77)** — no operator corpus, having contacted nothing | §6.10 |
+| `deploy/projection-real-provider-gate.sh` (real mode) | **SKIPPED (77)** — no provider corpus, having contacted nothing | §6.10 |
+| `go:real-provider-gate:fake` ×3 | **3/3, 33 assertions, 0 failed, 3 skipped** each | §6.10: 33 / 3 skipped |
+| `go:path-lifecycle-gate:three` | **3/3, 85 assertions, 0 failed, 0 skipped** each | §6.9 |
+| `go:publisher-mount-gate` ×3 | **3/3, exit 0** | §6.1 |
+| `go:rclone-comparison-gate:three` | **3/3, 70 assertions, 0 failed, 0 skipped** each | §6.3: 70 |
+| `go:three-server-concurrency-gate:three` | **3/3, 64 assertions, 0 failed, 0 skipped** each | §6.3: 64 |
+| `go:lease-gate:three` | **3/3, 29 assertions, 0 failed, 0 skipped** each — rerun on final bytes | §6.8: 29 |
+| `go:jellyfin-dataplane-gate:three` | **3/3, 366 / 366 / 366 assertions, 0 failed, 0 skipped** — rerun on final bytes | §6.3: 366 |
+| `go:emby-dataplane-gate:three` | **3/3, 395 / 394 / 395 assertions, 0 failed, 0 skipped** — rerun on final bytes | §6.3: 395 / 394 / 394; §6.12: 394 / 395 / 395 — this count varies by run |
+| `go:plex-dataplane-gate:three` | **3/3, 414 / 414 / 414 assertions, 0 failed, 0 skipped** — rerun on final bytes | §6.3: 414 / 412 / 414 |
+
+**EVERY ASSERTION COUNT IS THE ONE ALREADY ON RECORD FOR THAT GATE. This loop moved none of them**, which is
+what "no threshold moved" has to mean when it is checked rather than asserted.
+
+**THE LIVE CORRECTION IS VISIBLE IN THE HOST OUTPUT**, which is the whole point of calling it live. The
+publisher-mount phase that used to print a bare number under "a seek into each file returns bytes" now
+reports and asserts it, identically across all three runs:
+
+```
+--- a seek into each file returns bytes
+    /mnt/Movies/Local One/Local One.bin at block 512 returned 1024 byte(s)
+    /mnt/Movies/Remote Two/Remote Two.bin at block 2048 returned 1024 byte(s)
+```
+
+**THE HOST WAS LEFT AS IT WAS FOUND.** Every gate reported `cleanup: 0 mountpoints and no run directory left
+under the gate root`. The host's container, network, volume and catalog-mountpoint counts were sampled
+**before and after every gate** and were identical at every sample across both sequences:
+**26 running / 42 total, 17 networks, 45 volumes, 0 mountpoints** under `/mnt/user/appdata/catalog*`. No
+production media, service, Compose project, secret or unrelated network was touched, and the isolated
+checkout was removed afterwards.
+
+**AND IT CLOSES NOTHING.** Two gates skipped at status 77 having opened no socket, because **no real provider
+credential and no operator corpus exists at either approved path**. The fake-provider runs exercise the
+corrected programs and close nothing about a provider: a deterministic fake is not a provider. §6.1's rows
+are unchanged, and Phase 1 remains open on exactly the ground §6.10 already names.
+
 ### 6.4 The gates that did not exist — now none of them
 
 **A GATE THAT HAS NOT BEEN WRITTEN CANNOT BE RUN, AND SAYING SO IS NOT THE SAME AS SAYING IT FAILED.**

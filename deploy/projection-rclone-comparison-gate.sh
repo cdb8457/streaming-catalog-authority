@@ -154,21 +154,54 @@ chmod 777 "$WORK/mnt" "$WORK/out" "$WORK/rclone-cache" "$WORK/rclone-config" \
 chmod 755 "$GATE_ROOT" "$WORK"
 
 cat > "$WORK/jq.cjs" <<'JQ'
+// One field out of a JSON document on stdin, for shells that have no jq.
+//
+// THE DECODE IS SET ON THE STREAM, NOT DONE PER CHUNK. `raw += chunk` coerces each Buffer with its own
+// `toString()`, so a multi-byte character split across a read boundary becomes two U+FFFD replacement
+// characters -- silently, exit 0, with a value that is no longer the value the document carried. Measured on
+// an 800 KB document of two-byte characters: 24 replacement characters and a wrong answer, reported as a
+// success. `setEncoding` decodes with a StringDecoder that holds the partial sequence across the boundary.
+// Today's fixtures are ASCII, so this is latent. The operator corpus Phase 1 closes against is NOT GUARANTEED
+// to be ASCII -- no such corpus exists yet, so nothing here claims to have measured one -- and every gate reads
+// its verdicts through this program.
 let raw = '';
+process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => { raw += chunk; });
 process.stdin.on('end', () => {
-  const value = JSON.parse(raw)[process.argv[2]];
+  const document = JSON.parse(raw);
+  // AND A DOCUMENT THAT IS NOT AN OBJECT ANSWERS '' FOR EVERY FIELD, which is the shape of a field that is
+  // merely absent. A caller comparing that to an expected value fails for the wrong reason, and one testing
+  // it for emptiness passes. Neither may read a scalar as an answer.
+  if (document === null || typeof document !== 'object' || Array.isArray(document)) {
+    console.error('jq: the document on stdin is not an object, so no field of it can be read');
+    process.exit(2);
+  }
+  const value = document[process.argv[2]];
   console.log(value === undefined ? '' : String(value));
 });
 JQ
 
 cat > "$WORK/sha.cjs" <<'SHA'
+// The digest of a whole file. A READ THAT RETURNED NOTHING IS NOT A DIGEST: an empty or vanished object
+// hashed to e3b0c442...b855 and exited 0, and `createReadStream` with no 'error' listener turned an
+// unreadable one into an uncaught exception rather than a statement. Both are now refused by name.
 const { createHash } = require('node:crypto');
 const { createReadStream } = require('node:fs');
 const hash = createHash('sha256');
+let read = 0;
 createReadStream(process.argv[2])
-  .on('data', (chunk) => hash.update(chunk))
-  .on('end', () => console.log(hash.digest('hex')));
+  .on('error', (error) => {
+    console.error(`sha: could not read the object: ${error.code ?? error.message}`);
+    process.exit(3);
+  })
+  .on('data', (chunk) => { read += chunk.length; hash.update(chunk); })
+  .on('end', () => {
+    if (read === 0) {
+      console.error('sha: the object yielded no bytes, so there is nothing to digest');
+      process.exit(3);
+    }
+    console.log(hash.digest('hex'));
+  });
 SHA
 
 field() { node "$REL/jq.cjs" "$1"; }
@@ -609,6 +642,13 @@ step "what an ordinary non-root container sees, and whether the mount really car
 cat > "$WORK/out/baseline.sh" <<'BASE'
 set -eu
 test "$(id -u)" != "0" || { echo "the verifier is root" >&2; exit 1; }
+# A BASELINE OVER NOTHING IS NOT A BASELINE. `for target in "$@"` over an empty argument list runs its body
+# zero times and falls off the end at exit 0, printing nothing -- so every property this program exists to
+# establish (regular file, not a symlink, not a .strm placeholder, mode 444) is reported as holding for a set
+# it never looked at. Measured in the gate's own pinned image: no arguments, no output, exit 0. The callers
+# pass shell-expanded paths, so the day one of them expands to nothing is the day the check stops running and
+# says so in the same words it uses when it passes.
+test "$#" -gt 0 || { echo "no targets were named, so this baseline established nothing" >&2; exit 1; }
 for target in "$@"; do
   test -f "/mnt/$target"  || { echo "not a regular file: $target" >&2; exit 1; }
   test ! -L "/mnt/$target" || { echo "a media server would see a symlink" >&2; exit 1; }
@@ -869,12 +909,34 @@ block="$2"
 # all the way to the start — which is the transition a naive client is most likely to answer wrongly, because
 # it is the one that cannot be served by reading onward — and then the whole object. `dd`'s `skip` is a seek,
 # and the block size is a whole number of 64 KiB units so this is a handful of syscalls rather than a million.
-dd if="$target" bs=65536 skip="$block" count=1 2>/dev/null | sha256sum | cut -d' ' -f1
-dd if="$target" bs=65536 count=1 2>/dev/null | sha256sum | cut -d' ' -f1
+# AND A READ THAT RETURNED NOTHING MUST NOT DIGEST TO SOMETHING. `dd` reports success for a block that lands
+# past EOF and its status is lost to the pipe either way, so `dd | sha256sum` answered
+# e3b0c442...b855 -- the digest of the empty string -- for a read that produced no bytes at all. Measured in
+# the gate's own pinned image on a 100 000-byte file at block 64. THAT IS THE DANGEROUS DIRECTION HERE: the
+# caller runs THIS PROGRAM on both sides of the comparison, inside the mount and outside it, so a range
+# neither side can satisfy degrades both to the identical empty digest and the forward- and backward-seek
+# assertions pass over two reads that returned nothing. Only the third line is checked against a value
+# recorded elsewhere. The byte count is now asserted before the digest is taken.
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+block_digest() {
+  dd if="$target" bs=65536 skip="$1" count=1 2>/dev/null > "$scratch/block.bin"
+  bytes="$(wc -c < "$scratch/block.bin" | tr -d ' ')"
+  test "${bytes:-0}" -gt 0 \
+    || { echo "the read at 64 KiB block $1 of $target returned no bytes" >&2; exit 1; }
+  sha256sum "$scratch/block.bin" | cut -d' ' -f1
+}
+block_digest "$block"
+block_digest 0
 sha256sum "$target" | cut -d' ' -f1
 SEEKPROBE
 SEEK_TARGET="Movies/${LARGE_FILE%.mp4}/$LARGE_FILE"
 SEEK_BLOCK=$(( LARGE_SIZE / 2 / 65536 ))
+# A FORWARD SEEK TO BLOCK ZERO IS THE BACKWARD SEEK. The two ranged reads below are the same read whenever
+# the object is under 128 KiB, and the pair would then agree on both sides of the comparison while proving
+# nothing about seeking at all -- the transition this step exists to exercise would never be made.
+test "$SEEK_BLOCK" -gt 0 \
+  || die "the large object is under 128 KiB, so the forward seek and the backward seek are the same read"
 SEEK_OUT="$(docker run --rm --user 65534:65534 -v "$WORK/mnt:/mnt:rslave" -v "$WORK/out:/out:ro" \
   "$VERIFY_IMAGE" sh /out/seekprobe.sh "/mnt/$SEEK_TARGET" "$SEEK_BLOCK")"
 # THE COMPARISON IS AGAINST THE SAME FILE READ OUTSIDE THE MOUNT, so it is against values this topology had

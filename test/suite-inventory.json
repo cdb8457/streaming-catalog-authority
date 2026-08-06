@@ -425,6 +425,13 @@
       "group": "offline"
     },
     {
+      "file": "projection-gate-mount-programs.ts",
+      "group": "docker",
+      "requires": [
+        "docker"
+      ]
+    },
+    {
       "file": "provider-availability-bridge.ts",
       "group": "offline"
     },
