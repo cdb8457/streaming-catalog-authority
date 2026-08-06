@@ -161,14 +161,29 @@ explicit `--fixture-mode` switch and fails closed without it.
 
 ## 8. What an operator must supply
 
-Under a `0700` directory (default `/mnt/user/appdata/catalog/secrets/real-provider/`):
+Under a `0700` directory (default `/mnt/user/appdata/catalog/secrets/real-provider/torbox/`, overridable with
+`PROJECTION_TORBOX_INPUT_DIR`):
 
 | File | Mode | Contents |
 |---|---|---|
 | `torbox-credential` | `0600` | the TorBox API key, and nothing else |
-| `gate-secret` | `0600` | any high-entropy string; the daemon presents it to the resolver |
+| `credential` | `0600` | **the gate secret — note the name.** Any high-entropy string; the daemon presents it to the resolver. It must not equal the TorBox key, and the gate fails if it does |
 | `objects.json` | `0600` | 1–3 entries, `ref` being `torbox:<kind>:<id>:<fileId>`, with sizes and externally-recorded digests |
-| `endpoint.json` | `0600` | `resolverUrl` pointing at the loopback resolver, and an `allowedOrigins` naming the TorBox CDN origins |
+| `endpoint.json` | `0600` | **`id` and `allowedOrigins`, and nothing else** (the two fixture switches may appear if false). The CDN origins are the only part an operator knows |
+
+**THE ENDPOINT FILE MUST NOT NAME A `resolverUrl`, AND THIS TABLE USED TO SAY IT MUST.** That was the one
+sentence in this document an operator could not act on: `operatorEndpointProblems` refuses `resolverUrl`,
+`directBaseUrl`, `loopbackResolver`, `tokenFile` and every transport knob **by name**, because the resolver's
+address depends on a network namespace the gate creates and an operator cannot predict it. The gate builds
+the effective endpoint from the two fields above and hands *that* to both the preflight and the daemon. The
+same paragraph named the gate secret `gate-secret` while the gate has only ever read `credential`, so a
+corpus assembled from this table would have skipped with 77 for ever while looking complete.
+
+**IT IS NOT THE GENERIC GATE'S DIRECTORY, EITHER.** `deploy/projection-real-provider-gate.sh` reads
+`credential`, `objects.json` and `endpoint.json` from the parent directory, and §6.10 of the acceptance plan
+requires its `endpoint.json` to carry **exactly one** of `resolverUrl` or `directBaseUrl` — precisely what
+this gate refuses. While both gates shared one directory, preparing either one turned the other's honest
+`SKIPPED (77)` into a hard failure, and neither could be prepared without breaking the other.
 
 Templates carrying **no real values**: `deploy/torbox-resolver.template.json`, which carries the
 single accurate command sequence, and `deploy/real-provider-objects.template.json`.

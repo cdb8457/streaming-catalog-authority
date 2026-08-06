@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
-# Three consecutive clean runs of the PATH LIFECYCLE gate (G27's three-server half).
+# Three consecutive clean runs of the REAL TORBOX gate — the only sequence here that ever contacts TorBox.
+#
+# THIS HEADER USED TO DESCRIBE A DIFFERENT GATE. It was a verbatim copy of the path-lifecycle wrapper's, and
+# it told a reader that this sequence turns on three fresh media-server config directories and on set
+# differences between three real media servers' inventories. There is no media server anywhere in this gate.
 #
 # WHY THIS EXISTS AS ITS OWN SCRIPT. "Passing" in `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` means every
 # hard gate holds on THREE CONSECUTIVE RUNS, because one green run is a coincidence. Making that a loop inside
 # the gate itself would hide the most valuable property of the repetition: each run must start from nothing —
-# a fresh throwaway database, a fresh manifest directory, THREE fresh media-server config directories, a fresh
-# mount and a fresh probe cache — and a run that inherited the previous one's state would pass for the wrong
-# reason.
+# a fresh throwaway database, a fresh manifest directory, a fresh resolver process, a fresh mount and a fresh
+# probe cache — and a run that inherited the previous one's state would pass for the wrong reason.
 #
-# ON THIS GATE THE INHERITANCE RISK IS SPECIFIC AND NASTY. Every assertion here is a SET DIFFERENCE between
-# two inventories taken from three real media servers. A media-server config directory that survived into the
-# next run would carry its library, its item ids and its previous catalogue with it — so the "before"
-# inventory of run 2 could contain path B from run 1, the deletion phase would compare against the wrong
-# baseline, and the addition phase could be satisfied by an item that was never added because it never left.
-# Three fresh config directories are what make each run's baseline its own.
+# ON THIS GATE THE INHERITANCE RISK IS SPECIFIC AND NASTY, and it is the PROBE CACHE. A cache directory that
+# survived into the next run would serve that run's reads out of bytes the previous run already fetched, so
+# no link would be minted and TorBox would never be asked anything — and the one gate whose entire purpose is
+# to contact a real provider would report a pass on a run that contacted nothing. A fresh cache per run is
+# what makes each run a real request against the operator's account.
 #
 # A SKIPPED RUN IS NOT A COMPLETED RUN, AND THIS SCRIPT CANNOT SAY OTHERWISE. The gate exits 77 when the host
 # cannot host it. So: runs are COUNTED, the closing message is emitted only when the count reaches the target,
@@ -25,9 +27,9 @@
 # leave behind.
 #
 # WHAT IT IS STILL NOT. Three green runs HERE are three green runs on this host. On Windows and Docker Desktop
-# that is not Phase 1 closure, does not close G27, and SHALL NOT be reported as either; the acceptance plan
-# closes the tranche on a Linux or Unraid host. This script exists so that the same command means the same
-# thing when it is finally run there.
+# that is not Phase 1 closure, does not close the real-provider row, and SHALL NOT be reported as either;
+# the acceptance plan closes the tranche on a Linux or Unraid host. This script exists so that the same
+# command means the same thing when it is finally run there.
 set -uo pipefail
 
 RUNS="${PROJECTION_TORBOX_REAL_GATE_RUNS:-3}"
@@ -74,12 +76,18 @@ echo "$completed of $RUNS consecutive TorBox real-provider runs completed, none 
 echo
 echo "WHAT THIS DOES AND DOES NOT CLOSE."
 echo
-echo "  It proves the TorBox resolver is genuinely in the read path: three objects -- torrent, webdl and"
-echo "  usenet -- each became an ordinary read-only file, was read at an approved window, past 90% of the"
-echo "  object and backwards, and every CDN link was expired and every read recovered. Three consecutive"
-echo "  fresh runs means each started from nothing."
+echo "  THIS MESSAGE USED TO BE THE OFFLINE GATE'S, WORD FOR WORD. It told an operator who had just completed"
+echo "  three real runs against their own TorBox account that the provider had been a fixture, the credential"
+echo "  had been 32 random bytes, and no real account had ever been contacted -- at the exact moment that"
+echo "  stopped being true, and about the one run the whole tranche is waiting on."
 echo
-echo "  IT CLOSES NOTHING ABOUT ANY REAL PROVIDER. The provider was this repository own TorBox fixture and"
-echo "  the credential was 32 random bytes the gate generated. A real TorBox account has never been"
-echo "  contacted. deploy/projection-real-provider-gate.sh is the real run, and it SKIPS with 77 until an"
-echo "  operator supplies inputs."
+echo "  These runs CONTACTED TORBOX. The gate refuses to start without all four operator files, so reaching"
+echo "  this line means a real API key resolved real stable references into real CDN links and the operator's"
+echo "  own objects were read as ordinary read-only files through a FUSE mount: an approved window, a window"
+echo "  past 90% of the object, and a backward seek, each digest compared against one recorded outside the"
+echo "  mount. Three consecutive fresh runs means each started from nothing."
+echo
+echo "  WHAT IT STILL DOES NOT CLOSE. It is this gate and no other. Phase 1 closure is"
+echo "  docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md section 6.1 and every other row in it, and three green"
+echo "  runs on a host that is not Linux or Unraid close nothing at all -- read the run header above for"
+echo "  which host this was. The offline equivalent, which contacts nothing, is npm run go:torbox-mount-gate."

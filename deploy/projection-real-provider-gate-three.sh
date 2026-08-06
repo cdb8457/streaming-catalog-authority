@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
-# Three consecutive clean runs of the PATH LIFECYCLE gate (G27's three-server half).
+# Three consecutive clean runs of the REAL-PROVIDER CORRECTNESS gate (acceptance plan §6.10).
+#
+# THIS HEADER USED TO DESCRIBE A DIFFERENT GATE. It was a verbatim copy of the path-lifecycle wrapper's, and
+# it told a reader that this sequence turns on three fresh media-server config directories and on set
+# differences between three real media servers' inventories. There is no media server anywhere in this gate.
 #
 # WHY THIS EXISTS AS ITS OWN SCRIPT. "Passing" in `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` means every
 # hard gate holds on THREE CONSECUTIVE RUNS, because one green run is a coincidence. Making that a loop inside
 # the gate itself would hide the most valuable property of the repetition: each run must start from nothing —
-# a fresh throwaway database, a fresh manifest directory, THREE fresh media-server config directories, a fresh
-# mount and a fresh probe cache — and a run that inherited the previous one's state would pass for the wrong
-# reason.
+# a fresh throwaway database, a fresh manifest directory, a fresh mount and a fresh probe cache — and a run
+# that inherited the previous one's state would pass for the wrong reason.
 #
-# ON THIS GATE THE INHERITANCE RISK IS SPECIFIC AND NASTY. Every assertion here is a SET DIFFERENCE between
-# two inventories taken from three real media servers. A media-server config directory that survived into the
-# next run would carry its library, its item ids and its previous catalogue with it — so the "before"
-# inventory of run 2 could contain path B from run 1, the deletion phase would compare against the wrong
-# baseline, and the addition phase could be satisfied by an item that was never added because it never left.
-# Three fresh config directories are what make each run's baseline its own.
+# ON THIS GATE THE INHERITANCE RISK IS SPECIFIC AND NASTY, and it is the PROBE CACHE. Nearly every assertion
+# here is an "at most", and every one of them is satisfied by a run that fetched nothing. A cache directory
+# that survived into the next run would serve that run's reads out of bytes the previous run already
+# fetched — zero retries, zero refreshes, zero contacts — and `RP5-bytes-from-provider` exists precisely
+# because that shape otherwise reports a clean pass. A fresh cache per run is what keeps it honest.
 #
 # A SKIPPED RUN IS NOT A COMPLETED RUN, AND THIS SCRIPT CANNOT SAY OTHERWISE. The gate exits 77 when the host
 # cannot host it. So: runs are COUNTED, the closing message is emitted only when the count reaches the target,
@@ -25,9 +27,9 @@
 # leave behind.
 #
 # WHAT IT IS STILL NOT. Three green runs HERE are three green runs on this host. On Windows and Docker Desktop
-# that is not Phase 1 closure, does not close G27, and SHALL NOT be reported as either; the acceptance plan
-# closes the tranche on a Linux or Unraid host. This script exists so that the same command means the same
-# thing when it is finally run there.
+# that is not Phase 1 closure, does not close the real-provider row, and SHALL NOT be reported as either;
+# the acceptance plan closes the tranche on a Linux or Unraid host. This script exists so that the same
+# command means the same thing when it is finally run there.
 set -uo pipefail
 
 RUNS="${PROJECTION_REAL_PROVIDER_GATE_RUNS:-3}"

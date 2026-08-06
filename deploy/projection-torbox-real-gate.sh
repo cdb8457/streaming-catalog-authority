@@ -48,7 +48,16 @@ GATE_SKIP_STATUS=77
 
 # THE APPROVED PATH, AND THE ONLY PLACE THIS GATE EVER LOOKS. It does not search the filesystem for anything
 # that might be a credential, does not read one from the environment, and does not prompt.
-INPUT_DIR="${PROJECTION_REAL_PROVIDER_INPUT_DIR:-/mnt/user/appdata/catalog/secrets/real-provider}"
+#
+# IT IS ITS OWN DIRECTORY, AND THAT IS A REPAIR RATHER THAN TIDINESS. This gate and the GENERIC real-provider
+# gate both read `credential`, `objects.json` and `endpoint.json`, and they both used to read them from
+# `/mnt/user/appdata/catalog/secrets/real-provider`. Their `endpoint.json` schemas are MUTUALLY EXCLUSIVE:
+# the generic gate refuses a file naming neither `resolverUrl` nor `directBaseUrl`, and this gate refuses one
+# naming either, because the resolver URL depends on a namespace it creates. So an operator who prepared for
+# one turned the OTHER gate's honest `SKIPPED (77)` into a hard FAILURE, and the two could never be prepared
+# at once. `credential` did not even mean the same thing in the two places: here it is the gate secret the
+# daemon presents to the loopback resolver, there it is the credential sent to the provider.
+INPUT_DIR="${PROJECTION_TORBOX_INPUT_DIR:-/mnt/user/appdata/catalog/secrets/real-provider/torbox}"
 TORBOX_CREDENTIAL="$INPUT_DIR/torbox-credential"
 GATE_SECRET="$INPUT_DIR/credential"
 OBJECTS_FILE="$INPUT_DIR/objects.json"
@@ -91,6 +100,9 @@ if [ -n "$missing" ]; then
   echo "      the CORRECT and expected outcome on any machine nobody has deliberately prepared." >&2
   echo "" >&2
   echo "      It is not a pass and must not be reported as one. Phase 1 stays open." >&2
+  echo "      The directory this gate looks in: $INPUT_DIR" >&2
+  echo "      (its own, NOT the generic real-provider gate's — the two endpoint.json schemas exclude" >&2
+  echo "      each other, so sharing one directory made preparing either break the other)" >&2
   echo "      What to place: deploy/torbox-resolver.template.json" >&2
   echo "      To exercise the whole path offline instead: npm run go:torbox-mount-gate:three" >&2
   exit "$GATE_SKIP_STATUS"
@@ -121,29 +133,46 @@ process.stdin.on('end', () => {
 JQ
 
 cat > "$WORK/register.cjs" <<'REGISTER'
-// Emits the register commands into a 0600 shell file, because a TorBox stable reference identifies an item
+// Emits the whole registration as ONE 0600 BATCH FILE, because a TorBox stable reference identifies an item
 // in the operator's account and argv is world-readable.
+//
+// WHY THE PREVIOUS SHAPE DID NOT DO WHAT ITS OWN COMMENT CLAIMED. It wrote the register COMMANDS into a 0600
+// shell file and then ran them. A 0600 file protects the FILE; it does nothing for the command lines built
+// from it -- so every `register entry --source http-range:<id>:torbox:<kind>:<item>:<file>` spent its whole
+// lifetime in the process table with the operator's reference in argv, visible to every user on the host
+// through `ps`. That is precisely the exposure the file mode was said to prevent.
+//
+// `projection-register-cli batch --file` takes the entire corpus as ONE PATH argument. It calls the same
+// `registerVersion` and `registerEntry` the flag form calls -- there is no second write path -- and commits
+// them in a single transaction, so a refused row cannot leave a half-registered corpus behind either. The
+// reference reaches a 0600 file and stops there.
 const { readFileSync, writeFileSync, chmodSync } = require('node:fs');
+const { dirname, join } = require('node:path');
 const [, , out, objectsPath, endpointPath] = process.argv;
 const objects = JSON.parse(readFileSync(objectsPath, 'utf8'));
 const endpoint = JSON.parse(readFileSync(endpointPath, 'utf8'));
-const q = (value) => JSON.stringify(String(value));
-const cli = 'npx tsx src/ops/projection-register-cli.ts';
-const lines = ['#!/usr/bin/env bash', 'set -euo pipefail',
-  cli + ' root --id ' + q(endpoint.id) + ' --kind http-range'];
+const batch = { versions: [], entries: [] };
 objects.forEach((object, index) => {
   const key = 'tbr-version-' + (index + 1);
-  const item = '00000000-0000-4000-8000-' + String(index + 1).padStart(12, '0');
-  lines.push(cli + ' version --key ' + key + ' --size ' + object.sizeBytes
-    + ' --mtime 2026-01-01T00:00:00.000Z');
-  lines.push(cli + ' entry --item ' + q(item) + ' --version-key ' + key
-    + ' --path ' + q(object.label + '.bin')
-    + ' --source ' + q('http-range:' + endpoint.id + ':' + object.ref));
+  batch.versions.push({ key, size: object.sizeBytes, mtime: '2026-01-01T00:00:00.000Z' });
+  batch.entries.push({
+    item: '00000000-0000-4000-8000-' + String(index + 1).padStart(12, '0'),
+    versionKey: key,
+    path: object.label + '.bin',
+    // A SOURCE IS kind:rootId:objectRef, and the register CLI splits on the FIRST TWO colons only -- so the
+    // TorBox reference keeps its own colons intact as the objectRef.
+    sources: ['http-range:' + endpoint.id + ':' + object.ref],
+  });
 });
-const script = out.replace(/[^/]*$/, '') + 'register.sh';
-writeFileSync(script, lines.join('\n') + '\n');
-chmodSync(script, 0o600);
-writeFileSync(out, JSON.stringify({ objects: objects.length }, null, 2) + '\n');
+// RESOLVED WITH THE PLATFORM'S OWN SEPARATOR RULE rather than a regex that assumes one: a path-shaped
+// string containing no forward slash stripped to nothing, and the file carrying the operator's stable
+// references landed in the current working directory instead of the 0700 run tree.
+const file = join(dirname(out), 'register-batch.json');
+writeFileSync(file, JSON.stringify(batch, null, 2) + '\n');
+chmodSync(file, 0o600);
+// THE ROOT ID IS NOT A SECRET and is validated to be a boring slug, so it may travel as a flag. The
+// reference never does.
+writeFileSync(out, JSON.stringify({ objects: objects.length, rootId: endpoint.id }, null, 2) + '\n');
 REGISTER
 
 cat > "$WORK/config.cjs" <<'CONFIG'
@@ -205,20 +234,47 @@ const { createHash } = require('node:crypto');
 const [, , objectsPath, mountDir, out] = process.argv;
 const objects = JSON.parse(readFileSync(objectsPath, 'utf8'));
 
-function clampOffset(offset, length, size) { return Math.max(0, Math.min(offset, size - length)); }
+// THE WINDOW LENGTH GIVES WAY, NEVER THE OFFSET — and that is the repair.
+//
+// This used to clamp a fixed 64 KiB window back inside the object, which quietly destroyed both properties
+// the two reads are named for. For any object smaller than about 728 KiB the clamp pulled the "past 90%"
+// read BELOW the 90% line, so a gate that said it read past 90% did not; and for an object of 64 KiB or
+// less it pulled that offset to ZERO, where the tail read became byte-for-byte identical to the backward
+// read and the distinct-windows check FAILED A CORRECT MOUNT. The operator supplies the sizes here, so
+// neither case is hypothetical the way it is against a fixture whose sizes the gate chooses.
+//
+// So the offsets are computed from the object and only the LENGTHS are bounded: the tail always starts past
+// 90%, the backward read always ends at or before where the tail begins, and both stay inside the object.
+function tailWindow(size) {
+  const offset = Math.floor(size * 0.91);
+  return { offset, length: Math.max(1, Math.min(65536, size - offset)) };
+}
+function backWindow(size, tailOffset) {
+  return { offset: 0, length: Math.max(1, Math.min(65536, tailOffset > 0 ? tailOffset : size)) };
+}
+
+// STREAMED, NEVER ALLOCATED WHOLE. Every window here is 64 KiB except one: the WHOLE-OBJECT read taken
+// whenever an operator records a `sha256`. Nothing stops that object being a 40 GB film -- `probeDigests`
+// exist for exactly that case but are not compulsory -- and `Buffer.alloc(40e9)` fails with a message about
+// a typed array length, halfway through the run, after TorBox has already served the bytes. Digesting a
+// chunk at a time costs the same for a 64 KiB window and makes the unbounded one work.
+const READ_CHUNK = 1024 * 1024;
 
 function windowAt(path, offset, length) {
   const started = Date.now();
   const fd = openSync(path, 'r');
   try {
-    const buffer = Buffer.alloc(length);
+    const hash = createHash('sha256');
+    const buffer = Buffer.allocUnsafe(Math.min(length, READ_CHUNK));
     let filled = 0;
     while (filled < length) {
-      const got = readSync(fd, buffer, filled, length - filled, offset + filled);
+      const want = Math.min(buffer.length, length - filled);
+      const got = readSync(fd, buffer, 0, want, offset + filled);
       if (got === 0) break;
+      hash.update(buffer.subarray(0, got));
       filled += got;
     }
-    return { bytes: buffer.subarray(0, filled), elapsedMs: Date.now() - started };
+    return { bytesRead: filled, sha256: hash.digest('hex'), elapsedMs: Date.now() - started };
   } finally { closeSync(fd); }
 }
 
@@ -230,37 +286,47 @@ for (const object of objects) {
   // THE OPERATOR'S APPROVED WINDOWS, against digests recorded outside the mount before the run.
   for (const probe of object.probeDigests ?? []) {
     const got = windowAt(path, probe.offset, probe.length);
-    const digest = createHash('sha256').update(got.bytes).digest('hex');
-    const ok = got.bytes.length === probe.length && digest === probe.sha256;
+    const ok = got.bytesRead === probe.length && got.sha256 === probe.sha256;
     if (!ok) problems += 1;
-    results.push({ label: object.label, kind: 'probe', bytes: got.bytes.length, match: ok,
+    results.push({ label: object.label, kind: 'probe', bytes: got.bytesRead, match: ok,
       elapsedMs: got.elapsedMs });
   }
   if (object.sha256) {
     const whole = windowAt(path, 0, object.sizeBytes);
-    const ok = createHash('sha256').update(whole.bytes).digest('hex') === object.sha256;
+    const ok = whole.bytesRead === object.sizeBytes && whole.sha256 === object.sha256;
     if (!ok) problems += 1;
-    results.push({ label: object.label, kind: 'whole', bytes: whole.bytes.length, match: ok,
+    results.push({ label: object.label, kind: 'whole', bytes: whole.bytesRead, match: ok,
       elapsedMs: whole.elapsedMs });
   }
 
-  // PAST 90%, then BACKWARDS to a lower offset than the one just read.
-  const tailOffset = clampOffset(Math.floor(object.sizeBytes * 0.91), 65536, object.sizeBytes);
-  const tail = windowAt(path, tailOffset, Math.min(65536, object.sizeBytes - tailOffset));
-  if (tail.bytes.length === 0) problems += 1;
-  results.push({ label: object.label, kind: 'tail', bytes: tail.bytes.length,
-    match: tail.bytes.length > 0, elapsedMs: tail.elapsedMs });
+  // PAST 90%, then BACKWARDS to a lower offset than the one just read. THE OFFSETS ARE RECORDED, because a
+  // read that claims to be past 90% and is not is the kind of thing a report should make checkable rather
+  // than assertable only by reading the code that produced it.
+  const tailAt = tailWindow(object.sizeBytes);
+  const tail = windowAt(path, tailAt.offset, tailAt.length);
+  const tailOk = tail.bytesRead === tailAt.length;
+  if (!tailOk) problems += 1;
+  results.push({ label: object.label, kind: 'tail', bytes: tail.bytesRead, expected: tailAt.length,
+    offset: tailAt.offset, pastNinetyPercent: tailAt.offset >= Math.floor(object.sizeBytes * 0.9),
+    match: tailOk, elapsedMs: tail.elapsedMs });
 
-  const back = windowAt(path, 0, Math.min(65536, object.sizeBytes));
-  if (back.bytes.length === 0) problems += 1;
-  results.push({ label: object.label, kind: 'backward', bytes: back.bytes.length,
-    match: back.bytes.length > 0, elapsedMs: back.elapsedMs });
+  const backAt = backWindow(object.sizeBytes, tailAt.offset);
+  const back = windowAt(path, backAt.offset, backAt.length);
+  const backOk = back.bytesRead === backAt.length;
+  if (!backOk) problems += 1;
+  results.push({ label: object.label, kind: 'backward', bytes: back.bytesRead, expected: backAt.length,
+    offset: backAt.offset, match: backOk, elapsedMs: back.elapsedMs });
 
-  const tailDigest = createHash('sha256').update(tail.bytes).digest('hex');
-  const backDigest = createHash('sha256').update(back.bytes).digest('hex');
-  if (tailDigest === backDigest) {
+  // THE TWO WINDOWS MUST DIFFER, or the mount is serving one buffer for every offset. It is asserted only
+  // where the object is actually big enough to hold two DISJOINT windows: below that the two reads are the
+  // same bytes by arithmetic, and failing a correct mount for it is what the old clamp did.
+  const disjoint = tailAt.offset >= backAt.offset + backAt.length;
+  if (disjoint && tail.sha256 === back.sha256) {
     problems += 1;
     results.push({ label: object.label, kind: 'distinct-windows', match: false });
+  } else if (!disjoint) {
+    results.push({ label: object.label, kind: 'distinct-windows', match: true, skipped: true,
+      note: 'the object is too small to hold two disjoint windows; distinctness is not asserted' });
   }
 }
 writeFileSync(out, JSON.stringify({ results, problems }, null, 2) + '\n');
@@ -277,6 +343,33 @@ const req = http.request({ host: '127.0.0.1', port, path: '/resolve', method: 'P
 req.on('error', () => process.exit(1));
 req.end();
 PROBE
+
+cat > "$WORK/probe-reachable.cjs" <<'REACHABLE'
+// Can anything on the gate network open a TCP connection to the resolver's port? This measures the
+// TRANSPORT and nothing above it.
+//
+//   exit 0  a connection was ESTABLISHED       -> the resolver is reachable, which is the failure
+//   exit 1  the connection was REFUSED          -> the port is closed on a host that exists: proof
+//   exit 2  anything else, including a name that did not resolve or a connection that hung
+//
+// WHY THIS REPLACED `wget`. The check used to be `wget -q -O /dev/null http://<daemon>:<port>/resolve`, and
+// wget exits non-zero for a refused connection AND for every HTTP error status alike. The resolver answers
+// 404 to a GET and 401 to an unauthenticated POST — so a resolver that WAS reachable from the gate network
+// produced exactly the same exit code as one that was not, and the assertion could never have failed. It
+// was a gate that could only pass.
+//
+// THE THIRD OUTCOME IS WHY THERE ARE THREE. A probe whose name did not resolve, or that hung, has measured
+// nothing; folding that into "unreachable" would restore the same unfalsifiable pass by another route.
+const net = require('node:net');
+const [, , host, port] = process.argv;
+const socket = net.connect({ host, port: Number(port) });
+socket.setTimeout(3000);
+let settled = false;
+const done = (code) => { if (settled) return; settled = true; socket.destroy(); process.exit(code); };
+socket.on('connect', () => done(0));
+socket.on('timeout', () => done(2));
+socket.on('error', (error) => done(error.code === 'ECONNREFUSED' || error.code === 'ECONNRESET' ? 1 : 2));
+REACHABLE
 
 cat > "$WORK/scan.cjs" <<'SCAN'
 // Searches everything the run wrote for a secret. The needle arrives as a FILE PATH so it never enters argv,
@@ -364,8 +457,11 @@ docker network create "$NETWORK" >/dev/null 2>&1 || true
 # ----------------------------------------------------------------------------------------------------------
 step "publishing a generation whose sources are the operator's TorBox stable references"
 # ----------------------------------------------------------------------------------------------------------
-# The register script was written during preflight, before anything was built.
-bash "$WORK/out/register.sh"
+# The register BATCH FILE was written during preflight, before anything was built. Only its PATH and the
+# endpoint's boring slug reach argv; the stable references stay inside the 0600 file.
+ROOT_ID="$(node "$REL/jq.cjs" rootId < "$WORK/out/register.json")"
+npx tsx src/ops/projection-register-cli.ts root --id "$ROOT_ID" --kind http-range
+npx tsx src/ops/projection-register-cli.ts batch --file "$REL/out/register-batch.json"
 npx tsx src/ops/projection-publish-cli.ts --manifest-dir "$REL/manifest" > "$WORK/out/publish.json"
 test "$(node "$REL/jq.cjs" outcome < "$WORK/out/publish.json")" = "published" \
   || die "the generation was not published"
@@ -435,12 +531,21 @@ done
 test "$resolver_ready" -eq 1 || { logs_tail "$RESOLVER_CONTAINER"; die "the resolver never came up"; }
 echo "  the resolver answers on the shared loopback and refuses an unauthenticated request"
 
-# THE RESOLVER IS NOT REACHABLE FROM ANYWHERE ELSE, and that is asserted rather than assumed.
-if docker run --rm --network "$NETWORK" "$VERIFY_IMAGE" \
-  timeout 3 wget -q -O /dev/null "http://$MOUNT_CONTAINER:${RESOLVER_PORT}/resolve" >/dev/null 2>&1; then
-  die "the resolver answered a request from the gate network; it must be loopback-only"
-fi
-echo "  and is unreachable from the gate network"
+# THE RESOLVER IS NOT REACHABLE FROM ANYWHERE ELSE, and that is MEASURED rather than assumed — at the
+# transport, where the answer is unambiguous, rather than through an HTTP client whose exit code cannot tell
+# a refused connection from a 404.
+set +e
+docker run --rm --network "$NETWORK" -v "$PWD:/workspace" -w /workspace \
+  -e npm_config_update_notifier=false "$NODE_IMAGE" \
+  node "/workspace/$REL/probe-reachable.cjs" "$MOUNT_CONTAINER" "${RESOLVER_PORT}" >/dev/null 2>&1
+resolver_reach=$?
+set -e
+case "$resolver_reach" in
+  0) die "the resolver accepted a TCP connection from the gate network; it must be loopback-only" ;;
+  1) echo "  and is unreachable from the gate network: the connection was REFUSED on a host that resolves" ;;
+  *) die "the resolver's reachability could not be determined (probe exit $resolver_reach). A gate that \
+could not take the measurement must not report the property as proven" ;;
+esac
 
 echo "  waiting for the namespace to become visible"
 ready=0

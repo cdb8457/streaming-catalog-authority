@@ -1,5 +1,6 @@
 import {
-  existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync,
+  existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -160,7 +161,16 @@ test('the writing module creates no SYMBOLIC link, no media link and no director
   // The atomic-write shape, asserted by the calls it must make rather than by the comment that describes it.
   assert(source.includes('O_EXCL'), 'the temporary file is created exclusively');
   assert(source.includes('fsyncSync(fd)'), 'and flushed before the publish');
-  assert(source.includes('renameSync(temporary, destination)'), 'and the OVERWRITE path is a rename, which replaces');
+  // THE OVERWRITE PATH IS STILL A RENAME, and it is still the ONLY rename in the module. It now reaches the
+  // syscall through the replace surface so the win32-only retry can be proved on any host, so the shape is
+  // asserted where the surface is built rather than at the call site — and the count is what keeps a second,
+  // unretried rename from appearing somewhere else.
+  assert(source.includes('rename: (from: string, to: string) => { renameSync(from, to); }'),
+    'and the OVERWRITE path is a rename, which replaces');
+  assertEq([...source.matchAll(/(?<![A-Za-z.])renameSync\(/g)].length, 1,
+    'and there is exactly ONE rename call in the module');
+  assert(source.includes("surface.platform === 'win32'"),
+    'and the replacing retry is gated on the one platform whose rename fails while a file is merely open');
   assert(source.includes('lstatSync(output.path)'), 'and the destination is examined with lstat, not stat');
   assert(source.includes('fchmod: (fd, mode) => fchmodSync(fd, mode)'),
     'and the published file is made readable on the DESCRIPTOR, so a container running as another uid can import it');
@@ -475,6 +485,130 @@ test('two no-overwrite publishers cannot both succeed, and the winner is complet
   publishTemporary(third, destination, true);
   assertEq(readFileSync(destination, 'utf8'), 'DELIBERATE REPLACEMENT\n', 'an explicit overwrite replaces');
   rmSync(destination);
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// A REPLACING PUBLISH IS RETRIED ON WINDOWS AND NOWHERE ELSE, AND BOTH HALVES ARE PROVED HERE.
+//
+// THE DEFECT. On Windows a replacing rename returns ERROR_ACCESS_DENIED — `EPERM` — while ANY other handle is
+// open on the destination, and a virus scanner opens a file this process has just written. It is transient
+// and it is not rare: under concurrent load this very suite failed in 6 of 72 runs at the merge base, and the
+// operator-visible result was a produce that deleted its own finished snapshot and reported one opaque
+// sentence with no errno in it. Instrumenting the retry showed every occurrence clearing on attempt 29, 32 or
+// 45 — 0.6 to 0.9 seconds — so the budget is three seconds and the code is now named in the message.
+//
+// WHY THESE ARE DRIVEN THROUGH A SURFACE. The retry is win32-only on purpose: on POSIX `rename(2)` cannot
+// fail because somebody has the destination open, so `EPERM` there is a real refusal that must stay terminal.
+// A suite running on Linux would exercise neither branch, and a suite running on Windows would exercise only
+// one — which is the same reason the mode surface beside it exists.
+// ---------------------------------------------------------------------------------------------------------
+
+test('a Windows sharing violation is retried until it clears, and the publish succeeds', () => {
+  const destination = join(OUT, 'retried.json');
+  const temporary = join(OUT, '.retried.json.tmp');
+  writeFileSync(temporary, 'PUBLISHED AFTER A SCANNER LET GO\n', 'utf8');
+
+  let attempts = 0;
+  let paused = 0;
+  publishTemporary(temporary, destination, true, {
+    platform: 'win32',
+    pause: () => { paused += 1; },
+    rename: (from, to) => {
+      attempts += 1;
+      // Three refusals, exactly the shape Windows produces, and then the scanner lets go.
+      if (attempts <= 3) throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+      renameSync(from, to);
+    },
+  });
+
+  assertEq(attempts, 4, 'the publish retried until the rename went through');
+  assertEq(paused, 3, 'and it paused between attempts rather than spinning');
+  assertEq(readFileSync(destination, 'utf8'), 'PUBLISHED AFTER A SCANNER LET GO\n',
+    'and the complete bytes are the ones at the destination name');
+  assertEq(existsSync(temporary), false, 'and the temporary name is gone');
+  rmSync(destination);
+});
+
+test('a POSIX EPERM is NOT retried, because there it is a real refusal', () => {
+  // THE HALF THAT MATTERS MOST. On POSIX these codes mean a directory without write permission, a mount
+  // point, a sticky-bit refusal — permanent, correct answers. Retrying them 150 times would turn a
+  // diagnosable error into an intermittent-looking one three seconds later.
+  const destination = join(OUT, 'posix-refused.json');
+  const temporary = join(OUT, '.posix-refused.json.tmp');
+  writeFileSync(temporary, 'NEVER PUBLISHED\n', 'utf8');
+
+  let attempts = 0;
+  let refused = '';
+  try {
+    publishTemporary(temporary, destination, true, {
+      platform: 'linux',
+      pause: () => { throw new Error('a POSIX refusal must not pause for a retry'); },
+      rename: () => {
+        attempts += 1;
+        throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+      },
+    });
+  } catch (err) {
+    refused = err instanceof SnapshotProducePathError ? err.message : `unexpected: ${(err as Error).message}`;
+  }
+
+  assertEq(attempts, 1, 'a POSIX EPERM is answered once and believed');
+  assert(refused.includes('(EPERM)'),
+    `the refusal must name the errno it got, got: ${refused || 'no refusal at all'}`);
+  assertEq(existsSync(destination), false, 'and nothing was published');
+  assertEq(existsSync(temporary), false, 'and the temporary was removed');
+});
+
+test('a non-sharing failure on Windows is not retried either, and names its code', () => {
+  const destination = join(OUT, 'nospace.json');
+  const temporary = join(OUT, '.nospace.json.tmp');
+  writeFileSync(temporary, 'NEVER PUBLISHED\n', 'utf8');
+
+  let attempts = 0;
+  let refused = '';
+  try {
+    publishTemporary(temporary, destination, true, {
+      platform: 'win32',
+      pause: () => { throw new Error('a full disk must not be waited out'); },
+      rename: () => {
+        attempts += 1;
+        throw Object.assign(new Error('ENOSPC: no space left on device, rename'), { code: 'ENOSPC' });
+      },
+    });
+  } catch (err) {
+    refused = err instanceof SnapshotProducePathError ? err.message : `unexpected: ${(err as Error).message}`;
+  }
+
+  assertEq(attempts, 1, 'only the sharing codes are transient; a full disk is not');
+  assert(refused.includes('(ENOSPC)'), `the refusal must name the errno, got: ${refused}`);
+  assertEq(existsSync(temporary), false, 'and the temporary was removed');
+});
+
+test('the retry is bounded, and an unclearing sharing violation is still refused', () => {
+  const destination = join(OUT, 'never-clears.json');
+  const temporary = join(OUT, '.never-clears.json.tmp');
+  writeFileSync(temporary, 'NEVER PUBLISHED\n', 'utf8');
+
+  let attempts = 0;
+  let refused = '';
+  try {
+    publishTemporary(temporary, destination, true, {
+      platform: 'win32',
+      pause: () => undefined,
+      rename: () => {
+        attempts += 1;
+        throw Object.assign(new Error('EBUSY: resource busy or locked, rename'), { code: 'EBUSY' });
+      },
+    });
+  } catch (err) {
+    refused = err instanceof SnapshotProducePathError ? err.message : `unexpected: ${(err as Error).message}`;
+  }
+
+  assert(attempts > 1 && attempts <= 200,
+    `the retry must be bounded and must have happened; it made ${attempts} attempts`);
+  assert(refused.includes('(EBUSY)'), `and must still refuse, naming the errno; got: ${refused}`);
+  assertEq(existsSync(destination), false, 'and publish nothing');
+  assertEq(existsSync(temporary), false, 'and remove the temporary');
 });
 
 test('the no-replace claim is made only on the path that actually keeps it', () => {

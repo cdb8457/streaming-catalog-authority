@@ -128,34 +128,37 @@ writeFileSync(out, JSON.stringify(manifest, null, 2) + '\n');
 FAKEOBJECTS
 
 cat > "$WORK/register.cjs" <<'REGISTER'
-// Emits the register commands for the operator's objects into a shell file at mode 0600.
+// Emits the operator's whole registration as ONE batch file at mode 0600.
 //
-// WHY A FILE RATHER THAN INLINE COMMANDS. The stable reference is an argument to `register entry`, and argv
-// is world-readable. Writing the commands to a 0600 file and running that keeps the reference out of every
-// process listing taken while the gate runs.
+// WHY A FILE RATHER THAN INLINE COMMANDS, AND WHY IT IS NO LONGER A SHELL SCRIPT. The stable reference is an
+// argument to `register entry`, and argv is world-readable. Writing the COMMANDS to a 0600 file and running
+// that protected the file and nothing else: each command it ran still carried the reference in argv, visible
+// to every user on the host through `ps` for as long as it lived. `batch --file` takes the corpus as one
+// PATH argument, calls the same `registerVersion` and `registerEntry` the flag form calls, and commits them
+// in a single transaction, so a refused row cannot leave a half-registered corpus behind either.
 const { readFileSync, writeFileSync, chmodSync } = require('node:fs');
+const { dirname, join } = require('node:path');
 const [, , out, objectsPath, endpointPath] = process.argv;
 const objects = JSON.parse(readFileSync(objectsPath, 'utf8'));
 const endpoint = JSON.parse(readFileSync(endpointPath, 'utf8'));
-const q = (value) => JSON.stringify(String(value));
-const cli = 'npx tsx src/ops/projection-register-cli.ts';
-const lines = ['#!/usr/bin/env bash', 'set -euo pipefail',
-  cli + ' root --id ' + q(endpoint.id) + ' --kind http-range'];
+const batch = { versions: [], entries: [] };
 objects.forEach((object, index) => {
   const key = 'rp-version-' + (index + 1);
-  const item = '00000000-0000-4000-8000-' + String(index + 1).padStart(12, '0');
-  lines.push(cli + ' version --key ' + key + ' --size ' + object.sizeBytes
-    + ' --mtime 2026-01-01T00:00:00.000Z');
-  lines.push(cli + ' entry --item ' + q(item) + ' --version-key ' + key
-    + ' --path ' + q(object.label + '.bin')
+  batch.versions.push({ key, size: object.sizeBytes, mtime: '2026-01-01T00:00:00.000Z' });
+  batch.entries.push({
+    item: '00000000-0000-4000-8000-' + String(index + 1).padStart(12, '0'),
+    versionKey: key,
+    path: object.label + '.bin',
     // A SOURCE IS kind:rootId:objectRef and nothing else -- there is no field for a URL, a token or a
     // header, which is the registry's own way of making an unprintable value unstorable.
-    + ' --source ' + q('http-range:' + endpoint.id + ':' + object.ref));
+    sources: ['http-range:' + endpoint.id + ':' + object.ref],
+  });
 });
-const script = out.replace(/[^/]*$/, '') + 'register.sh';
-writeFileSync(script, lines.join('\n') + '\n');
-chmodSync(script, 0o600);
-writeFileSync(out, JSON.stringify({ objects: objects.length }, null, 2) + '\n');
+// RESOLVED WITH THE PLATFORM'S OWN SEPARATOR RULE rather than a regex that assumes one.
+const file = join(dirname(out), 'register-batch.json');
+writeFileSync(file, JSON.stringify(batch, null, 2) + '\n');
+chmodSync(file, 0o600);
+writeFileSync(out, JSON.stringify({ objects: objects.length, rootId: endpoint.id }, null, 2) + '\n');
 REGISTER
 
 cat > "$WORK/config.cjs" <<'CONFIG'
@@ -447,7 +450,9 @@ fi
 step "publishing a generation naming the operator's objects, and mounting it"
 # ----------------------------------------------------------------------------------------------------------
 node "$REL/register.cjs" "$REL/out/register.json" "$OBJECTS" "$ENDPOINT"
-bash "$WORK/out/register.sh"
+# ONLY A PATH AND A BORING SLUG REACH argv. The references stay inside the 0600 batch file.
+register root --id "$(node "$REL/jq.cjs" rootId < "$WORK/out/register.json")" --kind http-range
+register batch --file "$REL/out/register-batch.json"
 publish > "$WORK/out/publish.json"
 test "$(field outcome < "$WORK/out/publish.json")" = "published" || die "the generation was not published"
 

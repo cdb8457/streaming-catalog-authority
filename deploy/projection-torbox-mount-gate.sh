@@ -116,32 +116,36 @@ req.end();
 PROBE
 
 cat > "$WORK/register.cjs" <<'REGISTER'
-// Emits the register commands into a 0600 shell file.
+// Emits the whole registration as ONE 0600 BATCH FILE.
 //
-// WHY A FILE. The stable reference is an argument to `register entry`, and argv is world-readable. A
-// reference identifies an item in somebody's TorBox account, so it stays out of every process listing.
+// WHY A FILE, AND WHY IT IS NOW A BATCH FILE RATHER THAN A SHELL SCRIPT. The stable reference identifies an
+// item in somebody's TorBox account and argv is world-readable. This used to write the register COMMANDS
+// into a 0600 shell file and then run them -- which protected the FILE and left every reference in the
+// process table for the lifetime of each `register entry`, exactly the exposure the mode was said to
+// prevent. `batch --file` takes the corpus as one PATH argument, calls the same `registerVersion` and
+// `registerEntry` the flag form calls, and commits them in one transaction.
 const { readFileSync, writeFileSync, chmodSync } = require('node:fs');
+const { dirname, join } = require('node:path');
 const [, , out, objectsPath] = process.argv;
 const objects = JSON.parse(readFileSync(objectsPath, 'utf8'));
-const q = (value) => JSON.stringify(String(value));
-const cli = 'npx tsx src/ops/projection-register-cli.ts';
-const lines = ['#!/usr/bin/env bash', 'set -euo pipefail',
-  cli + ' root --id torbox --kind http-range'];
+const batch = { versions: [], entries: [] };
 objects.forEach((object, index) => {
   const key = 'tb-version-' + (index + 1);
-  const item = '00000000-0000-4000-8000-' + String(index + 1).padStart(12, '0');
-  lines.push(cli + ' version --key ' + key + ' --size ' + object.sizeBytes
-    + ' --mtime 2026-01-01T00:00:00.000Z');
-  // A SOURCE IS kind:rootId:objectRef, and the register CLI splits on the FIRST TWO colons only -- so the
-  // TorBox reference keeps its own colons intact as the objectRef.
-  lines.push(cli + ' entry --item ' + q(item) + ' --version-key ' + key
-    + ' --path ' + q(object.label + '.bin')
-    + ' --source ' + q('http-range:torbox:' + object.ref));
+  batch.versions.push({ key, size: object.sizeBytes, mtime: '2026-01-01T00:00:00.000Z' });
+  batch.entries.push({
+    item: '00000000-0000-4000-8000-' + String(index + 1).padStart(12, '0'),
+    versionKey: key,
+    path: object.label + '.bin',
+    // A SOURCE IS kind:rootId:objectRef, and the register CLI splits on the FIRST TWO colons only -- so the
+    // TorBox reference keeps its own colons intact as the objectRef.
+    sources: ['http-range:torbox:' + object.ref],
+  });
 });
-const script = out.replace(/[^/]*$/, '') + 'register.sh';
-writeFileSync(script, lines.join('\n') + '\n');
-chmodSync(script, 0o600);
-writeFileSync(out, JSON.stringify({ objects: objects.length }, null, 2) + '\n');
+// RESOLVED WITH THE PLATFORM'S OWN SEPARATOR RULE rather than a regex that assumes one.
+const file = join(dirname(out), 'register-batch.json');
+writeFileSync(file, JSON.stringify(batch, null, 2) + '\n');
+chmodSync(file, 0o600);
+writeFileSync(out, JSON.stringify({ objects: objects.length, rootId: 'torbox' }, null, 2) + '\n');
 REGISTER
 
 cat > "$WORK/verify.cjs" <<'VERIFY'
@@ -345,7 +349,9 @@ echo "  the fixture is serving all three source kinds, and has emitted its diges
 step "publishing a generation whose sources are TORBOX STABLE REFERENCES"
 # ----------------------------------------------------------------------------------------------------------
 node "$REL/register.cjs" "$REL/out/register.json" "$REL/out/torbox-objects.json"
-bash "$WORK/out/register.sh"
+# ONLY A PATH AND A BORING SLUG REACH argv. The references stay inside the 0600 batch file.
+register root --id "$(node "$REL/jq.cjs" rootId < "$WORK/out/register.json")" --kind http-range
+register batch --file "$REL/out/register-batch.json"
 publish > "$WORK/out/publish.json"
 test "$(field outcome < "$WORK/out/publish.json")" = "published" || die "the generation was not published"
 test "$(field entryCount < "$WORK/out/publish.json")" = "3" || die "the generation did not name three entries"
