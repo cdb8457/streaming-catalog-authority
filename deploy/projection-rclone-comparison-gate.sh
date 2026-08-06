@@ -223,13 +223,51 @@ cat > "$WORK/expect.cjs" <<'EXPECT'
 // THE CANARY IS EXCLUDED. It is registered at the endpoint and lives outside the library root on purpose, so
 // the readiness probe can check range semantics without putting a byte on a corpus object and destroying the
 // cold measurement before the gate has done anything.
+//
+// BOTH REFERENCES MUST MATCH A REGISTERED OBJECT, AND THE DOCUMENT MUST END UP WITH AN ANCHOR.
+//
+// THE DEFECT THIS CLOSES, MEASURED BY RUNNING IT. `canaryRef` and `barrierRef` were compared and never
+// checked. A canary reference that matched nothing skipped nothing, so THE CANARY — the one object this
+// gate deliberately reads before the measurement, and therefore the one object whose cold window is
+// already destroyed — was written into the corpus expectation. A barrier reference that matched nothing
+// produced an expectation with ZERO anchors, at exit 0; `verify-corpus` then selects
+// `entry.anchor === true` and its per-anchor loop iterates zero times, recording nothing at all for all
+// three servers while every aggregate still passes. Both were silent, and the second is the shape this
+// tranche keeps finding: an assertion whose absence looks exactly like its success.
 const { readFileSync, writeFileSync } = require('node:fs');
 const [, , registered, out, canaryRef, barrierRef] = process.argv;
+const die = (message) => { console.error(message); process.exit(1); };
 const objects = JSON.parse(readFileSync(registered, 'utf8'));
+if (!Array.isArray(objects)) die(`${registered} is not an array of registered objects`);
+for (const [name, ref] of [['the canary', canaryRef], ['the barrier', barrierRef]]) {
+  if (!ref) die(`${name} object was not named, so this expectation cannot be built from the registration`);
+  if (!objects.some((object) => object.ref === ref)) {
+    die(`${name} object ${JSON.stringify(ref)} is not registered at the endpoint. An unmatched canary is `
+      + 'written into the corpus it was excluded from; an unmatched barrier leaves the document with no '
+      + 'anchor, and the per-anchor assertions then iterate zero times and record nothing');
+  }
+}
 const entries = [];
+const seen = new Set();
 for (const object of objects) {
   if (object.ref === canaryRef) continue;
+  if (typeof object.path !== 'string' || object.path === '') {
+    die(`the endpoint registered ${JSON.stringify(object.ref)} without a path, so it has no key`);
+  }
+  if (!Number.isSafeInteger(object.size) || object.size <= 0) {
+    die(`${JSON.stringify(object.ref)} is registered at size ${JSON.stringify(object.size)}, which is `
+      + 'not a positive whole number of bytes');
+  }
+  if (!/^[0-9a-f]{64}$/.test(String(object.sha256))) {
+    die(`${JSON.stringify(object.ref)} is registered with ${JSON.stringify(object.sha256)}, which is not `
+      + 'a sha256, so every digest comparison against it would compare against nothing');
+  }
   const key = object.path.slice(object.path.lastIndexOf('/') + 1);
+  if (seen.has(key)) {
+    die(`two registered objects project to the file name ${JSON.stringify(key)}; a per-key lookup would `
+      + 'answer with whichever was written first');
+  }
+  seen.add(key);
   entries.push({
     key,
     sizeBytes: object.size,
@@ -237,6 +275,10 @@ for (const object of objects) {
     kind: 'http-range',
     ...(object.ref === barrierRef || object.seed ? { anchor: true } : {}),
   });
+}
+if (!entries.some((entry) => entry.anchor === true)) {
+  die('this expectation names no anchor. The per-anchor assertions select anchor === true, so a document '
+    + 'without one makes them iterate zero times and record nothing in place of the per-entry evidence');
 }
 writeFileSync(out, `${JSON.stringify(entries, null, 2)}\n`);
 console.log(String(entries.length));
@@ -392,6 +434,36 @@ step "generating the ${CORPUS_COUNT}-item legal synthetic corpus, in one contain
 cat > "$WORK/out/gen-corpus.sh" <<'GENCORPUS'
 set -eu
 total="$1"; localCount="$2"; ff="$3"
+# THE TWO COUNTS ARE VALIDATED BEFORE THE LOOP, BECAUSE `set -e` DOES NOT REACH INTO A `while` CONDITION.
+#
+# THE DEFECT THIS CLOSES, MEASURED BY RUNNING IT. With `total` empty or non-numeric,
+# `[ "$i" -le "$total" ]` exits 2 with "integer expression expected" -- and a command that fails as the
+# CONDITION of a `while` is exempt from `set -e`. The loop therefore ended on its first evaluation, NOT ONE
+# FILE WAS GENERATED, and this script printed "generated  corpus files" and EXITED 0. The line under the
+# loop echoed the ARGUMENT it had been handed and never a count of anything, so the only thing the caller
+# ever saw was a success message about a corpus that does not exist. A `total` of 0 did the same without
+# even the error line.
+case "$total" in
+  ''|*[!0-9]*)
+    echo "gen-corpus: the corpus size \"$total\" is not a whole number of entries" >&2
+    exit 1
+    ;;
+esac
+case "$localCount" in
+  ''|*[!0-9]*)
+    echo "gen-corpus: the local-entry count \"$localCount\" is not a whole number of entries" >&2
+    exit 1
+    ;;
+esac
+if [ "$total" -lt 1 ]; then
+  echo "gen-corpus: a corpus of no entries is not a corpus; nothing published from one could be asserted" >&2
+  exit 1
+fi
+if [ "$localCount" -gt "$total" ]; then
+  echo "gen-corpus: $localCount of $total entries were asked to be local" >&2
+  exit 1
+fi
+made=0
 i=1
 while [ "$i" -le "$total" ]; do
   n=$(printf "%02d" "$i")
@@ -405,14 +477,24 @@ while [ "$i" -le "$total" ]; do
   dur="2.$(( i % 7 ))"
   freq=$(( 200 + i * 7 ))
   if [ "$i" -gt $(( total - localCount )) ]; then dir=media; else dir=remote; fi
+  out="/work/${dir}/Projection Corpus ${n} (2026).mp4"
   "$ff" -hide_banner -loglevel error -y \
     -f lavfi -i "${src}=size=128x96:rate=15:duration=${dur}" \
     -f lavfi -i "sine=frequency=${freq}:duration=${dur}" \
     -c:v mpeg4 -qscale:v 5 -c:a aac -b:a 32k -shortest -movflags +faststart \
-    "/work/${dir}/Projection Corpus ${n} (2026).mp4"
+    "$out"
+  # AND EACH FILE IS LOOKED AT RATHER THAN ASSUMED. An encoder can exit 0 having written a container
+  # header and no media, and a zero-byte corpus entry then fails its digest comparison forty steps later,
+  # inside a gate whose subject is a media server rather than this generator.
+  if [ ! -s "$out" ]; then
+    echo "gen-corpus: the generator exited 0 but left no bytes in $out" >&2
+    exit 1
+  fi
+  made=$(( made + 1 ))
   i=$(( i + 1 ))
 done
-echo "  generated ${total} corpus files"
+# A COUNT OF THE FILES THIS SCRIPT VERIFIED, not a restatement of the number it was asked for.
+echo "  generated ${made} corpus files"
 GENCORPUS
 # THE GENERATOR WRITES INTO TWO DIRECTORIES BECAUSE THE PRODUCT'S GATE DOES, and the file is byte-identical to
 # that one so an offline test can compare them. Here the split has no meaning — both directories are served
