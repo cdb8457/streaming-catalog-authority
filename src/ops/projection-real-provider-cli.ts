@@ -7,7 +7,8 @@ import type { TLSSocket } from 'node:tls';
 import type { GateResult } from '../core/projection/media-server-dataplane.js';
 import {
   CONTROL_DEADLINE_MS, cleanupResults, controlResults, endpointProblems, findLeaks, findResultLeaks,
-  inputProblems, readOnlyResults, readResults, sha256Of, transportResults, workDoneResults,
+  inputProblems, ownCleanupResults, readOnlyResults, readResults, sha256Of, transportResults,
+  workDoneResults,
   type CredentialStat, type DirectProbe, type EndpointDescription, type MountRead, type OperatorObject,
 } from '../core/projection/real-provider.js';
 
@@ -473,6 +474,36 @@ async function main(): Promise<void> {
         expectedObjects: objects.length,
       }));
       recordAll(args, cleanupResults('RP6', obs.cleanup));
+      return;
+    }
+
+    // -----------------------------------------------------------------------------------------------------
+    // THE LAST ASSERTION, AND THE ONLY ONE THAT RUNS AFTER THE REPORT
+    // -----------------------------------------------------------------------------------------------------
+    //
+    // Every other verdict is decided while the run directory must still exist, because they are read out of
+    // it. That left the one thing most likely to leak — this run's own directory and the mounts under it —
+    // asserted by nothing: the EXIT trap's cleanliness check is a REPORT by construction, since a non-zero
+    // return there would overwrite the gate's exit status. So the gate cleans up explicitly once the report
+    // has been printed and the evidence copied out, and then asks this command whether anything survived.
+    // It is decided here rather than in the shell for the same reason every other verdict is.
+    case 'cleanup': {
+      const mountpointsRaw = args.flags.get('mountpoints') ?? '';
+      const results = ownCleanupResults('RP7', {
+        // EMPTY MEANS THE HOST COULD NOT ANSWER, and NaN is not zero: the module skips that line rather than
+        // passing it. Anything else is taken at face value and asserted.
+        mountpoints: mountpointsRaw === '' ? Number.NaN : Number(mountpointsRaw),
+        runDirectoryPresent: args.flags.get('run-directory-present') === 'true',
+      });
+      for (const result of results) {
+        const measured = result.measured === undefined ? '' : ` ${result.measured}/${result.budget}`;
+        console.log(`  ${result.verdict.padEnd(4)} ${result.gate}${measured}`);
+      }
+      const failed = results.filter((result) => result.verdict === 'fail');
+      if (failed.length > 0) {
+        for (const result of failed) console.error(`  ${result.gate}: ${result.note}`);
+        fail('the run did not clean up after itself');
+      }
       return;
     }
 

@@ -221,11 +221,39 @@ function isLoopbackHttp(raw: string): boolean {
  * transport shapes, or naming neither, is refused in both modes. An offline test requires that every one of
  * the relaxed rules still bites when `realEndpoint` is true.
  */
+/**
+ * The marker every shipped operator template carries in each field the operator must replace.
+ *
+ * A TEMPLATE THAT PASSES PREFLIGHT IS WORSE THAN NO TEMPLATE. `deploy/real-provider-endpoint.template.json`
+ * is structurally valid by construction — exactly one of resolverUrl/directBaseUrl, an https URL, a non-empty
+ * allowlist, both fixture switches false — so every rule below was satisfied by the unedited file, and
+ * preflight answered "PREFLIGHT PASSED … the inputs are well formed" over an endpoint whose id, base URL and
+ * allowlist were all still `REPLACE-ME`. The objects template is refused (its sizes and digests are
+ * placeholders that the numeric and hex rules catch); the endpoint one had nothing that could catch it.
+ *
+ * THE GATE ALREADY BELIEVED THIS RULE EXISTED. `deploy/projection-real-provider-gate.sh` runs the preflight
+ * against this very template in fake mode as a NEGATIVE CONTROL and dies if it is accepted — so on a host
+ * where that control was ever actually reached, the gate could not complete a single run.
+ */
+const TEMPLATE_PLACEHOLDER = /replace-me/i;
+
 export function endpointProblems(endpoint: EndpointDescription,
   realEndpoint = true): readonly string[] {
   const problems: string[] = [];
   const resolver = endpoint.resolverUrl ?? '';
   const direct = endpoint.directBaseUrl ?? '';
+
+  // AN UNEDITED TEMPLATE IS NOT A CONFIGURATION. Checked before anything else, because every other message
+  // below would describe the shape of a file the operator never filled in.
+  for (const [name, value] of [
+    ['id', endpoint.id], ['resolverUrl', resolver], ['directBaseUrl', direct],
+    ...endpoint.allowedOrigins.map((origin) => ['an allowed origin', origin] as const),
+  ] as const) {
+    if (typeof value === 'string' && TEMPLATE_PLACEHOLDER.test(value)) {
+      problems.push(`${name} still carries the template's REPLACE-ME placeholder; this endpoint file has `
+        + 'been copied but not filled in, and a run against it would contact nothing real');
+    }
+  }
 
   if (resolver === '' && direct === '') {
     problems.push('the endpoint names neither a resolverUrl nor a directBaseUrl, so there is no way to turn '
@@ -540,6 +568,16 @@ export interface TransportObservations {
   readonly refreshesPerRead: readonly number[];
   /** Connections that reached an origin the allowlist does not name. */
   readonly disallowedOriginContacts: number;
+  /**
+   * Whether a listener was actually stood up on the excluded origin to observe the count above.
+   *
+   * WITHOUT ONE THE COUNT IS A DECLARATION, NOT A MEASUREMENT, and this gate asserts nothing on it. The
+   * real-provider gate stands up no such listener — a real provider's traffic goes where the provider sends
+   * it — so the zero it reported was a literal the verdict could never fail against, under a note claiming it
+   * had been "observed at a listener the gate stands up". `deploy/projection-lease-gate.sh` does stand one
+   * up, and G26 asserts the allowlist there in full.
+   */
+  readonly egressObservedAtListener: boolean;
   /** Whether the endpoint resolves references before reading, so refresh assertions apply at all. */
   readonly endpointExpires: boolean;
 }
@@ -556,9 +594,17 @@ export function transportResults(gate: string, observed: TransportObservations):
     atMost(`${gate}-retries-bounded`, observed.retries, MAX_RETRIES_PER_READ,
       'retries after a retryable failure stayed inside the contract bound. This is NOT a load test and no '
       + '429 was provoked: what is asserted is that meeting one is bounded, not that one was made to happen'),
-    exactly(`${gate}-egress-allowlist`, observed.disallowedOriginContacts, 0,
-      'nothing reached an origin the allowlist does not name, observed at a listener the gate stands up on '
-      + 'the origin it deliberately excluded'),
+    observed.egressObservedAtListener
+      ? exactly(`${gate}-egress-allowlist`, observed.disallowedOriginContacts, 0,
+        'nothing reached an origin the allowlist does not name, observed at a listener the gate stands up on '
+        + 'the origin it deliberately excluded')
+      : {
+        gate: `${gate}-egress-allowlist`, verdict: 'skip',
+        note: 'SKIPPED, AND A SKIP IS NOT A PASS: this gate stands up no listener on the excluded origin, so '
+          + 'it cannot observe a contact with one. This line used to be a hard PASS against a zero the gate '
+          + 'wrote for itself, under a note claiming a listener that does not exist here. G26 asserts the '
+          + 'allowlist in full against a listener the lease gate really does stand up',
+      },
   ];
 
   results.push({
@@ -601,18 +647,92 @@ export function readOnlyResults(gate: string, refusals: {
   ];
 }
 
-/** Nothing survives the run: not a mount, not a container, not a byte of access material. */
+/**
+ * Nothing survives the run: not a mount, not a container, not a byte of access material.
+ *
+ * THESE ARE COUNTS TAKEN AFTER THE DATA PLANE IS TORN DOWN, NOT CONSTANTS. Every one of the first three used
+ * to arrive as the literal `0` written by the gate's own `observations.cjs`, at a moment when the mount
+ * container was still running — so `containers` was not merely unmeasured, it was false.
+ *
+ * AND A COUNT THE HOST COULD NOT TAKE IS REPORTED AS UNTAKEN, NOT AS A ZERO AND NOT AS A FAILURE. Only the
+ * mountpoint count has a host that can decline to answer it: `projection_gate_mounts_under` returns the empty
+ * string where there is no `findmnt`, which is every Windows host. §6.0 already settled what to do with a
+ * three-valued answer — it is reported, it is not treated as a pass, and it does not fail a gate for a
+ * property of the platform — and the alternative there was rejected in those words because it "broke the only
+ * environment these gates have ever run in". So an unanswerable count SKIPS, loudly, and stays a hard
+ * assertion on every host that can answer it, which includes the tranche-closing one.
+ */
 export function cleanupResults(gate: string, left: {
   readonly mountpoints: number; readonly containers: number;
   readonly runDirectories: number; readonly leaseTracesOnDisk: number;
 }): readonly GateResult[] {
+  const mountpointsTaken = typeof left.mountpoints === 'number' && Number.isFinite(left.mountpoints);
   return [
-    exactly(`${gate}-mountpoints`, left.mountpoints, 0, 'no mountpoint survived the run'),
-    exactly(`${gate}-containers`, left.containers, 0, 'no container survived it'),
-    exactly(`${gate}-run-directories`, left.runDirectories, 0, 'and no run directory'),
+    mountpointsTaken
+      ? exactly(`${gate}-mountpoints`, left.mountpoints, 0,
+        'no mountpoint survived the run, counted under the run directory after the data plane came down')
+      : {
+        gate: `${gate}-mountpoints`, verdict: 'skip',
+        note: 'SKIPPED, AND A SKIP IS NOT A PASS: this host cannot enumerate its own mountpoints (no '
+          + '`findmnt`), so whether one survived the run was not measured. It is asserted on every host that '
+          + 'can answer, and §6 says a mount-bearing gate closes nothing on a host that cannot',
+      },
+    exactly(`${gate}-containers`, left.containers, 0,
+      'no container the gate created survived it, counted by their exact pid-bearing names'),
+    // NAMED FOR WHAT IT ACTUALLY COUNTS. It used to be `-run-directories`, which read as "no run directory
+    // survived" while deliberately excluding the only one that could have: THIS run's. That directory must
+    // still exist here, because the verdict is being read out of it, so what this line bounds is the stale
+    // leak §6.5 describes — directories from EARLIER runs that were supposed to have cleaned up after
+    // themselves. This run's own directory is a separate, harder assertion, made after the report by
+    // `ownCleanupResults` at a point where it can honestly be required to be gone.
+    exactly(`${gate}-foreign-run-directories`, left.runDirectories, 0,
+      'no run directory from any EARLIER run was left under the gate root. This says nothing about this '
+      + 'run\'s own directory, which is still present because the verdict is being read out of it — that is '
+      + 'asserted separately, and as a hard success condition, after the report is emitted'),
     exactly(`${gate}-no-lease-on-disk`, left.leaseTracesOnDisk, 0,
       'and no access material reached disk — searched for by the exact high-entropy value the run used, '
       + 'across every file the run wrote, because "we do not log it" is a claim and this is a measurement'),
+  ];
+}
+
+/**
+ * THIS RUN'S OWN DIRECTORY AND MOUNTS ARE GONE — the assertion the gate could not previously make.
+ *
+ * WHY IT IS SEPARATE, AND WHY IT RUNS LAST. `cleanupResults` above is evaluated while the run directory must
+ * still exist, so it can only ever bound OTHER runs' leftovers. The one directory most likely to leak — this
+ * one, with this one's mounts under it — was covered by nothing: `projection_gate_report_cleanliness` runs
+ * inside the EXIT trap and its own comment explains why it can only REPORT, since a non-zero return there
+ * would overwrite the gate's exit status and turn a failing run into a passing one. So a gate could print
+ * "cleanup: 1 mountpoint left behind" and still exit 0, which is exactly the report-versus-assertion gap
+ * §6.5 exists to close.
+ *
+ * THE GATE NOW CLEANS UP EXPLICITLY ON THE SUCCESS PATH, AFTER THE REPORT HAS BEEN EMITTED AND AFTER THE
+ * EVIDENCE HAS BEEN COPIED OUT, AND FAILS IF ANYTHING SURVIVED. The EXIT trap is unchanged and still covers
+ * every failure path, where it must stay a report.
+ *
+ * THE MOUNTPOINT COUNT KEEPS THE THREE-VALUED TREATMENT §6.0 SETTLED: a host that cannot enumerate its own
+ * mounts skips that line loudly rather than passing or failing it. The DIRECTORY check has no such excuse —
+ * every host can answer whether a directory exists — so it is unconditional.
+ */
+export function ownCleanupResults(gate: string, left: {
+  readonly mountpoints: number; readonly runDirectoryPresent: boolean;
+}): readonly GateResult[] {
+  const mountpointsTaken = typeof left.mountpoints === 'number' && Number.isFinite(left.mountpoints);
+  return [
+    exactly(`${gate}-own-run-directory-removed`, left.runDirectoryPresent ? 1 : 0, 0,
+      'THIS run\'s own directory was removed, asserted after the report rather than reported after the run. '
+      + 'A gate that leaves its run directory behind is how the next run inherits state and passes for the '
+      + 'wrong reason, and until this assertion existed a successful gate could leave one and still exit 0'),
+    mountpointsTaken
+      ? exactly(`${gate}-own-mountpoints-removed`, left.mountpoints, 0,
+        'and no mountpoint survived underneath it. §6.5 records four dangling mountpoints left by an earlier '
+        + 'gate, each answering `Transport endpoint is not connected`; that is the leak this fails on')
+      : {
+        gate: `${gate}-own-mountpoints-removed`, verdict: 'skip',
+        note: 'SKIPPED, AND A SKIP IS NOT A PASS: this host cannot enumerate its own mountpoints (no '
+          + '`findmnt`), so whether one survived was not measured. The directory check above is '
+          + 'unconditional, and this line is asserted on every host that can answer it',
+      },
   ];
 }
 

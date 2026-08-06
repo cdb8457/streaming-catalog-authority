@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,6 +7,7 @@ import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 import {
   CONTROL_DEADLINE_MS, MAX_ACCESS_REFRESHES_PER_READ, MAX_RETRIES_PER_READ, MOUNT_READ_DEADLINE_MS,
   cleanupResults, controlResults, endpointProblems, findLeaks, findResultLeaks, inputProblems,
+  ownCleanupResults,
   readOnlyResults, readResults, transportResults, workDoneResults,
   type DirectProbe, type EndpointDescription, type MountRead, type OperatorObject,
 } from '../src/core/projection/real-provider.js';
@@ -86,6 +87,9 @@ const goodReads = (): MountRead[] => [
 
 const GOOD_OBSERVATIONS = {
   status429: 0, retries: 0, refreshesPerRead: [1], disallowedOriginContacts: 0, endpointExpires: true,
+  // A LISTENER REALLY STOOD UP, which is what makes the egress line an assertion rather than a record. The
+  // gate script itself passes `false` here and gets a skip; see the test that pins both directions.
+  egressObservedAtListener: true,
 } as const;
 
 const failedGates = (results: readonly { gate: string; verdict: string }[]): string[] =>
@@ -652,7 +656,10 @@ async function main(): Promise<void> {
 
   await test('EVERY VERDICT IS DECIDED IN THE MODULE, NOT IN THE SHELL', () => {
     const gate = repoFile('deploy/projection-real-provider-gate.sh');
-    for (const phase of ['preflight', 'control', 'reads', 'verdict', 'report']) {
+    // `cleanup` is the last of these and the only one that runs AFTER the report. It is here rather than in
+    // the shell for the same reason the rest are: a gate that decided its own verdicts could quietly decide
+    // to pass. It used to be a shell-side report that could not fail the run at all.
+    for (const phase of ['preflight', 'control', 'reads', 'verdict', 'report', 'cleanup']) {
       assert(new RegExp(`real_provider ${phase}`).test(gate),
         `the ${phase} phase is not driven through the CLI`);
     }
@@ -736,6 +743,576 @@ async function main(): Promise<void> {
     assert(gate.indexOf('FIXTURE_FLAG="--fixture-endpoint"') < fakeEcho
       && gate.indexOf('FIXTURE_FLAG="--fixture-endpoint"') > gate.indexOf('MODE="fake"'),
     'the opt-in is not confined to the fake-mode branch');
+  });
+
+  // -------------------------------------------------------------------------------------------------------
+  // THE PROGRAMS THE GATE WRITES AT RUN TIME, LIFTED OUT AND EXECUTED
+  // -------------------------------------------------------------------------------------------------------
+  //
+  // WHY THIS SECTION EXISTS. Everything this gate does to an operator's corpus, and every number it hands to
+  // the verdict above, is produced by small `.cjs` programs embedded in the shell script as heredocs. The
+  // tests before this point drive the VERDICT MODULE, which is falsifiable and well covered — but nothing had
+  // ever RUN the programs that FEED it. That is how a gate acquires a measurement that is wrong in a way no
+  // assertion can see: the module refuses a leaked mountpoint correctly, and the shell hands it a literal
+  // zero for ever. Each test below extracts the shipped program and executes it against real fixtures.
+
+  /** The exact program the gate writes at run time, lifted out of its heredoc. */
+  function heredoc(gatePath: string, name: string): string {
+    const text = repoFile(gatePath);
+    const opener = `cat > "$WORK/${name}" <<'`;
+    const start = text.indexOf(opener);
+    assert(start !== -1, `${gatePath} does not write ${name}`);
+    const delimiterEnd = text.indexOf("'", start + opener.length);
+    const delimiter = text.slice(start + opener.length, delimiterEnd);
+    const bodyStart = text.indexOf('\n', delimiterEnd) + 1;
+    const bodyEnd = text.indexOf(`\n${delimiter}\n`, bodyStart);
+    assert(bodyEnd !== -1, `${gatePath} never closes the heredoc for ${name}`);
+    return text.slice(bodyStart, bodyEnd);
+  }
+
+  const GATE = 'deploy/projection-real-provider-gate.sh';
+
+  /** That program, on disk in a scratch directory, ready to run. */
+  function extract(name: string, gatePath = GATE): { dir: string; script: string } {
+    const dir = mkdtempSync(join(tmpdir(), 'rpgate-'));
+    const script = join(dir, name);
+    writeFileSync(script, `${heredoc(gatePath, name)}\n`, 'utf8');
+    return { dir, script };
+  }
+
+  const runNode = (script: string, args: readonly string[]): { code: number; out: string; err: string } => {
+    const result = spawnSync(process.execPath, [script, ...args], { encoding: 'utf8' });
+    return { code: result.status ?? -1, out: result.stdout ?? '', err: result.stderr ?? '' };
+  };
+
+  await test('THE LEAK SCAN FINDS A LEAK, AND SAYS SO IN A COUNT AND NOTHING ELSE', () => {
+    const { dir, script } = extract('scan.cjs');
+    const root = join(dir, 'out');
+    mkdirSync(root);
+    const credential = join(dir, 'credential');
+    const secret = 'rp-fixture-credential-0123456789abcdef';
+    writeFileSync(credential, `${secret}\n`);
+
+    // NO LEAK: files that do not carry it.
+    writeFileSync(join(root, 'results.json'), JSON.stringify({ gate: 'RP1', verdict: 'pass' }));
+    const clean = runNode(script, [credential, root]);
+    assert(clean.code === 0 && clean.out.trim() === '0', `a clean run did not report 0: ${clean.out}`);
+
+    // A LEAK, PLANTED THE WAY ONE ACTUALLY HAPPENS — inside a log line.
+    writeFileSync(join(root, 'daemon.log'), `GET /object authorization: Bearer ${secret}\n`);
+    const leaked = runNode(script, [credential, root]);
+    assert(leaked.code === 0 && leaked.out.trim() === '1', `a planted leak was not found: ${leaked.out}`);
+
+    // AND THE MEASUREMENT ITSELF MUST NOT LEAK. Only a count reaches stdout: no filename, no matched line,
+    // and above all not the needle, which is what a naive `grep -r` implementation would print.
+    assert(!leaked.out.includes(secret) && !leaked.err.includes(secret),
+      'the leak scan printed the secret it was searching for');
+    assert(!leaked.out.includes('daemon.log') && !leaked.err.includes('daemon.log'),
+      'the leak scan named the file the secret was found in');
+    assert(/^\d+$/.test(leaked.out.trim()), 'stdout must be a bare count the shell can compare');
+  });
+
+  await test('A SECRET TOO SHORT TO SEARCH FOR IS REFUSED, NOT REPORTED AS ZERO LEAKS', () => {
+    // THE DEFECT, PROVEN BY RUNNING IT. The scan skipped the walk entirely for a needle under 8 bytes
+    // and printed `0`. The shell recorded that as `leaseTracesOnDisk: 0` and the verdict passed
+    // `RP6-no-lease-on-disk` — whose note says the value was "searched for by the exact high-entropy value
+    // the run used". Nothing had been searched for at all. In a real run the OPERATOR supplies this value.
+    const { dir, script } = extract('scan.cjs');
+    const root = join(dir, 'out');
+    mkdirSync(root);
+    const credential = join(dir, 'credential');
+
+    writeFileSync(credential, 'short12\n');
+    writeFileSync(join(root, 'daemon.log'), 'authorization: Bearer short12\n');
+    const short = runNode(script, [credential, root]);
+    assert(short.code !== 0,
+      `a 7-byte secret present verbatim in a file the run wrote reported "${short.out.trim()}" and exit `
+      + `${short.code}; a zero here is indistinguishable from "did not look"`);
+    assert(short.out.trim() === '', 'and it must not print a count it cannot stand behind');
+
+    // THE BOUNDARY IS EXACTLY WHERE THE COMMENT SAYS IT IS: 8 BYTES, accepted; 7, refused. Pinned so the
+    // prose and the rule cannot drift apart.
+    writeFileSync(credential, 'eightby8\n');
+    writeFileSync(join(root, 'daemon.log'), 'authorization: Bearer eightby8\n');
+    const boundary = runNode(script, [credential, root]);
+    assert(boundary.code === 0 && boundary.out.trim() === '1',
+      `an 8-byte secret must be searched for, not refused: exit ${boundary.code} "${boundary.out.trim()}"`);
+
+    // AND IT IS BYTES RATHER THAN CHARACTERS, which is the only reading that is safe for a non-ASCII secret:
+    // seven accented characters are fourteen bytes, and refusing them would disable the measurement for a
+    // credential that is perfectly decisive.
+    const sevenCharsFourteenBytes = 'ééééééé';
+    assert(sevenCharsFourteenBytes.length === 7
+      && Buffer.byteLength(sevenCharsFourteenBytes, 'utf8') === 14, 'the fixture must be 7 chars / 14 bytes');
+    writeFileSync(credential, `${sevenCharsFourteenBytes}\n`);
+    writeFileSync(join(root, 'daemon.log'),
+      Buffer.from(`authorization: Bearer ${sevenCharsFourteenBytes}\n`, 'utf8'));
+    const wide = runNode(script, [credential, root]);
+    assert(wide.code === 0 && wide.out.trim() === '1',
+      `a 7-character, 14-byte secret was refused, so the rule is counting characters: "${wide.out.trim()}"`);
+
+    // THE SAME LEAK, MUCH LONGER, IS FOUND — so the refusal above is about decisiveness and not about
+    // the scanner being broken.
+    writeFileSync(credential, 'longer-than-eight\n');
+    writeFileSync(join(root, 'daemon.log'), 'authorization: Bearer longer-than-eight\n');
+    const long = runNode(script, [credential, root]);
+    assert(long.code === 0 && long.out.trim() === '1', `the longer secret was not found: ${long.out}`);
+  });
+
+  await test('A SCAN THAT COULD EXAMINE NOTHING IS A FAILURE, BECAUSE ITS ZERO WOULD PROVE NOTHING', () => {
+    // A misspelled root was walked in silence and printed `0`, which reads exactly like "no leak".
+    const { dir, script } = extract('scan.cjs');
+    const credential = join(dir, 'credential');
+    writeFileSync(credential, 'rp-fixture-credential-0123456789abcdef\n');
+    const missing = runNode(script, [credential, join(dir, 'no-such-directory')]);
+    assert(missing.code !== 0,
+      `a root that does not exist reported "${missing.out.trim()}" instead of failing`);
+    assert(missing.out.trim() === '', 'and printed a count for a walk that opened no file');
+  });
+
+  await test('A SECRET IN A LARGE FILE IS FOUND, WHERE A 64 MiB CEILING USED TO HIDE IT', () => {
+    // THE DEFECT. `if (info.size > 64 * 1024 * 1024) continue;` skipped large files outright, so the same
+    // credential was found in a 32 MiB log and invisible in a 64 MiB one. A daemon log over a long run is
+    // exactly the file most likely both to be large and to carry a header.
+    const { dir, script } = extract('scan.cjs');
+    const root = join(dir, 'out');
+    mkdirSync(root);
+    const credential = join(dir, 'credential');
+    const secret = 'rp-fixture-credential-0123456789abcdef';
+    writeFileSync(credential, `${secret}\n`);
+
+    const big = Buffer.alloc(64 * 1024 * 1024 + 4096, 0x2e);
+    big.write(`authorization: Bearer ${secret}`, 33 * 1024 * 1024);
+    writeFileSync(join(root, 'daemon.log'), big);
+    const found = runNode(script, [credential, root]);
+    assert(found.code === 0 && found.out.trim() === '1',
+      `a secret in a ${big.length}-byte file was not found: exit ${found.code}, "${found.out.trim()}"`);
+  });
+
+  await test('A SECRET STRADDLING THE READ BOUNDARY IS STILL FOUND, AND A NON-ASCII ONE MATCHES ITSELF', () => {
+    // TWO WAYS A CHUNKED SCANNER GOES QUIETLY WRONG. Reading in fixed chunks without carrying a tail misses
+    // any needle that spans a boundary; and decoding the haystack as latin1 while the needle was decoded as
+    // utf8 — which is what this program used to do — means a secret with any non-ASCII byte can never match
+    // itself, however plainly it is written to disk.
+    const { dir, script } = extract('scan.cjs');
+    const root = join(dir, 'out');
+    mkdirSync(root);
+    const credential = join(dir, 'credential');
+
+    const secret = 'rp-boundary-straddling-secret-value';
+    writeFileSync(credential, `${secret}\n`);
+    const CHUNK = 4 * 1024 * 1024;
+    const body = Buffer.alloc(CHUNK + 2 * secret.length, 0x2e);
+    // PLANTED SO IT SPANS THE BOUNDARY: half before the 4 MiB mark, half after.
+    body.write(secret, CHUNK - Math.floor(secret.length / 2));
+    writeFileSync(join(root, 'daemon.log'), body);
+    const straddled = runNode(script, [credential, root]);
+    assert(straddled.code === 0 && straddled.out.trim() === '1',
+      `a secret spanning the read boundary was not found: "${straddled.out.trim()}"`);
+
+    const accented = 'crédentiel-très-sécurisé-0123456789';
+    writeFileSync(credential, `${accented}\n`);
+    writeFileSync(join(root, 'daemon.log'), Buffer.from(`authorization: Bearer ${accented}\n`, 'utf8'));
+    const nonAscii = runNode(script, [credential, root]);
+    assert(nonAscii.code === 0 && nonAscii.out.trim() === '1',
+      `a non-ASCII secret did not match itself: "${nonAscii.out.trim()}"`);
+  });
+
+  await test('THE CLEANUP COUNTERS ARE WHAT THE GATE COUNTED, AND A LEAK REACHES THE VERDICT', () => {
+    // THE DEFECT. `observations.cjs` wrote `cleanup: { mountpoints: 0, containers: 0, runDirectories: 0 }`
+    // as LITERALS. `cleanupResults` refuses a non-zero for each of them — the tests above prove that — so
+    // three assertions were being handed a constant they could never fail against. And they were written at
+    // a moment when the mount container was still running by design, so `containers: 0` was not merely
+    // unmeasured, it was false.
+    const { dir, script } = extract('observations.cjs');
+    const out = join(dir, 'observations.json');
+    const read = (): {
+      cleanup: { mountpoints: number; containers: number; runDirectories: number; leaseTracesOnDisk: number };
+      egressObservedAtListener: boolean;
+    } => JSON.parse(readFileSync(out, 'utf8'));
+
+    // A CLEAN RUN still records zeros — but now because the gate counted zero, not because it said so.
+    const clean = runNode(script, [out, 'true', 'true', 'true', 'true', '0', 'fake', '0', '0', '0']);
+    assert(clean.code === 0, `observations.cjs failed on a clean run: ${clean.err.slice(0, 200)}`);
+    assert(failedGates(cleanupResults('RP6', read().cleanup)).length === 0,
+      'a genuinely clean run must still pass RP6');
+
+    // A LEAK OF EACH KIND MUST REACH THE VERDICT. If these were still literals, every one of these would
+    // pass, which is precisely what was happening.
+    for (const [index, kind] of [[7, 'mountpoints'], [8, 'containers'], [9, 'runDirectories']] as const) {
+      const argv = [out, 'true', 'true', 'true', 'true', '0', 'fake', '0', '0', '0'];
+      argv[index] = '1';
+      assert(runNode(script, argv).code === 0, `observations.cjs failed writing a leaked ${kind}`);
+      const record = read();
+      assert(record.cleanup[kind] === 1,
+        `a leaked ${kind} did not survive into the record; it is still a literal`);
+      refuses(cleanupResults('RP6', record.cleanup), `a leaked ${kind} was accepted by the verdict`);
+    }
+
+    // AND A COUNT THAT COULD NOT BE TAKEN IS NOT A COUNT OF ZERO. The shell passes the empty string when the
+    // host cannot answer at all (no `findmnt`), and that must fail rather than pass — the same rule §6.0
+    // applies to the host preflight's three-valued verdicts.
+    // AND A COUNT THE HOST COULD NOT TAKE IS NOT A COUNT OF ZERO. The shell passes the empty string when
+    // there is no `findmnt` — every Windows host — and that must not read as "nothing was left behind".
+    assert(runNode(script, [out, 'true', 'true', 'true', 'true', '0', 'fake', '', '0', '0']).code === 0,
+      'observations.cjs failed on an undetermined mountpoint count');
+    // NaN HAS NO JSON SPELLING, so it lands as `null` — which is the point: it is not the number 0.
+    const undetermined = read().cleanup.mountpoints as number | null;
+    assert(undetermined === null,
+      `an unanswerable count must not become a zero; it landed as ${JSON.stringify(undetermined)}`);
+
+    // IT SKIPS RATHER THAN PASSING, AND RATHER THAN FAILING. §6.0 settled this for the host preflight's
+    // three-valued verdicts: an unanswerable check is reported, is never a pass, and does not fail a gate for
+    // a property of the platform. A hard failure here would break every Windows run of a gate §6 already says
+    // closes nothing there.
+    const undeterminedResults = cleanupResults('RP6', read().cleanup);
+    const mountpoints = undeterminedResults.find((result) => result.gate === 'RP6-mountpoints')!;
+    assert(mountpoints.verdict === 'skip',
+      `an unanswerable mountpoint count must SKIP, not ${mountpoints.verdict}`);
+    assert(/SKIP IS NOT A PASS/.test(mountpoints.note ?? ''), 'and must say a skip is not a pass');
+    assert(failedGates(undeterminedResults).length === 0,
+      'and must not fail the gate for a property of the platform');
+
+    // BUT WHERE THE HOST CAN ANSWER, IT IS STILL A HARD ASSERTION IN BOTH DIRECTIONS.
+    const answerable = { mountpoints: 0, containers: 0, runDirectories: 0, leaseTracesOnDisk: 0 };
+    assert(cleanupResults('RP6', answerable)
+      .find((result) => result.gate === 'RP6-mountpoints')?.verdict === 'pass',
+    'a measured zero must still pass');
+    refuses(cleanupResults('RP6', { ...answerable, mountpoints: 1 }),
+      'a measured leaked mountpoint must still fail');
+  });
+
+  await test('THE EGRESS LINE IS A SKIP WHERE NO LISTENER WATCHED, AND AN ASSERTION WHERE ONE DID', () => {
+    // THE DEFECT. `disallowedOriginContacts: 0` was a literal, and `RP3-egress-allowlist` asserted it with a
+    // note saying it had been "observed at a listener the gate stands up on the origin it deliberately
+    // excluded". This gate stands up no such listener — that sentence belongs to the LEASE gate, which does.
+    // So a hard PASS was being reported for a property nothing had measured.
+    const { dir, script } = extract('observations.cjs');
+    const out = join(dir, 'observations.json');
+    assert(runNode(script, [out, 'true', 'true', 'true', 'true', '0', 'fake', '0', '0', '0']).code === 0,
+      'observations.cjs failed');
+    const record = JSON.parse(readFileSync(out, 'utf8')) as Parameters<typeof transportResults>[1];
+    assert(record.egressObservedAtListener === false,
+      'the gate must declare that it stood up no listener on the excluded origin');
+
+    const egress = (obs: Parameters<typeof transportResults>[1]): { verdict: string; note?: string } =>
+      transportResults('RP3', obs).find((result) => result.gate === 'RP3-egress-allowlist')!;
+
+    const unwatched = egress(record);
+    assert(unwatched.verdict === 'skip',
+      `with no listener the egress line must SKIP, not pass; got ${unwatched.verdict}`);
+    assert(/SKIP IS NOT A PASS/.test(unwatched.note ?? ''), 'and must say a skip is not a pass');
+
+    // WHERE A LISTENER REALLY WATCHED, IT IS STILL A HARD ASSERTION IN BOTH DIRECTIONS.
+    assert(egress({ ...record, egressObservedAtListener: true }).verdict === 'pass',
+      'an observed zero must still pass');
+    assert(egress({ ...record, egressObservedAtListener: true, disallowedOriginContacts: 1 }).verdict
+      === 'fail', 'and an observed contact must still fail');
+  });
+
+  await test('THE DAEMON CONFIG NAMES THE CREDENTIAL BY PATH AND OPENS NO INSECURE DOOR BY DEFAULT', () => {
+    // The gate builds the daemon's config from the operator's endpoint description. Two properties matter
+    // and neither had ever been executed: the credential is named by PATH and its value is never read here,
+    // and the two relaxations default OFF so an endpoint file that says nothing cannot acquire them.
+    const { dir, script } = extract('config.cjs');
+    const endpointPath = join(dir, 'endpoint.json');
+    const out = join(dir, 'config.json');
+    writeFileSync(endpointPath, JSON.stringify({
+      id: 'provider', directBaseUrl: 'https://cdn.example.invalid/objects',
+      allowedOrigins: ['https://cdn.example.invalid'],
+    }));
+    assert(runNode(script, [endpointPath, out]).code === 0, 'config.cjs failed on a well-formed endpoint');
+
+    const text = readFileSync(out, 'utf8');
+    const config = JSON.parse(text) as {
+      endpoints: { tokenFile: string; allowInsecureHttp: boolean; allowPrivateAddresses: boolean;
+        allowedOrigins: string[]; }[];
+    };
+    const endpoint = config.endpoints[0]!;
+    assert(typeof endpoint.tokenFile === 'string' && endpoint.tokenFile.length > 0,
+      'the config must name a credential file');
+    assert(endpoint.allowInsecureHttp === false && endpoint.allowPrivateAddresses === false,
+      'an endpoint that asks for neither relaxation must not be granted one');
+    assert(endpoint.allowedOrigins.length === 1, 'the allowlist must be carried through verbatim');
+
+    // AND THE RELAXATIONS MUST BE OPT-IN BY EXACT VALUE, not by truthiness — `"false"` is a string and a
+    // truthy one, which is how a JSON typo becomes an open door.
+    writeFileSync(endpointPath, JSON.stringify({
+      id: 'provider', directBaseUrl: 'https://cdn.example.invalid/objects',
+      allowedOrigins: ['https://cdn.example.invalid'],
+      allowInsecureHttp: 'false', allowPrivateAddresses: 'yes',
+    }));
+    assert(runNode(script, [endpointPath, out]).code === 0, 'config.cjs failed on the typo endpoint');
+    const typo = (JSON.parse(readFileSync(out, 'utf8')) as typeof config).endpoints[0]!;
+    assert(typo.allowInsecureHttp === false && typo.allowPrivateAddresses === false,
+      'a string value was treated as an opt-in; the relaxations must require a real boolean true');
+  });
+
+  await test('THE FIXTURE DIGEST FILL REFUSES TO LEAVE A RUN COMPARING AGAINST ZEROS', () => {
+    // FAKE MODE fills the fixture manifest's placeholder digest from the CONTROL record, which read the
+    // window outside the mount. If nothing matched, the run would compare mount reads against a placeholder
+    // of 64 zeros and fail for a reason that has nothing to do with the data plane — so it fails closed
+    // instead. Neither branch had ever been executed.
+    const { dir, script } = extract('fill-digests.cjs');
+    const objectsPath = join(dir, 'objects.json');
+    const controlPath = join(dir, 'control.json');
+    const digest = 'a'.repeat(64);
+    const manifest = [{
+      label: 'object-1', ref: 'rp-object-1', sizeBytes: 8 * 1024 * 1024,
+      probeDigests: [{ offset: 1, length: 65536, sha256: '0'.repeat(64) }],
+    }];
+
+    writeFileSync(objectsPath, JSON.stringify(manifest));
+    writeFileSync(controlPath, JSON.stringify({ digests: { 'object-1:1:65536': digest } }));
+    const filled = runNode(script, [objectsPath, controlPath]);
+    assert(filled.code === 0, `a matching control record was refused: ${filled.err.slice(0, 200)}`);
+    const written = JSON.parse(readFileSync(objectsPath, 'utf8')) as typeof manifest;
+    assert(written[0]!.probeDigests[0]!.sha256 === digest,
+      'the approved digest was not taken from the control record');
+
+    // NOTHING MATCHING: the window key is right in shape and wrong in value, which is exactly the shape of
+    // an offset or length that drifted between the two.
+    writeFileSync(objectsPath, JSON.stringify(manifest));
+    writeFileSync(controlPath, JSON.stringify({ digests: { 'object-1:1:32768': digest } }));
+    const unmatched = runNode(script, [objectsPath, controlPath]);
+    assert(unmatched.code !== 0,
+      'a control record matching no approved probe was accepted, leaving the run to compare against zeros');
+    assert(JSON.parse(readFileSync(objectsPath, 'utf8'))[0].probeDigests[0].sha256 === '0'.repeat(64),
+      'and the manifest must be left untouched rather than half-filled');
+
+    // AND A MALFORMED DIGEST IS NOT A DIGEST. Accepting a short or non-hex value would put a string into the
+    // comparison that can never match anything a hash produces.
+    writeFileSync(objectsPath, JSON.stringify(manifest));
+    writeFileSync(controlPath, JSON.stringify({ digests: { 'object-1:1:65536': 'not-a-digest' } }));
+    assert(runNode(script, [objectsPath, controlPath]).code !== 0,
+      'a malformed control digest was accepted as an approved value');
+  });
+
+  await test('THE SHIPPED ENDPOINT TEMPLATE IS REFUSED BY THE PREFLIGHT IT IS A NEGATIVE CONTROL FOR', () => {
+    // THE DEFECT, AND IT WAS FOUND BY RUNNING THE GATE RATHER THAN BY READING IT.
+    //
+    // `deploy/projection-real-provider-gate.sh` runs the preflight against this template in FAKE mode as a
+    // negative control and dies if it is ACCEPTED — "the preflight accepted the template, which still
+    // carries REPLACE-ME placeholders". No such rule existed. The endpoint template is structurally valid by
+    // construction — exactly one of resolverUrl/directBaseUrl, https, a non-empty allowlist, both fixture
+    // switches false — so every rule in `endpointProblems` was satisfied by the unedited file and preflight
+    // answered "PREFLIGHT PASSED — the inputs are well formed".
+    //
+    // SO THE GATE COULD NOT COMPLETE A SINGLE RUN. `npm run go:real-provider-gate:fake` died at that control
+    // on the real Unraid host, at the merge base, before this fix. It is the gate standing between Phase 1
+    // and the one requirement it is still open on.
+    //
+    // AND THE OPERATOR-FACING HALF IS THE WORSE ONE: someone who copies the template, fills in the
+    // credential and objects but not the endpoint gets a green preflight telling them their inputs are well
+    // formed, and then a run aimed at `https://REPLACE-ME.example.invalid`.
+    const template = JSON.parse(repoFile('deploy/real-provider-endpoint.template.json')) as EndpointDescription;
+    const problems = endpointProblems(template);
+    assert(problems.length > 0, 'the shipped endpoint template is accepted by the preflight it is a control for');
+    assert(problems.some((problem) => /REPLACE-ME placeholder/.test(problem)),
+      `the refusal must name the placeholder rather than some incidental shape: ${problems.join('; ')}`);
+
+    // EVERY FIELD THE TEMPLATE ASKS AN OPERATOR TO REPLACE IS CHECKED, one at a time, so a rule that only
+    // looked at `id` would not pass this.
+    const filled: EndpointDescription = {
+      ...template, id: 'provider',
+      directBaseUrl: 'https://cdn.example.invalid/objects',
+      allowedOrigins: ['https://cdn.example.invalid'],
+    };
+    assert(endpointProblems(filled).length === 0,
+      `a properly filled-in endpoint of the template's own shape was refused: ${endpointProblems(filled).join('; ')}`);
+    for (const [field, value] of [
+      ['id', 'REPLACE-ME-endpoint-id'],
+      ['directBaseUrl', 'https://REPLACE-ME.example.invalid/objects'],
+    ] as const) {
+      assert(endpointProblems({ ...filled, [field]: value }).length > 0,
+        `an unreplaced ${field} was accepted`);
+    }
+    assert(endpointProblems({ ...filled, allowedOrigins: ['https://REPLACE-ME.example.invalid'] }).length > 0,
+      'an unreplaced allowed origin was accepted');
+
+    // AND THE MARKER IS MATCHED THE WAY THE TEMPLATES SPELL IT, in either case, so an edit of the template's
+    // capitalisation cannot quietly retire the rule.
+    assert(endpointProblems({ ...filled, id: 'replace-me-later' }).length > 0,
+      'the placeholder check must not be case-sensitive');
+
+    // THE GATE'S CONTROL MUST STILL BE THERE. A rule with nothing exercising it is how this happened.
+    const gate = repoFile('deploy/projection-real-provider-gate.sh');
+    assert(/--endpoint deploy\/real-provider-endpoint\.template\.json/.test(gate)
+      && /accepted the template, which still carries REPLACE-ME placeholders/.test(gate),
+    'the gate no longer runs the preflight against the template as a negative control');
+  });
+
+  await test('THIS RUN\'S OWN DIRECTORY AND MOUNTS SURVIVING IS A FAILURE, NOT A LINE IN A REPORT', () => {
+    // THE GAP. Every other verdict is read out of the run directory, so none of them can require it to be
+    // gone — `RP6-foreign-run-directories` bounds only EARLIER runs' leftovers and now says so by name. The
+    // one directory most likely to leak was asserted by nothing: `projection_gate_report_cleanliness` runs in
+    // the EXIT trap and can only REPORT, because a non-zero return there would overwrite the gate's exit
+    // status. So a successful gate could print "1 mountpoint left behind" and still exit 0 — the exact
+    // report-versus-assertion gap §6.5 exists to close, reappearing inside the gate that closes it.
+    const clean = { mountpoints: 0, runDirectoryPresent: false };
+    assert(failedGates(ownCleanupResults('RP7', clean)).length === 0,
+      'a run that cleaned up after itself must pass');
+
+    // A SURVIVING RUN DIRECTORY FAILS. This is the assertion that did not exist.
+    refuses(ownCleanupResults('RP7', { ...clean, runDirectoryPresent: true }),
+      'a run directory that survived the run was accepted');
+    // AND A SURVIVING MOUNTPOINT FAILS — §6.5's four dangling mounts, each answering "Transport endpoint is
+    // not connected", are what this is for.
+    refuses(ownCleanupResults('RP7', { ...clean, mountpoints: 1 }),
+      'a mountpoint that survived the run was accepted');
+
+    // THE DIRECTORY CHECK IS UNCONDITIONAL, because every host can answer whether a directory exists. Only
+    // the mountpoint count keeps §6.0's three-valued treatment, and a skip is never a pass.
+    const undetermined = ownCleanupResults('RP7', { mountpoints: Number.NaN, runDirectoryPresent: false });
+    const mounts = undetermined.find((result) => result.gate === 'RP7-own-mountpoints-removed')!;
+    assert(mounts.verdict === 'skip', `an unanswerable mountpoint count must skip, got ${mounts.verdict}`);
+    assert(/SKIP IS NOT A PASS/.test(mounts.note ?? ''), 'and must say a skip is not a pass');
+    refuses(ownCleanupResults('RP7', { mountpoints: Number.NaN, runDirectoryPresent: true }),
+      'a host that cannot count mountpoints must still fail on a surviving run directory');
+
+    // AND THE PHASE THE GATE ACTUALLY INVOKES IS EXECUTED, not just the function behind it. A verdict that
+    // is correct in the module and wired to a command that exits 0 anyway would leave the gap exactly where
+    // it was.
+    const cleanupPhase = (mountpoints: string, runDirectoryPresent: string): number => spawnSync(
+      'npx', ['tsx', join(HERE, '..', 'src/ops/projection-real-provider-cli.ts'), 'cleanup',
+        '--mountpoints', mountpoints, '--run-directory-present', runDirectoryPresent],
+      { encoding: 'utf8', shell: process.platform === 'win32' },
+    ).status ?? -1;
+    assert(cleanupPhase('0', 'false') === 0, 'the cleanup phase failed a run that cleaned up after itself');
+    assert(cleanupPhase('0', 'true') !== 0,
+      'the cleanup phase exited 0 with this run\'s directory still on disk');
+    assert(cleanupPhase('1', 'false') !== 0,
+      'the cleanup phase exited 0 with a mountpoint still under the run directory');
+    assert(cleanupPhase('', 'false') === 0,
+      'the cleanup phase failed a host that simply cannot count its own mountpoints');
+    assert(cleanupPhase('', 'true') !== 0,
+      'a host that cannot count mountpoints still has to fail on a surviving run directory');
+
+    // AND THE OLD NAME MUST NOT COME BACK. `RP6-run-directories` read as "no run directory survived" while
+    // deliberately excluding the only one that could have.
+    const foreign = cleanupResults('RP6', {
+      mountpoints: 0, containers: 0, runDirectories: 0, leaseTracesOnDisk: 0,
+    });
+    assert(foreign.some((result) => result.gate === 'RP6-foreign-run-directories'),
+      'the foreign-run-directory line must be named for what it counts');
+    assert(!foreign.some((result) => result.gate === 'RP6-run-directories'),
+      'the misleading `RP6-run-directories` name is back');
+    assert(/says nothing about this run's own directory/.test(
+      foreign.find((result) => result.gate === 'RP6-foreign-run-directories')?.note ?? ''),
+    'and must say plainly what it does not cover');
+  });
+
+  await test('THE GATE MAKES ITS OWN CLEANUP A SUCCESS CONDITION, AFTER THE REPORT AND AFTER THE EVIDENCE',
+    () => {
+      const gate = repoFile('deploy/projection-real-provider-gate.sh');
+
+      // IT IS DECIDED IN THE MODULE, like every other verdict, and driven through the CLI.
+      assert(/real_provider cleanup --mountpoints/.test(gate),
+        'the gate does not ask the module whether it cleaned up after itself');
+
+      // ORDER: report, then evidence, then cleanup, then the assertion. Requiring the run directory to be
+      // gone before the results were printed and copied out would cost the operator the evidence.
+      const report = gate.indexOf('real_provider report');
+      const evidence = gate.indexOf('"$GATE_ROOT/evidence"');
+      const cleanupRun = gate.indexOf('projection_gate_cleanup_run "$GATE_ROOT" "$WORK" "$VERIFY_IMAGE" || true\n\nOWN_MOUNTS_LEFT');
+      const assertion = gate.indexOf('real_provider cleanup --mountpoints');
+      assert(report !== -1 && evidence !== -1 && cleanupRun !== -1 && assertion !== -1,
+        'the success-path cleanup phase is not where this test can see it');
+      assert(report < evidence && evidence < cleanupRun && cleanupRun < assertion,
+        'the cleanup assertion does not run after the report and the evidence copy');
+
+      // AND FAILING IT ENDS THE RUN NON-ZERO, rather than being printed and shrugged off.
+      const tail = gate.slice(assertion);
+      assert(/else\s*\n\s*die "the run cleaned up after itself incompletely/.test(tail),
+        'a failed cleanup does not fail the gate');
+
+      // THE TRAP IS STILL THERE FOR EVERY FAILURE PATH, and is still a report there.
+      assert(/trap cleanup EXIT/.test(gate), 'the EXIT trap has been removed');
+      assert(/projection_gate_report_cleanliness/.test(gate),
+        'the trap no longer reports what it left behind');
+      // AND IT MUST NOT DOUBLE-REPORT OVER AN ASSERTION THAT ALREADY PASSED.
+      assert(/CLEANED=0/.test(gate) && /CLEANED=1/.test(gate)
+        && /\[ "\$\{CLEANED:-0\}" = "1" \]/.test(gate),
+      'the trap does not stand down once the success path has cleaned up and asserted it');
+
+      // THE FOREIGN-DIRECTORY COUNT MUST NOT SWALLOW THE EVIDENCE DIRECTORY IT NOW SITS BESIDE.
+      assert(/-name 'run-\*' ! -name "run-\$\$"/.test(gate),
+        'the foreign run-directory count would include the evidence directory');
+    });
+
+  await test('LOSING THE EVIDENCE IS A FAILURE, BECAUSE THE RUN DIRECTORY IS ABOUT TO BE DELETED', () => {
+    // THE DEFECT. The cleanup phase preserves the verdict evidence and then deletes the run directory, which
+    // is the only place that evidence exists. The first version copied both files with `|| true` and then
+    // printed "evidence kept" unconditionally — so a copy that failed for any reason destroyed the only
+    // record of why the run passed, announced that it had kept it, and exited 0. Same class as reporting a
+    // measurement that was never taken, applied to the thing that justifies every other measurement.
+    //
+    // THE SHIPPED FUNCTION IS EXTRACTED AND RUN, not restated. `die` is stubbed so a refusal is observable as
+    // an exit status instead of ending the harness.
+    const gate = repoFile('deploy/projection-real-provider-gate.sh');
+    const start = gate.indexOf('copy_evidence() {');
+    assert(start !== -1, 'the gate no longer has an extractable copy_evidence');
+    const end = gate.indexOf('\n}\n', start);
+    assert(end !== -1, 'copy_evidence is not closed where this test can find it');
+    const body = gate.slice(start, end + 3);
+
+    const run = (prepare: (work: string) => void, evidenceDir?: string): { code: number; err: string } => {
+      const dir = mkdtempSync(join(tmpdir(), 'rpevidence-'));
+      const work = join(dir, 'run');
+      mkdirSync(join(work, 'out'), { recursive: true });
+      const keep = evidenceDir ?? join(dir, 'evidence');
+      if (evidenceDir === undefined) mkdirSync(keep);
+      prepare(work);
+      const script = join(dir, 'copy.sh');
+      writeFileSync(script, [
+        'set -uo pipefail',
+        'die() { echo "GATE FAILED: $*" >&2; exit 1; }',
+        `WORK=${JSON.stringify(work)}`,
+        `EVIDENCE_DIR=${JSON.stringify(keep)}`,
+        body,
+        'copy_evidence "out/results.json" "results-kept.jsonl"',
+        'echo COPIED',
+      ].join('\n'), 'utf8');
+      const result = spawnSync('bash', [script], { encoding: 'utf8' });
+      return { code: result.status ?? -1, err: `${result.stdout ?? ''}${result.stderr ?? ''}` };
+    };
+
+    // THE HONEST CASE COPIES, and the copy is byte-identical to what the run wrote.
+    const good = run((work) => writeFileSync(join(work, 'out/results.json'), '{"gate":"RP1"}\n'));
+    assert(good.code === 0, `a well-formed evidence copy failed: ${good.err.slice(0, 200)}`);
+    assert(/COPIED/.test(good.err), 'and must reach the line after it');
+
+    // A RESULTS FILE THE VERDICT NEVER WROTE IS A FAILURE, not a silently skipped copy.
+    const missing = run(() => { /* nothing written */ });
+    assert(missing.code !== 0, 'a missing results file was accepted, and the run directory would be deleted');
+    assert(/no verdict evidence to preserve/.test(missing.err),
+      `the refusal must name what it could not preserve: ${missing.err.slice(0, 200)}`);
+
+    // AN EMPTY ONE IS TOO — `cp` would happily copy nothing at all.
+    const empty = run((work) => writeFileSync(join(work, 'out/results.json'), ''));
+    assert(empty.code !== 0, 'an empty results file was accepted as evidence');
+
+    // AND A COPY THAT CANNOT LAND IS A FAILURE. The destination here does not exist, which is what a
+    // read-only or full gate root looks like to `cp`.
+    const unwritable = run(
+      (work) => writeFileSync(join(work, 'out/results.json'), '{"gate":"RP1"}\n'),
+      join(tmpdir(), 'rpevidence-absent', 'nested', 'missing'),
+    );
+    assert(unwritable.code !== 0, 'a copy that could not land was accepted, and the evidence would be gone');
+
+    // AND THE SHIPPED CALL SITES MUST NOT RE-OPT OUT. `|| true` here is exactly what made this silent.
+    const phase = gate.slice(gate.indexOf('EVIDENCE_DIR="$GATE_ROOT/evidence"'));
+    const calls = [...phase.matchAll(/^copy_evidence "[^"]+" "[^"]+"$/gm)];
+    assert(calls.length === 2, `expected both evidence files to be preserved, found ${calls.length}`);
+    assert(!/cp "\$WORK[^\n]*\|\| true/.test(gate),
+      'an evidence copy is optional again, so a failed one would be swallowed');
+    assert(!/mkdir -p "\$EVIDENCE_DIR"[^\n]*\|\| true/.test(gate),
+      'the evidence directory is created optionally again');
+
+    // AND IT MUST STILL HAPPEN BEFORE ANYTHING IS DELETED.
+    assert(gate.indexOf('copy_evidence "out/results-summary.json"')
+      < gate.indexOf('projection_gate_cleanup_run "$GATE_ROOT" "$WORK" "$VERIFY_IMAGE" || true\n\nOWN_MOUNTS_LEFT'),
+    'the evidence is preserved after the run directory is deleted, which is no preservation at all');
   });
 
   await test('this suite runs in the aggregate', () => {

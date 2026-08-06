@@ -336,10 +336,19 @@ VERIFY
 
 cat > "$WORK/probe-resolver.cjs" <<'PROBE'
 // Is the resolver listening, and does it refuse an unauthenticated request? A 401 is the healthy answer.
+//
+// AND IT IS BOUNDED, BECAUSE `http.request` IS NOT. Node applies no default timeout, so a resolver that
+// accepted the connection and never answered left this probe waiting for ever — and a gate that hangs is
+// worse than one that fails, because nothing reports a hang. Proved by running it against a listener that
+// accepts and never responds: it sat there until an external timeout killed it. The transport probe beside
+// this one already bounded itself; this one did not.
 const http = require('node:http');
 const port = Number(process.argv[2]);
-const req = http.request({ host: '127.0.0.1', port, path: '/resolve', method: 'POST' },
-  (res) => process.exit(res.statusCode === 401 ? 0 : 1));
+const req = http.request(
+  { host: '127.0.0.1', port, path: '/resolve', method: 'POST', timeout: 5000 },
+  (res) => { res.resume(); process.exit(res.statusCode === 401 ? 0 : 1); },
+);
+req.on('timeout', () => { req.destroy(); process.exit(1); });
 req.on('error', () => process.exit(1));
 req.end();
 PROBE
@@ -374,11 +383,60 @@ REACHABLE
 cat > "$WORK/scan.cjs" <<'SCAN'
 // Searches everything the run wrote for a secret. The needle arrives as a FILE PATH so it never enters argv,
 // and only a COUNT is printed -- never a match, never a line, never a filename.
-const { readFileSync, readdirSync, statSync, existsSync } = require('node:fs');
+//
+// THREE WAYS THIS PRINTED "NO LEAK" WITHOUT LOOKING, each found by RUNNING it rather than reading it:
+//
+//   - a needle shorter than 8 bytes skipped the walk entirely and printed 0. Both secrets this gate
+//     searches for are operator-supplied in a real run, so a short one silently disabled the measurement. It
+//     is now REFUSED — the scan exits non-zero and prints no count, and the call site fails the gate on it;
+//   - any file larger than 64 MiB was skipped, so a secret written into a large log was invisible. The same
+//     value in a 32 MiB file was found and in a 64 MiB file was not;
+//   - a root that did not exist was walked in silence, so a misspelled path also printed 0.
+//
+// A ZERO THAT MEANS "DID NOT LOOK" IS INDISTINGUISHABLE FROM ONE THAT MEANS "DID NOT LEAK", and this is the
+// only measurement behind "neither secret reached disk". So the scan now FAILS CLOSED: it exits non-zero
+// rather than printing a number it cannot stand behind, and the gate treats that as a failure.
+//
+// THE COMPARISON IS ON BYTES, NOT ON DECODED TEXT. The haystack used to be decoded as latin1 while the needle
+// was decoded as utf8, so a secret carrying any non-ASCII byte could never have matched itself.
+const { openSync, readSync, closeSync, readFileSync, readdirSync, statSync, existsSync } = require('node:fs');
 const { join } = require('node:path');
 const [, , secretPath, ...roots] = process.argv;
-const needle = readFileSync(secretPath, 'utf8').trim();
+const needle = Buffer.from(readFileSync(secretPath, 'utf8').trim(), 'utf8');
+
+// A SHORT NEEDLE WOULD MATCH BY CHANCE, and a false positive here reads as a leak that did not happen. It is
+// REFUSED rather than skipped, because skipping it printed a zero that read as proof.
+if (needle.length < 8) {
+  console.error('scan: the secret is under 8 bytes, so a search for it could not be decisive; refusing to '
+    + 'report a count that would read as proof of no leak');
+  process.exit(2);
+}
+
+// READ IN BOUNDED CHUNKS, CARRYING ENOUGH TAIL THAT A NEEDLE STRADDLING A BOUNDARY IS STILL FOUND. There is
+// no size ceiling any more: memory is bounded by the chunk rather than by refusing to look at large files.
+const CHUNK = 4 * 1024 * 1024;
+const overlap = needle.length - 1;
+const buffer = Buffer.allocUnsafe(CHUNK + overlap);
+const containsNeedle = (path, size) => {
+  const fd = openSync(path, 'r');
+  try {
+    let carried = 0;
+    let position = 0;
+    while (position < size) {
+      const got = readSync(fd, buffer, carried, CHUNK, position);
+      if (got === 0) break;
+      position += got;
+      const filled = carried + got;
+      if (buffer.subarray(0, filled).includes(needle)) return true;
+      carried = Math.min(overlap, filled);
+      buffer.copy(buffer, 0, filled - carried, filled);
+    }
+    return false;
+  } finally { closeSync(fd); }
+};
+
 let hits = 0;
+let examined = 0;
 const walk = (dir) => {
   if (!existsSync(dir)) return;
   for (const name of readdirSync(dir)) {
@@ -386,13 +444,20 @@ const walk = (dir) => {
     let info;
     try { info = statSync(full); } catch { continue; }
     if (info.isDirectory()) { walk(full); continue; }
-    if (info.size > 64 * 1024 * 1024) continue;
-    let text;
-    try { text = readFileSync(full, 'latin1'); } catch { continue; }
-    if (text.includes(needle)) hits += 1;
+    let found;
+    // AN UNREADABLE FILE IS NOT AN EXAMINED ONE, so it cannot pad the count below out of a failure.
+    try { found = containsNeedle(full, info.size); } catch { continue; }
+    examined += 1;
+    if (found) hits += 1;
   }
 };
-if (needle.length >= 8) { for (const root of roots) walk(root); }
+for (const root of roots) walk(root);
+
+// A SCAN THAT OPENED NOTHING IS NOT A SCAN THAT FOUND NOTHING.
+if (examined === 0) {
+  console.error('scan: no file under any given root could be examined, so a zero here would prove nothing');
+  process.exit(3);
+}
 console.log(String(hits));
 SCAN
 
@@ -580,8 +645,13 @@ step "NO SECRET AND NO REFERENCE REACHED ANYTHING THIS RUN WROTE"
 for container in "$MOUNT_CONTAINER" "$RESOLVER_CONTAINER"; do
   docker logs "$container" > "$WORK/out/log-$container.txt" 2>&1 || true
 done
-CRED_HITS="$(node "$REL/scan.cjs" "$REL/inputs/torbox-credential" "$WORK/out" "$WORK/manifest" "$WORK/cache")"
-GATE_HITS="$(node "$REL/scan.cjs" "$REL/inputs/gate-secret" "$WORK/out" "$WORK/manifest" "$WORK/cache")"
+# AND A SCAN THAT COULD NOT BE DECISIVE IS A FAILURE, NOT A ZERO. `scan.cjs` exits non-zero when the secret
+# is too short to search for, or when it could not examine a single file — both of which used to print `0`
+# and be recorded as proof that nothing leaked. In a real run the operator supplies both of these values.
+CRED_HITS="$(node "$REL/scan.cjs" "$REL/inputs/torbox-credential" "$WORK/out" "$WORK/manifest" "$WORK/cache")" \
+  || die "the TorBox-credential leak scan could not be made decisive; a count from it would prove nothing"
+GATE_HITS="$(node "$REL/scan.cjs" "$REL/inputs/gate-secret" "$WORK/out" "$WORK/manifest" "$WORK/cache")" \
+  || die "the gate-secret leak scan could not be made decisive; a count from it would prove nothing"
 test "$CRED_HITS" -eq 0 || die "the TorBox credential reached $CRED_HITS file(s) this run wrote"
 test "$GATE_HITS" -eq 0 || die "the gate secret reached $GATE_HITS file(s) this run wrote"
 if grep -qE 'torbox:(torrent|webdl|usenet):[0-9]+:[0-9]+' "$WORK/out/log-$RESOLVER_CONTAINER.txt"; then

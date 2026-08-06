@@ -45,8 +45,13 @@ MOUNT_CONTAINER="projection-rp-mount-$$"
 FAKE_CONTAINER="projection-rp-fake-$$"
 
 GATE_ROOT="$PWD/.projection-real-provider-gate"
+REL_GATE_ROOT=".projection-real-provider-gate"
 REL=".projection-real-provider-gate/run-$$"
 WORK="$GATE_ROOT/run-$$"
+
+# SET ONLY WHEN THE SUCCESS-PATH CLEANUP HAS RUN AND BEEN ASSERTED. Until then the EXIT trap is the only
+# thing that cleans up, which is what every failure path relies on.
+CLEANED=0
 
 # THE APPROVED PATH, AND IT IS THE ONLY PLACE THIS GATE EVER LOOKS.
 #
@@ -74,10 +79,22 @@ export ADMIN_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:${PG_PORT}/c
 export DATABASE_URL="postgresql://app:app@127.0.0.1:${PG_PORT}/catalog"
 export PROJECTION_REAL_PROVIDER_GATE_PG_PORT="$PG_PORT"
 
+# THE TRAP IS THE FAILURE PATH'S CLEANUP, AND IT CAN ONLY EVER REPORT.
+#
+# `projection_gate_report_cleanliness` explains why in its own comment: a non-zero return from an EXIT trap
+# overwrites the gate's exit status, which would turn a failing run into a passing one — or a passing one into
+# a failure for a reason that has nothing to do with the data plane. So on the SUCCESS path the gate does not
+# rely on this at all; it cleans up explicitly, asserts the result, and sets CLEANED. This stays exactly as it
+# was for every path that leaves through `die`.
 cleanup() {
   docker rm -f "$MOUNT_CONTAINER" "$FAKE_CONTAINER" >/dev/null 2>&1 || true
   docker compose -f "$COMPOSE_FILE" down -v --remove-orphans >/dev/null 2>&1 || true
   docker network rm "$NETWORK" >/dev/null 2>&1 || true
+  if [ "${CLEANED:-0}" = "1" ]; then
+    # Already done and already ASSERTED. Repeating the report here would print a second, weaker statement
+    # about the same thing.
+    return 0
+  fi
   if [ -n "${WORK:-}" ]; then
     projection_gate_cleanup_run "$GATE_ROOT" "$WORK" "$VERIFY_IMAGE" || true
     projection_gate_report_cleanliness "$GATE_ROOT" "$WORK" || true
@@ -230,11 +247,60 @@ cat > "$WORK/scan.cjs" <<'SCAN'
 //
 // "WE DO NOT LOG IT" IS A CLAIM; THIS IS A MEASUREMENT. The needle arrives as a FILE PATH so it never enters
 // argv, and only a COUNT is printed -- never a match, never a line, never a filename.
-const { readFileSync, readdirSync, statSync, existsSync } = require('node:fs');
+//
+// THREE WAYS THIS PRINTED "NO LEAK" WITHOUT LOOKING, each found by RUNNING it rather than reading it:
+//
+//   - a needle shorter than 8 bytes skipped the walk entirely and printed 0. The operator supplies this
+//     value in a real run, so a short one silently disabled the whole measurement. It is now REFUSED — the
+//     scan exits non-zero and prints no count at all, and the call site treats that as a gate failure;
+//   - any file larger than 64 MiB was skipped, so a credential written into a large log was invisible. The
+//     same value in a 32 MiB file was found and in a 64 MiB file was not;
+//   - a root that did not exist was walked in silence, so a misspelled path also printed 0.
+//
+// A ZERO THAT MEANS "DID NOT LOOK" IS INDISTINGUISHABLE FROM ONE THAT MEANS "DID NOT LEAK", and this is the
+// only measurement behind "no access material reached disk". So the scan now FAILS CLOSED: it exits non-zero
+// rather than printing a number it cannot stand behind, and the gate treats that as a failure.
+//
+// THE COMPARISON IS ON BYTES, NOT ON DECODED TEXT. The haystack used to be decoded as latin1 while the needle
+// was decoded as utf8, so a secret carrying any non-ASCII byte could never have matched itself.
+const { openSync, readSync, closeSync, readFileSync, readdirSync, statSync, existsSync } = require('node:fs');
 const { join } = require('node:path');
 const [, , credentialPath, ...roots] = process.argv;
-const needle = readFileSync(credentialPath, 'utf8').trim();
+const needle = Buffer.from(readFileSync(credentialPath, 'utf8').trim(), 'utf8');
+
+// A SHORT NEEDLE WOULD MATCH BY CHANCE, and a false positive here reads as a leak that did not happen. It is
+// REFUSED rather than skipped, because skipping it printed a zero that read as proof.
+if (needle.length < 8) {
+  console.error('scan: the secret is under 8 bytes, so a search for it could not be decisive; refusing to '
+    + 'report a count that would read as proof of no leak');
+  process.exit(2);
+}
+
+// READ IN BOUNDED CHUNKS, CARRYING ENOUGH TAIL THAT A NEEDLE STRADDLING A BOUNDARY IS STILL FOUND. There is
+// no size ceiling any more: memory is bounded by the chunk rather than by refusing to look at large files.
+const CHUNK = 4 * 1024 * 1024;
+const overlap = needle.length - 1;
+const buffer = Buffer.allocUnsafe(CHUNK + overlap);
+const containsNeedle = (path, size) => {
+  const fd = openSync(path, 'r');
+  try {
+    let carried = 0;
+    let position = 0;
+    while (position < size) {
+      const got = readSync(fd, buffer, carried, CHUNK, position);
+      if (got === 0) break;
+      position += got;
+      const filled = carried + got;
+      if (buffer.subarray(0, filled).includes(needle)) return true;
+      carried = Math.min(overlap, filled);
+      buffer.copy(buffer, 0, filled - carried, filled);
+    }
+    return false;
+  } finally { closeSync(fd); }
+};
+
 let hits = 0;
+let examined = 0;
 const walk = (dir) => {
   if (!existsSync(dir)) return;
   for (const name of readdirSync(dir)) {
@@ -242,21 +308,49 @@ const walk = (dir) => {
     let info;
     try { info = statSync(full); } catch { continue; }
     if (info.isDirectory()) { walk(full); continue; }
-    if (info.size > 64 * 1024 * 1024) continue;
-    let text;
-    try { text = readFileSync(full, 'latin1'); } catch { continue; }
-    if (text.includes(needle)) hits += 1;
+    let found;
+    // AN UNREADABLE FILE IS NOT AN EXAMINED ONE, so it cannot pad the count below out of a failure.
+    try { found = containsNeedle(full, info.size); } catch { continue; }
+    examined += 1;
+    if (found) hits += 1;
   }
 };
-// A SHORT NEEDLE WOULD MATCH BY CHANCE, and a false positive here reads as a leak that did not happen.
-if (needle.length >= 8) { for (const root of roots) walk(root); }
+for (const root of roots) walk(root);
+
+// A SCAN THAT OPENED NOTHING IS NOT A SCAN THAT FOUND NOTHING.
+if (examined === 0) {
+  console.error('scan: no file under any given root could be examined, so a zero here would prove nothing');
+  process.exit(3);
+}
 console.log(String(hits));
 SCAN
 
 cat > "$WORK/observations.cjs" <<'OBSERVATIONS'
 // The observation record the verdict phase reads. COUNTERS ONLY: no URL, no reference, no header, no value.
+//
+// WHAT WAS WRONG WITH THIS FILE, AND IT WAS THE WHOLE POINT OF IT. Every cleanup counter here was the LITERAL
+// `0`, and so was `disallowedOriginContacts`. The verdict layer that consumes them is falsifiable and well
+// tested — `test/projection-real-provider.ts` refuses a leaked mountpoint and refuses a disallowed-origin
+// contact — so four RP6 assertions and one RP3 assertion were being handed a constant they could never fail
+// against. `deploy/projection-gate-cleanup.sh` says in its own words that the trap-time report "is a REPORT,
+// NOT AN ASSERTION" and that "the gate asserts cleanliness separately, where it can afford to fail". In this
+// gate that separate assertion did not exist: it was this literal.
+//
+// WORSE THAN UNMEASURED, THE CLEANUP ONES WERE MEASURED AT THE WRONG MOMENT. The verdict runs before the EXIT
+// trap, so at the instant `containers: 0` was written the mount container was still running by design. The
+// gate now TEARS THE DATA PLANE DOWN FIRST and passes in what it counted.
 const { writeFileSync } = require('node:fs');
-const [, , out, write, create, unlink, chmod, leaseTraces, mode] = process.argv;
+const [, , out, write, create, unlink, chmod, leaseTraces, mode,
+  mountpoints, containers, runDirectories] = process.argv;
+
+// A COUNT THAT COULD NOT BE TAKEN IS NOT A COUNT OF ZERO. The shell passes the empty string when the host
+// cannot answer the question at all (no `findmnt`), and that becomes NaN — which `JSON.stringify` writes as
+// `null`, so it is never the number 0 and can never be read as one. The verdict reports that as UNTAKEN and
+// SKIPS it, never as a pass; §6.0 settled the same three-valued question for the host preflight, where an
+// undetermined answer is reported rather than either passed or used to fail a gate for a property of the
+// platform. Where the host CAN answer, it stays a hard assertion.
+const count = (raw) => (raw === '' || raw === undefined ? Number.NaN : Number(raw));
+
 const record = {
   // NOT PROVOKED, ONLY BOUNDED. This corpus is never a load test, so no 429 is manufactured and no retry is
   // forced; what is recorded is what happened while the gate did its ordinary reads.
@@ -264,6 +358,10 @@ const record = {
   retries: 0,
   refreshesPerRead: [],
   disallowedOriginContacts: 0,
+  // THIS GATE STANDS UP NO LISTENER ON THE EXCLUDED ORIGIN, so it cannot observe a contact with one and does
+  // not claim to. The verdict records the egress line rather than asserting it, and says so. G26 asserts the
+  // allowlist in full against a listener `deploy/projection-lease-gate.sh` really does stand up.
+  egressObservedAtListener: false,
   // The direct path has no expiring access material, so the refresh assertion correctly SKIPS -- and a skip
   // says so. G24-G26 assert the refresh contract in full against the expiring-lease mode.
   endpointExpires: false,
@@ -273,7 +371,12 @@ const record = {
     unlinkRefused: unlink === 'true',
     chmodRefused: chmod === 'true',
   },
-  cleanup: { mountpoints: 0, containers: 0, runDirectories: 0, leaseTracesOnDisk: Number(leaseTraces) },
+  cleanup: {
+    mountpoints: count(mountpoints),
+    containers: count(containers),
+    runDirectories: count(runDirectories),
+    leaseTracesOnDisk: Number(leaseTraces),
+  },
   mode,
 };
 writeFileSync(out, JSON.stringify(record, null, 2) + '\n');
@@ -502,13 +605,53 @@ step "no access material reached disk — searched for by the exact value the ru
 # "WE DO NOT LOG IT" IS A CLAIM; THIS IS A MEASUREMENT. The credential is a high-entropy value this run
 # generated (fake mode) or the operator supplied (real mode), so a grep for it across everything the run
 # wrote is decisive. The needle is passed by FILE, never on the command line, so it never enters argv.
-LEASE_TRACES="$(node "$REL/scan.cjs" "$CREDENTIAL" "$WORK/out" "$WORK/manifest" "$WORK/cache")"
+# AND A SCAN THAT COULD NOT BE DECISIVE IS A FAILURE, NOT A ZERO. `scan.cjs` exits non-zero when the secret
+# is too short to search for, or when it could not examine a single file — both of which used to print `0`
+# and be recorded as proof that nothing leaked.
+LEASE_TRACES="$(node "$REL/scan.cjs" "$CREDENTIAL" "$WORK/out" "$WORK/manifest" "$WORK/cache")" \
+  || die "the credential-leak scan could not be made decisive; a count from it would prove nothing"
+
+# ----------------------------------------------------------------------------------------------------------
+step "TEARDOWN — the data plane comes down HERE, so cleanliness is measured rather than asserted"
+# ----------------------------------------------------------------------------------------------------------
+# WHY THIS STEP EXISTS AT ALL. RP6 asserts that no mountpoint, container or run directory survived the run,
+# and it used to be handed the literal `0` for all three by `observations.cjs` — at a moment when the mount
+# container was still running by design, so one of those three was not merely unmeasured but false. Nothing
+# after the leak scan needs the mount, so the data plane comes down before the verdict and the gate counts
+# what is actually left. `projection_gate_report_cleanliness` still runs in the EXIT trap, where its own
+# comment explains it can only report; this is the assertion it says the gate makes separately.
+docker rm -f "$MOUNT_CONTAINER" "$FAKE_CONTAINER" >/dev/null 2>&1 || true
+projection_gate_unmount_run "$GATE_ROOT" "$WORK" "$VERIFY_IMAGE" || true
+
+# EMPTY, NOT ZERO, WHEN THE QUESTION CANNOT BE ASKED. On a host without `findmnt` — every Windows host — this
+# returns the empty string, which the verdict records as UNTAKEN and SKIPS. It is never folded into a zero: a
+# check that could not run is not a check that passed. It stays a hard assertion on every host that can answer
+# it, which includes the tranche-closing one.
+MOUNTPOINTS_LEFT="$(projection_gate_mounts_under "$WORK")"
+
+# THE GATE'S OWN CONTAINERS, BY THEIR EXACT NAMES. Both carry this shell's pid, so nothing else on the host
+# can be counted here and no other concurrent run can be blamed for a leak of this one's.
+CONTAINERS_LEFT="$(docker ps -aq \
+  --filter "name=^/${MOUNT_CONTAINER}$" --filter "name=^/${FAKE_CONTAINER}$" | wc -l | tr -d ' ')"
+
+# RUN DIRECTORIES UNDER THE GATE ROOT THAT ARE NOT THIS RUN'S. This run's own directory must still exist —
+# the verdict is about to read its JSON out of it — so what is counted here is only the leak §6.5 describes:
+# directories left behind by EARLIER runs that were supposed to have cleaned up after themselves. This run's
+# own directory is asserted separately, after the report, by the `cleanup` phase at the end of this script.
+#
+# ONLY `run-*` IS COUNTED, not every directory under the gate root: the evidence copied out below also lives
+# there, and counting it would fail the gate for doing the right thing.
+RUN_DIRS_LEFT="$(find "$GATE_ROOT" -mindepth 1 -maxdepth 1 -type d -name 'run-*' ! -name "run-$$" 2>/dev/null \
+  | wc -l | tr -d ' ')"
+
+echo "  left behind: ${MOUNTPOINTS_LEFT:-<undetermined>} mountpoint(s), $CONTAINERS_LEFT container(s), $RUN_DIRS_LEFT foreign run directory(ies)"
 
 # ----------------------------------------------------------------------------------------------------------
 step "the verdict"
 # ----------------------------------------------------------------------------------------------------------
 node "$REL/observations.cjs" "$REL/out/observations.json" \
-  "$WRITE_REFUSED" "$CREATE_REFUSED" "$UNLINK_REFUSED" "$CHMOD_REFUSED" "$LEASE_TRACES" "$MODE"
+  "$WRITE_REFUSED" "$CREATE_REFUSED" "$UNLINK_REFUSED" "$CHMOD_REFUSED" "$LEASE_TRACES" "$MODE" \
+  "$MOUNTPOINTS_LEFT" "$CONTAINERS_LEFT" "$RUN_DIRS_LEFT"
 
 real_provider verdict --objects "$OBJECTS" --control "$REL/out/control.json" \
   $FIXTURE_FLAG \
@@ -522,4 +665,66 @@ if [ "$MODE" = "fake" ]; then
   echo "FAKE MODE COMPLETED. Every phase and every assertion ran, offline, against the product's own"
   echo "deterministic fake provider. This proves the GATE works and can fail. It proves NOTHING about any"
   echo "real provider, closes no acceptance gate, and Phase 1 stays open on exactly that ground."
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+step "CLEANUP — a success condition of this run, not a report about it"
+# ----------------------------------------------------------------------------------------------------------
+# THE GAP THIS CLOSES. Every verdict above is read out of the run directory, so none of them could ever
+# require that directory to be gone; `RP6-foreign-run-directories` says so in as many words and bounds only
+# EARLIER runs' leftovers. The one directory most likely to leak — this one, with this one's mounts under it —
+# was covered by nothing that could fail: `projection_gate_report_cleanliness` runs inside the EXIT trap, and
+# its own comment explains that a non-zero return there would overwrite the gate's exit status and turn a
+# failing run into a passing one. So the gate could print "1 mountpoint left behind" and still exit 0. That is
+# the report-versus-assertion gap §6.5 exists to close, reappearing in the gate that closes it.
+#
+# THE ORDER IS THE POINT. The report is already printed and the evidence is copied out FIRST, so requiring the
+# run directory to be gone cannot cost the operator the results that justify the verdict.
+#
+# AND IT CANNOT MASK AN EARLIER FAILURE, because it is only reached when every phase before it succeeded —
+# any earlier failure has already left through `die`, where the EXIT trap does the cleanup and reports it.
+# PRESERVING THE EVIDENCE IS ITSELF A PRECONDITION, NOT A COURTESY.
+#
+# This step is about to DELETE the run directory, which is the only place the verdict evidence exists. The
+# first version of it copied both files with `|| true` and then printed "evidence kept" unconditionally — so a
+# copy that failed for any reason (a full disk, a read-only gate root, a results file the verdict never wrote)
+# destroyed the only record of why the run passed, announced that it had kept it, and exited 0. A gate that
+# can lose its own evidence and still report success is the same class of defect as one that reports a
+# measurement it never took.
+#
+# SO EVERY STEP OF IT IS CHECKED: the source must exist and be non-empty, the copy must succeed, and the copy
+# must be byte-identical to what the run wrote. Any of those failing ends the run non-zero BEFORE anything is
+# deleted.
+EVIDENCE_DIR="$GATE_ROOT/evidence"
+mkdir -p "$EVIDENCE_DIR" \
+  || die "the evidence directory could not be created, and the run directory is about to be deleted; \
+refusing to destroy the only copy of this run's verdict"
+
+# EXTRACTED AND EXECUTED BY test/projection-real-provider.ts, so the three failure modes below are proved
+# rather than read. $1 is the path under the run directory, $2 the name to keep it under.
+copy_evidence() {
+  test -s "$WORK/$1" \
+    || die "the run wrote no $1, so there is no verdict evidence to preserve and nothing to stand behind"
+  cp "$WORK/$1" "$EVIDENCE_DIR/$2" \
+    || die "$1 could not be copied out of the run directory, which is about to be deleted"
+  cmp -s "$WORK/$1" "$EVIDENCE_DIR/$2" \
+    || die "the preserved copy of $1 does not match what the run wrote"
+}
+
+copy_evidence "out/results.json" "results-$$.jsonl"
+copy_evidence "out/results-summary.json" "results-summary-$$.json"
+echo "  evidence kept at $REL_GATE_ROOT/evidence/results-summary-$$.json (scrubbed before it was printed)"
+
+projection_gate_cleanup_run "$GATE_ROOT" "$WORK" "$VERIFY_IMAGE" || true
+
+OWN_MOUNTS_LEFT="$(projection_gate_mounts_under "$WORK")"
+OWN_DIR_PRESENT=false
+[ -d "$WORK" ] && OWN_DIR_PRESENT=true
+
+if real_provider cleanup --mountpoints "$OWN_MOUNTS_LEFT" --run-directory-present "$OWN_DIR_PRESENT"; then
+  # THE TRAP HAS NOTHING LEFT TO DO, and saying so keeps its report from contradicting this assertion.
+  CLEANED=1
+else
+  die "the run cleaned up after itself incompletely; a gate that leaves its run directory or a mountpoint \
+behind is how the NEXT run inherits a namespace and passes for the wrong reason"
 fi
