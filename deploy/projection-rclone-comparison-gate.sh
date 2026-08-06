@@ -902,31 +902,122 @@ step "no endpoint credential reached the mount, the client's cache or any server
 # in its own scratch state files, because the phases run as separate processes, and all three servers persist
 # their own authentication state. None of that is the endpoint credential and none of it is searched for.
 cat > "$WORK/out/leakcheck.sh" <<'LEAK'
+# THE SEARCH BEHIND "NO PROVIDER ACCESS MATERIAL REACHED DISK", AND THE THREE WAYS IT PROVED NOTHING.
+#
+# Each was found by RUNNING this program in the gate's own digest-pinned image against fixtures, not by
+# reading it:
+#
+#   - IT DISCARDED grep's ERRORS AND ITS EXIT STATUS ALIKE. `grep -rlF "$pattern" /scan 2>/dev/null` sends a
+#     scan root that does not exist and a file that cannot be opened down the same path as a clean miss: no
+#     output, so no leak, so exit 0. Measured in the pinned image: a secret sitting in plain text in a
+#     mode-000 file was reported ABSENT, and a /scan that did not exist was reported CLEAN. busybox grep
+#     exits 2 and writes a diagnostic for both, so both are now hard failures. A zero that means "did not
+#     look" is indistinguishable from one that means "did not leak", and this is the ONLY measurement
+#     standing behind the claim.
+#   - THE NEEDLE ARRIVED IN ARGV. Every call site passed the secret as a `docker run` argument, so it lived
+#     in the host's process table and in `docker inspect .Config.Cmd` for the life of the container --
+#     measured, verbatim -- while the rclone gate's own comment says its token "is in no argv, no container
+#     inspect output and no shell history". The needles now arrive as a FILE PATH, which is the idiom the
+#     register path was already corrected to.
+#   - THE FAILURE PATH PRINTED THE SECRET AND THE FILES IT WAS FOUND IN. Section 7 of the acceptance plan
+#     allows counts, digests and gate ids and nothing else. A hit now names the needle by its INDEX in the
+#     list; no needle and no path under the scan root is ever printed.
+#
+# WHAT IS REPORTED RATHER THAN REQUIRED, so that what is required can be trusted. The examined-file count is
+# printed for every scan and is REQUIRED only at the minimum the caller passes. A mount client entitled to
+# write nothing into its own cache directory must not fail a check about a leak that could not have happened,
+# and inventing a floor there would be fitting a threshold to an expectation.
 set -eu
 label="$1"
-shift
-found=0
-for pattern in "$@"; do
-  if grep -rlF "$pattern" /scan 2>/dev/null | head -5 | grep -q .; then
-    echo "LEAK: '$pattern' appears under $label" >&2
-    grep -rlF "$pattern" /scan 2>/dev/null | head -5 >&2
-    found=1
+needles="$2"
+minimum="${3:-1}"
+# THE ROOT IS AN ARGUMENT WITH THE CONTAINER PATH AS ITS DEFAULT, so the offline suite can run these exact
+# bytes against a temporary directory. A program only a container can execute is a program only a container
+# has ever executed, which is how this one kept three defects nobody could see.
+root="${4:-/scan}"
+
+refuse() { echo "leakcheck: $label: $1" >&2; exit 3; }
+
+test -d "$root" \
+  || refuse "the scan root is not a directory, so a clean result would mean the search never ran"
+test -s "$needles" \
+  || refuse "the needle list is missing or empty, so a clean result would mean nothing was searched for"
+
+# THE SCRATCH IS ITS OWN REFUSAL. Every diagnostic below is read out of a file, so a scratch directory
+# that could not be created would silently turn each of them into an empty file -- which is the shape of
+# "clean". It is created first and its failure ends the run.
+work="$(mktemp -d)" || refuse "no scratch directory could be created, so no diagnostic could be read back"
+trap 'rm -rf "$work"' EXIT
+
+# A ROOT THE WALKER CANNOT ENUMERATE IS NOT AN EMPTY ROOT.
+if ! find "$root" -type f > "$work/files" 2> "$work/walk"; then
+  refuse "the scan root could not be walked"
+fi
+test ! -s "$work/walk" || refuse "the scan root could not be walked completely"
+examined="$(wc -l < "$work/files" | tr -d ' ')"
+test "$examined" -ge "$minimum" \
+  || refuse "$examined file(s) under the scan root against a required $minimum; a clean result proves nothing"
+
+# A NEEDLE LIST THAT DOES NOT END IN A NEWLINE IS REFUSED, AND THIS ONE ALMOST SHIPPED.
+#
+# `wc -l` counts TERMINATORS and `read` drops an unterminated final record, so a nonempty one-line needle
+# file with no trailing newline counts ZERO needles, runs ZERO searches, and then agrees with itself at
+# zero: 0 needles read of 0 expected, 0 hits, exit 0. Measured against the same secret in the same tree
+# that the terminated list finds it in — "1 file(s) examined for 0 needle(s), 0 hit(s)", clean. A malformed
+# needle list is exactly what a caller gets wrong, and it produced the friendliest possible answer.
+#
+# Command substitution strips trailing newlines, so an empty last byte IS the terminator.
+test -z "$(tail -c 1 "$needles")" \
+  || refuse "the needle list does not end in a newline, so its last needle is dropped by every reader"
+total="$(wc -l < "$needles" | tr -d ' ')"
+test "$total" -ge 1 \
+  || refuse "the needle list holds no complete needle, so a clean result would mean nothing was searched"
+index=0
+hits=0
+while IFS= read -r pattern; do
+  index=$(( index + 1 ))
+  test -n "$pattern" || refuse "needle $index of $total is empty, and an empty needle matches every file"
+  status=0
+  grep -rlF -e "$pattern" "$root" > "$work/hit" 2> "$work/err" || status=$?
+  # 0 IS A MATCH, 1 IS A CLEAN MISS, AND ANYTHING ELSE IS A SEARCH THAT DID NOT COMPLETE.
+  if [ "$status" -ge 2 ] || [ -s "$work/err" ]; then
+    refuse "needle $index of $total could not be searched for across the whole root"
   fi
-done
-test "$found" -eq 0
+  if [ "$status" -eq 0 ]; then
+    hits=$(( hits + 1 ))
+    echo "LEAK: needle $index of $total appears under $label" >&2
+  fi
+done < "$needles"
+test "$index" -eq "$total" \
+  || refuse "read $index of $total needles, so the list was not searched in full"
+
+echo "  $label: $examined file(s) examined for $total needle(s), $hits hit(s)"
+test "$hits" -eq 0
 LEAK
 
+# THE NEEDLES ARRIVE AS A FILE, WHICH IS THE POINT. Fifteen lines above, this gate says its token "is in no
+# argv, no container inspect output and no shell history" -- and the ONLY place it ever reached argv was the
+# check written to prove it had not leaked, where `docker inspect .Config.Cmd` returned it verbatim. The
+# needles now reach the container as a path, at the same 0644 that comment already justifies for the token.
+printf '%s\n' "$DAV_TOKEN" "Authorization:" "Bearer " > "$WORK/out/leak-needles-client.txt"
+printf '%s\n' "$DAV_TOKEN" > "$WORK/out/leak-needles-token.txt"
+printf '%s\n' "$DAV_TOKEN" "fakedav" > "$WORK/out/leak-needles-library.txt"
+chmod 644 "$WORK/out/leak-needles-client.txt" "$WORK/out/leak-needles-token.txt" \
+  "$WORK/out/leak-needles-library.txt"
+test "${#DAV_TOKEN}" -ge 8 \
+  || die "the endpoint credential is under 8 bytes, so a search for it could not be decisive"
+
 docker run --rm -v "$WORK/rclone-cache:/scan:ro" -v "$WORK/out:/out:ro" "$VERIFY_IMAGE" \
-  sh /out/leakcheck.sh "the mount client cache" "$DAV_TOKEN" "Authorization:" "Bearer " \
+  sh /out/leakcheck.sh "the mount client cache" /out/leak-needles-client.txt 0 \
   || die "the mount client's cache holds the endpoint credential"
 
 docker run --rm -v "$WORK/rclone-config:/scan:ro" -v "$WORK/out:/out:ro" "$VERIFY_IMAGE" \
-  sh /out/leakcheck.sh "the mount client configuration" "$DAV_TOKEN" \
+  sh /out/leakcheck.sh "the mount client configuration" /out/leak-needles-token.txt 0 \
   || die "the mount client wrote the endpoint credential into its configuration"
 
 for scan_dir in jf-config plex-config emby-config; do
   docker run --rm -v "$WORK/$scan_dir:/scan:ro" -v "$WORK/out:/out:ro" "$VERIFY_IMAGE" \
-    sh /out/leakcheck.sh "a media server's library state" "$DAV_TOKEN" "fakedav" \
+    sh /out/leakcheck.sh "a media server's library state" /out/leak-needles-library.txt \
     || die "a media server persisted the endpoint credential or the endpoint's name"
 done
 echo "  no media server's library state names the endpoint or holds its credential"

@@ -421,6 +421,10 @@
       "group": "offline"
     },
     {
+      "file": "projection-gate-embedded-programs.ts",
+      "group": "offline"
+    },
+    {
       "file": "provider-availability-bridge.ts",
       "group": "offline"
     },

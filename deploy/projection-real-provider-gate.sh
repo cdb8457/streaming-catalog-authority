@@ -301,16 +301,28 @@ const containsNeedle = (path, size) => {
 
 let hits = 0;
 let examined = 0;
+let unreadable = 0;
+let unresolved = 0;
+let irregular = 0;
 const walk = (dir) => {
   if (!existsSync(dir)) return;
   for (const name of readdirSync(dir)) {
     const full = join(dir, name);
     let info;
-    try { info = statSync(full); } catch { continue; }
+    // A PATH THAT CANNOT BE RESOLVED HAS NO BYTES TO HOLD A SECRET — a dangling symlink is not a hole in the
+    // search — so it is counted and skipped rather than refused.
+    try { info = statSync(full); } catch { unresolved += 1; continue; }
     if (info.isDirectory()) { walk(full); continue; }
+    // A SOCKET OR A FIFO CANNOT HOLD A SECRET AT REST, and reading one can block for ever. Counted, skipped.
+    if (!info.isFile()) { irregular += 1; continue; }
     let found;
-    // AN UNREADABLE FILE IS NOT AN EXAMINED ONE, so it cannot pad the count below out of a failure.
-    try { found = containsNeedle(full, info.size); } catch { continue; }
+    // AN UNREADABLE FILE IS THE HALF OF THIS DEFECT THE LAST CORRECTION LEFT BEHIND. Skipping it silently was
+    // measured: run as an unprivileged uid over a directory holding one readable file with nothing in it and
+    // one mode-000 file with the credential in plain text, this printed 0 and exited 0. The readable file
+    // kept `examined` above zero, so the guard below never fired, and the leak that WAS there was reported
+    // ABSENT. These call sites run on the HOST as the operator over directories containers wrote as other
+    // uids, so it is live. It is now a REFUSAL: a file the scan could not open is coverage it did not have.
+    try { found = containsNeedle(full, info.size); } catch { unreadable += 1; continue; }
     examined += 1;
     if (found) hits += 1;
   }
@@ -321,6 +333,12 @@ for (const root of roots) walk(root);
 if (examined === 0) {
   console.error('scan: no file under any given root could be examined, so a zero here would prove nothing');
   process.exit(3);
+}
+// ...AND NEITHER IS ONE THAT COULD NOT OPEN EVERYTHING IT WALKED. Counts only: no path is ever named.
+if (unreadable > 0) {
+  console.error(`scan: ${unreadable} file(s) under the given roots could not be opened, so this scan did not `
+    + 'cover them and a count from it would read as proof it did');
+  process.exit(4);
 }
 console.log(String(hits));
 SCAN
