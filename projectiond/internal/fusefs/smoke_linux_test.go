@@ -327,6 +327,71 @@ func TestFUSEMountServesTheNamespace(t *testing.T) {
 	unmount()
 }
 
+// mountEmptyNamespace mounts a structurally legal EMPTY first generation — the minimal namespace this smoke
+// suite can stand up with no provider at all. It returns the mount point, the daemon and the mounted handle,
+// and registers cleanups so a failed test does not leave a mount behind.
+func mountEmptyNamespace(t *testing.T) (string, *daemon.Daemon, *Mounted) {
+	t.Helper()
+	base := t.TempDir()
+	manifestDir := filepath.Join(base, "manifest")
+	cacheDir := filepath.Join(base, "cache")
+	mountPoint := filepath.Join(base, "mnt")
+	for _, dir := range []string{manifestDir, cacheDir, mountPoint} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publish(t, manifestDir, "generation-1.json", buildManifest(1, "gen-one", nil, nil))
+	d, err := daemon.New(daemon.Config{
+		MountPoint:    mountPoint,
+		PointerPath:   filepath.Join(manifestDir, "pointer.json"),
+		ProbeCacheDir: cacheDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	if record := d.LoadPointer(); !record.Accepted {
+		t.Fatalf("the generation was not admitted: %+v", record)
+	}
+	m, err := Mount(d, mountPoint, MountSettings{StrictDirectMount: true})
+	if err != nil {
+		t.Fatalf("strict direct mount failed: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Unmount() })
+	return mountPoint, d, m
+}
+
+// A serve-loop death is observable from inside the daemon: when the kernel tears the connection down —
+// simulated here by unmounting through the RAW server, which is exactly the shape an external umount takes —
+// Done closes, UnmountRequested stays false, and ServeErr answers without hanging. This is the behaviour the
+// serve-death gate drives the supervisor through; the raw-server unmount is the only honest way to kill a
+// serve loop without killing the process.
+func TestFUSEMountServeDeathIsObserved(t *testing.T) {
+	if os.Getenv("PROJECTIOND_FUSE_SMOKE") == "" {
+		t.Skip("set PROJECTIOND_FUSE_SMOKE=1 and run with /dev/fuse to exercise the mount")
+	}
+	if _, err := os.Stat("/dev/fuse"); err != nil {
+		t.Skipf("no /dev/fuse on this host: %v", err)
+	}
+
+	// A minimal namespace: a structurally legal empty first generation needs no provider at all.
+	_, _, mount := mountEmptyNamespace(t)
+
+	// The kernel tears the connection down. Our Unmount is never called, so graceful stays false.
+	if err := mount.server.Unmount(); err != nil {
+		t.Fatalf("connection teardown: %v", err)
+	}
+	select {
+	case <-mount.Done():
+	case <-time.After(15 * time.Second):
+		t.Fatal("the serve loop must exit once the connection dies")
+	}
+	if mount.UnmountRequested() {
+		t.Fatal("an external teardown must not look like a graceful unmount")
+	}
+	_ = mount.ServeErr() // must answer now that the loop is done
+}
 func closeIf(f *os.File) {
 	if f != nil {
 		_ = f.Close()
