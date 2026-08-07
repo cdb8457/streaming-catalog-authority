@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cdb8457/streaming-catalog-authority/projectiond/internal/cache"
+	"github.com/cdb8457/streaming-catalog-authority/projectiond/internal/manifest"
 )
 
 func configFor(t *testing.T) Config {
@@ -145,6 +147,162 @@ func TestStatusPublishesWhatThePlaybackCacheServed(t *testing.T) {
 	}
 	if decoded.Playback.Hits != 1 || decoded.Playback.HitBytes != 4096 || decoded.Playback.Misses != 1 {
 		t.Fatalf("the JSON the gate reads does not carry the evidence: %s", encoded)
+	}
+}
+
+// A serve-loop death is a distinct readiness reason: the process is alive but the namespace is gone. The
+// supervisor records it, the status document carries it, and a successful remount clears it.
+func TestServeDeathIsRecordedAndCleared(t *testing.T) {
+	d, err := New(configFor(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	// A fresh daemon has no serve death to report.
+	if d.Status().ServeError != "" || d.Status().LastServeDeathAt != "" {
+		t.Fatalf("a fresh daemon must report no serve death: %+v", d.Status())
+	}
+	if d.ServeError() != nil {
+		t.Fatal("a fresh daemon must not report a serve error")
+	}
+
+	d.RecordServeDeath(errors.New("connection aborted"))
+	status := d.Status()
+	if status.ServeError != "connection aborted" {
+		t.Fatalf("the serve error is not reported: %q", status.ServeError)
+	}
+	if status.LastServeDeathAt == "" {
+		t.Fatal("a serve death must be timestamped")
+	}
+	if d.ServeError() == nil || d.ServeError().Error() != "connection aborted" {
+		t.Fatalf("ServeError must surface the death, got %v", d.ServeError())
+	}
+
+	d.ClearServeDeath()
+	if d.Status().ServeError != "" || d.Status().LastServeDeathAt != "" {
+		t.Fatalf("clearing a serve death must clear the document: %+v", d.Status())
+	}
+	if d.ServeError() != nil {
+		t.Fatal("clearing a serve death must clear the error")
+	}
+}
+
+// Ready means serving, and a serve-loop death is not serving — even while the process is alive and the
+// mounted flag is still up.
+func TestServeDeathMakesReadyFalseUntilCleared(t *testing.T) {
+	d, err := New(configFor(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	admitEmptyGeneration(t, d)
+
+	d.SetMounted(true)
+	if !d.Status().Ready {
+		t.Fatal("an admitted, mounted generation is ready")
+	}
+	d.RecordServeDeath(errors.New("connection aborted"))
+	if d.Status().Ready {
+		t.Fatal("a serve-loop death must make ready false even while mounted")
+	}
+	d.ClearServeDeath()
+	if !d.Status().Ready {
+		t.Fatal("a successful remount must restore ready")
+	}
+}
+
+// The /readyz handler carries the reason: a serve death is answered 503 with the reason in the body, and the
+// reason is gone after a remount. This is the loop the serve-death gate reads.
+func TestReadyzReportsServeDeathReason(t *testing.T) {
+	d, err := New(configFor(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	admitEmptyGeneration(t, d)
+	d.SetMounted(true)
+
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/readyz", nil)
+	recorder := httptest.NewRecorder()
+	d.statusMux().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("a ready daemon must answer 200, got %d", recorder.Code)
+	}
+
+	d.RecordServeDeath(errors.New("connection aborted"))
+	recorder = httptest.NewRecorder()
+	d.statusMux().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("a serve death must answer 503, got %d", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "connection aborted") {
+		t.Fatalf("the 503 must say why, got %s", recorder.Body.String())
+	}
+
+	d.ClearServeDeath()
+	recorder = httptest.NewRecorder()
+	d.statusMux().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("after a remount the daemon must be ready again, got %d", recorder.Code)
+	}
+}
+
+// admitEmptyGeneration publishes a structurally legal empty FIRST generation and admits it, so the ready
+// baseline ("a generation is admitted") can be reached with no provider in the loop.
+func admitEmptyGeneration(t *testing.T, d *Daemon) {
+	t.Helper()
+	doc := map[string]any{
+		"format":  manifest.Format,
+		"version": manifest.Version,
+		"generation": map[string]any{
+			"generationId": "gen_" + strings.Repeat("a", 32),
+			"sequence":     1,
+			"createdAt":    "2026-06-01T10:00:00.000Z",
+			"predecessor":  nil,
+			"provenance": map[string]any{
+				"producer": "catalog-authority", "producerVersion": "1.2.6",
+				"controlPlaneSchemaVersion": 9,
+				"sourceSnapshotDigest":      "sha256:" + strings.Repeat("a", 64),
+				"probeWindowBytes":          manifest.ProbeWindowBytes,
+			},
+			"admission": map[string]any{
+				"intent": "routine", "entryCount": 0, "deletions": []any{},
+				"deletionGuardAcknowledged": false, "deletionGuardDigest": nil,
+			},
+		},
+		"entries": []any{},
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, problems := manifest.Parse(raw)
+	if len(problems) > 0 {
+		t.Fatalf("the test built an invalid manifest: %v", manifest.Codes(problems))
+	}
+	dir := filepath.Dir(d.cfg.PointerPath)
+	if err := os.WriteFile(filepath.Join(dir, "generation-1.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pointer := Pointer{
+		GenerationID: parsed.Generation.GenerationID, Sequence: parsed.Generation.Sequence,
+		ArtifactName: "generation-1.json", ArtifactBytes: int64(len(raw)),
+		ManifestDigest: manifest.DigestOfBytes(raw),
+	}
+	body, err := json.Marshal(pointer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := filepath.Join(dir, "pointer.json.tmp")
+	if err := os.WriteFile(tmp, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, d.cfg.PointerPath); err != nil {
+		t.Fatal(err)
+	}
+	if record := d.LoadPointer(); !record.Accepted {
+		t.Fatalf("the generation was not admitted: %+v", record)
 	}
 }
 

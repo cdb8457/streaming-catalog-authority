@@ -95,8 +95,20 @@ type Daemon struct {
 
 	startedAt time.Time
 	mounted   atomic.Bool
-	mu        sync.Mutex
-	lastAdmit AdmitRecord
+	// serveDeath is the record of the most recent FUSE serve-loop death, nil until the supervisor records
+	// one. The daemon itself never guesses about the serve loop: main's supervisor is the only writer, and a
+	// successful remount restores nil.
+	serveDeath atomic.Pointer[serveDeathRecord]
+	mu         sync.Mutex
+	lastAdmit  AdmitRecord
+}
+
+// serveDeathRecord is the immutable record of one serve-loop death: why the loop exited and when the death
+// was observed. The pointer is nil while no death is current, which is also what a successful remount
+// restores.
+type serveDeathRecord struct {
+	err error
+	at  time.Time
 }
 
 // AdmitRecord is what the status surface reports about the most recent admission attempt.
@@ -306,6 +318,27 @@ func (d *Daemon) Config() Config                              { return d.cfg }
 // parsed but was never mounted is not something a health check should call ready, because nothing can read it.
 func (d *Daemon) SetMounted(mounted bool) { d.mounted.Store(mounted) }
 
+// RecordServeDeath tells the status surface that the FUSE serve loop died. The supervisor calls it when it
+// observes the serve loop exit without an unmount request. It is what makes /readyz answer not-ready with a
+// reason: "the process is alive but the namespace is gone" is exactly the failure mode this exists to make
+// visible.
+func (d *Daemon) RecordServeDeath(err error) {
+	d.serveDeath.Store(&serveDeathRecord{err: err, at: time.Now()})
+}
+
+// ClearServeDeath clears a recorded serve death after the supervisor has successfully remounted.
+func (d *Daemon) ClearServeDeath() {
+	d.serveDeath.Store(nil)
+}
+
+// ServeError reports the reason the serve loop died, or nil while no death is recorded.
+func (d *Daemon) ServeError() error {
+	if record := d.serveDeath.Load(); record != nil {
+		return record.err
+	}
+	return nil
+}
+
 // LoadPointer reads the pointer file and admits the artifact it names.
 //
 // A FAILED ADMISSION LEAVES THE LAST GOOD SNAPSHOT SERVING. Every early return here is a refusal that changes
@@ -502,6 +535,11 @@ type Status struct {
 	// hold no per-request record, no offset, no handle and no identity, and they are always on.
 	Playback      cache.PlaybackCounters `json:"playback"`
 	LastAdmission AdmitRecord            `json:"lastAdmission"`
+	// ServeError is why the FUSE serve loop exited, present only after a serve-loop death. It answers "the
+	// process is alive but the namespace is gone". Like the rest of this surface it is loopback-only.
+	ServeError string `json:"serveError,omitempty"`
+	// LastServeDeathAt is when the most recent serve-loop death was observed, RFC3339 UTC.
+	LastServeDeathAt string `json:"lastServeDeathAt,omitempty"`
 }
 
 func (d *Daemon) Status() Status {
@@ -519,8 +557,18 @@ func (d *Daemon) Status() Status {
 		status.GenerationSequence = snap.Sequence()
 		status.Entries = snap.Tree.FileCount
 		status.TotalBytes = snap.Tree.TotalBytes
-		// Ready is "a generation is admitted AND it is actually being served".
-		status.Ready = status.Mounted
+		// Ready is "a generation is admitted AND it is actually being served". A serve-loop death that the
+		// supervisor has observed is a mount that no longer serves, so it makes ready false even while the
+		// process is alive and remounting.
+		status.Ready = status.Mounted && d.serveDeath.Load() == nil
+	}
+	if record := d.serveDeath.Load(); record != nil {
+		if record.err != nil {
+			status.ServeError = record.err.Error()
+		} else {
+			status.ServeError = "the serve loop exited without an error"
+		}
+		status.LastServeDeathAt = record.at.UTC().Format(time.RFC3339)
 	}
 	if status.RetainedGenerations == nil {
 		status.RetainedGenerations = []string{}
