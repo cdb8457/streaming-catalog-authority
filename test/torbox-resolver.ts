@@ -40,28 +40,131 @@ const repoFile = (path: string): string => readFileSync(join(HERE, '..', path), 
 /**
  * A path in the spelling the SHELL will read, not the one the platform stores.
  *
- * WHY THIS EXISTS AND WHY IT IS NOT COSMETIC. `spawnSync('bash', [join(...)])` on Windows hands Git Bash a
- * native path — `C:\Users\clint\…` — and the backslashes are consumed as escapes before the script name is
- * resolved, so bash is asked to run `C:Usersclint…` and answers `No such file or directory`. That is why
- * `npm run test:torbox-resolver` was 79/1 on a Windows worktree while being 80/0 on Linux, and it made the
- * one wrapper test that drives a shipped script unrunnable on the platform this repository is developed on.
- * Forward slashes are accepted by Git Bash and by every POSIX shell, and on a POSIX host there are no
- * backslashes to replace, so this is a no-op there rather than a second code path.
+ * WHAT THIS IS AND, JUST AS IMPORTANTLY, WHAT IT IS NOT. Backslashes reaching a shell as argv are consumed
+ * as escapes, so a native `C:\Users\…` handed to a POSIX shell can arrive as `C:Usersclint…`. Forward
+ * slashes avoid that, and on a POSIX host there are no backslashes to replace, so this is a no-op there
+ * rather than a second code path.
+ *
+ * IT IS NOT, HOWEVER, WHAT MADE THE WRAPPER TEST FAIL ON WINDOWS, AND THE COMMIT THAT ADDED IT SAID IT WAS.
+ * Measured against each candidate binary directly: Git Bash runs a script at BOTH spellings, and the `bash`
+ * first on PATH on a stock Windows box — `C:\WINDOWS\system32\bash.exe`, which is WSL — runs it at NEITHER,
+ * because a Windows drive path is not addressable from inside WSL at all (it wants `/mnt/c/…`). The
+ * determinant was never the separator; it was WHICH `bash` got the call. `posixShell` below is the fix, and
+ * this remains for the argv hygiene it does provide.
  */
 const shPath = (path: string): string => path.replace(/\\/g, '/');
 
 /**
- * Blocks the suite could not execute on this platform, counted so a green summary cannot hide them.
+ * Blocks the suite could not execute here, counted so a green summary cannot hide them.
  *
- * A TEST THAT RETURNS EARLY STILL PRINTS `ok`. Three of the tests below need a POSIX shell for part of what
- * they assert; without this a Windows reader saw every line green and had no way to know which halves never
- * ran. Each skip names itself here and the count is printed with the totals.
+ * A TEST THAT RETURNS EARLY STILL PRINTS `ok`. Several tests below need a POSIX shell, or POSIX process and
+ * permission semantics, for part of what they assert; without this a Windows reader saw every line green and
+ * had no way to know which halves never ran. Each skip names itself here and the count is printed with the
+ * totals.
  */
 const skippedBlocks: string[] = [];
 const skipBlock = (what: string): void => {
   skippedBlocks.push(what);
   console.log(`  ..  SKIPPED on ${process.platform}: ${what}`);
 };
+
+// ---------------------------------------------------------------------------------------------------------
+// THE SHELL THIS SUITE DRIVES SHIPPED SCRIPTS WITH, CHOSEN BY EXECUTION RATHER THAN BY NAME
+// ---------------------------------------------------------------------------------------------------------
+//
+// THE DEFECT, WHICH SURVIVED TWO COMMITS AND WAS PUBLISHED AS A PASSING FIGURE BOTH TIMES. Four tests here
+// drive a shipped shell program, and they invoked it as `spawnSync('bash', …)` — whatever `bash` PATH
+// happens to resolve first. On a stock Windows install that is `C:\WINDOWS\system32\bash.exe`, the WSL
+// launcher, which cannot address a Windows drive path in any spelling; the wrapper test therefore FAILED
+// rather than ran, and the failure was indistinguishable from a real regression in the wrapper. It passed
+// only when the suite happened to be started from a shell that had put Git Bash's `bin` first, which is why
+// the recorded Windows figure did not reproduce from an ordinary PowerShell launch.
+//
+// SO THE SHELL IS CHOSEN BY ASKING IT TO DO THE JOB, NOT BY ASKING WHAT IT IS CALLED. Each candidate is made
+// to execute a real script at the exact path spelling the suite will use and print a sentinel. A candidate
+// that cannot is not a POSIX shell as far as this suite is concerned, whatever its name — and if none can,
+// every test that needs one SKIPS BY NAME rather than failing, because a suite that could not run the
+// wrapper has not checked the wrapper and must not report either verdict.
+//
+// A RELATED DEFECT WAS SOLVED DIFFERENTLY ELSEWHERE, AND THE DIFFERENCE IS DELIBERATE.
+// `test/projection-jellyfin-dataplane.ts` keeps whatever `bash` it finds and TRANSLATES the path into that
+// shell's convention (`toBashPath`, plus `WSLENV` so variables survive the boundary). That is right there,
+// where the wrapper only ever invokes a stub. It is wrong here: these wrappers run `npm`, `npx` and `docker`
+// out of this checkout, and a WSL bash would be a different machine with a different toolchain. What this
+// suite needs is the shell the repository is actually operated with.
+const SHELL_SENTINEL = 'projection-posix-shell-ok';
+
+/** Where a Git-for-Windows `bash.exe` lives, derived from the `git` that is installed rather than guessed. */
+function gitBashCandidates(): readonly string[] {
+  const found: string[] = [];
+  // `git --exec-path` answers e.g. `C:/Program Files/Git/mingw64/libexec/git-core`; the shell sits at
+  // `<install root>/bin/bash.exe`. Walking up from the answer finds it wherever Git was installed, which a
+  // hard-coded `C:\Program Files` would not.
+  const execPath = spawnSync('git', ['--exec-path'], { encoding: 'utf8' });
+  if (execPath.status === 0) {
+    let dir = String(execPath.stdout).trim().replace(/\\/g, '/');
+    for (let up = 0; up < 4 && dir.includes('/'); up += 1) {
+      found.push(`${dir}/bin/bash.exe`);
+      dir = dir.slice(0, dir.lastIndexOf('/'));
+    }
+  }
+  for (const root of [process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.LOCALAPPDATA]) {
+    if (root !== undefined && root !== '') found.push(`${shPath(root)}/Git/bin/bash.exe`);
+  }
+  return found;
+}
+
+/**
+ * Candidates in the order they should be preferred.
+ *
+ * ON WINDOWS, BARE `bash` IS TRIED LAST AND THAT ORDERING IS THE WHOLE POINT: it is the one most likely to
+ * be WSL. On a POSIX host bare `bash` is tried FIRST, because there it is the right answer — with the
+ * absolute paths after it so that a PATH which has been poisoned, shadowed or emptied still resolves to a
+ * real shell rather than making the suite skip a check it could have run.
+ */
+function shellCandidates(): readonly string[] {
+  if (process.platform === 'win32') return [...gitBashCandidates(), 'bash'];
+  return ['bash', '/bin/bash', '/usr/bin/bash', '/bin/sh'];
+}
+
+/** Can this candidate actually execute a script at the spelling this suite hands out? */
+function shellCanRunAScript(command: string): boolean {
+  const dir = mkdtempSync(join(tmpdir(), 'tbshell-'));
+  const script = join(dir, 'probe.sh');
+  writeFileSync(script, `#!/bin/sh\nprintf '%s' '${SHELL_SENTINEL}'\n`);
+  try { chmodSync(script, 0o755); } catch { /* Windows has no executable bit; the shell is given the path */ }
+  const result = spawnSync(command, [shPath(script)], { encoding: 'utf8', timeout: 30_000 });
+  return result.status === 0 && String(result.stdout ?? '').includes(SHELL_SENTINEL);
+}
+
+let shellChoice: { readonly command: string | null } | undefined;
+
+/** The chosen shell, or `null` when nothing on this host can run a script at this path. Memoised. */
+function posixShell(): string | null {
+  if (shellChoice === undefined) {
+    shellChoice = { command: shellCandidates().find(shellCanRunAScript) ?? null };
+  }
+  return shellChoice.command;
+}
+
+/**
+ * The chosen shell where a caller has already established there is one.
+ *
+ * Every call site is behind a guard that skips by name when `posixShell()` is null, so reaching this with
+ * nothing selected is a defect in the guard rather than a property of the host — and it throws rather than
+ * quietly falling back to bare `bash`, which is the behaviour this whole mechanism exists to remove.
+ */
+function shellOrThrow(): string {
+  const command = posixShell();
+  if (command === null) throw new Error('no POSIX shell was selected, and this block requires one');
+  return command;
+}
+
+/** For the selection regression, which has to re-resolve under a deliberately poisoned PATH. */
+function resetShellChoice(): void { shellChoice = undefined; }
+
+/** The reason a block cannot run, named for what is missing rather than for the platform. */
+const NO_SHELL = 'no POSIX shell on this host can execute a script at the workspace path';
 
 let passed = 0;
 let failed = 0;
@@ -1534,16 +1637,20 @@ async function main(): Promise<void> {
     // one run this whole tranche is waiting on. It is checked here by RUNNING the wrapper, through the seam
     // it documents for exactly this purpose.
     //
-    // BOTH PATHS GO THROUGH `shPath`, WHICH IS WHY THIS RUNS ON WINDOWS AT ALL. Handing Git Bash the native
-    // `C:\Users\…` spelling had it resolve `C:Usersclint…` and answer `No such file or directory`, so this
-    // test — the only one here that drives a shipped script end to end — failed on every Windows worktree
-    // while passing on Linux. The wrapper reads its stub path out of the environment, so that spelling has
-    // to be shell-readable too.
+    // THIS IS THE ONE TEST HERE THAT DRIVES A SHIPPED SCRIPT END TO END, AND IT IS THE ONE THAT KEPT FAILING
+    // ON WINDOWS FOR A REASON THAT HAD NOTHING TO DO WITH THE WRAPPER. It ran `spawnSync('bash', …)`, and on
+    // a stock Windows box that is WSL, which cannot address this checkout at all. It is now given the shell
+    // `posixShell` proved can execute a script here; where nothing can, it SKIPS BY NAME, because a suite
+    // that could not run the wrapper has not checked the wrapper. Both paths still go through `shPath`: the
+    // wrapper reads its stub path out of the environment, so that spelling has to be shell-readable too.
+    const shell = posixShell();
+    if (shell === null) { skipBlock(`${NO_SHELL} — the three-run wrappers were not executed`); return; }
+
     const drive = (script: string, commandVar: string, runsVar: string): string => {
       const dir = mkdtempSync(join(tmpdir(), 'tbwrap-'));
       const stub = join(dir, 'stub.sh');
       writeFileSync(stub, '#!/usr/bin/env bash\nexit 0\n');
-      const result = spawnSync('bash', [shPath(join(HERE, '..', 'deploy', script))], {
+      const result = spawnSync(shell, [shPath(join(HERE, '..', 'deploy', script))], {
         encoding: 'utf8',
         env: { ...process.env, [commandVar]: shPath(stub), [runsVar]: '1' },
       });
@@ -2038,9 +2145,15 @@ async function main(): Promise<void> {
       + 'empty or nonsensical bound');
 
     if (process.platform === 'win32') {
-      skipBlock('driving the shipped `bounded_read` against a SIGTERM-ignoring child (needs a POSIX shell)');
+      // NOT MERELY "needs a shell": Git Bash is present on this host and `posixShell` finds it. What this
+      // block needs is POSIX SIGNAL DELIVERY — a child that installs `trap "" TERM` and a `timeout` whose
+      // SIGTERM and SIGKILL reach it as signals rather than as emulated process termination. Naming the
+      // shell as the missing thing would be wrong now that one is selected and verified.
+      skipBlock('driving the shipped `bounded_read` against a SIGTERM-ignoring child '
+        + '(needs POSIX signal delivery, which win32 does not provide even under a POSIX shell)');
       return;
     }
+    if (posixShell() === null) { skipBlock(`${NO_SHELL} — \`bounded_read\` was not driven`); return; }
 
     // THE SHIPPED FUNCTION, EXECUTED. The harness supplies the grace the way the `mount_refuses` harness
     // supplies WORK and VERIFY_IMAGE — the gate's own constant is a literal assignment, not a knob, and is
@@ -2054,7 +2167,7 @@ async function main(): Promise<void> {
       const harness = join(dir, 'harness.sh');
       writeFileSync(harness, script);
       const began = Date.now();
-      const result = spawnSync('bash', [shPath(harness)], { encoding: 'utf8', timeout: 60_000 });
+      const result = spawnSync(shellOrThrow(), [shPath(harness)], { encoding: 'utf8', timeout: 60_000 });
       const status = /STATUS=(\d+)/.exec(`${result.stdout}${result.stderr}`);
       return { code: status === null ? -1 : Number(status[1]), elapsedMs: Date.now() - began };
     };
@@ -2150,10 +2263,34 @@ async function main(): Promise<void> {
     assert(/die "a privileged create through the mount was refused, but not because/.test(gate),
       'and a refusal for some other reason is not treated as the failure it is');
 
+    // AND THE ERRNO PROBE CANNOT MISATTRIBUTE A BROKEN DOCKER, BECAUSE IT NEVER SEES ONE.
+    //
+    // `ROFS_REASON` captures whatever the privileged `touch` printed and fails unless it names a read-only
+    // file system — so on a host where `docker run` itself failed, its message would be a daemon error and
+    // the die text would blame the mount for something Docker did. That is unreachable only because
+    // `mount_refuses 0:0` runs FIRST and already dies on 125/126/127, and "unreachable because of the order
+    // two things happen in" is exactly the kind of property that stops being true when somebody moves one.
+    // So the order is pinned here rather than left to be rediscovered.
+    const privilegedCreate = gate.indexOf('mount_refuses 0:0 "a file creation"');
+    const errnoProbe = gate.indexOf('ROFS_REASON=');
+    assert(privilegedCreate !== -1 && errnoProbe !== -1,
+      'the privileged create probe or the errno probe is gone');
+    assert(privilegedCreate < errnoProbe,
+      'the errno probe now runs BEFORE the privileged create that classifies a docker failure, so a broken '
+      + '`docker run` would be reported as the mount being refused for the wrong reason');
+    // The classification it depends on must still be the three-valued one.
+    assert(/125\|126\|127\) die "the mount's refusal of \$_what as \$_who could not be measured/.test(gate),
+      'the probe no longer classifies a docker failure as unmeasured, which is what keeps the errno probe '
+      + 'from ever seeing one');
+
     if (process.platform === 'win32') {
-      skipBlock('driving the shipped `mount_refuses` against a stub `docker` (needs a POSIX shell)');
+      // The harness puts a stub `docker` first on PATH, which needs the POSIX `:` separator and an
+      // executable bit; neither exists on win32, and a selected shell does not supply them.
+      skipBlock('driving the shipped `mount_refuses` against a stub `docker` '
+        + '(needs a PATH-injected executable, which win32 has no separator or exec bit for)');
       return;
     }
+    if (posixShell() === null) { skipBlock(`${NO_SHELL} — \`mount_refuses\` was not driven`); return; }
     const start = gate.indexOf('mount_refuses() {');
     assert(start !== -1, 'the gate no longer defines mount_refuses');
     const body = gate.slice(start, gate.indexOf('\n}\n', start) + 3);
@@ -2173,7 +2310,7 @@ async function main(): Promise<void> {
         + `${body}\n`
         + 'mount_refuses 0:0 "a write" "echo x >> /mnt/object-1.bin"\n'
         + 'echo REFUSED-AND-CONTINUED\n');
-      const result = spawnSync('bash', [shPath(harness)], {
+      const result = spawnSync(shellOrThrow(), [shPath(harness)], {
         encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` },
       });
       return { code: result.status ?? -1, out: `${result.stdout}${result.stderr}` };
@@ -2337,8 +2474,13 @@ async function main(): Promise<void> {
       'and the capture no longer covers both containers');
 
     if (process.platform === 'win32') {
-      skipBlock('driving the shipped `capture_container_logs` against a failing `docker` (needs a POSIX shell)');
+      // Same reason as `mount_refuses` above: a stub `docker` injected onto PATH.
+      skipBlock('driving the shipped `capture_container_logs` against a failing `docker` '
+        + '(needs a PATH-injected executable, which win32 has no separator or exec bit for)');
       return;
+    }
+    if (posixShell() === null) {
+      skipBlock(`${NO_SHELL} — \`capture_container_logs\` was not driven`); return;
     }
 
     // THE SHIPPED CAPTURE, EXECUTED AGAINST A `docker` THAT FAILS. This half used to be a pair of regexes
@@ -2365,7 +2507,7 @@ async function main(): Promise<void> {
         + `${body}\n`
         + 'capture_container_logs alpha beta\n'
         + 'echo CAPTURED-BOTH\n');
-      const result = spawnSync('bash', [shPath(harness)], {
+      const result = spawnSync(shellOrThrow(), [shPath(harness)], {
         encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` },
       });
       return {
@@ -2432,9 +2574,13 @@ async function main(): Promise<void> {
     // THE COPY IS A PRECONDITION OF THE DELETION, NOT A COURTESY BESIDE IT — the same three failure modes the
     // generic gate's own copy_evidence has, executed here against THIS gate's shipped copy.
     if (process.platform === 'win32') {
-      skipBlock('driving the shipped `copy_evidence` through its three failure modes (needs a POSIX shell)');
+      // The failure modes turn on POSIX filesystem behaviour — an ENOTDIR under a regular file, and modes
+      // root cannot bypass — rather than on the shell that exercises them.
+      skipBlock('driving the shipped `copy_evidence` and `preserve_failure_evidence` through their failure '
+        + 'modes (needs POSIX filesystem semantics: ENOTDIR under a regular file, and modes root obeys)');
       return;
     }
+    if (posixShell() === null) { skipBlock(`${NO_SHELL} — the evidence helpers were not driven`); return; }
     const start = gate.indexOf('copy_evidence() {');
     assert(start !== -1, 'the gate no longer preserves its evidence');
     const body = gate.slice(start, gate.indexOf('\n}\n', start) + 3);
@@ -2456,7 +2602,7 @@ async function main(): Promise<void> {
         + `${body}\n`
         + 'copy_evidence "out/reads.json" "reads-1.json"\n'
         + 'echo EVIDENCE-KEPT\n');
-      const result = spawnSync('bash', [shPath(harness)], { encoding: 'utf8' });
+      const result = spawnSync(shellOrThrow(), [shPath(harness)], { encoding: 'utf8' });
       return { code: result.status ?? -1, out: `${result.stdout}${result.stderr}` };
     };
 
@@ -2505,7 +2651,7 @@ async function main(): Promise<void> {
         + `${readyBody}\n${preserveBody}\n`
         + 'preserve_failure_evidence\n'
         + 'echo "TRAP-CONTINUED=$?"\n');
-      const result = spawnSync('bash', [shPath(harness)], { encoding: 'utf8' });
+      const result = spawnSync(shellOrThrow(), [shPath(harness)], { encoding: 'utf8' });
       let kept: string[] = [];
       let mode: number | undefined;
       try { kept = readdirSync(evidence); mode = statSync(evidence).mode & 0o777; } catch { kept = []; }
@@ -2539,6 +2685,87 @@ async function main(): Promise<void> {
     assert(/could NOT be preserved/.test(blocked.out),
       'a preservation that failed did not say so, so a reader would assume the record was kept');
     assert(blocked.kept.length === 0, 'a failed preservation left a partial copy behind');
+  });
+
+  await test('THE SHELL IS CHOSEN BY RUNNING IT, SO PATH ORDER CANNOT DECIDE WHETHER THIS SUITE CHECKS ANYTHING', () => {
+    // THE DEFECT, WHICH WAS PUBLISHED AS A PASSING WINDOWS FIGURE TWICE. Four tests here drive a shipped
+    // shell program, and they invoked whatever `bash` PATH resolved first. On a stock Windows box that is
+    // `C:\WINDOWS\system32\bash.exe` — the WSL launcher — which cannot address a Windows drive path in ANY
+    // spelling, so the wrapper test failed rather than ran, and the failure looked exactly like a regression
+    // in the wrapper. It passed only when the suite happened to be launched from a shell that had already
+    // put Git Bash's `bin` first, which is why the recorded figure did not reproduce from PowerShell.
+    //
+    // THE PREVIOUS FIX WAS SEPARATOR HYGIENE, AND SEPARATORS WERE NEVER THE DETERMINANT. Measured per
+    // candidate: Git Bash runs a script at both spellings; WSL's `bash` runs it at neither. This test pins
+    // the property that actually matters — that the suite picks a shell by MAKING IT DO THE JOB — and it
+    // does so under a PATH deliberately poisoned to put a broken `bash` first, which is the exact shape of
+    // the host the reviewer measured on.
+    const dir = mkdtempSync(join(tmpdir(), 'tbpath-'));
+    const bin = join(dir, 'bin');
+    mkdirSync(bin);
+    // A stand-in for WSL's launcher: on PATH, executable, and unable to address the path it is handed.
+    // `.cmd` on win32 because that is what `spawnSync` will resolve through PATHEXT; a bare name there
+    // would simply not be found and would prove nothing.
+    const refusal = 'cannot address a Windows path from here';
+    if (process.platform === 'win32') {
+      writeFileSync(join(bin, 'bash.cmd'), `@echo off\r\n>&2 echo ${refusal}\r\nexit /b 127\r\n`);
+    } else {
+      const poisoned = join(bin, 'bash');
+      writeFileSync(poisoned, `#!/bin/sh\necho '${refusal}' >&2\nexit 127\n`);
+      chmodSync(poisoned, 0o755);
+    }
+
+    const script = join(dir, 'probe.sh');
+    writeFileSync(script, `#!/bin/sh\nprintf '%s' '${SHELL_SENTINEL}'\n`);
+    try { chmodSync(script, 0o755); } catch { /* no executable bit on win32 */ }
+
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${bin}${process.platform === 'win32' ? ';' : ':'}${savedPath ?? ''}`;
+    resetShellChoice();
+    try {
+      // THE CONTROL: the form this replaced, in the same process, under the same PATH. It must be seen to
+      // pick the broken shell — otherwise this test is measuring nothing and would pass against the bug.
+      const naive = spawnSync('bash', [shPath(script)], { encoding: 'utf8', timeout: 30_000 });
+      assert(naive.status !== 0 || !String(naive.stdout ?? '').includes(SHELL_SENTINEL),
+        'a `bash` first on PATH that cannot run a script was still able to run one, so this control is not '
+        + 'reproducing the defect and nothing below is evidence');
+
+      // THE SELECTION: it must not be fooled by PATH order.
+      const chosen = posixShell();
+      if (chosen === null) {
+        // Honest on a host with no usable shell at all — but it must SAY so rather than fail, and the
+        // wrapper test must reach the same conclusion rather than reporting a wrapper regression.
+        skipBlock(`${NO_SHELL} — the selection regression could not find one behind the poisoned PATH`);
+        return;
+      }
+      assert(!chosen.startsWith(bin) && chosen !== 'bash',
+        `the selection returned ${chosen}, which is the poisoned candidate or the bare name that resolves `
+        + 'to it — PATH order is still deciding');
+      const viaChosen = spawnSync(chosen, [shPath(script)], { encoding: 'utf8', timeout: 30_000 });
+      assert(viaChosen.status === 0 && String(viaChosen.stdout ?? '').includes(SHELL_SENTINEL),
+        `the selected shell ${chosen} could not execute a script at the spelling this suite hands out`);
+
+      // AND THE SELECTION IS BY EXECUTION, NOT BY NAME: a candidate that exists and is executable but
+      // cannot do the job is rejected.
+      assert(!shellCanRunAScript(process.platform === 'win32' ? join(bin, 'bash.cmd') : join(bin, 'bash')),
+        'the verifier accepted a shell that cannot run a script, so it is checking existence rather than '
+        + 'capability');
+    } finally {
+      if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+      resetShellChoice();
+    }
+
+    // AND NO CALL SITE MAY GO BACK TO THE BARE NAME. Matched on the CALL rather than on the prose, since the
+    // comments quote the defective form on purpose — and counted rather than forbidden outright, because
+    // exactly one such call must survive: the control a few lines above, which has to spawn the bare `bash`
+    // in order to demonstrate that PATH order picks the broken one.
+    const suite = repoFile('test/torbox-resolver.ts');
+    const bareCalls = suite.match(/spawnSync\('bash',\s*\[/g) ?? [];
+    assert(bareCalls.length === 1,
+      `${bareCalls.length} call site(s) spawn the bare \`bash\`; exactly one may, and it is this test's own `
+      + 'control. Any other lets PATH order decide whether the suite checks anything');
+    assert(/const naive = spawnSync\('bash', \[shPath\(script\)\]/.test(suite),
+      'the one surviving bare-`bash` call is not this test\'s control, so something else reintroduced it');
   });
 
   await test('this suite runs in the aggregate', () => {

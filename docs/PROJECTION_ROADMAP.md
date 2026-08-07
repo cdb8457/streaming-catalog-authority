@@ -124,8 +124,8 @@ are not reopened. This is the roadmap for the projection appliance, and it is de
   often one could; a failed log capture was swallowed and the reference check covered one of two logs; and
   the gate Phase 1 closes on had **no hard cleanup assertion and preserved no evidence at all**. Every one is
   pinned by a test that fails against `6c900f4` and passes after. **No threshold moved and no product code
-  changed** — and the same is true of the independent review that followed, whose thirteen findings cost
-  thirteen more gate corrections and, again, nothing in the product.
+  changed** — and the same is true of the independent review that followed, whose **fourteen** findings cost
+  fourteen more corrections to gates, tests and documents and, again, nothing in the product.
 - **AND AN INDEPENDENT REVIEW OF THAT RUN FOUND TWO OF ITS SIX CORRECTIONS DID NOT DO WHAT THEY CLAIMED.**
   The outer hang bound sent SIGTERM and then WAITED for the child, so in the one case it was written for — a
   read wedged in the kernel against a FUSE mount, where only a FATAL signal gets through — the gate still
@@ -133,7 +133,10 @@ are not reopened. This is the roadmap for the projection appliance, and it is de
   outright, while the documentation said there was one knob and that it could only tighten. Both are fixed,
   the bound is now **derived from the corpus** rather than defended by prose, and a test drives the shipped
   function against a SIGTERM-ignoring child instead of matching its command line.
-  `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6.16 records all thirteen findings and what each cost.
+  `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6.16 records all **fourteen** findings and what each cost —
+  six tabled, seven lower-severity and the Windows one — and §6.17 records the re-review that followed, which
+  approved thirteen of the fourteen and blocked on the last: a Windows test figure published twice without
+  ever having been measured from the shell an ordinary launch uses.
 - **AND THE REMEDIATION RUN ITSELF FOUND THE MOST INTERESTING THING IN THE TRANCHE.** The first real run
   after those corrections FAILED, because **TorBox had rotated the CDN origin it hands back** and the
   operator's allowlist no longer named it — so the daemon **refused the resolved URL** and the read failed
