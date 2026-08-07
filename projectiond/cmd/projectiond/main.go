@@ -32,6 +32,10 @@ func main() {
 	debug := flag.Bool("debug-fuse", false, "log the FUSE protocol (very verbose; never logs file bytes)")
 	strictMount := flag.Bool("strict-direct-mount", false,
 		"refuse to fall back to the fusermount suid helper; proves the mount was made by syscall")
+	autoRemount := flag.Bool("auto-remount", false,
+		"after the FUSE serve loop dies, attempt a bounded remount instead of exiting")
+	serveExitCode := flag.Int("serve-exit-code", 3,
+		"exit code for a serve-loop death when --auto-remount is off or every remount attempt fails")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -136,19 +140,81 @@ func main() {
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-signals
-		logLine("unmounting")
-		cancel()
-		if err := mount.Unmount(); err != nil {
-			logLine("unmount refused: " + err.Error())
-		}
-	}()
 
 	d.SetMounted(true)
+	defer d.SetMounted(false)
 	logLine(fmt.Sprintf("serving generation %d", record.Sequence))
-	mount.Wait()
-	d.SetMounted(false)
+
+	// THE SUPERVISOR. The serve loop can die while the process lives: an external umount or a closed
+	// /dev/fuse tears the connection down from underneath us. A daemon that parked on Wait() and exited 0
+	// over a vanished namespace is a media server with no files, so the tail of main is a select that tells
+	// the two exits apart and reacts to a serve-loop death instead of parking forever.
+	for {
+		select {
+		case sig := <-signals:
+			logLine(fmt.Sprintf("received %s, unmounting", sig))
+			cancel()
+			if err := mount.Unmount(); err != nil {
+				logLine("unmount refused: " + err.Error())
+			}
+			<-mount.Done()
+			return
+		case <-mount.Done():
+			if mount.UnmountRequested() {
+				// The loop only exits this way when the signal branch above asked it to. Not a death.
+				return
+			}
+			serveErr := mount.ServeErr()
+			d.SetMounted(false)
+			d.RecordServeDeath(serveErr)
+			logLine("serve loop died: " + describeServeDeath(serveErr))
+			if !*autoRemount {
+				os.Exit(*serveExitCode)
+			}
+			if !remountLoop(d, cfg, *debug, *strictMount, &mount) {
+				logLine("serve loop died and no remount succeeded; exiting")
+				os.Exit(*serveExitCode)
+			}
+			d.ClearServeDeath()
+			d.SetMounted(true)
+			logLine(fmt.Sprintf("remounted; serving generation %d", record.Sequence))
+		}
+	}
+}
+
+// remountLoop re-establishes the mount after a serve-loop death. It is bounded: three attempts with linear
+// backoff, so a dying host does not burn CPU remounting forever. Each attempt first does a best-effort
+// unmount of the dead handle, because a serve-loop death can leave the mountpoint half-attached and the next
+// Mount() is a stack over whatever is there. On success the caller's handle is replaced and it returns true.
+func remountLoop(d *daemon.Daemon, cfg daemon.Config, debug, strictMount bool, mount **fusefs.Mounted) bool {
+	const attempts = 3
+	for attempt := 1; attempt <= attempts; attempt++ {
+		time.Sleep(time.Duration(attempt) * time.Second)
+		logLine(fmt.Sprintf("remount attempt %d/%d", attempt, attempts))
+		if err := (*mount).Unmount(); err != nil {
+			logLine("cleanup unmount refused: " + err.Error())
+		}
+		next, err := fusefs.Mount(d, cfg.MountPoint, fusefs.MountSettings{
+			Debug: debug, StrictDirectMount: strictMount,
+		})
+		if err != nil {
+			logLine("remount refused: " + err.Error())
+			continue
+		}
+		*mount = next
+		return true
+	}
+	return false
+}
+
+// describeServeDeath renders a serve-loop death for the log. ServeErr is non-nil for a death (the serve
+// goroutine reconstructs it), but the nil branch is kept as a guard: a death with nothing to say is still a
+// death worth reporting, not a silence.
+func describeServeDeath(err error) string {
+	if err == nil {
+		return "the serve loop exited without an error (external unmount or closed connection)"
+	}
+	return err.Error()
 }
 
 func describe(record daemon.AdmitRecord) string {
