@@ -227,6 +227,23 @@ these gates have ever run in.
 The table above says where a gate *can* be closed. This one says what has been *run*, because the two are not
 the same and only the second is evidence.
 
+**READ THIS BEFORE THE TABLE, BECAUSE THREE OF ITS CELLS AND THE PARAGRAPH UNDER IT ARE OLDER THAN §6.3.**
+The G7–G13 cells were written when every media-server run had been on Windows / Docker Desktop, and they
+still say so — the Plex and Emby columns read "run on Docker Desktop only" and three Plex cells read
+"not run". **§6.3 supersedes the PLATFORM half of every one of those sentences**: all three data-plane gates
+have since run **three consecutive fresh times on a real Unraid host** — Jellyfin 366 assertions per run,
+Emby 395/394/394, Plex 414/412/414, none failed and none skipped — and §6.3 is the authority on those runs.
+The paragraph immediately below the table ("Every run of it so far has been on Windows / Docker Desktop…") is
+kept **in its own words and marked HISTORICAL** rather than rewritten, because a document that quietly
+retrofits its past is the failure this repository is trying to leave behind. What is NOT superseded is what
+each cell says was MEASURED: "not run" for the three Plex cells means that gate phase has still never been
+run on any platform, and no Unraid sequence changes that.
+
+**AND THAT MATTERS MORE NOW THAN IT DID, BECAUSE THE ROADMAP CLOSED PHASE 1 AND NAMES THIS TABLE AS THE
+EVIDENCE.** A reader sent here by that row must not reach the opposite conclusion from a sentence whose
+platform clause expired. The closure rests on §6.3 for the media-server gates and on §6.15 for the real
+provider; this table records what each gate measured, and the two are only consistent when read that way.
+
 | Gate | Jellyfin | Plex | Emby |
 |---|---|---|---|
 | G7 **Scan** | run — `npm run go:jellyfin-dataplane-gate`, against a real digest-pinned Jellyfin with the mount as a library root. **The plan's ~50-entry corpus is now run**: 50 published identities, each catalogued at the published size as an ordinary file, with zero missing, zero duplicated and zero unexpected. Zero churn across a repeat scan, and across the daemon SIGKILL/restart/remount path, which is followed by a byte-for-byte read so it cannot pass on a dead mount. A graceful daemon restart under a long-running media server is **not** proved here and the reason is recorded | run on Docker Desktop only — `npm run go:plex-dataplane-gate`, against a real digest-pinned UNCLAIMED Plex. 51 published identities catalogued at the published size, zero missing, duplicated or unexpected, and zero churn across a repeat scan, a media-server restart, the daemon SIGKILL/restart/remount path and a mid-scan generation swap. Four green runs, three of them consecutive and fresh; see that gate's run record | run on Docker Desktop only — `npm run go:emby-dataplane-gate`, against a real digest-pinned Emby 4.9.5.0. 50 published identities catalogued at the published size as **ordinary files**, zero missing, wrong-sized, duplicated or unexpected, and zero churn — removals, duplicates, item-id, metadata **and projected path** — across a repeat scan, a media-server restart, the daemon SIGKILL/restart/remount path and a mid-scan generation swap. "Ordinary file" is asserted differently here because **this server never sends `LocationType`**: see that gate's §3.10. Four green runs, three of them consecutive and fresh |
@@ -240,10 +257,19 @@ the same and only the second is evidence.
 | G22 **Comparison control** | **RUN ON A REAL UNRAID HOST — three consecutive fresh runs, 70 assertions each, none failed and none skipped. See §6.3.** G22 has no pass threshold, so what three Unraid runs establish is that the comparison instrumentation held there and its figures are reproducible — NOT that the naive path passed or failed anything. Previously, A gate now exists and has been run on **Docker Desktop only**: `deploy/projection-rclone-comparison-gate.sh` puts the SAME ~50-entry corpus behind a digest-pinned rclone mount of a deterministic WebDAV endpoint and drives the SAME three real, digest-pinned media servers over it, with the SAME observer, the SAME barrier and the SAME overlap floors G18 uses. **HISTORICALLY** this column read `NOT RUN`, because §6 says Docker Desktop closes none of G7–G13, G18 or G22 and every run then had been on Docker Desktop; **it has since run 3/3 on a real Unraid host.** `docs/PROJECTION_PHASE_1_RCLONE_COMPARISON.md` §7 is the only place that says what has been run, and it carries **sixteen runs — one failure and fifteen completed, twelve of them through the committed three-consecutive-fresh-run wrapper in four sequences of three**. A coordinator review then found that the endpoint counted each response's Content-Length and reported it as what had been served, which invalidated one conclusion the document drew and none of its request, catalogue, overlap or cold-state evidence; the remediated instrument counts COMMITTED and OBSERVED bytes separately and has been run four more times, 70 assertions each with none failed and none skipped | same gate, same run, same platform — **NOT RUN** | same gate, same run, same platform — **NOT RUN** |
 | G24–G26 **Lease gates** | **RUN — 3/3 consecutive fresh runs on a real Unraid host**, 29 assertions per run, 0 failed, 0 skipped, by `deploy/projection-lease-gate.sh` with a **synthetic reader**. These gates **need no media server**: they are about the daemon's transport resolution, not about a scanner, so no column below applies to them. See §6.8 | — | — |
 | G27 **Path immutability** | **RUN — 3/3 consecutive fresh runs on a real Unraid host**, **85 assertions per run, 0 failed, 0 skipped**, by `deploy/projection-path-lifecycle-gate.sh`. ONE daemon, ONE mount, ONE generation sequence and all three servers reading it, so the three columns to the right are not independent runs of anything — they are the same run observed three ways, which is what G27 asks for. See §6.9. The admission-refusal half remains closed offline by `npm run test:projection-publisher` | **same run** — observed the refusal, the removal and the addition | **same run** — observed the refusal, the removal and the addition |
+| **Real provider** (§2's 1–3 operator files) | **RUN — 3/3 consecutive fresh runs on a real Unraid host**, exit 0, none skipped, by `deploy/projection-torbox-real-gate.sh` against a **real TorBox account and a real CDN**. Seven reads per run and zero problems: an ordinary-regular-file `stat` at exactly the manifest size, four operator-approved windows digest-compared against digests recorded outside the mount, one read past 90 % and one backward, all inside a finite deadline; exactly one resolution per object; the mount refusing write, create, unlink and chmod; the resolver refused at the transport from the gate network; neither secret and no stable reference anywhere the run wrote; and this run's own directory and mountpoints asserted gone. **This gate needs no media server** — it is about the HTTP Range adapter against a real endpoint, so no column below applies to it. **HISTORICALLY this row did not exist and every section of this document said no real provider endpoint had ever been contacted.** See §6.15, which also records the six gate defects the run exposed and what it refuses to claim | — | — |
 
-`docs/PROJECTION_PHASE_1_JELLYFIN_DATA_PLANE.md` describes the gate that produced the Jellyfin column. Every
-run of it so far has been on **Windows / Docker Desktop**, which §6 says closes none of G7–G13. The tranche
-still closes on Linux or Unraid, three consecutive times, and on **all three** media servers.
+**HISTORICAL — SUPERSEDED BY §6.3, AND KEPT IN ITS OWN WORDS.** The paragraph that follows was true when it
+was written and its platform clause is not true now; the banner above the table says which half expired and
+where the replacement is.
+
+> `docs/PROJECTION_PHASE_1_JELLYFIN_DATA_PLANE.md` describes the gate that produced the Jellyfin column. Every
+> run of it so far has been on **Windows / Docker Desktop**, which §6 says closes none of G7–G13. The tranche
+> still closes on Linux or Unraid, three consecutive times, and on **all three** media servers.
+
+**THE CORRECTION:** that document still describes the gate that produced the Jellyfin column, and that gate
+has since run **three consecutive fresh times on a real Unraid host, 366 assertions per run**, alongside Emby
+and Plex. §6.3 is the authority on all three sequences.
 
 **A second gate exists and the Plex column now records it as run on Docker Desktop.**
 `deploy/projection-plex-dataplane-gate.sh` — `npm run go:plex-dataplane-gate` — drives a real,
@@ -618,6 +644,15 @@ bounds the body, terminalises a second refresh and enforces both the allowlist a
 
 Then: `npm run go:real-provider-gate` to preflight and run once, and
 `npm run go:real-provider-gate:three` for the three consecutive fresh runs the plan requires.
+
+**AND THE TORBOX GATE HAS SINCE BEEN RUN AGAINST A REAL ACCOUNT — 3/3, AND §6.15 IS THE AUTHORITY ON IT.**
+Everything above this line was written while nothing had ever contacted a provider, and it is left standing
+because the sequence of what was believed when is the record. What is no longer true is the sentence "no real
+provider has been contacted, and Phase 1 remains open on exactly that ground": `npm run go:torbox-real-gate:three`
+completed **three consecutive fresh runs, exit 0, none skipped**, on the real Unraid host, reading an
+operator-supplied TorBox object as an ordinary read-only file through the production mount. **The generic
+gate's own real-mode row below is unchanged and still reads `SKIPPED (77)`** — the two gates take different
+inputs from different directories, and one running is not the other running.
 
 **THE TORBOX GATE READS A DIFFERENT DIRECTORY, AND IT HAS TO.** `deploy/projection-torbox-real-gate.sh`
 takes its four inputs from `…/secrets/real-provider/torbox/` (`PROJECTION_TORBOX_INPUT_DIR`), because its
@@ -1158,6 +1193,338 @@ programs that describe a synthetic corpus, and the endpoints they are described 
 deterministic fakes §6.10 already says close nothing. **No real provider endpoint and no operator corpus
 exists at either approved path.** §6.1's rows are unchanged, Phase 1 remains open on exactly the ground
 §6.10 names, and nothing here is evidence about a real provider.
+
+### 6.15 THE REAL TORBOX RUN — the thing every section above says has never happened
+
+**A REAL TORBOX ACCOUNT HAS NOW BEEN CONTACTED, AND THE OPERATOR'S OWN OBJECT WAS READ AS AN ORDINARY
+READ-ONLY FILE THROUGH THE PRODUCTION MOUNT.** `npm run go:torbox-real-gate:three` completed **3/3
+consecutive fresh runs, exit 0, none skipped**, on the same real Unraid host every other §6.3 sequence ran
+on, from an isolated checkout at `/mnt/user/appdata/catalog-phase1-torbox-real` taken at `6c900f4`. Every
+sentence in §6.10, §6.11, §6.12, §6.13 and §6.14 ending "no real provider endpoint has ever been contacted"
+was true when written and is **false now**. They are left standing, because the sequence of what was believed
+when is the record.
+
+**WHAT WAS SUPPLIED, AND WHAT IS DELIBERATELY NOT WRITTEN DOWN.** The four files §8 of
+`docs/PHASE_50_TORBOX_RESOLVER.md` names, at mode `0600` under a `0700` directory, on the host and never in
+this repository: the TorBox API key, an independent gate secret, a one-object `objects.json` and an
+`endpoint.json` naming one CDN origin. **The item id, the file id, the stable reference, the object's name,
+the CDN hostname and the signed links are not in this document, in the gate's output, in the run's evidence
+or in git**, and that is the contract rather than an oversight — §2 calls this a correctness corpus of 1–3
+files the operator is entitled to, and which files those are is not the repository's business.
+
+What CAN be said about the corpus without saying any of that: **one object, 1,732,948,646 bytes**, selected
+from the item by a policy stated before it was applied — the largest non-infected file whose type is playable
+video, ties broken by the lowest file id, so the choice is deterministic and defensible rather than picked.
+Four windows of 65,536 bytes were digested **outside the mount** by direct HTTPS ranged GETs against the CDN
+before any run, and recorded in `objects.json` in **strictly descending offset order** — 0.91, 0.60, 0.25 and
+0 of the object.
+
+**THE DESCENDING ORDER IS AN ASSERTION, NOT A STYLE.** `verify.cjs` reads the approved windows in manifest
+order, then its own tail window, then its own backward window. An ascending corpus makes every request the
+PROVIDER ever sees go forward, and lands the two reads named "past 90%" and "backward" on windows the
+daemon's probe cache already holds — so the backward seek would be proved against the cache and never against
+the CDN. Descending makes every fetch after the first a genuinely backward-going ranged GET at the provider.
+The first and last windows are also exactly the offsets and lengths `tailWindow` and `backWindow` compute, so
+the two reads the gate previously bounded only by byte count are now digest-compared as well.
+
+**WHAT THE THREE RUNS MEASURED**, identical in all three, from the preserved evidence at
+`.projection-torbox-real-gate/evidence/reads-*.json`:
+
+| | |
+|---|---|
+| reads through the mount | **7 per run, 0 problems** — one `stat`, four approved windows, one past 90 %, one backward |
+| `stat` | an **ordinary regular file** (`lstat`, so a symlink cannot pass) at **exactly** the manifest's 1,732,948,646 bytes |
+| digests | all four windows matched the values recorded outside the mount before the run |
+| past 90 % | offset 1,576,983,267, `pastNinetyPercent: true`, 65,536 bytes |
+| backward | offset 0 after a read at 91 %, 65,536 bytes |
+| slowest window | **1,934 ms**, across all three runs of the FINAL bytes, against the 120,000 ms deadline the program asserts |
+| resolutions | **exactly 1 per object**, counted from the resolver's own log line |
+| read-only | write, create, unlink and chmod each refused **twice** — as uid 65534 with all capabilities dropped, and as uid 0 with the default set, where `DAC_OVERRIDE` makes ownership and mode bits inapplicable — and the privileged create's **errno** then read back as `Read-only file system`, so the property is measured rather than inferred from four refusals a uid could explain. **HISTORICALLY this row read "probed as uid 65534 with all capabilities dropped"**, describing the superseded sequence while the slowest-window row beside it already described the final one |
+| resolver reachability | **REFUSED** at the transport from the gate network — loopback-only, never published |
+| secrets | 0 hits for the API key and 0 for the gate secret across everything the run wrote; 0 stable references in **either** container log; the API key **absent from the daemon container's filesystem** |
+| cleanup | `RP7-own-run-directory-removed` and `RP7-own-mountpoints-removed` **pass**, asserted after the report |
+
+**THE HOST WAS LEFT AS IT WAS FOUND.** Container, network and volume counts were identical before and after
+the sequence — **26 running / 42 total, 17 networks, 45 volumes** — with **0 mountpoints** under the gate
+root, **0 run directories**, and no production media, service, Compose project, secret or unrelated network
+touched. The secrets directory kept `0700`/`0600` throughout; the parent `…/secrets/real-provider` was
+tightened from `0755` to `0700` to match what §6.10 has always said it should be.
+
+**SIX DEFECTS WERE FOUND, ALL SIX IN THE GATE, AND NONE IN THE PRODUCT.** Every one was exposed by running
+this gate against a real account, and every one is pinned by a test in `test/torbox-resolver.ts` that fails
+against `6c900f4` and passes after — **6 failed / 74 passed** at the merge base, **80 passed / 0 failed**
+after, measured on the Linux host because three of the six are skipped on Windows. **HISTORICAL — the clause after "because" is wrong and §6.16 records why: only ONE of the six returned early on Windows. It is kept in place rather than silently corrected, and what replaced the count is real skip accounting — the suite now names every block it could not run and prints them with the totals, so no reader has to trust a number in prose.**
+
+| # | What was wrong | How it presented |
+|---|---|---|
+| 1 | **Nothing ever looked at the inode.** The gate's whole claim is that a TorBox object becomes an ORDINARY FILE, and the only `stat`-shaped thing in the run was a shell `ls /mnt/*.bin` used to decide the mount had appeared | A namespace publishing entries at the wrong LENGTH — the drift G7 asserts against on every media-server gate — passed here as long as the windows still digested, and a **symlink** out of the mount passed outright, because `openSync` follows one |
+| 2 | **The read step had no deadline of any kind.** `verify.cjs` recorded `elapsedMs` on every window and asserted nothing against it | This is the ONLY place in this gate where a real provider sits behind a system call. A CDN that accepted the connection and then stalled left the gate **hung, not failed** — no assertion, no cleanup, no report. It is §6.11 #4's defect, in the read path, in the one gate that talks to a real network |
+| 3 | **The four read-only refusals could not fail.** They ran `docker run … && echo no \|\| echo yes` and read EVERY non-zero exit as "the mount refused it" | `docker run` answers **125/126/127** when the daemon refuses the run, the entrypoint is not executable, or it is not found — so a broken image, a missing device or a Docker outage produced exactly the exit code the gate read as proof the mount is read-only. All four could pass without the mount being consulted once. It is §6.11 #4's `wget` defect again |
+| 4 | **The provider was never asserted to have been contacted, and resolutions were unbounded.** No line in the gate required a resolution to have HAPPENED, and none bounded how often one could | Every ceiling here is satisfied by a run that contacted nothing — which is exactly why the generic gate asserts a positive byte count. And a data plane re-minting access material for every window would read the same correct bytes, pass, and spend the operator's metered rate limit once per read |
+| 5 | **`docker logs … \|\| true`, and a reference check over one file.** A capture that failed left an EMPTY file, and the leak scan and reference grep then reported the property proven over a file the run never wrote. The reference grep looked only at the RESOLVER's log | The step's own heading says no reference reached anything this run wrote. The DAEMON holds the same reference — it is the `objectRef` it POSTs and the source string it carries all run — and its log was never examined. Same class as `scan.cjs`'s "a zero that means did not look", one layer up from it |
+| 6 | **No hard cleanup assertion, and no evidence survived a passing run.** The only statement this gate made about its own leftovers came from `projection_gate_report_cleanliness` inside the EXIT trap, which its own comment explains can only REPORT | §6.11 #5 closed this for the GENERIC gate and not for this one — the gate Phase 1 actually closes on could print `cleanup: 1 mountpoint left behind` and exit 0. And `reads.json`, the whole record of what was read, lived only in the run directory the trap deletes: "three consecutive runs" was a claim with no substrate |
+
+**NO THRESHOLD MOVED, NO HARD FAILURE BECAME A SKIP, AND NO REDACTION WAS LOOSENED.** There is exactly **one**
+new configurable, and this sentence has been corrected once already: it briefly claimed one while shipping
+two. It is the read-deadline seam the offline suite needs in order to execute the shipped bytes rather than
+string-match a constant, and it **can only tighten** — absent, blank, unparseable, or at or above the
+built-in 120 s all yield the built-in, a request for an hour yields two minutes, and a test asserts the gate
+never sets it. **The second one is gone**: see §6.16. One privilege was reduced: the resolver container — the
+only place on the host holding the API key — now mounts the checkout `:ro`, and the offline twin does too, so
+the reduction has a control that can be run without a provider.
+
+**WHAT THE DIRECT-CONTROL CLAUSES OF §6.10 DO AND DO NOT MEAN HERE, STATED RATHER THAN GLOSSED.** The generic
+gate takes ONE direct HTTPS ranged GET per object *outside* the daemon, and reports TLS, redirect refusal,
+`206`, an exact `Content-Range`, size agreement and `Content-Length` agreement from it. **This gate takes no
+such probe**, and the reason is that its purpose is a diagnostic split rather than an extra property: it
+exists so that "the product is broken" and "the provider does not do byte ranges" can be told apart *when a
+read fails*. When the read SUCCEEDS, every one of those properties is entailed, because
+`projectiond/internal/source/http.go` refuses each of the alternatives on every ranged read it makes —
+`CheckRedirect` returns an error so a 3xx is never followed; a `200` is `CondRangeUnsupported` and the body is
+abandoned at the header; a `Content-Range` that does not parse as exactly `bytes <start>-<end>/<total>`, or
+whose window is not the one requested, is `CondRangeMismatch`; a total that disagrees with the manifest is
+`CondSizeDisagrees`; a disagreeing `Content-Length` is `CondRangeMismatch`; a short body is `CondShortBody`;
+and the transport is `MinVersion: tls.VersionTLS12` with the system trust store, with `InsecureSkipVerify`
+appearing nowhere in the shipped daemon. **So the entailment is from refusals the daemon's own tests and the
+offline gates' fault injection already prove, not from a literal the gate wrote for itself** — and it is
+recorded here as an entailment rather than as an observation, because those are different things.
+
+**429s WERE NOT PROVOKED AND ARE NOT ASSERTED**, exactly as §6.10 says. This is a correctness corpus, never a
+load test: three runs of seven windows each is four ranged GETs per run against a metered account.
+
+**THE SEQUENCE RAN THE BYTES THAT ARE COMMITTED, AND THAT IS CHECKABLE RATHER THAN ASSERTED.** `sha256` of
+`deploy/projection-torbox-real-gate.sh` in the committed tree and in the isolated checkout the 3/3 sequence
+ran from are the same value, `960b4027af9b…`. **This is the THIRD sequence and the only one on record**, and
+saying so is the point: a first passed 3/3 and was discarded when one comment and one default changed
+afterwards; a second passed 3/3 at `be63ac9d5f42…` and was discarded when the review in §6.16 found that two
+of that commit's corrections did not deliver what they claimed. **A gate whose bytes moved after its evidence
+was taken has no evidence**, and re-running has been cheaper than explaining the gap every time.
+
+**WHAT WAS RUN, AND WHAT FAILED THAT HAS NOTHING TO DO WITH THIS.**
+
+| Command | Where | Result |
+|---|---|---|
+| `npm run go:torbox-real-gate` | Unraid, isolated checkout | **exit 0**, first real contact, before the six corrections |
+| `npm run go:torbox-real-gate` | Unraid, after §6.16's corrections | **exit 1** — and the failure is the finding: TorBox had rotated the CDN origin, the daemon **refused the resolved URL** and the mount answered EIO. Not a defect in the gate or the product; the egress allowlist working against a real provider. See §6.16 |
+| `npm run go:torbox-real-gate` | Unraid, allowlist refreshed | **exit 0**, single run, against the final bytes |
+| `npm run go:torbox-real-gate:three` | Unraid, isolated checkout | **3/3, exit 0, none skipped**, against the **final** shipped bytes (`960b4027af9b…`) — 7 reads, 0 problems, 1 resolution, both read-only uid probes refused, the privileged one naming a read-only file system, RP7 passing, each run. Slowest window across the three: **1,934 ms** |
+| `npm run go:torbox-real-gate` with an empty input directory | Unraid | **SKIPPED (77)**, having contacted nothing — the negative control still holds after the corrections |
+| `npm run go:torbox-mount-gate` | Unraid | **exit 0** — the offline twin, re-run as a control after §6.16 gave it the same `:ro` checkout mount the real gate has, so that privilege reduction now has a guard somebody can run |
+| `npm run test:torbox-resolver` | Unraid | **84 passed, 0 failed, 0 blocks skipped** |
+| `npm run test:torbox-resolver` | Windows, launched from **PowerShell** | **84 passed, 0 failed, 5 blocks skipped**, each named in the summary. **THIS ROW HAS BEEN WRONG TWICE AND §6.17 IS WHY.** It first read "80 passed, 0 failed"; a review measured **79/1**. It then read "83 passed, 0 failed", and the same review measured **82/1** — because the fix was separator hygiene and the cause was WHICH `bash` PATH resolves first. The figures above are taken from an ordinary PowerShell launch, which is the shell that exposed both, and the launching shell is named because it turned out to be load-bearing |
+| the same suite against `6c900f4` | Unraid | **74 passed, 6 failed** — one failure per defect above |
+| the same suite against `cee01c9` (this section's own first attempt) | Unraid | **75 passed, 8 failed** — one per §6.16 correction, each failing for its own named reason rather than incidentally |
+| `npx tsc --noEmit` | Windows | clean |
+| `npm run test` (full offline suite) | Windows, launched from **PowerShell** | **339 selected, 332 passed, 7 failed**, 3 docker-group suites not selected. **HISTORICALLY this row read "339 passed, 0 failed"**, and like the focused row above it was taken from a shell that had already put Git Bash first. The seven are every suite that drives a shipped wrapper through bare `bash`; **all seven fail identically at `6e4442b`**, measured individually and again through the full suite in an isolated worktree of that commit, so this loop's delta is exactly one suite in the passing direction. The baseline run of the same suite is **330 / 9**: those seven, `torbox-resolver`, and `publish-outbox`, which passes 3/3 standalone on **both** trees and is recorded as flaky under parallel execution rather than attributed to anything. §6.17 names them |
+| `npm run test` (full offline suite) | Unraid | **307 passed, 32 failed — the identical 32 suites** a pristine `6c900f4` checkout of the same host produces: zero only-at-head, zero only-at-base. **HISTORICALLY this row carried the same figures but they were not measured on the committed tree** — that run was started against a tree holding the code changes and not yet the document changes, and it therefore missed the one suite the documents broke. Measured again on the committed bytes, after §6.16's guard correction, it is 307/32 with no delta for real. See below |
+
+**THE HOST'S FULL OFFLINE SUITE FAILS 32 OF 339 SUITES, AND THAT IS RECORDED RATHER THAN ROUNDED OFF.**
+`npm run test` on the Unraid host is **307 passed / 32 failed**, and reporting it as anything else would be
+the exact failure this repository exists to stop. **It is measured against a pristine `6c900f4` checkout of
+the same host, cloned fresh for the comparison and run the same way, and that run is `307 passed / 32 failed`
+too — the SAME 32 suites, compared as sorted sets: zero suites fail only at this tree, and zero fail only at
+the merge base.** So the delta this work makes to that suite is **nothing in either direction**. The causes
+are the host, not the tree: `embedded-postgres` declining to run as root (most of the 32, all DB-backed), a
+sidecar socket directory whose mode the host's umask widens, and one `bash: ./baseline.sh: Permission denied`
+on `fuse.shfs`. The one of the 32 that touches gate bytes at all, `projection-gate-embedded-programs`, is
+**63 passed / 1 failed on both trees — the same single failure.** The same suite on Windows is **339 selected,
+339 passed, 0 failed**, which is why the platform is named beside every figure in the table above.
+
+**WHAT THESE THREE RUNS DO NOT CLOSE.** No media server was in them — G7–G13 are other gates, closed by their
+own sequences. One object is one object: the HTTP Range adapter is shown correct against **this** provider
+for **this** shape of object, and nothing here is a statement about throughput, concurrency, amplification or
+any other quantitative property, all of which are answered against the fake endpoint where the harness
+controls the answers. The offline equivalent, which contacts nothing, remains `npm run go:torbox-mount-gate`.
+
+### 6.16 The independent review of the real run, and the two claims that did not survive it
+
+**THE RUN IN §6.15 WAS REVIEWED BY SOMEBODY WHO HAD NOT WRITTEN IT, AND TWO OF ITS SIX CORRECTIONS DID NOT
+DELIVER THE PROPERTY THEY CLAIMED.** Both were in the same step, both were about bounding a hang, and both are
+the shape this repository keeps finding: a measurement that reads as proof and is not.
+
+| # | What the review found | Why it mattered |
+|---|---|---|
+| 1 | **The outer hang bound did not bind the hang it was written for.** `timeout N cmd` with no `--kill-after` sends SIGTERM and then WAITS for the child. A child SIGTERM cannot stop makes `timeout` block for exactly as long as the child does and return 124 only afterwards | The named scenario is a read blocked in the kernel against a wedged FUSE mount, and Linux waits on FUSE requests with `wait_event_killable` — a FATAL signal gets through and a SIGTERM does not. So in **precisely** the case §6.15 said was now a failure rather than a hang, the gate still hung. Measured: `timeout 2 sh -c 'trap "" TERM; sleep 8'` returns 124 after **nine** seconds; with `-k 1` it returns 137 after **three**. The test could not see it because it matched the command line rather than running it |
+| 2 | **A second new configurable, and it could only LOOSEN.** `PROJECTION_TORBOX_REAL_GATE_READ_TIMEOUT_S` was unvalidated and raised the ceiling without limit — and GNU `timeout` reads a duration of `0` as **no timeout at all** | §6.15 and the commit message both said there was **one** new configurable and that it could only tighten. That was false in both halves: `…=0` removed the bound outright while the gate went on printing that the property was proven |
+| 3 | **The new §6.1 row was not in the §6.1 table.** It was added after the blank line that already terminated it, so it rendered as a paragraph of raw pipes | The roadmap says "§6.1's new row is the record", and the record was not in the table it named |
+| 4 | **§6.1's Docker-Desktop-only text contradicted the closure this commit makes** | A reader who did what the roadmap told them — consult §6.1 — reached the opposite conclusion from a sentence whose platform clause had expired |
+| 5 | **Evidence was still destroyed on every FAILING run, and the `die` strings said otherwise** | Every `die` leaves through the EXIT trap, and the trap `rm -rf`s the run directory — so "refusing to destroy the only copy of this run's evidence" was a refusal that destroyed it a moment later. A run failing AT the read step, where `reads.json` IS the diagnosis, kept nothing |
+| 6 | **No `.gitignore` entry for the gate root that now leaves a file behind on purpose** | This is the first gate in the family to persist an artifact into the checkout deliberately, and `reads.json` carries operator labels and the exact object size — corpus detail §6.15's own contract keeps out of git |
+
+**AND SEVEN LOWER-SEVERITY FINDINGS, EVERY ONE OF WHICH IS FIXED RATHER THAN ARGUED WITH.** "Exactly one
+resolution per object" was claimed while `1 ≤ R ≤ N` was asserted, which is the same thing only on the
+one-object corpus actually run — the lower bound is now `-ge $OBJECT_COUNT`, so the pair is an equality. The
+120 s ceiling existed as three unrelated literals — the heredoc's, the shell's and `real-provider.ts`'s — with
+nothing comparing them; a test now pins all three. The resolver's `:ro` checkout mount was exercised by
+nothing runnable offline; the offline twin mounts `:ro` too. `timeout`'s own 125/126/127 were reported as
+"reads through the mount failed" when they mean the read was never bounded at all; every outcome is now
+named. The log-capture check was a pair of regexes; it is now driven against a `docker` that fails. And the
+outer bound's headroom argument was defended by prose rather than enforced — **it is now DERIVED**:
+`register.cjs` counts the windows `verify.cjs` will actually open, and the bound is that count × the
+per-window deadline × 2 + 60 s, with a test that runs both shipped programs against the same corpus and
+requires the plan to equal the reads.
+
+**THE REVIEW ALSO REPRODUCED A WINDOWS FAILURE THE DOCUMENT HAD RECORDED AS A PASS.**
+`npm run test:torbox-resolver` was **79/1** on a Windows worktree, not 80/0: `spawnSync('bash', [nativePath])`
+hands Git Bash `C:\Users\…`, the backslashes are consumed as escapes, and bash is asked to run
+`C:Usersclint…`. It predates this work and is fixed here — every shell invocation goes through one helper
+that writes the path in the spelling a shell reads. **And the "three of the six are skipped on Windows"
+sentence was wrong**: only one test returned early. Rather than correct the count, the suite now COUNTS its
+skipped blocks and prints them with the totals, because a test that returns early still prints `ok` and a
+green summary that hides an unexecuted half is the thing this whole loop is about.
+
+**ONE DEFECT WAS FOUND BY THE REMEDIATION RUN ITSELF, AND IT IS THE MOST USEFUL THING HERE.** The first real
+run after the corrections FAILED, and it failed for a reason no offline test could have produced: **TorBox had
+rotated the CDN origin it hands back**, the operator's `allowedOrigins` no longer named it, and the daemon
+**refused the resolved URL and answered EIO**. That is the egress allowlist doing exactly what it exists for,
+observed against a real provider for the first time — a resolved URL pointing somewhere the operator never
+authorised was not followed. But `verify.cjs` let the EIO escape as an **uncaught exception** and died at the
+first window, so no `reads.json` was ever written, the failure-path preservation had nothing to preserve, and
+the operator got a Node stack trace instead of a record naming the window and the errno. **The one case the
+evidence exists for produced none.** A failed read is now recorded with its errno, every remaining window is
+still attempted, and the run exits non-zero with a complete record; a test drives the shipped program against
+an unreadable window and requires exactly that.
+
+**WHAT THIS COSTS AN OPERATOR, STATED PLAINLY: `allowedOrigins` IS PERISHABLE.** It named one origin when
+§6.15's sequence ran and a different one hours later. The allowlist here now names both **exact** origins —
+no wildcard, no pattern, because §4's own words are that an unbounded allowlist is how a signed URL becomes a
+server-side request forgery. Every recorded probe digest was re-verified against the new origin before
+anything was changed and all four still matched, which is what proves it is the same object behind a rotated
+CDN rather than a different one.
+
+**AND A GUARD WRITTEN TO STOP EXACTLY THIS HAD BEEN FAILING SINCE §6.15's OWN COMMIT, UNNOTICED.**
+`test/projection-lease-gates.ts` carries a tripwire titled "neither document has quietly closed the tranche",
+and it required both authority documents to keep stating that no real provider endpoint had ever been
+contacted and that Phase 1 was open. Closing Phase 1 broke it, correctly — **and §6.15's own test matrix
+recorded the host suite as `307 passed / 32 failed`, the same 32 as the merge base, which did not include
+it.** The reason is ordering and nothing more interesting: that suite was started against a tree carrying the
+code changes and not yet the document changes, so it measured a tree nobody committed. **The figure was
+therefore taken on the wrong bytes.** Re-measured on the committed tree it was **306/33** — the 32 plus this
+one — and with the guard corrected it is **307/32 with a genuinely empty delta**, which is what the table
+above now records and what was not previously true.
+
+The guard is **re-aimed rather than deleted, and it is now harder to satisfy than it was**. The word its title
+turns on is QUIETLY: a closure is quiet when the conclusion appears without the evidence that earns it. So a
+document may now record closure only in the company of that evidence — the run-record section, the
+three-consecutive-run sequence, and the command that produced it — while the sentence the tranche was open on
+must still be **findable, in the past tense**, because deleting the history is the other way a document
+closes quietly. The plan must additionally carry the `sha256` pinning the run to the bytes. It is matched on
+the FLATTENED text, which is the second half of the defect: the old assertion ran against the raw document,
+so a sentence that had merely been re-wrapped across a line stopped matching, and a document that had dropped
+it was indistinguishable from one that had only reflowed it.
+
+**NO THRESHOLD MOVED, NO ASSERTION WEAKENED, AND ONE WAS STRENGTHENED.** The read-only step used to probe only
+as uid 65534 with every capability dropped — where `rm`, `chmod` and an append would be refused by ordinary
+ownership and permission rules against a perfectly WRITABLE filesystem. The measurement was real; the
+conclusion "the mount is read-only" did not follow from it. The gate now probes **both** uids — the second as
+root with the default capability set, where `DAC_OVERRIDE` makes permission bits inapplicable — and then reads
+the **errno** behind the refusal rather than inferring it, failing if a privileged create is refused for any
+reason other than a read-only file system.
+
+### 6.17 The re-review — one blocker, and it was a figure that had never been measured where it was published
+
+**THE RE-REVIEW OF §6.16's COMMIT APPROVED THIRTEEN OF ITS FOURTEEN ITEMS AND BLOCKED ON ONE**, and the one
+it blocked on is the Windows test figure — for the second consecutive commit, on the mechanism the previous
+round had already named. That is worth stating plainly: the correction was applied, the figure was
+re-published, and the figure was still wrong, because the correction addressed the wrong cause.
+
+**WHAT THE CAUSE ACTUALLY WAS.** The suite drove shipped shell programs with `spawnSync('bash', …)` — whatever
+`bash` PATH resolves first. On a stock Windows install that is `C:\WINDOWS\system32\bash.exe`, the **WSL**
+launcher, which cannot address a Windows drive path in **any** spelling. §6.16 diagnosed it as backslashes
+being eaten as argv escapes and fixed the separators, which is genuine argv hygiene and is kept — but
+measured per candidate binary, Git Bash runs a script at **both** spellings and WSL's `bash` runs it at
+**neither**. The separator was never the determinant. The figure passed only when the suite happened to be
+launched from a shell that had already put Git Bash's `bin` first, which is exactly what happened, and is why
+an ordinary PowerShell launch produced **82 passed / 1 failed** against a published **83 / 0**.
+
+**THE FIX IS THAT THE SHELL IS NOW CHOSEN BY MAKING IT DO THE JOB.** Candidates are tried in an order that
+puts bare `bash` **last** on Windows (where it is most likely to be WSL) and **first** on POSIX (where it is
+the right answer), with Git Bash located from `git --exec-path` so it is found wherever Git was installed
+rather than guessed at. Each candidate is then made to execute a real script at the exact path spelling the
+suite hands out and print a sentinel; one that cannot is not a POSIX shell as far as this suite is concerned,
+whatever it is called. **Where nothing on the host can, every affected block SKIPS BY NAME** — because a
+suite that could not run the wrapper has not checked the wrapper, and must report neither verdict.
+
+**AND THE SELECTION IS PINNED BY A REGRESSION THAT POISONS PATH ON PURPOSE.** It puts a `bash` first on PATH
+that is present, executable and unable to address the path it is handed — WSL's failure mode, reproduced —
+and then asserts three things: that the **naive form still picks the broken one** (a live control, so the
+test cannot pass against the bug), that the selection does not, and that the verifier rejects the poisoned
+candidate when asked directly, so it is checking capability rather than existence. It also counts the
+surviving bare-`bash` call sites and requires exactly one: its own control. Mutating the call sites back to
+`spawnSync('bash', …)` fails it with *"7 call site(s) spawn the bare `bash`"* and simultaneously reproduces
+the original `/bin/bash: …: No such file or directory`.
+
+**A RELATED DEFECT WAS SOLVED DIFFERENTLY ELSEWHERE, AND THE DIFFERENCE IS DELIBERATE.**
+`test/projection-jellyfin-dataplane.ts` keeps whatever `bash` it finds and TRANSLATES the path into that
+shell's convention. That is right there, where the wrapper only ever invokes a stub. It is wrong here: these
+wrappers run `npm`, `npx` and `docker` out of this checkout, and a WSL bash would be a different machine with
+a different toolchain. What this suite needs is the shell the repository is actually operated with.
+
+**THE SKIP REASONS WERE ALSO WRONG, AND THEY WERE WRONG IN THE DIRECTION THAT MATTERS.** Four blocks said
+they needed "a POSIX shell". A POSIX shell is present on this host and the selector finds it; what those
+blocks actually need is POSIX **signal delivery** (a child that ignores SIGTERM), a **PATH-injected
+executable** (a stub `docker`, which needs the `:` separator and an exec bit), and POSIX **filesystem
+semantics** (an `ENOTDIR` under a regular file, and modes root obeys). Each now names what is missing. The
+count moved from 83 to **84** because the selection regression is a new test, not because anything changed
+verdict.
+
+**THE FOUR REMAINING ITEMS, EACH SMALL AND EACH CLOSED.**
+
+| Item | What it was | What it is now |
+|---|---|---|
+| §6.15's read-only row | Described the SUPERSEDED probe (`uid 65534` only) while the slowest-window row beside it already described the final sequence — one table reporting two different runs | Describes the final proof: refused for **both** uids, and the privileged create's **errno** read back as `Read-only file system`. The old wording is kept in the row, marked |
+| "three of the six are skipped on Windows" | Contradicted only from §6.16, not marked where it stands | Marked HISTORICAL **in place**, the way §6.1's paragraph is, with a pointer to the skip accounting that replaced the count |
+| thirteen vs fourteen | The roadmap said thirteen, the commit fourteen | **Fourteen**, everywhere: six tabled findings, seven lower-severity, and the Windows one |
+| `ROFS_REASON` misattribution | Its die text would blame the mount for a broken `docker run` — unreachable only because `mount_refuses 0:0` runs first and already dies on 125/126/127 | **Unchanged in the gate, and now pinned by a test.** "Unreachable because of the order two things happen in" stops being true the moment somebody moves one, so the order is asserted rather than left to be rediscovered |
+
+**AND THE ONE THING THAT IS RECORDED RATHER THAN FIXED, BECAUSE FIXING IT WOULD COST MORE THAN IT IS WORTH.**
+`timeout` answers **137** when it kills a child after the grace, and the gate reports that as "ignored SIGTERM
+… and were KILLED after the grace". **137 is `128 + SIGKILL`, and it does not distinguish the grace-kill from
+any other SIGKILL** — an out-of-memory kill by the host, or an operator killing the child, produces the same
+status and would be described the same way. What the gate can stand behind is the part that matters: **the
+read did not complete and the run fails closed**, and the bound is proved to fire by the offline regression
+rather than by this status. The attribution in the message is a best reading of a status that has no
+provenance, and it is stated here so that nobody reads it as one. Correcting the wording would change the
+executable bytes of the gate, which are `sha256 960b4027af9b…` — **the bytes the 3/3 real-provider sequence
+in §6.15 ran** — and that evidence is worth more than a more careful sentence in a failure path no run has
+taken.
+
+**AND MEASURING THE FULL SUITE FROM POWERSHELL FOUND THE SAME DEFECT IN SEVEN MORE FILES, WHICH IS WHY THE
+"339 / 339 WINDOWS" ROW ABOVE IS ALSO WRONG AND IS NOW CORRECTED.** Every Windows figure this document has
+carried was taken from a shell that had already put Git Bash first. Run from an ordinary PowerShell launch,
+`npm run test` is **332 passed / 7 failed**, and the seven are
+`projection-jellyfin-dataplane`, `projection-plex-dataplane`, `projection-emby-dataplane`,
+`projection-three-server-concurrency`, `projection-path-lifecycle`, `projection-real-provider` and
+`projection-rclone-comparison` — every suite in the repository that drives a shipped wrapper through
+`spawnSync('bash', …)`. They fail with the same two signatures this section is about: `127`, and
+`/bin/bash: C:UsersclintAppData…: No such file or directory`.
+
+**THEY ARE PRE-EXISTING AND THIS LOOP DID NOT CAUSE THEM, WHICH IS MEASURED RATHER THAN ASSERTED.** All seven
+fail identically at `6e4442b` from PowerShell, each measured individually and again through the full suite in
+an isolated worktree of that commit — **330 passed / 9 failed** there against **332 / 7** here, with the
+failing sets compared as sorted sets: **zero suites fail only at this tree.** This change touches
+`test/torbox-resolver.ts` and two documents, so it could not have reached the seven.
+
+**THE TWO-SUITE DIFFERENCE IS ONE FIX AND ONE FLAKE, AND THEY ARE NOT REPORTED AS THE SAME THING.**
+`torbox-resolver` moves from failing to passing, which is this loop's work. `publish-outbox` also appears in
+the baseline's failing set and not in this tree's — but it passes **3/3 standalone on both trees**, so it is
+a flake under parallel execution and is claimed as nothing. A delta of two where only one is attributable is
+worth spelling out, because a report that quietly banked the second would be the same species of error as the
+Windows figures this section exists to correct.
+
+**THEY ARE RECORDED HERE RATHER THAN FIXED, DELIBERATELY.** Each of those suites drives a real gate wrapper,
+`test/projection-jellyfin-dataplane.ts` already carries a **different** and locally-correct answer to the same
+problem (`toBashPath`, which translates for whichever `bash` is found, plus `WSLENV`), and choosing between
+translating and selecting is a decision per suite rather than a sweep. What this section establishes is that
+the mechanism is understood, that a tested implementation of the selecting half now exists in one file, and
+that **no Windows figure in this document may be published again without naming the shell it was taken
+from.** The remaining seven are the obvious next piece of work and are named so that nobody has to rediscover
+them.
+
+**NOTHING IN THIS LOOP TOUCHED AN EXECUTABLE GATE BYTE.** `deploy/projection-torbox-real-gate.sh` still
+hashes to `960b4027af9b…`, so §6.15's runs remain the evidence for exactly the bytes that produced them, and
+no provider was contacted for any of this. The changes are one test file, one guard in another, and this
+section.
 
 ### 6.4 The gates that did not exist — now none of them
 
