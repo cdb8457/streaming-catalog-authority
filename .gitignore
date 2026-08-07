@@ -61,3 +61,24 @@ deploy/ci/acceptance/playwright-report/
 # The cleanup trap deletes the directory on success and on failure. This is what stops an INTERRUPTED run from
 # leaving that file where `git add -A` could reach it.
 .projection-rclone-gate/
+
+# ...and for the ACCESS-LEASE gate (G24–G26) and the PATH-LIFECYCLE gate (G27). Both declare a gate root the
+# same way the entries above do and neither had one here; the reason every entry above gives applies to them
+# unchanged.
+.projection-lease-gate/
+.projection-lifecycle-gate/
+
+# ...and for the THREE gates that take an operator-supplied corpus: the offline TorBox mount gate, the
+# generic real-provider gate, and the REAL TorBox gate.
+#
+# THE LAST OF THESE IS THE FIRST GATE IN THIS FAMILY THAT LEAVES A FILE BEHIND ON PURPOSE, so its entry is
+# doing more work than the others'. `.projection-torbox-real-gate/evidence/reads-*.json` is preserved by
+# design — on success as a hard precondition of deleting the run directory, and on failure best-effort from
+# the EXIT trap — because it is the only record of what was read through the mount. That file carries
+# operator-chosen labels and the exact object size, which is corpus detail this repository deliberately keeps
+# out of git; the gate writes it at mode 0700 under a directory it chmods 0700, and this entry is what stops
+# `git add -A` reaching it regardless. The other two never intend to leave anything, and this is the belt to
+# that brace for an INTERRUPTED run of either.
+.projection-torbox-gate/
+.projection-real-provider-gate/
+.projection-torbox-real-gate/

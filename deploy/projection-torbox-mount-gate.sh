@@ -447,7 +447,7 @@ TB_SIZE=$((8 * 1024 * 1024))
 # THE FIXTURE IS REACHED BY NETWORK ALIAS, because the CDN link it mints has to name a host the DAEMON can
 # dial. A loopback spelling would resolve in the wrong namespace and the second hop would fail.
 docker run -d --name "$FIXTURE_CONTAINER" --network "$NETWORK" --network-alias torbox-fixture \
-  -v "$PWD:/workspace" -w /workspace \
+  -v "$PWD:/workspace:ro" -w /workspace \
   -v "$WORK/inputs:/inputs:ro" -v "$WORK/out:/out" \
   -e npm_config_update_notifier=false \
   "$NODE_IMAGE" ./node_modules/.bin/tsx src/ops/torbox-fixture-cli.ts serve \
@@ -559,9 +559,14 @@ echo "  the daemon is running"
 # ----------------------------------------------------------------------------------------------------------
 step "starting the REAL resolver INSIDE the daemon's network namespace, so it stays loopback-only"
 # ----------------------------------------------------------------------------------------------------------
+# THE CHECKOUT IS READ-ONLY HERE TOO, AND THAT IS WHAT MAKES THE REAL GATE'S SAME REDUCTION RUNNABLE.
+# The real gate mounts this container's checkout `:ro` because it is the one process on the host holding the
+# TorBox API key. Leaving the offline twin read-write meant the only thing exercising that reduction was the
+# gate nobody can run in CI: a future `tsx` or `node` that wanted to write a cache inside the checkout would
+# have broken the real gate while this control stayed green.
 docker run -d --name "$RESOLVER_CONTAINER" \
   --network "container:$MOUNT_CONTAINER" \
-  -v "$PWD:/workspace" -w /workspace \
+  -v "$PWD:/workspace:ro" -w /workspace \
   -v "$WORK/inputs:/inputs:ro" \
   -e npm_config_update_notifier=false \
   "$NODE_IMAGE" ./node_modules/.bin/tsx src/ops/torbox-resolver-cli.ts serve \

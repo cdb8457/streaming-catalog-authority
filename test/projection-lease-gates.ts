@@ -672,20 +672,57 @@ test('THE COUNT OF PROVEN GATE GROUPS IS SEVEN, AND BOTH DOCUMENTS SAY SO', () =
   assert(/SEVEN/i.test(flat(PLAN)), 'and so does the acceptance plan');
 });
 
-test('NO GATE IS RECORDED AS MISSING ANY MORE, and neither document has quietly closed the tranche', () => {
+test('NO GATE IS RECORDED AS MISSING ANY MORE, and neither document has QUIETLY closed the tranche', () => {
   // Writing the last missing gate is exactly the moment a document drifts into announcing closure, so the
-  // guard bites hardest here: the one remaining ground must still be stated, in both documents.
+  // guard bites hardest here.
   assert(PLAN.includes('### 6.4 The gates that did not exist — now none of them'),
     'the section is plural and settled now, because nothing in it is still missing');
   assert(/### 6\.9 G27/.test(PLAN), 'and the plan carries G27’s run record');
 
-  // THE ONE GROUND THAT REMAINS.
+  // WHAT THIS GUARD USED TO REQUIRE, AND WHY IT NO LONGER CAN.
+  //
+  // It required both documents to state the one remaining ground — that no real provider endpoint had ever
+  // been contacted — and that Phase 1 was open. That was the correct tripwire for as long as it was true.
+  // One HAS since been contacted: `npm run go:torbox-real-gate:three` completed three consecutive fresh runs
+  // against a real TorBox account and a real CDN on the Unraid host, and §6.15 and §6.16 of the acceptance
+  // plan are the run record. A guard that demanded both documents keep asserting the opposite would be
+  // demanding they lie.
+  //
+  // SO IT IS RE-AIMED RATHER THAN DELETED, AND IT IS STRICTLY HARDER TO SATISFY THAN THE OLD ONE.
+  // The word the old title turned on was QUIETLY. A closure is quiet when the conclusion appears without the
+  // evidence that earns it, so closure is now permitted only in the company of that evidence: the run record
+  // section, the three-consecutive-run sequence, and the sha of the bytes that produced it. And the sentence
+  // the tranche was open on must still be FINDABLE, in the past tense, because deleting the history is the
+  // other way a document can close quietly.
+  //
+  // IT IS MATCHED ON THE FLATTENED TEXT, WHICH IS THE DEFECT THAT LET THIS GUARD GO GREEN WHEN IT SHOULD NOT
+  // HAVE. The old assertion ran against the raw document, so the same sentence merely re-wrapped across a
+  // line no longer matched — and a document that had genuinely dropped it and one that had only reflowed it
+  // were indistinguishable.
   for (const [name, text] of [['the acceptance plan', PLAN], ['the roadmap', ROADMAP]] as const) {
-    assert(/no real provider endpoint has ever been contacted/i.test(text),
-      name + ' still records that no real provider endpoint has been contacted');
-    assert(/Phase 1 remains open|says Open|\*\*Open\.\*\*/i.test(text),
-      name + ' still records that Phase 1 is open');
+    const document = flat(text);
+    assert(/no real provider endpoint has ever been contacted/i.test(document),
+      name + ' has DELETED the ground the tranche was open on rather than keeping it in the past tense');
+
+    const closes = /Phase 1 closes|Phase 1 is closed|\*\*Done\.\*\*/i.test(document);
+    const open = /Phase 1 remains open|says Open|\*\*Open\.\*\*/i.test(document);
+    assert(closes || open, name + ' records neither an open nor a closed tranche');
+    if (!closes) continue;
+
+    // CLOSURE IS ONLY ALLOWED TO APPEAR NEXT TO WHAT EARNS IT.
+    assert(/§?6\.15/.test(document),
+      name + ' announces closure without citing the real-provider run record that justifies it');
+    assert(/three consecutive fresh runs/i.test(document),
+      name + ' announces closure without citing the three-consecutive-run sequence the plan requires');
+    assert(/go:torbox-real-gate:three/.test(document),
+      name + ' announces closure without naming the command that produced the sequence');
   }
+
+  // AND THE PLAN — the evidence authority — must carry the sha of the bytes the sequence ran, so the claim
+  // is checkable rather than assertable. The roadmap is not required to: it points at the plan.
+  const plan = flat(PLAN);
+  assert(/sha256/i.test(plan) && /identical/i.test(plan),
+    'the acceptance plan does not pin the run to the bytes that produced it');
 });
 
 test('HISTORY IS KEPT, BUT ONLY IN THE PAST TENSE', () => {
