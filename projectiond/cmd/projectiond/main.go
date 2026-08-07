@@ -32,6 +32,8 @@ func main() {
 	debug := flag.Bool("debug-fuse", false, "log the FUSE protocol (very verbose; never logs file bytes)")
 	strictMount := flag.Bool("strict-direct-mount", false,
 		"refuse to fall back to the fusermount suid helper; proves the mount was made by syscall")
+	refuseStale := flag.Bool("refuse-stale", false,
+		"refuse to start if a stale projectiond mount exists at the mount point")
 	autoRemount := flag.Bool("auto-remount", false,
 		"after the FUSE serve loop dies, attempt a bounded remount instead of exiting")
 	serveExitCode := flag.Int("serve-exit-code", 3,
@@ -86,6 +88,27 @@ func main() {
 	}
 	if cfg.MountPoint == "" {
 		fail("a mount point is required")
+	}
+
+	// THE MOUNTPOINT IS PROBED, NEVER ASSUMED. Mount() stacks over whatever is there, so one statfs and one
+	// mountinfo read decide what the stack lands on. The default is to stack over anything — including a dead
+	// mount, which is how recovery works (a supervisor remount stacks over the corpse). --refuse-stale turns
+	// the one dangerous case, serving over a mount whose transport is gone, into an actionable refusal. The
+	// echoed path is the operator's own --mount argument, the same startup exception the --config path gets.
+	switch result := fusefs.ProbeMountpoint(cfg.MountPoint); result {
+	case fusefs.ProbeStaleProjectiond:
+		logLine("stale projectiond mount detected at " + cfg.MountPoint)
+		if *refuseStale {
+			fail("refusing to start: stale mount at " + cfg.MountPoint +
+				" (clear it with: umount -l " + cfg.MountPoint + ")")
+		}
+		logLine("stacking over the stale mount (default); clear it with: umount -l " + cfg.MountPoint)
+	case fusefs.ProbeLiveProjectiond:
+		logLine("live projectiond mount detected at " + cfg.MountPoint)
+	case fusefs.ProbeForeign:
+		logLine("non-projectiond mount detected at " + cfg.MountPoint)
+	case fusefs.ProbeEmpty:
+		logLine("no existing mount at " + cfg.MountPoint)
 	}
 
 	// Mount returns a mount whose request loop is already running and whose INIT handshake has completed.
