@@ -228,14 +228,18 @@ rejected rather than quoted, because there the committed length is counted and t
 | 13 | Windows / Docker Desktop | **COMPLETED**, against `330a9e7` — the first run of the REMEDIATED instrument | 70, none failed, none skipped | **the run that showed how far off the retracted claim was.** 2,783,683,960 bytes COMMITTED against 120,343,984 OBSERVED, with 117 of 1,057 bodies abandoned part-way. See §7.3 and §7.4 |
 | 14–16 | Windows / Docker Desktop | **COMPLETED**, three consecutive fresh runs through the committed wrapper, same commit, no tracked file edited inside them | 70 each, none failed, none skipped | wrapper exit 0, `3 of 3 consecutive … none skipped`; the working tree was still clean at `330a9e7` afterwards. §7.4 |
 | 17 | Windows / Docker Desktop | **COMPLETED**, against `9f1d4de` — after an independent review found §7.4 comparing G22's observed column against the product's committed one | 70, none failed, none skipped | the confirmation that shared runtime code still works: 1,054 GETs, 2,572,593,873 bytes COMMITTED against 131,196,070 OBSERVED, 941 bodies written in full and 113 abandoned, and 2,567,722,747 / 126,400,276 over the 43 comparable entries. §7.5 and §7.6 |
+| 18–20 | **Unraid host** | **COMPLETED**, three consecutive fresh runs through the committed wrapper `npm run go:rclone-comparison-gate:three`, against the tree exactly as committed at `69f93e0` — the current HEAD, copied byte-identical to the host before the first run (1593 tracked files, MANIFEST-MISSING=0) | **70 each, none failed, none skipped** | wrapper exit 0, `3 of 3 consecutive … none skipped`; the host's container, network, volume and catalog-mountpoint counts were sampled before and between every gate and identical at all samples; the gate root was empty before and after, and every run reported `cleanup: 0 mountpoints and no run directory left under the gate root`. §7.7 |
 
-**Sixteen completed runs and one failure, all on Windows / Docker Desktop, and the §6.1 table of the
-acceptance plan still reads NOT RUN.** Twelve of the sixteen came through the committed
+**Nineteen completed runs and one failure: sixteen completed and one failed on Windows / Docker Desktop, and
+three completed on a real Unraid host (runs 18–20) — and the §6.1 table of the acceptance plan now reads RUN
+ON A REAL UNRAID HOST.** Twelve of the sixteen Windows runs came through the committed
 three-consecutive-fresh-run wrapper, in four sequences of three, with no tracked file edited inside or
 between them. **Runs 1–12 were taken with an instrument whose byte counter is now known to have measured
 something other than what it was reported as — see §7.3** — and their COMMITTED figures stand as such. That is the repetition the
 acceptance plan asks for — **on the wrong platform**. §6 of the plan says G22 closes on a Linux or Unraid
-host, and none of these seventeen runs was one. No real provider endpoint has ever been contacted — the WebDAV
+host, and none of the first seventeen runs was one. **Runs 18–20 are the repetition the acceptance plan asks
+for, on the platform §6 names** — three consecutive fresh runs against the tree as committed, 70 assertions
+each, none failed and none skipped. No real provider endpoint has ever been contacted — the WebDAV
 endpoint is the in-repository fake — and Phase 1 remains open.
 
 **The rows for runs 3–17 were necessarily written after they finished**, which is true of every run record in
@@ -481,6 +485,52 @@ subject of §7.3 and §7.5.
 proves peer receipt, neither is a TCP acknowledgement, neither counts exact wire bytes, and neither is
 provider billing. No real provider has ever been contacted by any automated gate here.
 
+### 7.7 The three runs on a real Unraid host
+
+Runs 18–20 were taken on the Unraid host itself — **not** Windows / Docker Desktop — against the tree exactly
+as committed at `69f93e0` (the current HEAD, `cdb8457/projection-phase1-heredoc-audit-2`), copied byte-identical
+to `/mnt/user/appdata/catalog-phase1-heredoc-audit-2` before the first run: 1593 tracked files, MANIFEST-MISSING=0.
+The host is Unraid 7.2.3, kernel 6.12.54-Unraid, Node v22.18.0, Compose v2.40.3, Docker 27.5.1, with
+`/mnt/user` on `fuse.shfs` with shared propagation. The three runs went through the committed wrapper
+`npm run go:rclone-comparison-gate:three`, with no tracked file edited inside or between them.
+
+**Every figure below is RECORDED. None of them is a pass or a failure**, because G22 has no pass threshold;
+what three fresh runs on a real Unraid host establish is that the comparison instrumentation held there and
+that its figures are reproducible — **NOT** that the naive path passed or failed anything.
+
+| | run 18 | run 19 | run 20 |
+|---|---|---|---|
+| ranged GETs, all answered 206 | **945** | **954** | **982** |
+| whole-body responses | **0** | **0** | **0** |
+| **COMMITTED** media bytes | **1,832,119,999** | **1,831,807,829** | **2,148,540,321** |
+| of which corpus / canary | 1,832,053,787 / 66,212 | 1,831,741,617 / 66,212 | 2,148,474,109 / 66,212 |
+| **OBSERVED** media bytes | **196,142,491** | **197,844,713** | **218,652,534** |
+| of which corpus / canary | 196,076,279 / 66,212 | 197,778,501 / 66,212 | 218,586,322 / 66,212 |
+| the client's own accounting | 34,244,108 bytes over 849 transfers | 34,643,260 over 867 | 35,143,401 over 888 |
+| bodies written in full / abandoned part-way | 925 / 20 | 934 / 20 | 958 / 24 |
+| over the 43 comparable entries | 1,826,974,759 committed / 190,997,251 observed over 821 GETs | 1,826,537,081 / 192,573,965 over 825 GETs | 2,143,133,029 / 213,245,242 over 845 GETs |
+| peak connections / requests in flight | 30 / 3 | 27 / 3 | 11 / 4 |
+| PROPFIND / OPTIONS / HEAD | 52 (0 depth-0, 52 depth-1) / 0 / 0 | 52 / 0 / 0 | 52 / 0 / 0 |
+| listing XML | 90,249 bytes | 90,249 bytes | 90,249 bytes |
+| corpus objects exercised | 49 / 49 | 49 / 49 | 49 / 49 |
+| scan seconds (emby / jellyfin / plex) | 10 / 5 / 18 | 7 / 5 / 18 | 8 / 5 / 18 |
+| three-way overlap | 9 samples / 4 s | 9 samples / 4 s | 9 samples / 4 s |
+
+**The figures land inside the ranges §7.1–§7.6 record from the Windows runs.** The metadata cost is identical
+in every one of the three runs and matches the Windows runs exactly: 52 depth-1 PROPFINDs, 90,249 bytes of
+listing XML, 0 OPTIONS, 0 HEAD, 0 HTTP 429, 0 mutating requests. Over the 43 comparable entries, every figure
+sits inside the §7.6 band: 821–845 GETs (Windows 780–941), 1.83–2.14 GB COMMITTED (Windows 1.82–2.78 GB) and
+191–213 MB OBSERVED (Windows 88.9–126.4 MB). The total ranged GETs — 945, 954, 982 — are likewise in the same
+band as §7.4's 959–1,057, run 18's total a hair below it for the same reason the byte figures move: how many
+times each media server happens to re-open the ~105 MB fixture and seek backwards in it. Run 20's committed
+total (2.15 GB) sits at the top of the band for the same reason run 17's did. The scan durations and three-way
+overlap (9 samples / 4 s in every run) match the Windows runs too.
+
+**And what these runs do not change.** The topology is still the one ADR 002 rejected, no real provider
+endpoint has ever been contacted, per-server attribution is still impossible and is not claimed, and Phase 1
+remains open. What three runs on Unraid establish is a reproducible instrument on the platform §6 names — not
+a recommendation, not a pass, not closure of anything.
+
 ## 8. What this gate does not prove
 
 These are enumerated as data in `RCLONE_COMPARISON_NONCLAIMS`, printed by
@@ -493,7 +543,9 @@ recommendation fails a test rather than a review.
 - **G22 has no pass threshold**, so no figure here is a pass or a failure; what fails closed is the
   instrumentation, never the cost.
 - **A Docker Desktop pass is not Linux or Unraid closure and closes none of G7–G13, G18 or G22.**
-- **No run of this gate has ever happened on a real Linux or Unraid host.**
+- **Three consecutive fresh runs have now happened on a real Unraid host (runs 18–20), and what they establish
+  is that the comparison instrumentation held there and its figures are reproducible — NOT that the naive path
+  passed or failed anything.**
 - **No real provider endpoint has ever been contacted.**
 - **Per-server attribution is impossible here and is not claimed.**
 - **The endpoint reports COMMITTED and OBSERVED bytes as two separate figures**, and a committed figure is
