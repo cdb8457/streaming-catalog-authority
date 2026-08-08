@@ -1013,9 +1013,7 @@ export const RCLONE_COMPARISON_NONCLAIMS: readonly string[] = Object.freeze([
   'G22 has NO pass threshold, so no figure here is a pass or a failure; what fails closed is the '
     + 'instrumentation, never the cost',
   'a Docker Desktop pass is not Linux or Unraid closure and closes none of G7-G13, G18 or G22',
-  'three consecutive fresh runs of this gate have now happened on a real Unraid host, and what they establish '
-    + 'is that the comparison instrumentation held there and its figures are reproducible -- NOT that the naive '
-    + 'path passed or failed anything',
+  'no run of this gate has ever happened on a real Linux or Unraid host',
   'no real provider endpoint has ever been contacted; the WebDAV endpoint is the in-repository fake',
   'per-server attribution is impossible here and is not claimed: one mount client serves all three servers, '
     + 'so the endpoint sees the client and never the server behind a byte',

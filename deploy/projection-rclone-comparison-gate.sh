@@ -48,11 +48,10 @@
 # once per corpus object, and a request really was blocked at the barrier and released rather than lapsing.
 #
 # WHAT IT DOES NOT PROVE. A Docker Desktop pass is NOT Linux/Unraid closure and closes NONE of G7–G13, G18 or
-# G22. Three consecutive fresh runs HAVE now happened on a real Unraid host, and what they establish is that
-# the comparison instrumentation held there and its figures are reproducible — NOT that the naive path passed
-# or failed anything. No real provider endpoint has ever been contacted. Per-server attribution is impossible
-# here and is not claimed: one mount client serves all three servers, so the endpoint sees the client and never
-# the server behind a byte. Nothing here decodes anything. Phase 1 remains open.
+# G22. No run has ever happened on a real Linux or Unraid host and no real provider endpoint has ever been
+# contacted. Per-server attribution is impossible here and is not claimed: one mount client serves all three
+# servers, so the endpoint sees the client and never the server behind a byte. Nothing here decodes anything.
+# Phase 1 remains open.
 #
 # EVERYTHING IS BOUNDED. Every readiness probe, scan, observation and wait has a hard deadline; a hang fails
 # the gate rather than occupying the machine.
