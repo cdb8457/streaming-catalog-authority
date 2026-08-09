@@ -65,13 +65,24 @@ export ADMIN_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:${PG_PORT}/c
 export DATABASE_URL="postgresql://app:app@127.0.0.1:${PG_PORT}/catalog"
 export PROJECTION_STALE_MOUNT_GATE_PG_PORT="$PG_PORT"
 
-# THE ONE FLAG: --refuse-stale runs the second phase against the same corpse. Everything else is the first
-# phase. An env var is also honored so a caller that cannot pass arguments can still choose the phase; the
-# flag wins when both are present.
-REFUSE_STALE="${PROJECTION_STALE_MOUNT_GATE_REFUSE_STALE:-0}"
-if [ "${1:-}" = "--refuse-stale" ]; then
-  REFUSE_STALE=1
-fi
+# BOTH PHASES RUN, DEFAULT THEN --refuse-stale, AGAINST THE SAME CORPSE. There is no phase flag, and the
+# absence is the point.
+#
+# THIS GATE USED TO HAVE ONE, AND IT MADE THE EVIDENCE COMMAND PROVE HALF ITS CLAIM. The phase was selected by
+# `--refuse-stale` or `PROJECTION_STALE_MOUNT_GATE_REFUSE_STALE`, both defaulting to the first phase — and
+# nothing that an operator actually runs passed either. `npm run go:stale-mount-gate:three` therefore ran the
+# stacking half three times, printed "PHASE 1 COMPLETE", exited 0, and was recorded as the gate passing, while
+# the Phase 2 document said the gate exercises BOTH halves against the SAME corpse. The refusal — the entire
+# reason `--refuse-stale` exists in the daemon — was never once executed by the command that closes the gate.
+#
+# A default that decides how much of a gate runs is a default that decides how much is proved, so the choice
+# is gone rather than re-defaulted: a caller who wants half the evidence is a caller who wants half the
+# evidence, and the acceptance plan names one stale-mount gate.
+
+# How long phase 2 waits for the refusing daemon to exit, in half-second ticks. A refusal is a startup
+# decision — probe, log, exit, before any mount — so 60s is enormous for it; the bound exists to turn a daemon
+# that never exits into a failure rather than a hang.
+REFUSE_TIMEOUT_TICKS=120
 
 # THE SHARED CLEANUP CONTRACT. Sourced before anything can fail, so the EXIT trap is armed from the first
 # container name onward — and the corpse this gate creates is exactly the mount the contract was written to
@@ -275,34 +286,61 @@ docker logs "$RECOVERY_CONTAINER" 2>&1 | grep -q "serving generation 1" \
 echo "  the recovery daemon's log names the corpse, says it is stacking over it, and reports serving generation 1"
 
 docker stop "$RECOVERY_CONTAINER" >/dev/null
-RECOVERY_EXIT="$(docker wait "$RECOVERY_CONTAINER" || true)"
+# `docker stop` has already returned, so the container has exited and its status is a fact to be read rather
+# than an event to be waited for. Read it, rather than blocking on `docker wait`: a wait whose result IS the
+# assertion is the shape that hung phase 2 below, and there is no reason for this one to take that shape.
+RECOVERY_EXIT="$(docker inspect -f '{{.State.ExitCode}}' "$RECOVERY_CONTAINER")"
 test "$RECOVERY_EXIT" = "0" || die "the recovery daemon exited $RECOVERY_EXIT after a requested SIGTERM, not 0"
 echo "  a requested SIGTERM unmounted the recovery mount cleanly (exit 0)"
 corpse_is_stale
 
-if [ "$REFUSE_STALE" -eq 1 ]; then
-  # --------------------------------------------------------------------------------------------------------
-  step "phase 2 (--refuse-stale) — the SAME corpse, and the daemon refuses to serve over it"
-  # --------------------------------------------------------------------------------------------------------
-  start_daemon "$REFUSE_CONTAINER" "--refuse-stale"
-  REFUSE_EXIT="$(docker wait "$REFUSE_CONTAINER" || true)"
-  test "$REFUSE_EXIT" = "1" || die "the refusing daemon exited $REFUSE_EXIT, not 1, for a stale mount"
-  echo "  the refusing daemon exited with status 1"
-  docker logs "$REFUSE_CONTAINER" 2>&1 | grep -q "stale projectiond mount detected at /mnt/projection" \
-    || die "the refusing daemon did not name the corpse in its log"
-  docker logs "$REFUSE_CONTAINER" 2>&1 | grep -q "refusing to start: stale mount at /mnt/projection" \
-    || die "the refusing daemon did not report its refusal"
-  echo "  the refusing daemon's log names the corpse and says 'refusing to start: stale mount at /mnt/projection'"
-  corpse_is_stale
+echo
+echo "PHASE 1 COMPLETE: the daemon faced the corpse, named it, stacked over it, and served generation 1;"
+echo "a requested SIGTERM then unmounted cleanly. The corpse remains, and phase 2 faces the same one."
 
-  echo
-  echo "PHASE 2 COMPLETE: with --refuse-stale, the daemon refuses to serve over the corpse and exits 1."
-else
-  echo
-  echo "PHASE 1 COMPLETE: the daemon faced the corpse, named it, stacked over it, and served generation 1;"
-  echo "a requested SIGTERM then unmounted cleanly. The corpse remains for phase 2 (--refuse-stale)."
+# ----------------------------------------------------------------------------------------------------------
+step "phase 2 (--refuse-stale) — the SAME corpse, and the daemon refuses to serve over it"
+# ----------------------------------------------------------------------------------------------------------
+# THE CORPSE IS THE ONE PHASE 1 LEFT, re-verified stale immediately above. That is what makes the two halves
+# comparable: the default stacked over this object, and the flag refuses this object.
+start_daemon "$REFUSE_CONTAINER" "--refuse-stale"
+
+# THE WAIT IS BOUNDED, AND THE BOUND IS THE ASSERTION. A refusal is a startup decision — the daemon probes,
+# logs and exits before it ever mounts — so it is over in seconds. An unbounded `docker wait` here would mean
+# that the one regression this phase exists to catch, a --refuse-stale daemon that SERVES instead of refusing,
+# hangs the gate forever instead of failing it: the daemon would sit there serving, and `docker wait` would
+# sit there waiting. A gate that hangs on the defect it is looking for reports nothing at all.
+REFUSE_EXIT=""
+n=0
+while [ "$n" -lt "$REFUSE_TIMEOUT_TICKS" ]; do
+  REFUSE_STATE="$(docker inspect -f '{{.State.Status}}' "$REFUSE_CONTAINER" 2>/dev/null || echo missing)"
+  if [ "$REFUSE_STATE" = "exited" ]; then
+    REFUSE_EXIT="$(docker inspect -f '{{.State.ExitCode}}' "$REFUSE_CONTAINER")"
+    break
+  fi
+  n=$((n + 1))
+  sleep 0.5
+done
+if [ -z "$REFUSE_EXIT" ]; then
+  docker logs "$REFUSE_CONTAINER" 2>&1 | tail -30 >&2
+  die "the --refuse-stale daemon was still running after $((REFUSE_TIMEOUT_TICKS / 2))s; a refusal exits at startup, so it is serving over the corpse"
 fi
+test "$REFUSE_EXIT" = "1" || die "the refusing daemon exited $REFUSE_EXIT, not 1, for a stale mount"
+echo "  the refusing daemon exited with status 1"
+docker logs "$REFUSE_CONTAINER" 2>&1 | grep -q "stale projectiond mount detected at /mnt/projection" \
+  || die "the refusing daemon did not name the corpse in its log"
+docker logs "$REFUSE_CONTAINER" 2>&1 | grep -q "refusing to start: stale mount at /mnt/projection" \
+  || die "the refusing daemon did not report its refusal"
+echo "  the refusing daemon's log names the corpse and says 'refusing to start: stale mount at /mnt/projection'"
+# AND IT REFUSED WITHOUT MOUNTING. A daemon that stacked and then exited 1 would satisfy every assertion
+# above; the corpse still being the only projectiond mount here is what says the refusal happened instead of
+# a mount followed by a late failure.
+corpse_is_stale
 
 echo
-echo "STALE-MOUNT GATE COMPLETE. The cleanup trap unmounts and removes the run directory, and the report"
-echo "above (or in the transcript's tail) says whether any mountpoint was left behind."
+echo "PHASE 2 COMPLETE: with --refuse-stale, the daemon refuses to serve over the corpse and exits 1."
+
+echo
+echo "STALE-MOUNT GATE COMPLETE. Both halves ran against the same corpse. The cleanup trap unmounts and"
+echo "removes the run directory, and the report above (or in the transcript's tail) says whether any"
+echo "mountpoint was left behind."

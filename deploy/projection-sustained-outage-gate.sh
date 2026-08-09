@@ -117,20 +117,33 @@ resolutions()    { curl -fsS --max-time 10 "http://127.0.0.1:${RANGE_PORT}/count
 
 # A SINGLE 64KiB READ AT A BYTE OFFSET, THE SMALLEST UNIT THAT FORCES ONE BLOCK FETCH. `dd` fails with a
 # nonzero status when the daemon returns EIO for the read, which is what the outage means to a media server.
+#
+# IT PRINTS ITS OWN VERDICT RATHER THAN LEAVING ONE TO BE INFERRED FROM AN EXIT STATUS, and the reason is that
+# `docker run` reports its OWN failures — an image it cannot pull, a mount it cannot make, a daemon that is
+# not there — as 125/126/127, before `dd` executes a single instruction. A caller that read "non-zero" as
+# "the daemon returned EIO" would score every one of those as a successful fast failure: the hold phase's
+# reads would all "fail fast", the endpoint would see zero traffic because nothing ran, and the gate would
+# report a textbook outage over a container that never started. `read:ok` and `read:eio` are printed BY the
+# probe, so a run that produced neither is a third outcome and is refused rather than counted.
 read_block() {
   docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" \
-    sh -c "dd if='/mnt/$ENTRY_PATH' bs=65536 skip=$(( $1 / 65536 )) count=1 of=/dev/null 2>/dev/null" >/dev/null 2>&1
+    sh -c "dd if='/mnt/$ENTRY_PATH' bs=65536 skip=$(( $1 / 65536 )) count=1 of=/dev/null 2>/dev/null && echo read:ok || echo read:eio" \
+    2>/dev/null || true
 }
 
-# A read that is EXPECTED to fail during the outage, timed. Dies if it unexpectedly succeeded; prints the
-# elapsed milliseconds. The read itself fails fast; the timing includes `docker run` startup.
+# A read that is EXPECTED to fail during the outage, timed. Dies if it unexpectedly succeeded, and dies just
+# as loudly if the probe never ran; prints the elapsed milliseconds. The read itself fails fast; the timing
+# includes `docker run` startup, which is what FAST_FAIL_CEILING_MS leaves room for.
 timed_read_fail() {
-  local start now
+  local start now verdict
   start="$(date +%s%3N)"
-  if read_block "$1"; then
-    die "a read at $1 bytes unexpectedly succeeded during the outage"
-  fi
+  verdict="$(read_block "$1")"
   now="$(date +%s%3N)"
+  case "$verdict" in
+    *read:eio*) ;;
+    *read:ok*)  die "a read at $1 bytes unexpectedly succeeded during the outage" ;;
+    *)          die "the read probe at $1 bytes never ran (docker refused it), so nothing was measured: '$verdict'" ;;
+  esac
   echo $(( now - start ))
 }
 

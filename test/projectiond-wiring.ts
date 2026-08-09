@@ -127,7 +127,16 @@ test('the mount always starts its request loop: Wait-without-Serve cannot come b
   assert(/func Mount\([^)]*\) \(\*Mounted, error\)/.test(fusefs), 'Mount hands back a started mount');
   const main = read('projectiond/cmd/projectiond/main.go');
   assert(!/\bserver\.Wait\(\)/.test(main), 'main does not wait on a server it never served');
-  assert(main.includes('mount.Wait()'), 'main waits on the started mount');
+  // MAIN BLOCKS ON THE STARTED MOUNT, AND PHASE 2 CHANGED HOW WITHOUT CHANGING WHETHER.
+  //
+  // This used to require the literal `mount.Wait()`. The mount-hardening supervisor replaced that call with a
+  // select on `mount.Done()`, because parking on Wait is exactly the behaviour a serve-loop death has to
+  // interrupt — a daemon blocked in Wait over a namespace the kernel has torn down exits 0 and reports
+  // success. The PROPERTY the assertion protects is unchanged: main's tail blocks on the handle Mount
+  // returned, never on a raw server and never on nothing. So both spellings are accepted and the absence of
+  // either is still the failure.
+  assert(/\bmount\.(Wait|Done)\(\)/.test(main),
+    'main does not block on the started mount, so it can return while the namespace is still being served');
 });
 
 test('end of file is not an error', () => {

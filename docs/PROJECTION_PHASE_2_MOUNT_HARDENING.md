@@ -75,6 +75,12 @@ is exercised against. G7-G9 prove the mount **survives** a process death (the ne
 corpse and keeps serving); this gate's subject is the corpse itself at **startup**, where the probe decides
 the stack lands on something it should name rather than something it should guess about.
 
+**Both halves run, in one run, and the gate has no phase switch.** It briefly had one — `--refuse-stale`, or
+`PROJECTION_STALE_MOUNT_GATE_REFUSE_STALE`, both defaulting to the stacking half — and **nothing an operator
+runs passed either**, so `npm run go:stale-mount-gate:three` proved the stacking half three times and never
+once executed the refusal this section describes. The switch is gone rather than re-defaulted: the flag in
+the table above is the flag the gate passes to the **daemon** in phase 2, not a choice the caller makes.
+
 ### Run record
 
 | Run | Host | Assertions | Failed | Skipped | Evidence |
@@ -179,3 +185,53 @@ The offline pins for all of the above live in `test/projection-mount-hardening.t
 scripts are wired, every heredoc is quoted, the skip contract is 77-and-never-0, the `:three` wrappers
 refuse a live prior gate **before** touching its run directory, and cleanup happens through the shared helper
 on every exit path. It runs everywhere in seconds; the gates themselves need the host.
+
+---
+
+## 7. Five defects found before the first run, and what each cost
+
+**None of these was found by running a gate**, because no gate has run. They were found by reading the three
+scripts and the daemon against the claims this document makes, and every one is the same class Phase 1 spent
+four dispatches on: **a step whose success does not depend on the thing it says it measures.** They are
+recorded here because a gate corrected before its first run is still a gate that shipped wrong, and the
+tranche's own standard is that the correction is written down rather than quietly applied.
+
+| # | Where | What was wrong | What it cost |
+|---|---|---|---|
+| 1 | `projectiond/internal/fusefs/fusefs.go` | The supervisor called `mount.Done()`, `mount.UnmountRequested()` and `mount.ServeErr()`; `Mounted` had none of them. **`projectiond` did not compile**, so two of the three gates could not have run at all | the serve-death capture on the handle, with the graceful flag stored **before** the kernel detach — invert that order and every clean SIGTERM is reported as a serve-loop death, and `--serve-exit-code` fails a graceful stop. Classification is a named method so `projectiond/internal/fusefs/serve_linux_test.go` drives the **shipped** decision rather than an imitation of it |
+| 2 | `deploy/projection-stale-mount-gate.sh` | The `--refuse-stale` half sat behind a **default-off switch no caller passed**, so `npm run go:stale-mount-gate:three` ran the stacking half three times, printed `PHASE 1 COMPLETE` and exited 0 — while §2 said both halves face the same corpse. **The refusal had never been executed by the command that closes the gate** | the switch removed; both phases run in order against the one corpse, and phase 2 re-verifies the corpse so a refusal cannot be confused with a mount followed by a late failure |
+| 3 | `deploy/projection-stale-mount-gate.sh` | An **unbounded `docker wait`** took the refusing daemon's exit status. The one regression phase 2 exists to catch — a `--refuse-stale` daemon that **serves** instead of refusing — would have hung the gate forever rather than failing it | a bounded poll that names what the bound means; and the recovery daemon's status is now read with `docker inspect` after `docker stop` has already returned, rather than waited for |
+| 4 | `deploy/projection-serve-death-gate.sh` | Two assertions could not fail for their stated reason. The post-exit status probe read **`docker run`'s own 125** — it cannot join an exited container's network namespace — as "the surface is unreachable", so it passed without consulting anything. And `ready_ok >= 2`, described as ready "before and after the death", is satisfied by two ready samples **before** it: a daemon that died and never came back passed the assertion written to catch exactly that | the probe prints its own verdict (`probe:answered` / `probe:unreachable`) and docker's refusal is a separate, explicitly non-evidential outcome; the poller records a **transition sequence** and the gate requires `R → D → R` |
+| 5 | `deploy/projection-sustained-outage-gate.sh` | The same class again, and the worst instance of it. `read_block` returned `docker run`'s status, and `timed_read_fail` read any non-zero as "the daemon returned EIO". A docker that could not start would therefore have scored **the entire hold phase** as reads failing fast with **zero provider traffic** — the gate's headline result — over a container that never ran. The trip phase's counter delta would have caught it; the hold phase, which is the point, would not | the probe prints `read:ok` / `read:eio`, and a run that produced neither **dies** rather than returning a fast elapsed time. Pinned with a catch-all requirement, so a two-branch dispatch cannot silently fold "never ran" into "failed" |
+
+**No threshold moved, and the only product change is #1** — which was not a tuning but a build failure. Each
+defect is pinned by a test in `test/projection-mount-hardening.ts` that **fails against the shipped scripts
+and passes after**, which is the only form of "fixed" this tranche accepts.
+
+**THREE OF THE FIVE ARE ONE DEFECT.** #2, #4 and #5 are each a step that reports a result without the product
+having been consulted — a phase that never ran, a probe that could not start, a read that was never attempted.
+Phase 1's audits found the same shape in the TorBox gate's four read-only refusals, and it is worth naming as
+a class rather than as three incidents: **a gate assertion must fail when the product misbehaves AND when the
+measurement does not happen.** The two-token verdict (`probe:*`, `read:*`) with an explicit third outcome is
+this tranche's answer to it, and the pins enforce the shape rather than the wording.
+
+**#3 IS THE OPPOSITE FAILURE AND BELONGS BESIDE THEM.** There the gate would not have reported a false result;
+it would have reported **nothing at all**, because it hung on the state it was watching for. Both ends of that
+are unusable evidence, and both are avoided the same way: **the measurement is bounded and its absence is a
+failure.**
+
+**AND THE NEW EMBEDDED PROGRAM IS EXECUTED BY A TEST, not grepped.** Phase 1 spent four dispatches on
+programs written into gates through heredocs and checked only by regex — and every dispatch found defects that
+a regex could not see, in programs no test had ever run. `readyz-probe.sh` is the one Phase 2 program with real
+logic, so `test/projection-mount-hardening.ts` **extracts it from the gate and runs it** against a stub `wget`
+playing a scripted ready/not-ready/ready sequence, and asserts the program's own output is `RDR` in five
+samples. Mutating the shipped probe so it never records the not-ready state makes that test fail with
+`collapsed a ready/dead/ready run into 'R'` — which is the regression, caught by running the program.
+
+It picks its shell **by executing one** rather than by name, which is `d4f3265`'s lesson applied rather than
+restated: keyed on `process.platform` it would have skipped on the machine this work was done on, and a skip
+that looks like a pass is the failure mode this whole section is about.
+
+**AND FIXING THESE CLOSES NOTHING.** All three run records above still read `NOT RUN`. What changed is that
+the gates can now compile, run whole, and fail for the reasons they name — which is the precondition for the
+nine runs, not a substitute for them.

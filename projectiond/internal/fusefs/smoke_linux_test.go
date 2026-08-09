@@ -18,6 +18,7 @@ import (
 	"sort"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/cdb8457/streaming-catalog-authority/projectiond/internal/daemon"
 	"github.com/cdb8457/streaming-catalog-authority/projectiond/internal/fakeprovider"
@@ -392,6 +393,7 @@ func TestFUSEMountServeDeathIsObserved(t *testing.T) {
 	}
 	_ = mount.ServeErr() // must answer now that the loop is done
 }
+
 func closeIf(f *os.File) {
 	if f != nil {
 		_ = f.Close()

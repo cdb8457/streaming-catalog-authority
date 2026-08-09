@@ -17,6 +17,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -435,9 +436,22 @@ func contextFor(cancel <-chan struct{}) (context.Context, context.CancelFunc) {
 // to answer INIT, so the first `readdir` hung forever — a production hang, not a test artefact. Returning a
 // started mount rather than a raw server makes that mistake unrepresentable: there is no way to obtain the
 // server without the loop, and Mount does not return until the kernel has completed INIT.
+// WHY IT ALSO CARRIES A DEATH. The request loop can stop for two reasons that look identical from inside this
+// process: this handle asked it to, or the kernel tore the connection down from underneath it — an external
+// umount, a closed /dev/fuse. A supervisor that cannot tell those apart either exits 0 over a namespace that
+// has vanished or refuses to shut down when asked. So the handle records which one happened.
 type Mounted struct {
 	server *fuse.Server
+	// served closes when the request loop has exited, for whatever reason. It is what Wait and Done both
+	// block on, and its close is also the happens-before edge that makes serveErr safe to read.
 	served chan struct{}
+	// serveErr names the reason the loop exited. Written once by the serve goroutine BEFORE served closes,
+	// and read only after. The value is DIAGNOSTIC: UnmountRequested, not the presence of an error, is the
+	// discriminator a supervisor is meant to branch on.
+	serveErr error
+	// graceful records that Unmount was asked for on this handle. Atomic because the asking and the loop's
+	// exit are on different goroutines by construction.
+	graceful atomic.Bool
 }
 
 // MountSettings are the few knobs a caller has over how the mount is made.
@@ -493,14 +507,20 @@ func Mount(d *daemon.Daemon, mountpoint string, settings MountSettings) (*Mounte
 	}
 	m := &Mounted{server: server, served: make(chan struct{})}
 	go func() {
+		// THE CLOSE IS DEFERRED SO IT HAPPENS LAST, and that is load-bearing rather than tidy: serveErr is
+		// written below, and the deferred close is the edge that publishes it to whoever reads ServeErr.
 		defer close(m.served)
 		// THE REQUEST LOOP. Without this the mount exists and answers nothing.
 		server.Serve()
+		m.recordServeExit()
 	}()
 	// Do not hand back a mount before the kernel has finished INIT: a caller that stats it immediately would
 	// otherwise race the handshake.
 	if err := server.WaitMount(); err != nil {
-		_ = server.Unmount()
+		// Through m rather than the server, so this deliberate teardown is recorded as one. Nothing reads the
+		// handle on this path — it is never returned — but an unmount this code asked for is not a death, and
+		// a path that says otherwise is a trap for the next person to reuse it.
+		_ = m.Unmount()
 		<-m.served
 		return nil, err
 	}
@@ -510,5 +530,42 @@ func Mount(d *daemon.Daemon, mountpoint string, settings MountSettings) (*Mounte
 // Wait blocks until the filesystem is unmounted and the request loop has finished.
 func (m *Mounted) Wait() { <-m.served }
 
+// recordServeExit classifies the request loop's exit. It runs on the serve goroutine, once, after Serve has
+// returned and BEFORE served closes — that deferred close is what publishes serveErr to any reader.
+//
+// IT IS A NAMED METHOD RATHER THAN THREE LINES INSIDE THE GOROUTINE so that a test can drive the shipped
+// decision instead of an imitation of it. go-fuse's Serve() returns nothing at all, so the kernel's reason is
+// not available from the API; the one thing this handle knows is whether an unmount was ASKED FOR. If it was
+// not, the loop stopped because the connection went away underneath it, and that is a serve-loop death.
+func (m *Mounted) recordServeExit() {
+	if m.graceful.Load() {
+		return
+	}
+	m.serveErr = errors.New("the FUSE serve loop exited without a requested unmount " +
+		"(external unmount, or the kernel closed the connection)")
+}
+
+// Done is closed once the request loop has exited, for either reason. A supervisor selects on it so that a
+// serve-loop death is observed WHILE THE PROCESS IS STILL ALIVE, rather than parked on Wait forever; the two
+// accessors below say which reason it was.
+func (m *Mounted) Done() <-chan struct{} { return m.served }
+
+// UnmountRequested reports whether Unmount was called on this handle. THIS IS THE DISCRIMINATOR: a request
+// loop that exited without one died, and one that exited with one shut down.
+func (m *Mounted) UnmountRequested() bool { return m.graceful.Load() }
+
+// ServeErr names the reason the request loop exited, and blocks until it has. It is DIAGNOSTIC — text for a
+// log line — because go-fuse gives the reason to nobody. Branch on UnmountRequested, never on this being nil.
+func (m *Mounted) ServeErr() error {
+	<-m.served
+	return m.serveErr
+}
+
 // Unmount detaches the mount. The request loop ends on its own once the kernel closes the channel.
-func (m *Mounted) Unmount() error { return m.server.Unmount() }
+func (m *Mounted) Unmount() error {
+	// THE FLAG IS SET BEFORE THE UNMOUNT, AND THAT ORDER IS THE WHOLE CONTRACT. The loop is about to exit; if
+	// the flag were stored after the syscall, the loop could observe it unset and report a real shutdown as a
+	// death — which, with --serve-exit-code, is a clean SIGTERM turned into a failing exit status.
+	m.graceful.Store(true)
+	return m.server.Unmount()
+}

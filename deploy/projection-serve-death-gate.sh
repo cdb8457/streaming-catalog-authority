@@ -264,14 +264,34 @@ docker logs "$MOUNT_CONTAINER" 2>&1 | grep -q "serve loop died" \
   || die "the daemon did not report the serve-loop death"
 echo "  the daemon's log says 'serve loop died'"
 
-# A DEAD DAEMON'S STATUS SURFACE IS UNREACHABLE. The container is gone, so a probe sharing its network
-# namespace cannot even start; this is the negative half of the same assertion the gate made positive before
-# the death.
-if docker run --rm --network "container:$MOUNT_CONTAINER" "$VERIFY_IMAGE" \
-    wget -q -T 3 -O - "http://${STATUS_ADDR}/readyz" >/dev/null 2>&1; then
-  die "the daemon's status surface answered after a serve-loop death and exit"
-fi
-echo "  the daemon's status surface is unreachable after the exit"
+# A DEAD DAEMON'S STATUS SURFACE DOES NOT ANSWER, AND THE CHECK HAS TO EARN THAT.
+#
+# THE OBVIOUS VERSION OF THIS CHECK CANNOT FAIL FOR THE REASON IT STATES. It ran the probe and treated any
+# non-zero status as "unreachable" — but `docker run --network container:<exited>` cannot START at all, and
+# `docker run` reports its own refusal as 125/126/127 before the probe image executes a single instruction.
+# So the assertion passed on docker's error, not on the surface's silence, and would have kept passing with
+# the daemon still serving happily on another container. This is the same defect the Phase 1 review found four
+# times over in the TorBox gate's read-only refusals.
+#
+# SO THE PROBE'S OWN VERDICT IS WHAT IS READ. The probe prints exactly one token and the gate demands it: a
+# `wget` that fails prints `probe:unreachable`, and one that succeeds prints `probe:answered`. If the
+# container could not start, neither token appears and the run status is docker's — all three are separated
+# below and only one of them passes.
+PROBE_OUT="$(docker run --rm --network "container:$MOUNT_CONTAINER" "$VERIFY_IMAGE" \
+  sh -c "wget -q -T 3 -O - 'http://${STATUS_ADDR}/readyz' >/dev/null 2>&1 && echo probe:answered || echo probe:unreachable" \
+  2>/dev/null || true)"
+case "$PROBE_OUT" in
+  *probe:answered*)
+    die "the daemon's status surface answered after a serve-loop death and exit" ;;
+  *probe:unreachable*)
+    echo "  the daemon's status surface refused the connection after the exit (the probe ran and said so)" ;;
+  *)
+    # Docker refused to start the probe, which is the EXPECTED shape here — you cannot join the network
+    # namespace of a container that has exited — and it is reported as what it is rather than counted as
+    # evidence. The assertion the gate keeps is the one above it: the daemon exited 3.
+    echo "  the probe could not be started against the exited container, which is itself the namespace being gone;" \
+         "no status-surface claim is made from it" ;;
+esac
 
 echo
 echo "PHASE A COMPLETE: the serve loop died, the death was reported, and the daemon exited 3 rather than"
@@ -303,21 +323,40 @@ echo "  entry identity before the death: inode:size:mtime=$STAT_BEFORE"
 # THE READYZ POLLER. It shares the daemon's network namespace and samples /readyz every half second through
 # the whole death and recovery. "The daemon came back" is only evidence of a recovery if something actually
 # saw it leave; the poller is that something.
+#
+# IT RECORDS THE SEQUENCE, NOT TWO COUNTERS, AND THAT IS THE WHOLE DIFFERENCE. The counting version asserted
+# `ready_ok >= 2` and called it "ready before and after the death" — but two ready samples taken half a second
+# apart BEFORE the umount satisfy it just as well, so the assertion's own sentence was not what it checked. A
+# daemon that went ready, died and never came back would have passed it, which is precisely the regression
+# phase B exists for. What has to be true is an ORDER: ready, then not-ready, then ready again. So the probe
+# collapses its samples into a transition string — R and D, one letter per change of state — and the gate
+# matches the order rather than a population.
 cat > "$WORK/readyz-probe.sh" <<'PROBE'
 #!/bin/sh
 i=0
 ok=0
 dead=0
-while [ "$i" -lt 60 ]; do
+seq=""
+last=""
+while [ "$i" -lt 120 ]; do
   if wget -q -T 5 -O - "http://127.0.0.1:9000/readyz" 2>/dev/null | grep -q '"ready":true'; then
+    state=R
     ok=$((ok + 1))
   else
+    state=D
     dead=$((dead + 1))
   fi
+  if [ "$state" != "$last" ]; then
+    seq="${seq}${state}"
+    last="$state"
+  fi
+  # The recovery is complete the moment the sequence has been seen whole; stopping here keeps the probe from
+  # outliving the phase it measures.
+  case "$seq" in RDR*) break ;; esac
   i=$((i + 1))
   sleep 0.5
 done
-echo "ready_ok=$ok ready_dead=$dead"
+echo "ready_seq=$seq ready_ok=$ok ready_dead=$dead"
 PROBE
 docker run -d --name "$PROBE_CONTAINER" --network "container:$MOUNT_CONTAINER" \
   -v "$WORK:/work:ro" "$VERIFY_IMAGE" sh /work/readyz-probe.sh >/dev/null
@@ -348,16 +387,21 @@ docker logs "$MOUNT_CONTAINER" 2>&1 | grep -q "remounted; serving generation" \
   || die "the daemon did not report a successful remount"
 echo "  the daemon's log reports both the death and the successful remount"
 
-# THE DEATH WAS OBSERVED. The poller must have seen at least one not-ready sample while the process lived,
-# and at least two ready samples (before the death and after the recovery) — otherwise the remount could be
-# a daemon that never noticed the umount at all.
+# THE DEATH WAS OBSERVED, IN ORDER. The poller's transition string must OPEN with `RDR`: ready before the
+# umount, not-ready while the serve loop was dead, and ready again after the remount. Anything else is a
+# different story — `R` alone is a daemon that never noticed the umount, `RD` is one that died and stayed
+# dead, and `DR` is one that was never ready to begin with — and none of them is the recovery phase B claims.
 docker wait "$PROBE_CONTAINER" >/dev/null 2>&1 || true
 PROBE_LOG="$(docker logs "$PROBE_CONTAINER" 2>&1 | tail -1)"
+PROBE_SEQ="$(printf '%s' "$PROBE_LOG" | sed -n 's/.*ready_seq=\([RD]*\).*/\1/p')"
 PROBE_OK="$(printf '%s' "$PROBE_LOG" | sed -n 's/.*ready_ok=\([0-9][0-9]*\).*/\1/p')"
 PROBE_DEAD="$(printf '%s' "$PROBE_LOG" | sed -n 's/.*ready_dead=\([0-9][0-9]*\).*/\1/p')"
-test -n "$PROBE_OK"   && test "$PROBE_OK"   -ge 2 || die "the poller never saw ready before and after the death"
-test -n "$PROBE_DEAD" && test "$PROBE_DEAD" -ge 1 || die "the poller never observed the not-ready window"
-echo "  the poller saw $PROBE_OK ready sample(s) and $PROBE_DEAD not-ready sample(s)"
+test -n "$PROBE_SEQ" || die "the poller produced no transition sequence: $PROBE_LOG"
+case "$PROBE_SEQ" in
+  RDR*) ;;
+  *) die "the poller saw '$PROBE_SEQ', not ready -> not-ready -> ready; the death and the recovery were not both observed" ;;
+esac
+echo "  the poller observed ready -> not-ready -> ready ($PROBE_SEQ: $PROBE_OK ready, $PROBE_DEAD not-ready samples)"
 
 echo
 echo "PHASE B COMPLETE: the serve loop died, was reported, and was remounted in place over the same"

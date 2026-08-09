@@ -154,9 +154,15 @@ are not reopened. This is the roadmap for the projection appliance, and it is de
 |---|---|
 | **Projection Phase 0** | The executable product contract. `docs/ADR_002_PROJECTION_APPLIANCE.md`, `docs/PROJECTION_PHASE_0_PRODUCT_CONTRACT.md`, `docs/schemas/projection-manifest-v1.schema.json`, `src/core/projection/*`, `test/projection-manifest-v1.ts`. **Done.** |
 | **Projection Phase 1** | The **vertical slice**: manifest producer → published artifact → `projectiond` → FUSE mount → Plex, Jellyfin and Emby scanning and playing it. Local passthrough and HTTP Range adapters, in the same tranche. Gates in `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md`. **Done.** The daemon, the manifest producer (`docs/PROJECTION_PHASE_1_MANIFEST_PUBLISHER.md`), the publisher-to-mount gate, **all three media-server data-plane gates**, the three-server concurrency gate, the rclone comparison control, the access-lease gate and G27's three-server path-lifecycle gate have each **run three consecutive fresh times on a real Unraid host** — seven gate groups, seven 3/3 sequences. **This row said Open for one remaining reason — that no real provider endpoint had ever been contacted — and that reason is spent:** the TorBox real-provider gate has since run **3/3 consecutive fresh times on that host against a real account and a real CDN** (§6.15). **HISTORICALLY this row read `Open`.** Whether any given gate has ever passed is §6.1 of the acceptance plan and each gate's own run record, because **a gate existing is not a gate passing** — and closing this row does not retroactively make any row in that table say more than it says. |
+| **Projection Phase 2** | **Mount hardening.** Three failure modes of the daemon's own mount lifecycle, each with a gate: a serve loop killed under a **living** process, the **corpse** a dead process left at the mountpoint, and a provider outage that outlasts the circuit breaker's budget. Gate definitions and run records in `docs/PROJECTION_PHASE_2_MOUNT_HARDENING.md`. **Open — 0 of the 9 fresh runs have happened** (three gates, each closed only by three consecutive fresh runs via its `:three` wrapper). What exists is the executable form: the gates are written, wired to evidence commands, the daemon exposes the serve-death discrimination they measure, and `test/projection-mount-hardening.ts` pins all of it offline. **None of the three has ever been executed on a host with `/dev/fuse`**, so every run record in that document reads `NOT RUN` and this row reads Open until they stop. A gate existing is not a gate passing — the sentence the row above spent four dispatches earning. |
 
-There is no Phase 2 in this document. Writing one now would be a guess, and a guess in a roadmap is how a
-product acquires thirty phases of scaffolding around a thing that has never run.
+**HISTORICALLY — SUPERSEDED.** *There is no Phase 2 in this document. Writing one now would be a guess, and
+a guess in a roadmap is how a product acquires thirty phases of scaffolding around a thing that has never
+run.* That sentence was correct for exactly as long as the slice had never run end to end, and it is
+retired by the condition it named rather than by an argument: the row above closed on a real Unraid host
+against a real provider. The row it is replaced by is deliberately the narrowest thing that could follow —
+**the daemon's own mount lifecycle**, no new frontend surface, no new evidence ceremony — and it opens
+holding **nothing**, which is the only honest state for a tranche whose gates have not run.
 
 ## The anti-detour rule
 
