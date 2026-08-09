@@ -567,8 +567,11 @@ test('THE SHIPPED NAMESPACE PROBE IS RUN, against a stub docker that answers, an
   //    as a lingering mount, and must do so without depending on a container that could not bind it.
   const lingering = runHelper('exit 125', '"the mount client" 2', '/');
   assertEq(lingering.status, 1, `a lingering mount must fail closed: ${lingering.stdout}`);
-  assert(/stale/.test(lingering.stdout) && /mount\(s\)/.test(lingering.stdout),
-    `a lingering mount was not refused by name: ${lingering.stdout}`);
+  assert(/LIVE mount\(s\)/.test(lingering.stdout) && /did not go away at all/.test(lingering.stdout),
+    `a lingering LIVE mount was not refused by name: ${lingering.stdout}`);
+  // ...and the offending mountinfo line is printed, so the failure names what is still mounted.
+  assert(/\/proc|ntfs|ext4|fuse|overlay|\s\/\s/.test(lingering.stdout),
+    `the failure does not show the mountinfo line it is refusing: ${lingering.stdout}`);
 });
 
 // -----------------------------------------------------------------------------------------------------------
