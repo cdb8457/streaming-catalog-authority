@@ -578,22 +578,39 @@ test('THE SHIPPED NAMESPACE PROBE IS RUN, against a stub docker that answers, an
 // THE DOCUMENT MAY NOT SAY MORE THAN A RUN HAS SHOWN.
 // -----------------------------------------------------------------------------------------------------------
 
-test('WHILE THE BAKE-OFF RUN RECORD SAYS NOT RUN, NOTHING MAY CLAIM A FIGURE', () => {
+test('THE BAKE-OFF RECORD AND ITS MARKER AGREE, and no run of it may declare a winner', () => {
+  // THIS USED TO REQUIRE A `NOT RUN` MARKER, which was right until the harness completed and then failed for
+  // the good news — the same trap the mount-hardening record fell into. The invariant that survives a run is
+  // that the marker and the rows say the same thing.
   const doc = read(BAKEOFF);
   const flat = doc.replace(/\s+/g, ' ');
-  assert(/\*\*NOT RUN\.\*\*/.test(doc), 'the bake-off document carries no NOT RUN marker');
-
-  // Placeholder rows only: a row with a host or a number in it is a claim, and a claim while the marker
-  // above it still says NOT RUN is the contradiction this repository exists to prevent.
-  const rows = (doc.match(/^\| [A-C] \|.*$/gm) ?? []).map((row) => row.trim());
+  const marker = /\*\*NOT RUN\.\*\*/.test(doc);
+  const rows = (doc.match(/^\| \*{0,2}[A-C]\*{0,2} \|.*$/gm) ?? []).map((row) => row.trim());
   assert(rows.length >= 3, 'the bake-off document has no per-arm run-record rows');
-  for (const row of rows) {
-    assert(/^\| [A-C] \|( — \|)+$/.test(row), `a bake-off run record is filled while the document says NOT RUN: ${row}`);
+
+  if (marker) {
+    for (const row of rows) {
+      assert(/^\| [A-C] \|( — \|)+$/.test(row),
+        `a bake-off run record is filled while the document says NOT RUN: ${row}`);
+    }
+  } else {
+    // A run happened, so the record must carry the identity that makes it checkable.
+    for (const needed of [/[Cc]ommit \*\*`[0-9a-f]{40}`\*\*/, /tree sha256[\s\S]{0,20}[0-9a-f]{64}/,
+      /image \*\*`sha256:[0-9a-f]{64}`\*\*/, /Unraid/]) {
+      assert(needed.test(doc),
+        `the bake-off run record omits ${String(needed)}, so the figures cannot be tied to what produced them`);
+    }
+    assert(/exit 0/i.test(doc), 'the bake-off run record does not state the run\'s exit status');
   }
+
+  // THESE HOLD IN BOTH STATES. A harness with no declared threshold may never crown anything, run or not.
   for (const stale of [/the naive path (is|was) (slower|worse|beaten)/i, /projectiond (wins|won|beats)/i,
-    /\bmeasured\b[^.|]{0,40}\b(MiB|ms|seconds)\b/i]) {
-    assert(!stale.test(flat), `the bake-off document states a figure no run produced: ${String(stale)}`);
+    /rclone (is|was) (fixed|beaten|worse)/i, /winner is/i]) {
+    assert(!stale.test(flat), `the bake-off document declares a winner it has no threshold for: ${String(stale)}`);
   }
+  assert(/no winner is declared|does not declare a winner/i.test(flat),
+    'the document no longer says outright that it declares no winner');
+
   // The harness names three arms and the document must name the same three, including WHY there is no mount2.
   for (const arm of ['projectiond', '--vfs-cache-mode off', '--vfs-cache-mode full']) {
     assert(doc.includes(arm), `the bake-off document does not name the ${arm} arm`);

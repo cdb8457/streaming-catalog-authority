@@ -1,8 +1,8 @@
 # Projection Phase 2b/2c — the multi-frontend comparison
 
-**Status: the harness has been executed on the real Unraid host and NO ARM HAS COMPLETED.** Every run record on this page is empty and says so; §4.1 records exactly how far it got and the one thing blocking it. Nothing
-below is a measurement; the figures are still a description of what it would measure, written so that a completing run
-has something to fill in and so that nobody can mistake the description for the result.
+**Status: RUN on the real Unraid host, all three arms, exit 0.** §4 carries the figures and the exact
+commit, tree and image they were taken on. They are **measurements, not verdicts**: this harness has no pass
+threshold, declares no winner, and closes no gate.
 
 **Files:** `deploy/projection-multi-frontend-comparison-gate.sh`, `-optional.sh`;
 `docker-compose.projection-multi-frontend.yml` (committed, and named by the harness rather than generated);
@@ -120,56 +120,60 @@ behind it.
 
 ## 4. Run record
 
-**NOT RUN.** No arm has completed, so no arm has a row. A row is filled only by a run that completed, and a
-partial run is not a partial result — R1, R2, R3 and the resource accounting all come after the point where
-this stops, so there is nothing to put in these columns.
+**RUN, all three arms, exit 0.** 2026-08-09T18:24:04−05:00 → 18:33:51−05:00 (587 s wall) on the real Unraid
+host `tower`, via `npm run go:multi-frontend-comparison` with `PROJECTIOND_IMAGE=projectiond:phase2-frozen`.
+Commit **`d12b377be69f7e5a0014e7699b326e56209b59ef`**, tree sha256
+`fc3ccaf042c12c1c7dc39e1000ea578a0b96b8ecd7ca1fc19b2d508cbfc1d135` (1603 tracked files, byte-identity verified
+in both directions); image **`sha256:9b701935af43bf71c126c9e59855bce7da33752e18dc5d1929c54320ab2c2798`**.
+Host: Unraid 7.2.3, kernel 6.12.54-Unraid, Docker 27.5.1, Compose 2.40.3, Node v22.18.0.
+Evidence: `phase2-evidence/multi-frontend-run1.log` on the host.
 
-| Arm | Host | R1 | R2 | R3 | CPU / RAM | Evidence |
-|---|---|---|---|---|---|---|
-| A | — | — | — | — | — | — |
-| B | — | — | — | — | — | — |
-| C | — | — | — | — | — | — |
-
-### 4.1 How far it got, and the one thing blocking it
-
-**It was executed on the real Unraid host `tower` six times**, each attempt going further than the last as the
-defects in §7 were found and fixed. The furthest run reached **step 14 of arm A** — through the corpus,
-Postgres, the credential checks, generation 1, the daemon mount, **all three real media servers started and
-their libraries created**, the ~50-entry corpus published, and **three real simultaneous library scans over
-the same projected mount**. Two of the three concurrency assertions passed on their budgets:
-
-| Assertion | measured | budget | |
+| | **A** projectiond-FUSE | **B** rclone cache off | **C** rclone cache full |
 |---|---|---|---|
-| `TS1-servers-observed-scanning` | 3 | 3 | **pass** |
-| `TS1-max-servers-in-flight-at-once` | 3 | 3 | **pass** |
-| `TS1-continuous-simultaneous-samples` | **1** | 3 | **fail** |
+| R1 stall bound | false | false | false |
+| R1 stall (ms) | 108,693 | 5,426 | 19,085 |
+| R2 converged on read | 1 | 1 | 1 |
+| R3 ready (ms) | **757** | 1,251 | 1,195 |
+| access resolutions | 2 | 0 | 0 |
+| CPU avg / peak % | 9.65 / 229.79 | 5.82 / 25.84 | 5.99 / 27.96 |
+| memory avg / peak MB | 160.8 / 299.3 | 70.2 / 110.7 | 60.8 / 85.2 |
+| continuous 3-way overlap (measured) | 6 samples / 2.5 s | 8 samples / 3.5 s | 8 samples / 3.5 s |
+| arm gates pass/fail | 64/0 | 70/0 | 69/0 |
 
-**THE BLOCKER IS A SCOPE DECISION, NOT A BUG I CAN CORRECT.** The third assertion wants the longest *unbroken*
-run of samples with all three servers scanning to be at least 3 — roughly 1.5 s of continuous three-way
-overlap at the sampler's tick. The harness got one sample, and the run says why: *"the barrier was released
-after **0s** of a provider read actually being blocked"*. The barrier object exists to make the scanners queue
-behind one slow provider read so the overlap is long enough to sample; on arm A nothing ever blocked on it,
-the three scans went through at full speed, and they finished too close together to overlap for 1.5 s.
+Cleanliness: container/network/volume/`fuse.projectiond` counts identical before and after (26/17/45/0), the
+gate root empty afterwards, and every arm's leak searches proved they had a subject.
 
-That is **arguably the comparison working**: `projectiond` serves scan-window reads from its probe cache, so a
-scan that would queue behind the provider on the rclone arms does not queue at all here. The difference in
-overlap is a *figure this harness exists to report*. But `TS1-continuous-simultaneous-samples` is a **Phase 1
-acceptance threshold**, inherited through the shared `concurrent-scan` driver, and inside a harness it is
-applied as a pass/fail to a quantity that is supposed to be a measurement.
+**READ THESE AS FIGURES, NOT AS A VERDICT.** No threshold was declared before the run, so nothing here is a
+pass or a failure and **no winner is declared**. In particular: **R1 bound on no arm** — every frontend served
+the held object from something it already had, which is the round recording that a 4,500 ms provider stall did
+not reach a read on any of the three. The R1 millisecond figures are therefore *how long the full read took*,
+not stall durations, and arm A's 108 s is a 94 MiB read through a FUSE daemon rather than a penalty. Arm A's
+CPU peak is one sampled instant on a 128-core host. Nothing here reopens ADR-002, and rclone remains the
+comparison control.
 
-Closing it means one of:
+**AND MEASUREMENT MODE DID NOT CARRY THIS RUN — say so plainly.** Arm A measured **6 samples / 2.5 s**, which
+clears the strict floor of 3 samples / 2 s on its own; arms B and C cleared it too. The 1-sample observation
+that motivated §3.1 came from a run in which arm A's scans were degenerate *because the daemon could not read
+a single remote byte* — the credential and seed defects in §7. With those fixed, arm A's scans do real work
+and overlap for longer. Measurement mode remains the right shape for a figure the harness exists to compare,
+and it is what let the run get far enough to discover that; it is **not** what made this run pass.
 
-1. **Give the harness a measurement-mode concurrency observation** — same instrument, figures reported and
-   nothing failed — which changes the semantics of a driver Phase 1 gates depend on; or
-2. **Make arm A's barrier actually block**, by holding an object the daemon cannot serve from its probe cache
-   during the scan window, which changes what the scan measures and therefore its comparability with G18/G22;
-   or
-3. **Retune the budget**, which is moving a Phase 1 threshold to make a Phase 2 harness green — the one option
-   that should not be taken quietly, and is recorded here so it is not.
+### 4.1 What it took to get here
 
-**None of these was chosen.** Each trades away something belonging to Phase 1, and the harness closes no gate,
-so the tranche does not depend on the answer. Evidence for the six attempts is in
-`phase2-evidence/multi-frontend-run1.log` and `/tmp/mf{1..6}.log` on the host.
+**The harness had never completed a single arm.** Getting it to run all three found **nineteen defects**, and
+only the first nine were visible by reading — §7 lists them all. The rest each hid behind the one before it,
+so every fix bought exactly one more step and no more.
+
+The concurrency threshold was the first blocker and the only one that needed a decision rather than a
+correction; §3.1 records what measurement mode does and does not relax. Everything after it was the harness
+disagreeing with itself or with G18: a credential the daemon refused, a seed the daemon could not find, three
+object counts that predated the object R2 added, control calls to port 80, a container name never released,
+and a teardown that could not tell a corpse from a clean mountpoint.
+
+**None of them was a product defect.** Two are findings ABOUT the products and are recorded as such:
+`projectiond` stacks over a stale mount at startup while `rclone` cannot mount over one at all (its
+`fusermount` fails outright), and a cleanly stopped `projectiond` leaves a dead mount entry on the host that
+answers `ENOTCONN` until the cleanup contract removes it.
 
 ## 5. What a run of this will and will not establish
 
@@ -200,11 +204,11 @@ it can run beside `go:rclone-comparison-gate` rather than colliding with it.
 
 ---
 
-## 7. Twelve defects, nine found by reading and three by running it
+## 7. Nineteen defects: nine found by reading, ten by running it
 
 **Defects 1–9 were found by reading** the harness
 against the claims it makes, and each is pinned by a test in `test/projection-multi-frontend.ts` that fails
-against the harness as it arrived and passes after — **14 of that suite's 16 tests fail against the file as
+against the harness as it arrived and passes after — **15 of that suite's 17 tests fail against the file as
 it was inherited**, and the two that do not are about documents rather than about the harness.
 
 **THREE OF THE TWELVE MEAN IT COULD NEVER HAVE RUN AT ALL**, on any host, for reasons that have nothing to do
@@ -236,6 +240,14 @@ Unraid, and each was invisible until the one before it was fixed.
 | 10 | **The credential assertion probed the one path that enforces no credential.** Arm A checked `/direct/<ref>` with a deliberately wrong bearer token and expected a refusal. `handleDirect` calls `serveRange` with **no auth check at all** — in direct mode the URL is the capability, and only `handleResolve` compares the Authorization header. The endpoint answered 206 exactly as designed and the harness died with "the endpoint served a ranged request with the wrong credential", an accusation aimed at a path that never made the promise. The R2 rotation checks had the same defect | a `resolveprobe.sh` against `/resolve` — the path the credential guards **and** the path the daemon calls in resolver mode, so it is what R2 actually rotates. It prints `resolve:<status>`, the gate demands 200 or 401, and a run that produced neither is refused. The status is extracted **by pattern**, because busybox prints its own `wget: server returned error: HTTP/1.1 401 …` line and taking `$2` of any HTTP-matching line yielded `resolve:server`. Arms B/C keep probing `/dav`, which does enforce on every request |
 | 11 | **The daemon was started before generation 1 was published.** `start_daemon` ran thirty lines above the publish step, so the daemon came up against an empty manifest directory and exited 1 with `no generation could be admitted, so there is nothing to serve: pointer-unreadable`. The harness then waited out its full 120-second `await_path` budget for a namespace no live process was serving and reported **"the mount never became visible"** — true, and silent about why | publish first, then start the daemon, which is the order every gate that works uses |
 | 12 | **It never migrated the database.** Compose brings up an empty Postgres owned by `postgres`; the `app` role the control plane connects as, and every table it writes, are created by `src/ops/migrate-cli.ts`. Without it the first `register` died with `password authentication failed for user "app"` — a message that points at credentials when the role had simply never been created | the migration runs immediately after Postgres reports healthy, as it does in every other gate here |
+
+| 13 | **The daemon could not read a single remote byte**, because the token was `chmod 644`. `SecretFile.loadLocked` refuses a credential with `perm&0o077 != 0` — correctly: a secret every user on the host can read is not one. The refusal happens BEFORE the resolver is contacted, so it looked like nothing at all | 0600. 0644 came from G22, where only rclone reads the token and no such rule applies |
+| 14 | **The seed was unreadable too.** Generated into `$WORK/media/seed/` but registered `local:media:$SEED_FILE`, root-relative, so the daemon looked for a file that does not exist. Surfaced two layers away as `ffprobe … Input/output error`, `Size: null`, "1 at the wrong size" | the source names the subdirectory; arms B/C serve it from there, so the source is what had to change |
+| 15 | **Only Plex was waited out** after library creation. G18 waits for Plex because Plex scans unprompted — a statement about who starts, not who has finished. Jellyfin and Emby also index the one-entry generation, and a corpus landing mid-flight leaves the seed catalogued with a null size and never revisited | all three settle on the seed before the corpus is published |
+| 16 | **Three accounting errors from adding R2 to a G18-derived gate**: `REGISTERED_OBJECTS` omitted the rotated object (endpoint counted 45, gate declared 44); `--non-corpus-objects` was 1 when there are two; and the registration ORDER put the rotated object between the canary and the barrier, so `window` — which treats the first N ordinals as non-corpus — scored the BARRIER as non-corpus and reported the 11 MiB the scan legitimately read from it as "bytes outside the corpus" | counted, and the canary and rotated object now both precede the barrier. The harness's own comment already said this order was load-bearing |
+| 17 | **Every control call went to port 80.** `ENDPOINT_ALIAS` was the bare container name, so `http://fakerange/control/hold/…` reached nothing and R1's first action failed against a healthy endpoint that had never been asked | the alias carries its port |
+| 18 | **The teardown check could not witness the state it existed to detect.** It asked a sibling container, but a dead FUSE mount cannot be bound by `docker run -v`, so on arm B the probe was refused all 60 times. Worse, `test -d` fails identically for "no mount" and "dead mount", so the check had been passing on a corpse | the host's `/proc/self/mountinfo` is the witness, and `statfs` tells live from dead: a LIVE mount fails, a corpse is recorded and left to the cleanup contract that removes it |
+| 19 | **Arm C could not start, then could not remount.** Arm B stopped the rclone client without removing it, so arm C hit `Conflict. The container name … is already in use`; and rclone, unlike `projectiond`, cannot mount over the corpse a killed client leaves — `fusermount: exit status 1` | the client is removed on teardown, and R3 clears the corpse through the shared lazy unmount first |
 
 **AND ONE THAT WAS NOT A DEFECT IN THE HARNESS BUT IN WHAT COULD BE CHECKED ABOUT IT.** Both
 operational-round writers were multi-line `node -e '…'` arguments. `parseShellSource` — the reader
