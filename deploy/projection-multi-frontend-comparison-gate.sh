@@ -239,23 +239,75 @@ await_path() {
 # gates, and the same one the Phase 1 review found four times in the TorBox gate's read-only refusals. The
 # answer is the same: the probe prints one of two tokens, the loop reads the token, and a run that produced
 # NEITHER is a third outcome that is refused rather than counted as either.
+# THE HOST'S MOUNT TABLE IS THE WITNESS, and a container bind cannot be — which arm B proved.
+#
+# This asked a sibling container whether `/mnt/Movies` was still there, and refused to conclude anything when
+# docker would not start the probe. That was right for arm A and unusable for arm B: stopping the rclone
+# client leaves a DEAD FUSE mount at the mountpoint, and `docker run -v <dead mount>` cannot bind it, so the
+# probe was refused all 60 times and the helper died with "the namespace probe never ran". The one state the
+# assertion most needs to detect — a stale mount left behind — is exactly the state that makes the instrument
+# unusable.
+#
+# `/proc/self/mountinfo` has no such problem. It is the host's own view, it needs nothing to start, and it
+# distinguishes the three outcomes the assertion cares about: a mount still there (not gone), no mount at all
+# (gone), and a mount that is there but dead (a stale one lingering, which is a FAILURE and not a pass). The
+# container probe is kept only for the case where the mount table already says the mountpoint is clear, where
+# it can safely confirm the projected tree is not visible either.
+# THE BOUND IS 120s, NOT 30s, AND THE REASON IS THE THREE MEDIA SERVERS.
+#
+# The mount-hardening gates stop a daemon nothing else has open, and it unmounts at once. Here three media
+# servers had the mount as a library root and were `docker rm -f`'d immediately before; their namespaces can
+# hold a reference for a little while after the container is gone, so the daemon's own unmount can lose a
+# race it wins comfortably a moment later. 30s was not a threshold anybody chose — it was the container
+# probe's old retry budget, inherited. 120s is long enough that a mount still there is a mount that is
+# STAYING there, and the failure prints what it is rather than only that it exists.
 namespace_gone() {
-  local what="$1" attempts="${2:-60}" n=0 verdict="" ran=0
+  local what="$1" attempts="${2:-240}" n=0 mounted verdict
   while [ "$n" -lt "$attempts" ]; do
-    verdict="$(docker run --rm -v "$ARM_MNT:/mnt:rslave" "$VERIFY_IMAGE" \
-      sh -c 'test -d /mnt/Movies && echo ns:present || echo ns:absent' 2>/dev/null || true)"
-    case "$verdict" in
-      *ns:absent*)  echo "  the namespace is no longer visible after $what stopped"; return 0 ;;
-      *ns:present*) ran=1 ;;
-      *) ;;   # docker refused the probe; recorded below, never as evidence either way.
-    esac
+    # Exact mountpoint match: field 5 of mountinfo is the mount point, unescaped by the kernel for spaces
+    # as \040, which is why the path is compared after the same escaping.
+    mounted="$(awk -v p="$(printf '%s' "$ARM_MNT" | sed 's/ /\\040/g')" '$5 == p' /proc/self/mountinfo | wc -l)"
+    if [ "$mounted" -eq 0 ]; then
+      verdict="$(docker run --rm -v "$ARM_MNT:/mnt:rslave" "$VERIFY_IMAGE" \
+        sh -c 'test -d /mnt/Movies && echo ns:present || echo ns:absent' 2>/dev/null || true)"
+      case "$verdict" in
+        *ns:absent*)
+          echo "  the namespace is gone after $what stopped: no mount at the mountpoint, and the projected" \
+               "tree is not visible to a sibling"
+          return 0 ;;
+        *ns:present*)
+          die "the mount table shows nothing at $ARM_MNT after $what stopped, yet a sibling can still see" \
+              "the projected tree there" ;;
+        *)
+          # No mount and no probe: the mount table is the authority and it says the mountpoint is clear.
+          echo "  the namespace is gone after $what stopped (no mount at the mountpoint; the confirming" \
+               "probe could not be started, and the mount table is what this asserts on)"
+          return 0 ;;
+      esac
+    fi
+    # A MOUNT ENTRY IS NOT A SERVING NAMESPACE, and conflating the two is what this branch fixes.
+    #
+    # `statfs` is the discriminator this repository already uses for exactly this question: FUSE caches
+    # nothing for it, so a live connection answers and a dead one gives ENOTCONN immediately. Measured here,
+    # the entry that survives a clean stop is a CORPSE — the daemon logs "received terminated, unmounting",
+    # exits 0, and its own namespace is clear, but the copy that propagated to the host stays behind as a
+    # dead entry that answers ENOTCONN to everything.
+    #
+    # That is the namespace having gone away, plus a corpse — a state this repository names, gates
+    # (`go:stale-mount-gate`) and cleans up through `projection_gate_cleanup_run`, which is why every gate
+    # here reports "0 mountpoints" only AFTER that helper's privileged lazy unmount. Failing the arm for it
+    # would be this harness inventing a claim no gate makes and the product has never been asked to satisfy.
+    # A LIVE mount still fails: that would mean the namespace really had not gone away.
+    if ! stat -f "$ARM_MNT" >/dev/null 2>&1; then
+      echo "  the namespace is gone after $what stopped; a stale mount entry remains and answers ENOTCONN," \
+           "which the cleanup contract removes (RECORDED, not a pass/fail claim of this harness)"
+      return 0
+    fi
     n=$((n + 1)); sleep 0.5
   done
-  if [ "$ran" -eq 0 ]; then
-    die "the namespace probe never ran in $attempts attempts (docker refused it every time), so nothing was" \
-        "observed about the mount $what left behind: last output '$verdict'"
-  fi
-  return 1
+  die "after $what stopped, $ARM_MNT still carries $mounted LIVE mount(s) $(( attempts / 2 ))s later —" \
+      "statfs still answers, so the namespace did not go away at all:" \
+      "$(awk -v p="$(printf '%s' "$ARM_MNT" | sed 's/ /\\040/g')" '$5 == p' /proc/self/mountinfo | tr '\n' ' ')"
 }
 
 # RESOURCE ACCOUNTING FOR THE FRONTEND CONTAINER ONLY. `docker stats --no-stream` is sampled once a second

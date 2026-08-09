@@ -256,10 +256,20 @@ test('THE NAMESPACE-GONE CHECK READS THE PROBE\'S VERDICT, not docker run\'s exi
   for (const token of ['ns:present', 'ns:absent']) {
     assert(gate.includes(token), `the namespace probe does not emit '${token}', so it cannot say what it saw`);
   }
-  // ...and the third outcome — the probe never ran — is refused rather than folded into either answer.
+  // ...and the WITNESS is the host's mount table, not a container that may be unable to start.
+  //
+  // The container-only version was right for arm A and unusable for arm B: stopping the rclone client leaves
+  // a DEAD FUSE mount, `docker run -v <dead mount>` cannot bind it, and the probe was refused all 60 times.
+  // The one state the assertion most needs to detect — a stale mount lingering — is exactly the state that
+  // disables a container-based instrument. /proc/self/mountinfo needs nothing to start and tells the three
+  // outcomes apart.
   const helper = gate.slice(gate.indexOf('namespace_gone() {'));
-  assert(/never ran in .* attempts/.test(helper),
-    'a probe that docker refused every time is scored as an observation instead of as no observation');
+  assert(/\/proc\/self\/mountinfo/.test(helper),
+    'the namespace check no longer consults the host mount table, so a dead mount disables its only witness');
+  assert(/a stale\s*"\s*\\?\s*\n?\s*"?mount left behind is exactly what this step exists to refuse|stale/.test(helper),
+    'a mount still present after the frontend stopped is not refused by name');
+  assert(/yet a sibling can still see/.test(helper),
+    'the contradiction — no mount in the table but the tree still visible — is not refused');
   // Both arms go through the one helper, so neither can drift back.
   assertEq((gate.match(/^\s*namespace_gone "/gm) ?? []).length, 2,
     'both arms must use the shared namespace_gone helper');
@@ -504,7 +514,7 @@ test('THE SHIPPED NAMESPACE PROBE IS RUN, against a stub docker that answers, an
 
   const dir = mkdtempSync(join(tmpdir(), 'mf-nsgone-'));
 
-  const runHelper = (dockerBody: string, args: string): {
+  const runHelper = (dockerBody: string, args: string, mnt = '/tmp/mf-no-mount-here'): {
     status: number | null;
     stdout: string;
     stderr: string;
@@ -516,7 +526,7 @@ test('THE SHIPPED NAMESPACE PROBE IS RUN, against a stub docker that answers, an
     // `die` here records the refusal and exits non-zero, exactly as the harness's own die does.
     writeFileSync(script, [
       '#!/bin/sh',
-      'ARM_MNT=/tmp/mnt', 'VERIFY_IMAGE=stub', 'die() { echo "GATE FAILED: $*"; exit 1; }',
+      `ARM_MNT=${mnt}`, 'VERIFY_IMAGE=stub', 'die() { echo "GATE FAILED: $*"; exit 1; }',
       helper,
       `namespace_gone ${args} && echo helper:gone || echo helper:still-there`,
     ].join('\n') + '\n');
@@ -529,29 +539,36 @@ test('THE SHIPPED NAMESPACE PROBE IS RUN, against a stub docker that answers, an
     return { status: run.status, stdout: run.stdout, stderr: run.stderr };
   };
 
-  // 1. The probe RAN and saw nothing: the namespace really is gone.
+  // The mount table is the witness, so ARM_MNT points at a directory with no mount. Each case then varies
+  // only what the confirming container probe says.
+  //
+  // 1. No mount, and the probe confirms the tree is not visible: gone.
   const absent = runHelper('echo ns:absent', '"the daemon" 4');
   assertEq(absent.status, 0, `the absent probe failed: ${absent.stderr || absent.stdout}`);
   assert(absent.stdout.includes('helper:gone'),
-    `a probe reporting ns:absent must mean the namespace is gone: ${absent.stdout}`);
+    `no mount plus ns:absent must mean the namespace is gone: ${absent.stdout}`);
 
-  // 2. The probe RAN and saw the mount every time: the namespace is still there, and the helper says so
-  //    rather than timing out silently.
+  // 2. No mount, but the probe still sees the tree. That is a contradiction and must fail closed rather
+  //    than being resolved in either direction.
   const present = runHelper('echo ns:present', '"the daemon" 3');
-  assertEq(present.status, 0, `the present probe driver failed: ${present.stderr || present.stdout}`);
-  assert(present.stdout.includes('helper:still-there'),
-    `a probe reporting ns:present must NOT be read as gone: ${present.stdout}`);
+  assertEq(present.status, 1, `a contradictory observation must fail closed: ${present.stdout}`);
+  assert(/yet a sibling can still see/.test(present.stdout),
+    `the contradiction was not named: ${present.stdout}`);
 
-  // 3. THE ONE THAT MATTERS. Docker refused the probe every time — the 125 an unstartable container gives —
-  //    and the helper must refuse to draw any conclusion, rather than reporting the namespace gone.
+  // 3. No mount, and docker cannot start the confirming probe. The mount table is the authority and it says
+  //    the mountpoint is clear — but the caveat has to be stated, not swallowed.
   const refused = runHelper('exit 125', '"the daemon" 3');
-  assertEq(refused.status, 1, `a refused docker probe must fail closed: ${refused.stderr || refused.stdout}`);
-  assert(refused.stdout.includes('GATE FAILED:'),
-    `a refused docker probe did not report the closed failure: ${refused.stdout}`);
-  assert(!refused.stdout.includes('helper:gone'),
-    `docker's own refusal was scored as the namespace being gone: ${refused.stdout}`);
-  assert(/never ran/.test(refused.stdout),
-    `a probe that never ran must be refused by name, got: ${refused.stdout}`);
+  assertEq(refused.status, 0, `a clear mount table must still conclude: ${refused.stderr || refused.stdout}`);
+  assert(refused.stdout.includes('helper:gone'), `expected gone, got: ${refused.stdout}`);
+  assert(/could not be started/.test(refused.stdout),
+    `the unstartable confirming probe was not disclosed: ${refused.stdout}`);
+
+  // 4. THE ONE ARM B NEEDED. A mountpoint that IS a mount — the shape a stale FUSE mount leaves — must fail
+  //    as a lingering mount, and must do so without depending on a container that could not bind it.
+  const lingering = runHelper('exit 125', '"the mount client" 2', '/');
+  assertEq(lingering.status, 1, `a lingering mount must fail closed: ${lingering.stdout}`);
+  assert(/stale/.test(lingering.stdout) && /mount\(s\)/.test(lingering.stdout),
+    `a lingering mount was not refused by name: ${lingering.stdout}`);
 });
 
 // -----------------------------------------------------------------------------------------------------------
