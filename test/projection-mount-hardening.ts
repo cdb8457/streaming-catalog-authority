@@ -428,6 +428,99 @@ test('NO GATE READS DOCKER RUN\'S OWN REFUSAL AS THE MOUNT\'S OR THE DAEMON\'S A
     'timed_read_fail no longer distinguishes a read that failed from a probe that never ran');
 });
 
+test('THE OUTAGE TRIP READS OUTSIDE THE WARMED CHUNK, and each read reports whether it reached the wire', () => {
+  // The trip offsets were 8 MiB and 12 MiB, both inside the 12 MiB chunk the warm read pulls, so the first
+  // "faulted" read was served from cache and the gate died with "a read at 8388608 bytes unexpectedly
+  // succeeded during the outage" — which reads like a breaker that failed to open, when nothing had failed.
+  const text = read('deploy/projection-sustained-outage-gate.sh');
+  const body = text.split('\n').filter((line) => !line.trimStart().startsWith('#')).join('\n');
+  assert(!/timed_read_fail \$\(\( (8|12|16) \* MIB \)\)/.test(body),
+    'a trip or verify read uses an offset inside the chunk the warm read caches, so it can be served locally');
+  const loop = /for trip_mib in ([0-9 ]+); do/.exec(body);
+  assert(loop !== null, 'the trip is no longer a loop over explicit offsets');
+  for (const mib of (loop[1] as string).trim().split(/\s+/).map(Number)) {
+    assert(mib >= 24, `trip offset ${mib}MiB is close enough to the warmed chunk to be served from cache`);
+  }
+  // Each read must report the requests that reached the endpoint, so a cache hit is distinguishable from a
+  // locally-refused read — and it must do so by PRINTING them, not by setting a global.
+  assert(/printf '%s:%s' "\$ms" "\$\(\( after - before \)\)"/.test(text),
+    'trip_read_fail no longer returns the request delta alongside the timing');
+  assert(!/^TRIP_DELTA=0$/m.test(body),
+    'trip_read_fail is back to handing the delta to its caller through a global — it is invoked inside a '
+    + 'command substitution, so the assignment happens in a subshell and the caller never sees it');
+  assert(/TRIP_DELTA="\$\{TRIP_OUT##\*:\}"/.test(body), 'the caller no longer parses the delta from the output');
+});
+
+test('THE BREAKER IS DECLARED OPEN FROM AN OBSERVED LOCAL REFUSAL, not from a predicted request count', () => {
+  // `RR_TRIP >= BREAKER_THRESHOLD` held the ENDPOINT's ranged-request counter against the BREAKER's failure
+  // budget. Two different counters: readpath stops retrying the moment the breaker refuses locally, so the
+  // endpoint saw 4 where the arithmetic predicted 5, and the gate died with "the 503s did not land". They
+  // had. What an open breaker uniquely does is fail a read without a single request leaving the host.
+  const body = read('deploy/projection-sustained-outage-gate.sh')
+    .split('\n').filter((line) => !line.trimStart().startsWith('#')).join('\n');
+  assert(!/test "\$RR_TRIP" -ge "\$BREAKER_THRESHOLD"/.test(body),
+    'the gate again infers an open breaker by comparing the endpoint request counter to the breaker budget');
+  assert(/BREAKER_OPENED=1/.test(body) && /test "\$BREAKER_OPENED" -eq 1/.test(body),
+    'nothing observes the breaker actually refusing a read locally');
+  // ...and the counters it does compare are read after they have stopped moving.
+  assert(/range_requests_settled\(\)/.test(body),
+    'the request counter is sampled without settling, and it lags the read that caused it — a read that put '
+    + 'three requests on the wire reported a delta of zero');
+  assert(/before="\$\(range_requests_settled\)"/.test(body) && /after="\$\(range_requests_settled\)"/.test(body),
+    'the per-read delta is not measured from settled samples');
+});
+
+test('EVERY FILE A GATE WRITES HAS A DIRECTORY TO WRITE IT INTO', () => {
+  // The sustained-outage gate had `mkdir -p "$WORK/..."` THIRTY-FIVE LINES BELOW its first
+  // `cat > "$WORK/jq.cjs"`, so under `set -e` it ended on its own first write on every host — never reaching
+  // the /dev/fuse check, never starting PostgreSQL, never touching the daemon. Everything it claims about
+  // the circuit breaker was unreachable from line one. This is the same defect the multi-frontend harness
+  // had, which is why it is checked here over all three gates rather than fixed once and hoped about.
+  for (const gate of GATES) {
+    const lines = read(`deploy/projection-${gate}-gate.sh`).split('\n')
+      .map((line) => (line.trimStart().startsWith('#') ? '' : line));
+    const norm = (path: string): string => path.replace('$REL', '$WORK');
+    const made: Array<[number, string]> = [];
+    lines.forEach((line, index) => {
+      if (!line.trimStart().startsWith('mkdir -p')) return;
+      for (const match of line.matchAll(/"([^"]+)"/g)) made.push([index + 1, norm(match[1] as string)]);
+    });
+    lines.forEach((line, index) => {
+      const match = /^cat > "([^"]+)"/.exec(line.trim());
+      if (match === null) return;
+      const target = norm(match[1] as string);
+      if (!target.includes('/')) return;
+      const parent = target.slice(0, target.lastIndexOf('/'));
+      // `mkdir -p a/b` creates a and a/b, so an earlier mkdir naming the parent, an ancestor, or a
+      // descendant of it all satisfy this.
+      assert(made.some(([at, dir]) => at < index + 1
+        && (dir === parent || parent.startsWith(`${dir}/`) || dir.startsWith(`${parent}/`))),
+      `${gate}:${index + 1}: ${match[1]} is written into ${parent}, which no earlier mkdir creates — under `
+        + '`set -e` the gate ends here, before it has run a single assertion');
+    });
+  }
+});
+
+test('NO GATE ASSERTS ONE LIBC\'S SENTENCE FOR AN ERRNO, when it pins an image built on another', () => {
+  // The stale-mount gate asserted glibc's strerror(ENOTCONN), "transport endpoint is not connected", against
+  // an Alpine verify image pinned by digest — and Alpine is musl, which says "Socket not connected". The
+  // assertion could not match on the only image it is ever handed, and on the real host all three runs died
+  // with "the corpse is stale for the wrong reason: ... df: /mnt: Socket not connected" — the right reason,
+  // spelled by the libc the gate itself pinned. A message is not a contract; the errno is.
+  for (const gate of GATES) {
+    const text = read(`deploy/projection-${gate}-gate.sh`);
+    const body = text.split('\n').filter((line) => !line.trimStart().startsWith('#')).join('\n');
+    if (!/not connected/i.test(body)) continue;
+    for (const spelling of ['transport endpoint is not connected', 'socket not connected']) {
+      assert(body.toLowerCase().includes(spelling),
+        `${gate}: matches an ENOTCONN message but not the '${spelling}' spelling, so it depends on which `
+        + 'libc the verify image happens to be built against');
+    }
+    assert(!/grep -qi "transport endpoint is not connected"/.test(body),
+      `${gate}: still greps a single libc's ENOTCONN sentence`);
+  }
+});
+
 test('THE REMOUNT LOOP UNMOUNTS ONLY WHAT IS OURS, so --auto-remount recovers for consumers too', () => {
   // Found by the first real execution of this gate, on the Unraid host. The cleanup unmount ran
   // unconditionally — but a serve-loop death means our FUSE mount is ALREADY gone, so it unmounted whatever

@@ -192,9 +192,25 @@ corpse_is_stale() {
   if docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" df -P /mnt >/dev/null 2>&1; then
     die "the corpse is not stale: a sibling container's statfs still answered"
   fi
+  # ENOTCONN IS AN ERRNO, AND THIS USED TO ASSERT ONE LIBC'S SENTENCE FOR IT.
+  #
+  # The check was `grep -qi "transport endpoint is not connected"`, which is GLIBC's strerror(ENOTCONN). The
+  # verify image is pinned by digest to Alpine, which is MUSL, and musl's is "Socket not connected". So this
+  # assertion could not match on the only image it is ever handed — on the real host all three runs died with
+  # "the corpse is stale for the wrong reason: ... df: /mnt: Socket not connected", which is precisely the
+  # right reason spelled by the libc the gate itself pinned.
+  #
+  # A message is not a contract; the errno is. Shell cannot read errno numerically here — busybox has no
+  # facility for it and the verify image has no compiler — so what is matched is the SET of spellings of that
+  # one errno, and anything outside the set still dies. Adding a libc is adding a spelling, and a wrong
+  # errno (ENOENT, EACCES) matches neither and fails as loudly as before.
   stderr="$(docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" df -P /mnt 2>&1 || true)"
-  printf '%s' "$stderr" | grep -qi "transport endpoint is not connected" \
-    || die "the corpse is stale for the wrong reason: $(printf '%s' "$stderr" | tr '\n' ' ')"
+  case "$(printf '%s' "$stderr" | tr '[:upper:]' '[:lower:]')" in
+    *"transport endpoint is not connected"*) ;;  # glibc
+    *"socket not connected"*)                ;;  # musl — what the pinned Alpine verify image says
+    *) die "the corpse is stale for the wrong reason (no spelling of ENOTCONN in the statfs error):" \
+           "$(printf '%s' "$stderr" | tr '\n' ' ')" ;;
+  esac
   err=""
   local count
   count="$(docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" \

@@ -193,6 +193,14 @@ await_namespace() {
   return 1
 }
 
+# THE RUN DIRECTORY IS MADE BEFORE THE FIRST THING IS WRITTEN INTO IT, and it was not.
+#
+# `mkdir -p "$WORK/..."` sat THIRTY-FIVE LINES BELOW the first `cat > "$WORK/jq.cjs"`, so under `set -e` this
+# gate ended on its own first write, every time, on every host: `.../run-2353691/jq.cjs: No such file or
+# directory`. It never reached the /dev/fuse check, never started PostgreSQL, and never touched the daemon —
+# so the whole of what it claims to prove about the circuit breaker was unreachable from line one.
+mkdir -p "$WORK/manifest" "$WORK/cache" "$WORK/mnt" "$WORK/out" "$WORK/secret"
+
 # EVERY EMBEDDED SCRIPT IS A FILE IN A QUOTED HEREDOC, not an inline `node -e "..."` spanning lines.
 # `test/custody-runtime-closure.ts` parses every shipped script and refuses a line whose quotes do not close
 # on it, because an unreadable line is one a "does this region contain X" gate answers "no" for.
@@ -231,7 +239,7 @@ if (probe === undefined) process.exit(1);
 console.log([probe.offset, probe.length, probe.sha256].join(':'));
 PROBE
 
-mkdir -p "$WORK/manifest" "$WORK/cache" "$WORK/mnt" "$WORK/out" "$WORK/secret"
+# (the mkdir itself now happens above, before the first heredoc writes into $WORK)
 chmod 755 "$GATE_ROOT" "$WORK"
 chmod 777 "$WORK/cache" "$WORK/mnt" "$WORK/out"
 
@@ -399,21 +407,121 @@ step "tripping the breaker — the endpoint answers 503 until it has failed enou
 # reason, and the zero-resolution delta proves the warm read had already minted the lease.
 RR_BEFORE="$(range_requests)"
 RES_BEFORE="$(resolutions)"
-control "fault/${OBJECT_REF}?fault=status-503&times=6"
+control "fault/${OBJECT_REF}?fault=status-503&times=24"
 echo "  status-503 is armed for the subject object"
 
-TRIP1_MS="$(timed_read_fail $(( 8 * MIB )))"
-test "$TRIP1_MS" -lt "$READ_DEADLINE_MS" || die "the first faulted read took ${TRIP1_MS}ms"
-TRIP2_MS="$(timed_read_fail $(( 12 * MIB )))"
-test "$TRIP2_MS" -lt "$READ_DEADLINE_MS" || die "the second faulted read took ${TRIP2_MS}ms"
-echo "  both faulted reads failed within the ${READ_DEADLINE_MS}ms deadline: ${TRIP1_MS}ms and ${TRIP2_MS}ms"
+# THE TRIP OFFSETS ARE FAR FROM ANYTHING THE WARM READ TOUCHED, AND THE GATE CHECKS THAT RATHER THAN ASSUMING
+# IT.
+#
+# These were 8 MiB and 12 MiB, and both were already in the daemon's cache — so the first faulted read
+# SUCCEEDED and the gate died with "a read at 8388608 bytes unexpectedly succeeded during the outage", which
+# reads like a breaker that failed to open. Nothing had failed: the warm read of the 1 MiB head window makes
+# the daemon fetch a 12 MiB CHUNK, so everything below ~12 MiB is local and no 503 can reach it. Measured on
+# the host: a read at 8 MiB returned read:ok with a range-request delta of ZERO, while a read at 40 MiB
+# returned read:eio with a delta of 3 — the three retries readpath makes.
+#
+# So the offsets move out of the warmed chunk, and — because an offset being uncached is exactly the kind of
+# assumption that rots when a chunk size changes — each trip read now has to PROVE it reached the wire. A read
+# served from cache is not a faulted read, and saying so is the difference between finding this in one line
+# and blaming the breaker for a cache hit the gate itself arranged.
+# THE COUNTER IS READ ONLY ONCE IT HAS STOPPED MOVING, because it lags the read that caused it.
+#
+# `dd` returns EIO when the daemon gives up, but the endpoint records a request when IT finishes with it, and
+# those are not the same instant. Sampling immediately after the read gave a delta of 0 for a read that had in
+# fact put three requests on the wire — and the loop below reads a zero delta as "the breaker refused this
+# locally", so it concluded the breaker was open after one read when only three of the five failures had
+# landed. The verify read then succeeded against a breaker that was still closed, and the gate reported "a
+# read at 62914560 bytes unexpectedly succeeded during the outage": a true sentence about a state the gate
+# itself had misjudged.
+#
+# Settling is two equal samples in a row, bounded. It is not a sleep chosen to be long enough.
+range_requests_settled() {
+  local last cur i=0
+  last="$(range_requests)"
+  while [ "$i" -lt 40 ]; do
+    sleep 0.25
+    cur="$(range_requests)"
+    if [ "$cur" = "$last" ]; then printf '%s' "$cur"; return 0; fi
+    last="$cur"
+    i=$(( i + 1 ))
+  done
+  printf '%s' "$last"
+}
+
+# IT PRINTS BOTH NUMBERS, BECAUSE A FUNCTION CALLED IN `$( )` CANNOT HAND ANYTHING BACK ANY OTHER WAY.
+#
+# This first set a global, `TRIP_DELTA`, and the caller read it after `TRIP_MS="$(trip_read_fail ...)"`. A
+# command substitution runs in a SUBSHELL, so the assignment died with it and the caller's TRIP_DELTA stayed
+# at its initial 0 forever — which the loop reads as "the breaker refused this read locally". It therefore
+# declared the breaker open after the very first faulted read, every time, no matter what had happened.
+#
+# The output is `<elapsed-ms>:<requests-that-reached-the-endpoint>` and the caller splits it. A failed read
+# with a delta of ZERO is not a cache hit — timed_read_fail has already refused a read that succeeded — it is
+# a read the OPEN BREAKER refused locally, which is the state this phase is driving toward.
+trip_read_fail() {
+  local offset="$1" before after ms
+  before="$(range_requests_settled)"
+  ms="$(timed_read_fail "$offset")"
+  after="$(range_requests_settled)"
+  printf '%s:%s' "$ms" "$(( after - before ))"
+}
+
+# THE TRIP KEEPS FAILING READS UNTIL THE BREAKER'S BUDGET IS SPENT, rather than assuming two reads spend it.
+#
+# The old shape was two reads and an assertion that at least BREAKER_THRESHOLD (5) requests had reached the
+# endpoint, on the reasoning that "each failing read is retried up to three times, so two reads record five
+# counted failures". On the host it recorded FOUR, and the gate died with "only 4 ranged request(s) reached
+# the endpoint during the trip; the 503s did not land" — which is the wrong diagnosis twice over. The 503s
+# landed perfectly; there were just fewer of them than the arithmetic predicted, because readpath stops
+# retrying once the breaker refuses locally and exactly where that lands mid-read is not a contract.
+#
+# Worse, four failures may leave the breaker CLOSED, and then the verify read below — taken with the fault
+# disarmed — would succeed and be reported as "unexpectedly succeeded during the outage". The gate would have
+# blamed the breaker for never opening when nothing had asked it to.
+#
+# So the loop drives the observable quantity to the threshold instead of predicting it: distinct uncached
+# offsets, each read proving it reached the wire, until the endpoint has counted at least BREAKER_THRESHOLD
+# failed requests. It is bounded, and running out of offsets is a failure rather than a quiet stop.
+# THE LOOP STOPS ON THE OBSERVABLE, NOT ON A PREDICTED COUNT, AND THE OBSERVABLE IS THE BREAKER ITSELF.
+#
+# The assertion here used to be `RR_TRIP >= BREAKER_THRESHOLD` — the endpoint's ranged-request counter held
+# against the breaker's 5-failure budget. Those are two different counters. `rangeRequests` counts what
+# arrived at the endpoint; the breaker counts failures its own way, and readpath stops retrying the moment the
+# breaker refuses locally. On the host the endpoint saw FOUR requests and the gate died with "only 4 ranged
+# request(s) reached the endpoint during the trip; the 503s did not land". The 503s landed perfectly.
+#
+# What the phase actually needs to establish is that the breaker OPENED, and there is a direct observation of
+# that: a read that fails WITHOUT a single request reaching the endpoint has been refused locally, which is
+# what an open breaker does and is the only thing that does it. So the loop reads until it sees exactly that,
+# and running out of offsets first is the failure.
+TRIP_MS_LIST=""
+TRIP_READS=0
+BREAKER_OPENED=0
+for trip_mib in 40 44 48 52 56; do
+  TRIP_OUT="$(trip_read_fail $(( trip_mib * MIB )))"
+  TRIP_MS="${TRIP_OUT%%:*}"
+  TRIP_DELTA="${TRIP_OUT##*:}"
+  TRIP_READS=$(( TRIP_READS + 1 ))
+  TRIP_MS_LIST="$TRIP_MS_LIST ${trip_mib}MiB:${TRIP_MS}ms/${TRIP_DELTA}req"
+  test "$TRIP_MS" -lt "$READ_DEADLINE_MS" \
+    || die "the faulted read at ${trip_mib}MiB took ${TRIP_MS}ms, over the ${READ_DEADLINE_MS}ms deadline"
+  if [ "$TRIP_DELTA" -eq 0 ]; then BREAKER_OPENED=1; break; fi
+done
+echo "  $TRIP_READS faulted read(s), each under the ${READ_DEADLINE_MS}ms deadline:$TRIP_MS_LIST"
+test "$BREAKER_OPENED" -eq 1 \
+  || die "after $TRIP_READS faulted read(s) every read was still reaching the endpoint, so the breaker never" \
+         "opened and the hold phase below would be measuring a closed one"
+echo "  the breaker is open: the last faulted read was refused locally, with no request reaching the endpoint"
 
 RR_AFTER="$(range_requests)"
 RES_AFTER="$(resolutions)"
 RR_TRIP=$(( RR_AFTER - RR_BEFORE ))
 RES_TRIP=$(( RES_AFTER - RES_BEFORE ))
-test "$RR_TRIP" -ge "$BREAKER_THRESHOLD" \
-  || die "only ${RR_TRIP} ranged request(s) reached the endpoint during the trip; the 503s did not land"
+# The 503s reached the endpoint rather than being refused for some unrelated local reason. This is the
+# property the counter can actually speak to; how many requests it takes to spend the budget is not.
+test "$RR_TRIP" -ge 1 \
+  || die "no ranged request reached the endpoint during the trip; the 503 fault never landed and whatever" \
+         "opened the breaker was not this outage"
 test "$RES_TRIP" -eq 0 \
   || die "${RES_TRIP} resolution(s) happened during the trip; the warm read should already have minted the lease"
 echo "  ${RR_TRIP} ranged request(s) were failed with 503 at the endpoint, with ${RES_TRIP} resolution(s)"
@@ -425,7 +533,11 @@ echo "  the 503 fault is disarmed"
 # only fail fast if the breaker is refusing it locally — and the zero counter delta proves no packet left the
 # host to find out.
 RR_BEFORE="$(range_requests)"
-VERIFY_MS="$(timed_read_fail $(( 16 * MIB )))"
+# 48 MiB, not 16: the same warmed-chunk reasoning as the trip offsets. 16 MiB is just outside the 12 MiB the
+# warm read pulls, which is far too close to call — and here a cache hit would be INVISIBLE, because this read
+# is expected to fail fast with zero provider traffic and a cache hit produces a fast success that the
+# assertion below would report as "unexpectedly succeeded". This offset must be one nothing has ever fetched.
+VERIFY_MS="$(timed_read_fail $(( 60 * MIB )))"
 test "$VERIFY_MS" -lt "$FAST_FAIL_CEILING_MS" \
   || die "a read with the breaker open took ${VERIFY_MS}ms; the fast-fail ceiling is ${FAST_FAIL_CEILING_MS}ms"
 RR_AFTER="$(range_requests)"
