@@ -356,15 +356,36 @@ test('NODE IS NEVER HANDED THE ABSOLUTE SPELLING OF THE RUN DIRECTORY', () => {
     'digest() no longer runs the relative spelling of sha.cjs');
 });
 
+const shPath = (path: string): string =>
+  path.replace(/\\/g, '/').replace(/^([A-Za-z]):\//, (_m, drive: string) => `/${drive.toLowerCase()}/`);
+
+const shellQuote = (value: string): string => `'${value.replace(/'/g, `'"'"'`)}'`;
+
 /**
- * A POSIX shell that can actually execute a script here, CHOSEN BY RUNNING ONE — never by `process.platform`.
- * `d4f3265` records a figure published twice that was never measured, because a suite picked its shell by
- * name and PATH order decided whether anything was checked.
+ * A POSIX shell that can execute a file through this suite's path spelling, CHOSEN BY RUNNING ONE.
+ *
+ * A bare `echo` probe accepts WSL Bash on Windows even though the test later supplies MSYS `/c/...` paths.
+ * Prefer Git Bash when installed and require every fallback to execute a real temporary script via `shPath`.
  */
 function workingShell(): string | undefined {
-  for (const candidate of ['sh', 'bash', 'C:/Program Files/Git/usr/bin/sh.exe']) {
-    const probe = spawnSync(candidate, ['-c', 'echo shell:ok'], { encoding: 'utf8', timeout: 20_000 });
-    if (probe.error === undefined && probe.status === 0 && probe.stdout.includes('shell:ok')) return candidate;
+  const dir = mkdtempSync(join(tmpdir(), 'phase2b-shell-probe-'));
+  const script = join(dir, 'probe.sh');
+  writeFileSync(script, [
+    '#!/bin/sh',
+    'for tool in head tail mv sleep; do command -v "$tool" >/dev/null || exit 1; done',
+    'echo shell:path-ok',
+  ].join('\n') + '\n');
+  chmodSync(script, 0o755);
+
+  for (const candidate of ['C:/Program Files/Git/usr/bin/sh.exe', 'sh', 'bash']) {
+    const probe = spawnSync(candidate, ['-c',
+      `PATH="/usr/bin:/bin:$PATH" exec ${shellQuote(shPath(script))}`], {
+      encoding: 'utf8',
+      timeout: 20_000,
+    });
+    if (probe.error === undefined && probe.status === 0 && probe.stdout.includes('shell:path-ok')) {
+      return candidate;
+    }
   }
   return undefined;
 }
@@ -427,10 +448,12 @@ test('THE SHIPPED NAMESPACE PROBE IS RUN, against a stub docker that answers, an
   }
 
   const dir = mkdtempSync(join(tmpdir(), 'mf-nsgone-'));
-  const shPath = (path: string): string =>
-    path.replace(/\\/g, '/').replace(/^([A-Za-z]):\//, (_m, drive: string) => `/${drive.toLowerCase()}/`);
 
-  const runHelper = (dockerBody: string, args: string): { status: number | null; stdout: string } => {
+  const runHelper = (dockerBody: string, args: string): {
+    status: number | null;
+    stdout: string;
+    stderr: string;
+  } => {
     const stub = join(dir, 'docker');
     writeFileSync(stub, `#!/bin/sh\n${dockerBody}\n`);
     chmodSync(stub, 0o755);
@@ -443,25 +466,33 @@ test('THE SHIPPED NAMESPACE PROBE IS RUN, against a stub docker that answers, an
       `namespace_gone ${args} && echo helper:gone || echo helper:still-there`,
     ].join('\n') + '\n');
     const run = spawnSync(shell, ['-c',
-      `PATH="${shPath(dir)}:$PATH" exec "${shPath(script)}"`], { encoding: 'utf8', timeout: 120_000 });
+      `PATH="${shPath(dir)}:/usr/bin:/bin:$PATH" exec "${shPath(script)}"`],
+      { encoding: 'utf8', timeout: 120_000 });
     assert(run.error === undefined, `the shipped helper could not be executed: ${String(run.error)}`);
-    return { status: run.status, stdout: run.stdout };
+    assert(run.status !== null && run.status !== 126 && run.status !== 127,
+      `the shipped helper was not executed (status ${String(run.status)}): ${run.stderr || '(no stderr)'}`);
+    return { status: run.status, stdout: run.stdout, stderr: run.stderr };
   };
 
   // 1. The probe RAN and saw nothing: the namespace really is gone.
   const absent = runHelper('echo ns:absent', '"the daemon" 4');
+  assertEq(absent.status, 0, `the absent probe failed: ${absent.stderr || absent.stdout}`);
   assert(absent.stdout.includes('helper:gone'),
     `a probe reporting ns:absent must mean the namespace is gone: ${absent.stdout}`);
 
   // 2. The probe RAN and saw the mount every time: the namespace is still there, and the helper says so
   //    rather than timing out silently.
   const present = runHelper('echo ns:present', '"the daemon" 3');
+  assertEq(present.status, 0, `the present probe driver failed: ${present.stderr || present.stdout}`);
   assert(present.stdout.includes('helper:still-there'),
     `a probe reporting ns:present must NOT be read as gone: ${present.stdout}`);
 
   // 3. THE ONE THAT MATTERS. Docker refused the probe every time — the 125 an unstartable container gives —
   //    and the helper must refuse to draw any conclusion, rather than reporting the namespace gone.
   const refused = runHelper('exit 125', '"the daemon" 3');
+  assertEq(refused.status, 1, `a refused docker probe must fail closed: ${refused.stderr || refused.stdout}`);
+  assert(refused.stdout.includes('GATE FAILED:'),
+    `a refused docker probe did not report the closed failure: ${refused.stdout}`);
   assert(!refused.stdout.includes('helper:gone'),
     `docker's own refusal was scored as the namespace being gone: ${refused.stdout}`);
   assert(/never ran/.test(refused.stdout),

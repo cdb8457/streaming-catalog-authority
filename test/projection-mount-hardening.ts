@@ -27,8 +27,8 @@ const failures: Array<[string, unknown]> = [];
  * Blocks this suite could not execute here, counted so a green summary cannot hide them.
  *
  * A TEST THAT RETURNS EARLY STILL PRINTS `PASS`. One test below EXECUTES a shipped embedded program against a
- * stub on PATH, which needs POSIX process semantics; without this a Windows reader would see it green and
- * have no way to know the half that runs the program never ran.
+ * stub on PATH, which needs a POSIX shell that can execute this host's temporary paths; without that proof a
+ * reader would see it green and have no way to know the half that runs the program never ran.
  */
 const skippedBlocks: string[] = [];
 const skipBlock = (what: string): void => {
@@ -449,25 +449,9 @@ test('THE SERVE-DEATH POLLER PROVES AN ORDER, not a population of samples', () =
 // is that string. A regex over the gate would pass against a state machine that never emits `D`.
 //
 // SO THE SHIPPED PROGRAM IS EXTRACTED FROM THE GATE AND RUN, against a stub `wget` that plays a scripted
-// sequence of ready/not-ready answers. Running it needs a PATH-injected executable and POSIX process
-// semantics, which win32 does not provide; there the block SKIPS and says so rather than printing green.
+// sequence of ready/not-ready answers. Running it needs a PATH-injected executable and a POSIX shell that
+// can execute this host's temporary paths; when none can, the block SKIPS and says so rather than printing green.
 // ---------------------------------------------------------------------------------------------------------
-
-/**
- * A POSIX shell that can actually execute a script here, CHOSEN BY RUNNING ONE.
- *
- * THIS SUITE DOES NOT KEY THE DECISION ON `process.platform`, and that is a lesson this repository paid for:
- * `d4f3265` records a Windows figure published twice that was never measured, because the suite picked its
- * shell by name and PATH order decided whether anything was checked. A name is a guess; an execution is not.
- * So a candidate is accepted only after it has run a script that prints a token.
- */
-function workingShell(): string | undefined {
-  for (const candidate of ['sh', 'bash', 'C:/Program Files/Git/usr/bin/sh.exe']) {
-    const probe = spawnSync(candidate, ['-c', 'echo shell:ok'], { encoding: 'utf8', timeout: 20_000 });
-    if (probe.error === undefined && probe.status === 0 && probe.stdout.includes('shell:ok')) return candidate;
-  }
-  return undefined;
-}
 
 /**
  * A path spelled the way the SHELL will read it, which on Windows is not the way the platform stores it.
@@ -477,6 +461,38 @@ function workingShell(): string | undefined {
  */
 const shPath = (path: string): string =>
   path.replace(/\\/g, '/').replace(/^([A-Za-z]):\//, (_m, drive: string) => `/${drive.toLowerCase()}/`);
+
+const shellQuote = (value: string): string => `'${value.replace(/'/g, `'"'"'`)}'`;
+
+/**
+ * A POSIX shell that can actually execute a file through this suite's path spelling, CHOSEN BY RUNNING ONE.
+ *
+ * Probing only `echo` is insufficient on Windows: System32's `bash.exe` is WSL Bash and can run `echo`, but it
+ * cannot open the MSYS `/c/...` paths used below. Prefer Git Bash when installed, then accept another shell
+ * only after it executes a real temporary script through `shPath`. On POSIX hosts `shPath` is unchanged.
+ */
+function workingShell(): string | undefined {
+  const dir = mkdtempSync(join(tmpdir(), 'phase2-shell-probe-'));
+  const script = join(dir, 'probe.sh');
+  writeFileSync(script, [
+    '#!/bin/sh',
+    'for tool in head tail mv sleep; do command -v "$tool" >/dev/null || exit 1; done',
+    'echo shell:path-ok',
+  ].join('\n') + '\n');
+  chmodSync(script, 0o755);
+
+  for (const candidate of ['C:/Program Files/Git/usr/bin/sh.exe', 'sh', 'bash']) {
+    const probe = spawnSync(candidate, ['-c',
+      `PATH="/usr/bin:/bin:$PATH" exec ${shellQuote(shPath(script))}`], {
+      encoding: 'utf8',
+      timeout: 20_000,
+    });
+    if (probe.error === undefined && probe.status === 0 && probe.stdout.includes('shell:path-ok')) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
 
 /** The probe exactly as the gate writes it, taken from the gate rather than restated. */
 function extractReadyzProbe(): string {
@@ -527,7 +543,7 @@ test('THE SHIPPED READYZ PROBE IS RUN, and it reports the order it actually obse
   // locate `sh` at all, and rewriting it makes the spawn itself fail with ENOENT. Prepending inside the shell
   // avoids both, because `$PATH` there is already in the spelling that shell uses.
   const run = spawnSync(shell, ['-c',
-    `PATH="${shPath(dir)}:$PATH" PLAN="${shPath(join(dir, 'plan'))}" exec "${shPath(script)}"`], {
+    `PATH="${shPath(dir)}:/usr/bin:/bin:$PATH" PLAN="${shPath(join(dir, 'plan'))}" exec "${shPath(script)}"`], {
     encoding: 'utf8',
     timeout: 120_000,
   });
