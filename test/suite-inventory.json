@@ -440,6 +440,10 @@
       "group": "offline"
     },
     {
+      "file": "projection-evidence-consistency.ts",
+      "group": "offline"
+    },
+    {
       "file": "provider-availability-bridge.ts",
       "group": "offline"
     },
