@@ -98,6 +98,43 @@ test('THE COMPOSE FILE IS COMMITTED AND THE GATE ROOT IS IGNORED, like every oth
     'the gate root is not gitignored, so an interrupted run leaves credentials where `git add -A` reaches them');
 });
 
+test('A CREDENTIAL ASSERTION PROBES THE PATH THE CREDENTIAL ACTUALLY GUARDS', () => {
+  // Arm A's credential checks probed `/direct/<ref>` with a wrong bearer token and expected a refusal.
+  // `/direct/` is UNAUTHENTICATED BY CONSTRUCTION — `handleDirect` calls `serveRange` with no auth check,
+  // because in direct mode the URL is the capability; only `handleResolve` compares the Authorization
+  // header. So the endpoint answered 206 to the wrong token exactly as designed, and the harness died with
+  // "the endpoint served a ranged request with the wrong credential" on the first real run — an accusation
+  // aimed at the one path that never made the promise. /resolve is also what the daemon calls in resolver
+  // mode, so it is what R2 rotates: probing it is both correct and the point.
+  const gate = read(GATE);
+  const body = gate.split('\n').filter((line) => !line.trimStart().startsWith('#')).join('\n');
+  // A /direct/ probe with the RIGHT token is a liveness check and is fine — the path is Range-only and the
+  // 206 is the point. What may never live there is a CREDENTIAL assertion: a wrong token expecting refusal,
+  // or the rotation checks, both of which /direct/ answers 206 to by design.
+  for (const line of body.split('\n')) {
+    if (!/probe\.sh "http:\/\/fakerange:8099\/direct\//.test(line)) continue;
+    assert(!/not-the-token|ROTATED_TOKEN/.test(line),
+      `a credential assertion probes /direct/, which enforces no credential at all: ${line.trim()}`);
+  }
+  assert(!/\$\(resolve_probe/.test(body) || /ROT_OLD="\$\(resolve_probe "\$ARM_TOKEN"\)"/.test(body),
+    'the post-rotation check no longer goes through the credential-guarded path');
+  assert(/resolveprobe\.sh/.test(body), 'there is no probe against the credential-guarded /resolve path');
+  // ...and it reads the probe's own verdict, with the never-ran case refused rather than folded in.
+  for (const token of ['resolve:200', 'resolve:401']) {
+    assert(body.includes(token), `the resolve probe's verdict '${token}' is never matched`);
+  }
+  assert(/the credential probe never ran against the endpoint/.test(body),
+    'a resolve probe that produced no status is not refused as a third outcome');
+  // The status is parsed by pattern, not by column: busybox prints its own `wget: server returned error:
+  // HTTP/1.1 401 ...` diagnostic, and taking $2 of any HTTP-matching line yielded `resolve:server`.
+  assert(/grep -oE 'HTTP\/\[0-9\.\]\+ \[0-9\]\{3\}'/.test(gate),
+    'the resolve probe no longer extracts the status code by pattern, so busybox\'s own diagnostic line can '
+    + 'be misread as the status');
+  // The WebDAV endpoint DOES enforce on every request, so arms B/C keep probing /dav.
+  assert(/probe\.sh "http:\/\/fakedav:8098\/dav\//.test(body),
+    'arms B/C no longer probe the WebDAV path, which does enforce the credential on every request');
+});
+
 test('THERE IS NO :three WRAPPER, because a harness closes nothing', () => {
   // Every acceptance gate has one and this deliberately does not. A `:three` on a thing with no pass
   // threshold would announce a closure it cannot deliver, which is the exact class Phase 1 spent four

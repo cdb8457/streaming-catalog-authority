@@ -507,7 +507,16 @@ step "the PostgreSQL every arm's control plane shares"
 test -f "$COMPOSE_FILE" || die "the compose file $COMPOSE_FILE is missing from the repository"
 docker compose -f "$COMPOSE_FILE" config -q
 docker compose -f "$COMPOSE_FILE" up -d --wait postgres
-echo "  postgres is ready"
+# AND IT IS MIGRATED, WHICH THIS HARNESS NEVER DID.
+#
+# The compose file brings up an EMPTY database owned by `postgres`. The `app` role the control plane connects
+# as, and every table it writes, are created by the migration — so without this line the very first
+# `register` died with `projection-register: password authentication failed for user "app"`, a message that
+# points at credentials when the truth is that the role had never been created. Every gate in this
+# repository that touches the control plane runs this immediately after Postgres reports healthy; this one
+# is now one of them.
+npx tsx src/ops/migrate-cli.ts
+echo "  postgres is ready and migrated"
 
 # ----------------------------------------------------------------------------------------------------------
 # THE SHARED NODE PROGRAMS. Each is written once into $REL/out and read by every arm. The corpus.cjs walk is
@@ -672,6 +681,29 @@ cat > "$WORK/out/fullread.sh" <<'FULLREAD'
 set -eu
 sha256sum "$1" | cut -d' ' -f1
 FULLREAD
+cat > "$WORK/out/resolveprobe.sh" <<'RESOLVEPROBE'
+set -eu
+# THE CREDENTIAL ON THE RANGE ENDPOINT GUARDS /resolve, AND NOTHING ELSE.
+#
+# Arm A's credential assertions used to probe `/direct/<ref>` with a wrong bearer token and expect a refusal.
+# `/direct/` is UNAUTHENTICATED BY CONSTRUCTION — `handleDirect` calls `serveRange` with no auth check at all,
+# because in direct mode the URL is the capability. Only `handleResolve` compares the Authorization header
+# (`internal/fakeprovider/fakeprovider.go`). So the endpoint answered 206 to the wrong token, exactly as
+# designed, and the harness died with "the endpoint served a ranged request with the wrong credential" — an
+# accusation aimed at the one path that never made the promise.
+#
+# /resolve is also the path that MATTERS here: it is what the daemon calls in resolver mode, so it is what R2
+# rotates. This probe prints its own verdict — `resolve:<status>` — so a container that never started is a
+# third outcome rather than being read as a refusal.
+out="$(wget -S --header "Authorization: Bearer $2" --header "Content-Type: application/json" \
+  --post-data "{\"objectRef\":\"$3\"}" -O /dev/null "$1/resolve" 2>&1 || true)"
+# THE CODE IS THE THREE DIGITS AFTER AN HTTP VERSION, wherever they appear. Taking `$2` of any line matching
+# "HTTP/" picked up busybox's own diagnostic — `wget: server returned error: HTTP/1.1 401 Unauthorized` — and
+# printed `resolve:server`, which the caller then correctly refused as "the probe never ran". Both the header
+# line and that diagnostic carry the real status; matching the pattern rather than a column reads either.
+code="$(printf '%s' "$out" | grep -oE 'HTTP/[0-9.]+ [0-9]{3}' | tail -1 | awk '{print $2}')"
+echo "resolve:${code:-none}"
+RESOLVEPROBE
 cat > "$WORK/out/seekprobe.sh" <<'SEEKPROBE'
 set -eu
 target="$1"
@@ -776,6 +808,16 @@ mkdir -p "$WORK/arm-a/out" "$WORK/arm-a/manifest" "$WORK/arm-a/cache" "$WORK/arm
          "$WORK/arm-a/jf-config" "$WORK/arm-a/jf-cache" "$WORK/arm-a/emby-config" "$WORK/arm-a/plex-config" \
          "$WORK/arm-a/plex-transcode"
 chmod 755 "$GATE_ROOT" "$WORK" "$WORK/arm-a" "$WORK/arm-a/mnt"
+# THE MEDIA SERVERS' STATE DIRECTORIES HAVE TO BE WRITABLE BY THE UIDS THOSE SERVERS RUN AS, and none of them
+# was. `mkdir -p` makes them 755 owned by root; Jellyfin runs `--user 1000:1000` and its very first act is to
+# create its application paths under /config and /cache, so it died on startup with
+# `System.IO.Directory.CreateDirectory` and the harness reported "Jellyfin never came up". Emby's s6
+# entrypoint does its own setuid and Plex takes PLEX_UID, so all three need the same thing. This is exactly
+# what `deploy/projection-jellyfin-dataplane-gate.sh` does for the same directories, and the harness was the
+# only place that ran three media servers without it.
+chmod 777 "$WORK/arm-a/cache" "$WORK/arm-a/out" \
+          "$WORK/arm-a/jf-config" "$WORK/arm-a/jf-cache" "$WORK/arm-a/emby-config" \
+          "$WORK/arm-a/plex-config" "$WORK/arm-a/plex-transcode"
 
 # THE ENDPOINT IS internal/fakeprovider, the only "provider" any automated gate here contacts. It runs in
 # RESOLVER mode rather than direct mode, so the daemon must exchange the stable objectRef for short-lived
@@ -823,12 +865,27 @@ echo "  the range endpoint is up"
 docker run --rm --network "$NETWORK" -v "$WORK/out:/probe:ro" "$VERIFY_IMAGE" \
   sh /probe/probe.sh "http://fakerange:8099/direct/${CANARY_REF}" "$ARM_TOKEN" >/dev/null 2>&1 \
   || { logs_tail "$PD_RANGE_CONTAINER"; die "the endpoint does not answer a ranged request with 206"; }
-# AND IT REFUSES ONE WITH THE WRONG CREDENTIAL, or R2 would be a round about nothing.
-if docker run --rm --network "$NETWORK" -v "$WORK/out:/probe:ro" "$VERIFY_IMAGE" \
-     sh /probe/probe.sh "http://fakerange:8099/direct/${CANARY_REF}" "not-the-token" >/dev/null 2>&1; then
-  die "the endpoint served a ranged request with the wrong credential"
-fi
-echo "  the endpoint answers a ranged request with 206, and refuses one with the wrong credential"
+# AND THE CREDENTIAL IS EXERCISED WHERE IT ACTUALLY GUARDS: /resolve, which is what the daemon calls in
+# resolver mode and therefore what R2 rotates. `/direct/` is unauthenticated by construction, so asserting a
+# refusal there asserted nothing and failed for it.
+resolve_probe() {
+  docker run --rm --network "$NETWORK" -v "$WORK/out:/probe:ro" "$VERIFY_IMAGE" \
+    sh /probe/resolveprobe.sh "http://fakerange:8099" "$1" "$CANARY_REF" 2>/dev/null || true
+}
+RESOLVE_GOOD="$(resolve_probe "$ARM_TOKEN")"
+case "$RESOLVE_GOOD" in
+  *resolve:200*) ;;
+  *) logs_tail "$PD_RANGE_CONTAINER"
+     die "the endpoint did not resolve with the CORRECT credential (got '$RESOLVE_GOOD'), so a rotation" \
+         "round against it would measure nothing" ;;
+esac
+RESOLVE_BAD="$(resolve_probe "not-the-token")"
+case "$RESOLVE_BAD" in
+  *resolve:401*) ;;
+  *resolve:200*) die "the endpoint resolved with the WRONG credential; R2 would be a round about nothing" ;;
+  *) die "the credential probe never ran against the endpoint (got '$RESOLVE_BAD'), so nothing was checked" ;;
+esac
+echo "  the endpoint answers a ranged request with 206, resolves with the right credential and returns 401 for the wrong one"
 
 ENDPOINT_LARGE_SIZE="$(node "$REL/out/objects.cjs" "$REL/out/objects.json" "$LARGE_REF" size)"
 test "$ENDPOINT_LARGE_SIZE" = "$LARGE_SIZE" || die "the endpoint disagrees with the barrier file about its size"
@@ -880,14 +937,16 @@ daemon_status() {
     || die "the daemon's status surface did not answer; a cold window cannot be told from a warm one"
 }
 
-start_daemon
-echo "  waiting for the namespace to become visible to a sibling container"
-await_path "$SEED_PATH" || { logs_tail "$PD_MOUNT_CONTAINER"; die "the mount never became visible"; }
-echo "  visible"
-
 # ----------------------------------------------------------------------------------------------------------
 step "publishing generation 1: ONE LOCAL SEED ENTRY, AND NOTHING REMOTE"
 # ----------------------------------------------------------------------------------------------------------
+# THIS RUNS BEFORE THE DAEMON STARTS, AND IT DID NOT.
+#
+# `start_daemon` was called thirty lines above this step, so the daemon came up against an empty manifest
+# directory, found no admitted generation, and exited 1 with `no generation could be admitted, so there is
+# nothing to serve: pointer-unreadable`. The harness then sat in `await_path` for its full 120-second budget
+# waiting for a namespace no live process was serving, and reported "the mount never became visible" — which
+# is true, and says nothing about why. Every gate that works publishes first; this one is now one of them.
 # Two of the three media servers create a library without scanning it. PLEX DOES NOT: creating a section
 # starts a scan of it immediately. If the corpus were already published at that moment, Plex would scan it
 # before this gate had triggered anything and the concurrent scan would measure a window in which the data
@@ -908,6 +967,12 @@ POINTER_DIGEST="$(field manifestDigest < "$WORK/arm-a/manifest/pointer.json")"
 ACTUAL_DIGEST="sha256:$(node "$REL/out/sha.cjs" "$ARM_REL/manifest/$ARTIFACT")"
 test "$POINTER_DIGEST" = "$ACTUAL_DIGEST" || die "the pointer digest does not describe the artifact"
 echo "  pointer digest verified against the artifact file"
+
+# NOW the daemon, with a generation waiting for it.
+start_daemon
+echo "  waiting for the namespace to become visible to a sibling container"
+await_path "$SEED_PATH" || { logs_tail "$PD_MOUNT_CONTAINER"; die "the mount never became visible"; }
+echo "  the namespace is visible to a sibling container"
 
 # ----------------------------------------------------------------------------------------------------------
 step "starting THREE REAL MEDIA SERVERS over the SAME mount"
@@ -1167,15 +1232,19 @@ docker run -d --name "$PD_RANGE_CONTAINER" --network "$NETWORK" --network-alias 
 wait_ready "$PD_RANGE_CONTAINER" "http://fakerange:8099/counters"
 echo "  the endpoint restarted onto the rotated credential"
 
-# AND THE ROTATION REALLY BOUND, or this round measured nothing.
-if docker run --rm --network "$NETWORK" -v "$WORK/out:/probe:ro" "$VERIFY_IMAGE" \
-     sh /probe/probe.sh "http://fakerange:8099/direct/${CANARY_REF}" "$ARM_TOKEN" >/dev/null 2>&1; then
-  die "the endpoint still honours the OLD credential after the rotation"
-fi
-if ! docker run --rm --network "$NETWORK" -v "$WORK/out:/probe:ro" "$VERIFY_IMAGE" \
-     sh /probe/probe.sh "http://fakerange:8099/direct/${CANARY_REF}" "$ROTATED_TOKEN" >/dev/null 2>&1; then
-  die "the endpoint does not honour the NEW credential after the rotation"
-fi
+# AND THE ROTATION REALLY BOUND, or this round measured nothing — checked on /resolve, the path the
+# credential guards and the one the daemon uses, not on the unauthenticated /direct/.
+ROT_OLD="$(resolve_probe "$ARM_TOKEN")"
+case "$ROT_OLD" in
+  *resolve:401*) ;;
+  *resolve:200*) die "the endpoint still honours the OLD credential after the rotation" ;;
+  *) die "the post-rotation credential probe never ran (got '$ROT_OLD'), so the rotation was not verified" ;;
+esac
+ROT_NEW="$(resolve_probe "$ROTATED_TOKEN")"
+case "$ROT_NEW" in
+  *resolve:200*) ;;
+  *) die "the endpoint does not honour the NEW credential after the rotation (got '$ROT_NEW')" ;;
+esac
 
 # THE READ THE ROTATION IS ABOUT. The daemon's next resolution is refused under the old credential, and the
 # daemon reloads its secret only when a resolution is refused — so the FIRST read may fail and the FOLLOWING
@@ -1438,7 +1507,11 @@ run_rclone_arm() {
   mkdir -p "$work_arm/out" "$work_arm/rclone-config" "$work_arm/rclone-cache" \
     "$work_arm/jf-config" "$work_arm/jf-cache" "$work_arm/emby-config" "$work_arm/plex-config" \
     "$work_arm/plex-transcode" "$work_arm/mnt"
-  chmod 777 "$work_arm/mnt" "$work_arm/out" "$work_arm/rclone-cache" "$work_arm/rclone-config"
+  # The media-server state directories too, for the same reason arm A's are: Jellyfin runs as 1000:1000 and
+  # creates its application paths on startup, and `mkdir -p` leaves these 755 owned by root.
+  chmod 777 "$work_arm/mnt" "$work_arm/out" "$work_arm/rclone-cache" "$work_arm/rclone-config" \
+            "$work_arm/jf-config" "$work_arm/jf-cache" "$work_arm/emby-config" \
+            "$work_arm/plex-config" "$work_arm/plex-transcode"
   chmod 755 "$work_arm"
 
   # THE CREDENTIAL IS RESET TO THE ORIGINAL AT THE TOP OF EVERY ARM. Arm A's R2 rotated the shared token file

@@ -282,27 +282,58 @@ test('THE ROADMAP NAMES PHASE 2 AND ITS DOCUMENT, and retires the sentence that 
   }
 });
 
-test('WHILE EVERY RUN RECORD SAYS NOT RUN, NO DOCUMENT MAY SAY OTHERWISE', () => {
-  // One marker per gate. A gate that has run replaces its own, and only its own.
-  const markers = PHASE2.match(/\*\*NOT RUN\.\*\*/g) ?? [];
-  assertEq(markers.length, GATES.length, 'each gate must carry its own NOT RUN marker until it has run');
+test('EVERY GATE\'S MARKER AND ITS ROWS AGREE, and the roadmap counts what the tables actually show', () => {
+  // THIS USED TO REQUIRE EXACTLY THREE `NOT RUN` MARKERS AND NINE EMPTY ROWS, which was right for exactly as
+  // long as nothing had run — and then it failed the moment a gate passed on the host, for the good news.
+  // A test that has to be edited when the thing it watches succeeds is a test that will be edited carelessly
+  // on the day it matters. The invariant it was reaching for survives runs: a gate's marker and its rows
+  // must say the same thing, and the roadmap must count what the tables show rather than a number typed once.
+  //
+  // Sections are split on the gate headings so each gate's marker is checked against ITS OWN rows; a gate
+  // that has run must not be able to clear a marker belonging to one that has not.
+  const sections = PHASE2.split(/^## \d+\. Gate \d+ — /m).slice(1);
+  assertEq(sections.length, GATES.length, 'the document no longer has one section per gate');
 
-  // Three placeholder rows per gate, and PLACEHOLDER is the assertion: a row with a host in it is a claim,
-  // and a claim in this table while the marker above it still says NOT RUN is the contradiction.
-  const rows = (PHASE2.match(/^\| [123]\/3 \|.*$/gm) ?? []).map((row) => row.trim());
-  assertEq(rows.length, GATES.length * 3, 'three run-record rows per gate');
-  for (const row of rows) {
-    assert(/^\| [123]\/3 \|( — \|){5}$/.test(row), `a run record is filled while its gate says NOT RUN: ${row}`);
+  let filledRuns = 0;
+  for (const section of sections) {
+    const name = (section.split('\n')[0] ?? '').trim();
+    const rows = (section.match(/^\| [123]\/3 \|.*$/gm) ?? []).map((row) => row.trim());
+    assertEq(rows.length, 3, `${name}: expected three run-record rows`);
+    const placeholders = rows.filter((row) => /^\| [123]\/3 \|( — \|){5}$/.test(row)).length;
+    const marker = /\*\*NOT RUN\.\*\*/.test(section);
+
+    if (marker) {
+      assertEq(placeholders, 3,
+        `${name}: says NOT RUN while ${3 - placeholders} of its rows carry a claim — a filled row is a claim, `
+        + 'and a claim under a NOT RUN marker is the contradiction this whole document exists to prevent');
+    } else {
+      assertEq(placeholders, 0,
+        `${name}: has no NOT RUN marker but still shows ${placeholders} empty row(s); either it ran and the `
+        + 'rows should say so, or it did not and the marker belongs back');
+      // A filled row must name a host and a result, not merely be non-empty.
+      for (const row of rows) {
+        assert(/Unraid|Linux/.test(row) && /PASS|FAIL/i.test(row),
+          `${name}: a filled run record names no host or no outcome: ${row}`);
+      }
+      filledRuns += 3;
+    }
   }
 
-  // ...and the roadmap counts those nine absent runs rather than describing them.
+  // ...and the roadmap counts exactly those runs. Derived, not typed: the number in the roadmap is checked
+  // against the number of filled rows above, so the two cannot drift.
   const row = ROADMAP.split('\n').find((line) => line.startsWith('| **Projection Phase 2**')) ?? '';
-  assert(row.includes('**Open'), 'the Phase 2 row must read Open while no gate has run');
-  assert(/0 of the 9 fresh runs/.test(row),
-    'the Phase 2 row must count the runs that have not happened, not characterise them');
-  for (const stale of [/Phase 2[^.|]{0,40}\*\*Done\*\*/i, /Phase 2 closes/i,
-    /3\/3[^.|]{0,60}(serve-death|stale-mount|sustained-outage)/i]) {
-    assert(!stale.test(flat(ROADMAP)), `the roadmap claims a Phase 2 run that has not happened: ${String(stale)}`);
+  assert(row.length > 0, 'the roadmap has no Projection Phase 2 row');
+  const claimed = /(\d+) of the 9 fresh runs/.exec(row);
+  assert(claimed !== null, 'the Phase 2 row must count the fresh runs, not characterise them');
+  assertEq(Number(claimed[1]), filledRuns,
+    `the roadmap says ${claimed[1] as string} of 9 fresh runs while the run records show ${filledRuns}`);
+
+  if (filledRuns < 9) {
+    assert(row.includes('**Open'), 'the Phase 2 row must read Open until all nine fresh runs are recorded');
+  }
+  for (const stale of [/Phase 2[^.|]{0,40}\*\*Done\*\*/i, /Phase 2 closes/i]) {
+    assert(!stale.test(flat(ROADMAP)) || filledRuns === 9,
+      `the roadmap closes Phase 2 with only ${filledRuns} of 9 runs recorded: ${String(stale)}`);
   }
 });
 

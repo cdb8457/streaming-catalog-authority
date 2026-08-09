@@ -1,11 +1,11 @@
 # Projection Phase 2b/2c — the multi-frontend comparison
 
-**Status: the harness exists and has NEVER RUN.** Every run record on this page is empty and says so. Nothing
-below is a measurement; it is a description of what the harness would measure, written so that the first run
+**Status: the harness has been executed on the real Unraid host and NO ARM HAS COMPLETED.** Every run record on this page is empty and says so; §4.1 records exactly how far it got and the one thing blocking it. Nothing
+below is a measurement; the figures are still a description of what it would measure, written so that a completing run
 has something to fill in and so that nobody can mistake the description for the result.
 
 **Files:** `deploy/projection-multi-frontend-comparison-gate.sh`, `-optional.sh`;
-`docker-compose.projection-multi-frontend.yml` (written by the harness at run time);
+`docker-compose.projection-multi-frontend.yml` (committed, and named by the harness rather than generated);
 offline pins in `test/projection-multi-frontend.ts`. The mount-hardening half of this tranche is
 `docs/PROJECTION_PHASE_2_MOUNT_HARDENING.md`; the two are independent and neither closes the other.
 
@@ -74,14 +74,56 @@ Resource accounting samples **the frontend container only** — the daemon on ar
 
 ## 4. Run record
 
-**NOT RUN.** The harness has never been executed, on any host. There is no partial run, no Windows figure and
-no Unraid figure. A row is filled only by a run that completed.
+**NOT RUN.** No arm has completed, so no arm has a row. A row is filled only by a run that completed, and a
+partial run is not a partial result — R1, R2, R3 and the resource accounting all come after the point where
+this stops, so there is nothing to put in these columns.
 
 | Arm | Host | R1 | R2 | R3 | CPU / RAM | Evidence |
 |---|---|---|---|---|---|---|
 | A | — | — | — | — | — | — |
 | B | — | — | — | — | — | — |
 | C | — | — | — | — | — | — |
+
+### 4.1 How far it got, and the one thing blocking it
+
+**It was executed on the real Unraid host `tower` six times**, each attempt going further than the last as the
+defects in §7 were found and fixed. The furthest run reached **step 14 of arm A** — through the corpus,
+Postgres, the credential checks, generation 1, the daemon mount, **all three real media servers started and
+their libraries created**, the ~50-entry corpus published, and **three real simultaneous library scans over
+the same projected mount**. Two of the three concurrency assertions passed on their budgets:
+
+| Assertion | measured | budget | |
+|---|---|---|---|
+| `TS1-servers-observed-scanning` | 3 | 3 | **pass** |
+| `TS1-max-servers-in-flight-at-once` | 3 | 3 | **pass** |
+| `TS1-continuous-simultaneous-samples` | **1** | 3 | **fail** |
+
+**THE BLOCKER IS A SCOPE DECISION, NOT A BUG I CAN CORRECT.** The third assertion wants the longest *unbroken*
+run of samples with all three servers scanning to be at least 3 — roughly 1.5 s of continuous three-way
+overlap at the sampler's tick. The harness got one sample, and the run says why: *"the barrier was released
+after **0s** of a provider read actually being blocked"*. The barrier object exists to make the scanners queue
+behind one slow provider read so the overlap is long enough to sample; on arm A nothing ever blocked on it,
+the three scans went through at full speed, and they finished too close together to overlap for 1.5 s.
+
+That is **arguably the comparison working**: `projectiond` serves scan-window reads from its probe cache, so a
+scan that would queue behind the provider on the rclone arms does not queue at all here. The difference in
+overlap is a *figure this harness exists to report*. But `TS1-continuous-simultaneous-samples` is a **Phase 1
+acceptance threshold**, inherited through the shared `concurrent-scan` driver, and inside a harness it is
+applied as a pass/fail to a quantity that is supposed to be a measurement.
+
+Closing it means one of:
+
+1. **Give the harness a measurement-mode concurrency observation** — same instrument, figures reported and
+   nothing failed — which changes the semantics of a driver Phase 1 gates depend on; or
+2. **Make arm A's barrier actually block**, by holding an object the daemon cannot serve from its probe cache
+   during the scan window, which changes what the scan measures and therefore its comparability with G18/G22;
+   or
+3. **Retune the budget**, which is moving a Phase 1 threshold to make a Phase 2 harness green — the one option
+   that should not be taken quietly, and is recorded here so it is not.
+
+**None of these was chosen.** Each trades away something belonging to Phase 1, and the harness closes no gate,
+so the tranche does not depend on the answer. Evidence for the six attempts is in
+`phase2-evidence/multi-frontend-run1.log` and `/tmp/mf{1..6}.log` on the host.
 
 ## 5. What a run of this will and will not establish
 
@@ -112,14 +154,14 @@ it can run beside `go:rclone-comparison-gate` rather than colliding with it.
 
 ---
 
-## 7. Nine defects found porting this harness, before its first run
+## 7. Twelve defects, nine found by reading and three by running it
 
-**None of these was found by running it**, because it has not run. They were found by reading the harness
+**Defects 1–9 were found by reading** the harness
 against the claims it makes, and each is pinned by a test in `test/projection-multi-frontend.ts` that fails
-against the harness as it arrived and passes after — **13 of that suite's 15 tests fail against the file as
+against the harness as it arrived and passes after — **14 of that suite's 16 tests fail against the file as
 it was inherited**, and the two that do not are about documents rather than about the harness.
 
-**THREE OF THE EIGHT MEAN IT COULD NEVER HAVE RUN AT ALL**, on any host, for reasons that have nothing to do
+**THREE OF THE TWELVE MEAN IT COULD NEVER HAVE RUN AT ALL**, on any host, for reasons that have nothing to do
 with FUSE or with a provider: a directory that was never created, a program run before it was written, and a
 configuration file that was created as a directory. They are #5–#7 below, and each aborts the harness under
 `set -e` before an endpoint starts. They are recorded first because they change what the previous
@@ -137,6 +179,17 @@ been executed once.
 | 7 | **`mkdir -p "$WORK/arm-a/config.json"` made the daemon's configuration file a DIRECTORY**, so the `cat > "$WORK/arm-a/config.json"` below it could not write and **arm A could not start** | the path is out of the `mkdir` list, and a pin refuses any path that is made a directory and later written as a file. That pin has to join backslash continuations to work: the `mkdir` listed nine paths over three lines and `config.json` was on the third, so a per-line scan reads `mkdir -p`, sees the first argument, and never looks at the one that caused the bug |
 | 8 | **The harness generated its own compose file into the repository root on every run and never removed it**, so a run left an untracked `docker-compose.projection-multi-frontend.yml` in the working tree — and the only description of the shared Postgres lived inside an 1,800-line script, where no reviewer reads a compose file and no diff shows it change. The gate root was **not gitignored** either, though it holds two throwaway endpoint credentials and three arms' caches, so an interrupted run left them where `git add -A` reaches | the compose file is committed and merely named, like every other `docker-compose.projection-*.yml` here, and the harness dies if it is missing rather than silently writing one; `.projection-multi-frontend-comparison-gate/` joins the other gate roots in `.gitignore`. `${...:-5515}` is resolved by docker compose itself, so nothing about the behaviour changed |
 | 9 | **Six call sites handed `node` the absolute spelling of the run directory**, against the rule the harness's own header states — docker gets `$WORK`, node and tsx get `$REL`, "because an MSYS absolute path is not something a Windows node binary can open". A Windows node resolved `/c/Users/…` against the current drive and opened `C:\c\Users\…` | the six use `$REL`/`$ARM_REL`, and the pin allows a shell **redirection** of an absolute path (the shell opens that, not node) while refusing an absolute path as a node **argument**. Linux was never affected; the repository is developed on Windows, so this was the difference between iterating on the harness and not |
+
+### Found by running it on the real host
+
+Defects 1–9 were found by reading. These were not — each one needed the harness to actually execute on
+Unraid, and each was invisible until the one before it was fixed.
+
+| # | What was wrong | What it cost |
+|---|---|---|
+| 10 | **The credential assertion probed the one path that enforces no credential.** Arm A checked `/direct/<ref>` with a deliberately wrong bearer token and expected a refusal. `handleDirect` calls `serveRange` with **no auth check at all** — in direct mode the URL is the capability, and only `handleResolve` compares the Authorization header. The endpoint answered 206 exactly as designed and the harness died with "the endpoint served a ranged request with the wrong credential", an accusation aimed at a path that never made the promise. The R2 rotation checks had the same defect | a `resolveprobe.sh` against `/resolve` — the path the credential guards **and** the path the daemon calls in resolver mode, so it is what R2 actually rotates. It prints `resolve:<status>`, the gate demands 200 or 401, and a run that produced neither is refused. The status is extracted **by pattern**, because busybox prints its own `wget: server returned error: HTTP/1.1 401 …` line and taking `$2` of any HTTP-matching line yielded `resolve:server`. Arms B/C keep probing `/dav`, which does enforce on every request |
+| 11 | **The daemon was started before generation 1 was published.** `start_daemon` ran thirty lines above the publish step, so the daemon came up against an empty manifest directory and exited 1 with `no generation could be admitted, so there is nothing to serve: pointer-unreadable`. The harness then waited out its full 120-second `await_path` budget for a namespace no live process was serving and reported **"the mount never became visible"** — true, and silent about why | publish first, then start the daemon, which is the order every gate that works uses |
+| 12 | **It never migrated the database.** Compose brings up an empty Postgres owned by `postgres`; the `app` role the control plane connects as, and every table it writes, are created by `src/ops/migrate-cli.ts`. Without it the first `register` died with `password authentication failed for user "app"` — a message that points at credentials when the role had simply never been created | the migration runs immediately after Postgres reports healthy, as it does in every other gate here |
 
 **AND ONE THAT WAS NOT A DEFECT IN THE HARNESS BUT IN WHAT COULD BE CHECKED ABOUT IT.** Both
 operational-round writers were multi-line `node -e '…'` arguments. `parseShellSource` — the reader

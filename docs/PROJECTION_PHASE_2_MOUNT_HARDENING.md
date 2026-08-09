@@ -43,13 +43,30 @@ and fail this gate.
 
 ### Run record
 
-| Run | Host | Assertions | Failed | Skipped | Evidence |
+| Run | Host | Confirmed checks | Failed | Skipped | Evidence |
 |---|---|---|---|---|---|
-| 1/3 | — | — | — | — | — |
-| 2/3 | — | — | — | — | — |
-| 3/3 | — | — | — | — | — |
+| 1/3 | **Unraid `tower`** | **22** | 0 | 0 | PASS in 15,633 ms |
+| 2/3 | **Unraid `tower`** | **22** | 0 | 0 | PASS in 15,905 ms |
+| 3/3 | **Unraid `tower`** | **22** | 0 | 0 | PASS in 15,929 ms |
 
-> **NOT RUN.** Filled at tranche close on the real Unraid host, `npm run go:serve-death-gate:three`.
+> **RUN 3/3, exit 0**, 2026-08-09T12:25:10−05:00 → 12:25:58−05:00 (48 s wall), via
+> `npm run go:serve-death-gate:three` with `PROJECTIOND_IMAGE=projectiond:phase2-frozen`.
+> Commit **`fcbf0c6f913909157c2e3427264710eca53e2d4d`**, tree sha256
+> `b6e5f5487c3f41d30de1a6e250ecc779be75879c59fb9a80b74abc0b365ede2f` (1601 tracked files, byte-identity
+> verified against the local checkout in both directions); image
+> **`sha256:9b701935af43bf71c126c9e59855bce7da33752e18dc5d1929c54320ab2c2798`**.
+> Host: Unraid 7.2.3, kernel 6.12.54-Unraid, Docker 27.5.1, Compose 2.40.3, Node v22.18.0.
+> **Real subjects, three times each:** the daemon exited **3** in phase A; the poller observed
+> **ready → not-ready → ready** (`RDR`, 2 ready / 2 not-ready samples) in phase B; the entry's
+> inode:size:mtime was **unchanged** across the remount. **0 skips.**
+> Cleanliness: containers/networks/volumes/`fuse.projectiond` counts identical before and after
+> (26/17/45/0), every run reported `cleanup: 0 mountpoints and no run directory left under the gate root`,
+> and the gate root was empty afterwards.
+> Evidence: `phase2-evidence/serve-death-three.log` on the host.
+>
+> "Confirmed checks" counts the gate's own confirmation lines per run. **This gate emits no assertion
+> total**, so that number is what it prints, not a count it computes — said plainly rather than dressed up
+> as an assertion count.
 
 ---
 
@@ -83,13 +100,23 @@ the table above is the flag the gate passes to the **daemon** in phase 2, not a 
 
 ### Run record
 
-| Run | Host | Assertions | Failed | Skipped | Evidence |
+| Run | Host | Confirmed checks | Failed | Skipped | Evidence |
 |---|---|---|---|---|---|
-| 1/3 | — | — | — | — | — |
-| 2/3 | — | — | — | — | — |
-| 3/3 | — | — | — | — | — |
+| 1/3 | **Unraid `tower`** | **16** | 0 | 0 | PASS in 16,799 ms |
+| 2/3 | **Unraid `tower`** | **16** | 0 | 0 | PASS in 17,129 ms |
+| 3/3 | **Unraid `tower`** | **16** | 0 | 0 | PASS in 17,247 ms |
 
-> **NOT RUN.** Filled at tranche close on the real Unraid host, `npm run go:stale-mount-gate:three`.
+> **RUN 3/3, exit 0**, 2026-08-09T12:25:58−05:00 → 12:26:50−05:00 (52 s wall), via
+> `npm run go:stale-mount-gate:three` with `PROJECTIOND_IMAGE=projectiond:phase2-frozen`.
+> Same frozen commit, tree sha256 and image as §1.
+> **Real subjects, three times each:** phase 1 stacked over the corpse and served generation 1, and a
+> requested SIGTERM unmounted it cleanly; **phase 2's `--refuse-stale` daemon exited 1** naming the corpse —
+> the first time that refusal has ever executed. The corpse was verified stale **nine times** (three per
+> run: before phase 1, after phase 1's clean stop, and after phase 2's refusal), each time by `statfs`
+> answering ENOTCONN while mountinfo still named `fuse.projectiond`. **0 skips.**
+> Cleanliness: counts identical before and after (26/17/45/0), `cleanup: 0 mountpoints and no run directory
+> left under the gate root` on every run, gate root empty afterwards.
+> Evidence: `phase2-evidence/stale-mount-three.log` on the host.
 
 ---
 
@@ -127,13 +154,32 @@ product behaviour exists; the evidence is what was missing.
 
 ### Run record
 
-| Run | Host | Assertions | Failed | Skipped | Evidence |
+| Run | Host | Confirmed checks | Failed | Skipped | Evidence |
 |---|---|---|---|---|---|
-| 1/3 | — | — | — | — | — |
-| 2/3 | — | — | — | — | — |
-| 3/3 | — | — | — | — | — |
+| 1/3 | **Unraid `tower`** | **32** | 0 | 0 | PASS in 89,569 ms |
+| 2/3 | **Unraid `tower`** | **32** | 0 | 0 | PASS in 89,810 ms |
+| 3/3 | **Unraid `tower`** | **32** | 0 | 0 | PASS in 89,636 ms |
 
-> **NOT RUN.** Filled at tranche close on the real Unraid host, `npm run go:sustained-outage-gate:three`.
+> **RUN 3/3, exit 0**, 2026-08-09T12:26:50−05:00 → 12:31:19−05:00 (269 s wall), via
+> `npm run go:sustained-outage-gate:three` with `PROJECTIOND_IMAGE=projectiond:phase2-frozen`.
+> Same frozen commit, tree sha256 and image as §1. Each run is ~90 s because the gate holds the object down
+> through the breaker's full **60 s cooldown** before releasing; that wait is the product's number, not the
+> gate's.
+> **Real subjects, three times each**, and the trip is reproducible to the request:
+>
+> | | run 1 | run 2 | run 3 |
+> |---|---|---|---|
+> | faulted reads to open the breaker | 40MiB **1009 ms/3 req**, 44MiB **585 ms/1 req**, 48MiB **354 ms/0 req** | 40MiB 1020 ms/3 req, 44MiB 574 ms/1 req, 48MiB 391 ms/0 req | 40MiB 1003 ms/3 req, 44MiB 594 ms/1 req, 48MiB 348 ms/0 req |
+>
+> The third read failing with **zero requests reaching the endpoint** is the open breaker refusing locally —
+> the only thing that produces that signature. Then, every run: **zero provider traffic during the hold**;
+> the namespace stayed the snapshot (same identity, same listing, same generation); and after the cooldown
+> the **first read after release succeeded and matched the tail probe digest** — the half-open probe closing
+> the breaker on real evidence. No lease or credential was found in the probe cache, the manifest or the
+> report. **0 skips.**
+> Cleanliness: counts identical before and after (26/17/45/0), `cleanup: 0 mountpoints and no run directory
+> left under the gate root` on every run, gate root empty afterwards.
+> Evidence: `phase2-evidence/sustained-outage-three.log` on the host.
 
 ---
 
@@ -240,11 +286,29 @@ nine runs, not a substitute for them.
 
 ## 8. What has actually been validated, and what is blocked
 
-This section is the tranche's evidence ledger. Everything in it was observed on **this Windows host with
-Docker Desktop**, in the worktree `projection-phase2-claude`. Nothing in it was observed on Unraid, and the
-distinction is the whole content of §8.2.
+This section is the tranche's evidence ledger. It has two halves and they are kept apart on purpose: the
+**offline** checks, taken on a Windows host with Docker Desktop, and the **nine strict runs**, taken on the
+real Unraid host `tower`. Only the second half is gate evidence. The first half is what makes a run worth
+attempting.
+
+**THE NINE RUNS HAPPENED, AND THEY ARE WHAT FOUND EVERYTHING THAT MATTERED.** Six defects were discovered by
+executing these gates for the first time, and not one of them was visible by reading — including the one that
+made `--auto-remount` recover for the daemon and for nobody else. The run records in §1–§3 carry the figures;
+§7 carries the defects; this section carries the boundary between what ran and what did not.
 
 ### 8.1 Observed, with the command that observed it
+
+**On the real Unraid host `tower`**, frozen commit and image in each run record:
+
+| What | Command | Result |
+|---|---|---|
+| serve-death, three consecutive fresh runs | `npm run go:serve-death-gate:three` | **3/3, exit 0**, 0 skips (§1) |
+| stale-mount, three consecutive fresh runs | `npm run go:stale-mount-gate:three` | **3/3, exit 0**, 0 skips (§2) |
+| sustained-outage, three consecutive fresh runs | `npm run go:sustained-outage-gate:three` | **3/3, exit 0**, 0 skips (§3) |
+| host cleanliness across all nine | container / network / volume / `fuse.projectiond` counts sampled before and after every sequence | **26 / 17 / 45 / 0 at every sample**, and every run printed `cleanup: 0 mountpoints and no run directory left under the gate root` |
+| the tree those runs used | `git archive HEAD` to the host, then a sorted per-file sha256 manifest compared in both directions | **byte-identical**, 1601 tracked files |
+
+**Offline, on the Windows development host:**
 
 | What | How it was checked | Result |
 |---|---|---|
@@ -263,23 +327,25 @@ distinction is the whole content of §8.2.
 
 ### 8.2 Not observed — the blockers, stated as blockers
 
-- **NO GATE HAS RUN. NOT ONE, NOT ONCE.** The three run records in §1–§3 and the bake-off's in
-  `docs/PROJECTION_PHASE_2_RCLONE_BAKEOFF.md` §4 are empty because they are true. Everything in §8.1 is a
-  check on **source and on embedded programs**; none of it starts a daemon, mounts a filesystem or reads a
-  byte through one.
-- **THE UNRAID HOST WAS NOT TOUCHED.** Closing this tranche needs nine runs (three gates × three consecutive
-  fresh) on a host where `/dev/fuse` is reachable from a container, plus at least one harness run. That host
-  is the Unraid box Phase 1 closed on. This work had no access to it and no authorization to deploy to it, so
-  **the runs are not skipped — they are not attempted, and an unattempted run is not a pass.**
-- **NO REAL PROVIDER, NO MEDIA SERVER, NO LIVE JELLYFIN.** No provider account was contacted and no live
-  media system was touched by any of this. The endpoints the gates and the harness use are the
-  in-repository fakes.
-- **THE `--refuse-stale` REFUSAL HAS STILL NEVER EXECUTED.** §7 defect 2 removed the switch that was hiding
-  it, so the evidence command now reaches it. Reaching it is not running it.
-- **AND THE MULTI-FRONTEND HARNESS HAS NEVER COMPLETED A STEP THAT NEEDED DOCKER.** Three of the eight
-  defects in its §7 mean it aborted within its first fifty lines on any host; they were found by executing it
-  against a stub `docker`, which is how far this host can take it. Getting past them is not a run — the
-  furthest it has been driven is the corpus step, where a stub cannot produce media.
+- **NO MEDIA SERVER WAS IN ANY OF THESE NINE RUNS, AND THAT IS BY DESIGN, NOT BY OMISSION.** These three
+  gates run the production image and nothing else: the namespace is a single local entry (serve-death,
+  stale-mount) or one HTTP-range object (sustained-outage). What they prove is the daemon's own mount
+  lifecycle. **They say nothing about Plex, Jellyfin or Emby**, and no assertion here should be read as
+  covering them — G7–G13 and G18 are where the media servers live.
+- **NO REAL PROVIDER, AND NO LIVE MEDIA SYSTEM.** No provider account was contacted. The endpoints are the
+  in-repository fakes (`cmd/fakerange`, `cmd/fakewebdav`). No live Jellyfin, Plex or Emby library, no user
+  Movies path, and no Docker resource outside these gates' own named containers, networks and gate roots was
+  touched.
+- **THE FIGURES ARE THIS HOST'S.** 16 s per serve-death run and 90 s per sustained-outage run are what a
+  128-core Threadripper with warm images does; they are timings, not thresholds, and no assertion depends on
+  them except the gate's own bounded deadlines.
+- **THE BREAKER'S TRIP SHAPE IS OBSERVED, NOT CONTRACTED.** Sustained-outage reproducibly needed three
+  faulted reads (3 requests, then 1, then a local refusal) to spend the 5-failure budget. That is what this
+  daemon did three times on this host; the gate asserts the **open breaker**, which is the property, and not
+  the request arithmetic, which is not.
+- **AND THE NINE RUNS CLOSE THE THREE GATES, NOT THE TRANCHE.** The multi-frontend harness is separate and
+  its state is recorded in `docs/PROJECTION_PHASE_2_RCLONE_BAKEOFF.md` §4 — that document, not this one, is
+  the authority on whether it has produced figures.
 
 ### 8.3 One inconsistency in the inherited baseline, reported rather than resolved
 
@@ -289,11 +355,17 @@ The revert at `373df01` restored **two** of them — `deploy/projection-rclone-c
 on a real Linux or Unraid host** — and left the third, `docs/PROJECTION_PHASE_1_RCLONE_COMPARISON.md`, still
 carrying §7.7 and its runs 18–20 table.
 
-So the repository currently says both things. **No test catches it**, because nothing cross-checks that
-document against the nonclaims list. It is left exactly as found: the revert is recorded as intentional, and
-which side is true — whether those Unraid runs happened — is not a question this tranche can answer from the
-tree. Resolving it means either re-reverting the document or restoring the two nonclaims, and both are
-decisions about what is known to have happened, not edits to make on inference.
+**This has since been investigated against the host rather than against the text, and neither side was
+edited.** The gate demonstrably ran there — its gate root exists, empty, timestamped, in exactly one of the
+four `catalog*` trees — but the **count** and the figures cannot be recovered, because that gate retains no
+per-run artifact. The full finding, and the two ways it can actually be closed, are in
+**`docs/PROJECTION_EVIDENCE_RECONCILIATION.md`** under `RCLONE-G22-LINUX-RUN-EXISTENCE`, registered
+**UNRESOLVED**.
+
+**It no longer goes unnoticed.** `test/projection-evidence-consistency.ts` fails closed on any contradiction
+between a universal "this has never run" denial and a run record that says it did, unless that contradiction
+is registered in the ledger with a STATUS — and a stale ledger entry whose contradiction has since gone is
+failed too, so it cannot hand a future one a free pass.
 
 ### 8.4 Reproducing all of it safely
 
@@ -321,3 +393,29 @@ npm run go:multi-frontend-comparison                    # the harness; no :three
 Run those on a host where `/dev/fuse` is reachable from a container. A `77` from any of them is a **skip**,
 and for the `:three` wrappers a skip is a failure — which is the contract that keeps an unrunnable host from
 producing a green record.
+
+**Reproducing the nine runs exactly.** The recorded runs were taken this way, and the two details that matter
+are the byte-identity check and the image override:
+
+```sh
+# 1. Put the exact committed bytes on the host — tracked files only, no working-tree drift.
+ssh tower 'mkdir -p /mnt/user/appdata/catalog-phase2-claude'
+git archive --format=tar HEAD | ssh tower 'tar -x -C /mnt/user/appdata/catalog-phase2-claude'
+
+# 2. Prove they are the same bytes, in both directions, before believing anything a run says.
+#    (A sorted per-file sha256 manifest; normalise sha256sum's binary marker if one side is Git Bash.)
+ssh tower 'cd /mnt/user/appdata/catalog-phase2-claude && find . -type f -print0 \
+  | LC_ALL=C sort -z | xargs -0 sha256sum | sed "s/ \*/  /" | sha256sum'
+
+# 3. Dependencies, then the production image built FROM THAT TREE, under its own tag.
+ssh tower 'cd /mnt/user/appdata/catalog-phase2-claude && npm ci && docker build -t projectiond:phase2-frozen ./projectiond'
+
+# 4. The nine runs. PROJECTIOND_IMAGE keeps them off any projectiond:phase1-local another tree left behind;
+#    the gates rebuild that tag from the tree they are in, so the bytes under test stay the frozen ones.
+ssh tower 'cd /mnt/user/appdata/catalog-phase2-claude && PROJECTIOND_IMAGE=projectiond:phase2-frozen \
+  npm run go:serve-death-gate:three'
+```
+
+**Do not run two of these at once on one host.** They bind fixed loopback ports, so a second concurrent run
+fails with `Bind for 127.0.0.1:8170 failed: port is already allocated` — which is a collision, not a defect,
+and it wastes a whole sequence.
