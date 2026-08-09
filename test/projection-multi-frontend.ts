@@ -98,6 +98,24 @@ test('THE COMPOSE FILE IS COMMITTED AND THE GATE ROOT IS IGNORED, like every oth
     'the gate root is not gitignored, so an interrupted run leaves credentials where `git add -A` reaches them');
 });
 
+test('THE CREDENTIAL THE DAEMON READS IS OWNER-ONLY, because the daemon refuses anything broader', () => {
+  // `SecretFile.loadLocked` fails terminally with "credential file permissions are too broad" when
+  // `perm&0o077 != 0`. The harness chmod'd the token 0644 — copied from G22, where only rclone reads it and
+  // no such rule applies. Here projectiond reads it, so every remote read returned EIO before the resolver
+  // was ever contacted: the endpoint's resolution counter never moved, Jellyfin reported a null size for all
+  // 44 remote-backed entries, and the harness blamed the corpus for "44 at the wrong size".
+  const gate = read(GATE);
+  const body = gate.split('\n').filter((line) => !line.trimStart().startsWith('#')).join('\n');
+  assert(/chmod 600 "\$WORK\/secret\/token"/.test(body),
+    'the token the daemon reads is not chmod 600; projectiond refuses a group- or world-readable credential');
+  assert(!/chmod 6[0-7][0-7] "\$WORK\/secret\/token" "\$WORK\/secret\/token\.sh"/.test(body),
+    'the token and its reader script are chmod\'d together again, which puts the secret at the script\'s mode');
+  // The daemon's own rule is the reason, so it is asserted here too: if the product ever stopped refusing a
+  // broad credential, this pin should be revisited deliberately rather than quietly becoming pointless.
+  assert(/perm&0o077 != 0/.test(read('projectiond/internal/source/resolver.go')),
+    'the daemon no longer refuses a group- or world-readable credential; this pin encodes that rule');
+});
+
 test('A CREDENTIAL ASSERTION PROBES THE PATH THE CREDENTIAL ACTUALLY GUARDS', () => {
   // Arm A's credential checks probed `/direct/<ref>` with a wrong bearer token and expected a refusal.
   // `/direct/` is UNAUTHENTICATED BY CONSTRUCTION — `handleDirect` calls `serveRange` with no auth check,

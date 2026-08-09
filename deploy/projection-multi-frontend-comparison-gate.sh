@@ -364,7 +364,25 @@ printf '%s' "$DAV_TOKEN" > "$WORK/secret/token"
 cat > "$WORK/secret/token.sh" <<'TOKENSH'
 cat /secret/token
 TOKENSH
-chmod 644 "$WORK/secret/token" "$WORK/secret/token.sh"
+# THE TOKEN IS 0600, AND 0644 MADE ARM A UNABLE TO READ A SINGLE REMOTE BYTE.
+#
+# `projectiond` REFUSES A CREDENTIAL ANYBODY CAN READ. `SecretFile.loadLocked` fails terminally with
+# `CondSourceAuthRefused` — "credential file permissions are too broad" — when `perm&0o077 != 0`, which is
+# the daemon being right: a secret readable by every user on the host is not a secret. The refusal happens
+# BEFORE the resolver is contacted, so from outside it looks like nothing at all: every remote read returned
+# EIO, the endpoint's resolution counter never moved off the two the gate's own probes had made, and Jellyfin
+# reported `Size: null` for all 44 remote-backed entries while the six local ones were fine. The harness then
+# blamed the corpus — "44 at the wrong size" — for a credential the daemon had declined to load.
+#
+# 0644 CAME FROM G22, WHERE IT IS CORRECT. There the token is read by RCLONE through a bearer-token-command,
+# not by projectiond, so no permission rule applies. Copying the idiom into a topology where the DAEMON reads
+# the secret imported a mode the daemon exists to reject.
+#
+# Every container that reads this file runs as root — the daemon (`--user 0:0`), both endpoints, and the
+# rclone mount client (`--user 0:0`) — so owner-only costs nothing. `token.sh` stays 0755: it is a script
+# that CATs the secret, not the secret.
+chmod 600 "$WORK/secret/token"
+chmod 755 "$WORK/secret/token.sh"
 chmod 755 "$WORK/secret"
 test "${#DAV_TOKEN}" -ge 8 \
   || die "the endpoint credential is under 8 bytes, so a search for it could not be decisive"
@@ -791,6 +809,12 @@ LEAK
 # traffic: neither endpoint counts them, exactly as it does not count /counters, and the control surface is
 # the only way a gate outside the process can drive the barrier. The request comes from the pinned verifier
 # image so it needs no curl and no credential handling.
+# THE ALIAS CARRIES THE PORT, and it did not — so every control call went to port 80.
+#
+# `control_hold` and `control_release` compose `http://${ENDPOINT_ALIAS}/control/...`, and the alias was
+# the bare container name. Nothing listens on 80 in either endpoint, so R1's very first action failed
+# with "the endpoint did not accept a hold on obj-projection-barrier" — the endpoint was healthy and
+# had simply never been asked. Everywhere else in this harness the same host is written with its port.
 control_hold()    { docker run --rm --network "$NETWORK" "$VERIFY_IMAGE" \
                       wget -q -O /dev/null --post-data= "http://${ENDPOINT_ALIAS}/control/hold/$1" \
                       || die "the endpoint did not accept a hold on $1"; }
@@ -834,6 +858,10 @@ while [ "$index" -le "$(( CORPUS_COUNT - CORPUS_LOCAL ))" ]; do
   index=$(( index + 1 ))
 done
 
+# ORDER IS LOAD-BEARING BELOW, and inserting the rotated object broke it. The `window` assertion treats
+# the FIRST --non-corpus-objects ordinals as non-corpus, so the canary and the rotated object must BOTH
+# precede the barrier. With the barrier registered second it was scored as non-corpus, and the 11 MiB
+# the scan legitimately read from it came back as "bytes outside the corpus".
 docker run -d --name "$PD_RANGE_CONTAINER" --network "$NETWORK" --network-alias fakerange \
   -p "127.0.0.1:${PD_RANGE_PORT}:8099" \
   -v "$PWD:/workspace" -w /workspace/projectiond -v "$WORK/out:/out" -v "$WORK/remote:/remote:ro" \
@@ -842,8 +870,8 @@ docker run -d --name "$PD_RANGE_CONTAINER" --network "$NETWORK" --network-alias 
   "$GO_IMAGE" go run ./cmd/fakerange --addr 0.0.0.0:8099 --lease-prefix "$LEASE_MARKER" \
   --token-file /secret/token --public-base-url "http://fakerange:8099" --max-hold "$HOLD_MAX" \
   --file-object "${CANARY_REF}=/remote/${CANARY_FILE}" \
-  --file-object "${LARGE_REF}=/remote/${LARGE_FILE}" \
   --file-object "${ROT_REF}=/remote/${ROT_FILE}" \
+  --file-object "${LARGE_REF}=/remote/${LARGE_FILE}" \
   "${CORPUS_OBJECT_FLAGS[@]}" --emit /out/objects.json >/dev/null
 
 # ARM A'S LINES ARE THE SHARED CORPUS DESCRIPTION'S INPUT. The endpoint emits objects.json into the shared
@@ -853,7 +881,7 @@ ARM_OUT="$WORK/arm-a/out"
 ARM_REL="$REL/arm-a"
 FRONTEND_CONTAINER="$PD_MOUNT_CONTAINER"
 ARM_TOKEN="$DAV_TOKEN"
-ENDPOINT_ALIAS="fakerange"
+ENDPOINT_ALIAS="fakerange:8099"
 ARM_CLI="src/ops/projection-three-server-concurrency-cli.ts"
 DAV_BASE="http://127.0.0.1:${PD_RANGE_PORT}"
 
@@ -955,8 +983,19 @@ step "publishing generation 1: ONE LOCAL SEED ENTRY, AND NOTHING REMOTE"
 register root --id media --kind local
 register root --id vault --kind http-range
 register version --key seed --size "$SEED_SIZE" --mtime 2026-06-01T10:00:00.000Z
+# THE SEED'S SOURCE NAMES THE SUBDIRECTORY THE FILE IS ACTUALLY IN, and it did not.
+#
+# The file is generated into `$WORK/media/seed/`, but the source said `local:media:$SEED_FILE` —
+# root-relative — so the daemon looked for `$WORK/media/Projection Seed (2026).mp4`, which does not exist,
+# and every read of the seed returned EIO. G18 gets away with that exact source string because it writes its
+# seed AT the local root; this harness keeps the file in `seed/` because arms B/C serve it from there
+# (`--seed-object … /media-src/media/seed/…`), so the SOURCE is what has to name the subdirectory.
+#
+# It surfaced two layers away from the cause: Jellyfin's probe failed with `ffprobe … Input/output error`,
+# the item was catalogued with `Size: null`, and the corpus assertion reported "1 at the wrong size" against
+# the one file it had been unable to read at all.
 register entry --item "b0000000-0000-4000-8000-000000000002" --version-key seed --path "$SEED_PATH" \
-  --source "local:media:$SEED_FILE"
+  --source "local:media:seed/$SEED_FILE"
 
 publish > "$ARM_OUT/publish-1.json"
 test "$(field outcome  < "$ARM_OUT/publish-1.json")" = "published" || die "generation 1 was not published"
@@ -1077,6 +1116,25 @@ node "$REL/out/seed-expect.cjs" "$ARM_REL/out/seed-expected.json" "$SEED_FILE" "
 plex scan --state "$PLEX_STATE" --expect-file "$ARM_REL/out/seed-expected.json" \
   --out "$ARM_REL/out/plex-seed-items.json" --label seed \
   || { logs_tail "$PLEX_CONTAINER"; die "Plex never settled after its own library-creation scan"; }
+# ALL THREE ARE SETTLED ON THE SEED, NOT JUST PLEX — and the missing two cost a whole run to find.
+#
+# G18 waits only for Plex here, because Plex is the one that scans a section the instant it is created. That
+# is a statement about who scans UNPROMPTED, not about who has finished. Jellyfin and Emby also index the
+# one-entry generation when their library is added, and if the corpus lands while that is still in flight the
+# seed's own media probe can be superseded: the item ends up catalogued with `Size: null` and never revisited,
+# because the later scan only probes what it has not seen.
+#
+# That is exactly what happened. With the credential fixed, arm A matched **49 of 50** identities and the one
+# that failed was the SEED — `expected=33106 observed=-1`, the entry that had been there longest. So the
+# other two get the same explicit settle the harness already gives Plex, against the same one-entry
+# expectation, and the corpus is published only once all three agree on it.
+jellyfin scan --state "$JF_STATE" --expect-file "$ARM_REL/out/seed-expected.json" \
+  --out "$ARM_REL/out/jellyfin-seed-items.json" --label seed \
+  || { logs_tail "$JF_CONTAINER"; die "Jellyfin never settled on the seed entry before the corpus"; }
+emby scan --state "$EMBY_STATE" --expect-file "$ARM_REL/out/seed-expected.json" \
+  --out "$ARM_REL/out/emby-seed-items.json" --label seed \
+  || { logs_tail "$EMBY_CONTAINER"; die "Emby never settled on the seed entry before the corpus"; }
+echo "  all three servers have settled on the one-entry generation; the corpus is next"
 
 # ----------------------------------------------------------------------------------------------------------
 step "publishing the ~50-entry corpus — AFTER every library exists, and BEFORE anything has scanned it"
@@ -1100,7 +1158,15 @@ test "$CORPUS_TOTAL" -ge 48 || die "the corpus is $CORPUS_TOTAL entries, not the
 REMOTE_ENTRIES="$(field remoteEntries    < "$WORK/out/corpus-totals.json")"
 SMALL_REMOTE_BYTES="$(field smallRemoteBytes < "$WORK/out/corpus-totals.json")"
 LARGE_REMOTE_BYTES="$(field largeRemoteBytes < "$WORK/out/corpus-totals.json")"
-REGISTERED_OBJECTS=$(( 1 + 1 + CORPUS_COUNT - CORPUS_LOCAL ))
+# THE ROTATED OBJECT IS COUNTED, AND IT WAS NOT — this expression was copied from G18, which has no R2.
+#
+# The endpoint is started with FOUR kinds of object: the canary, the barrier, the ROTATED object, and the
+# remote corpus. G18 registers only the first, second and fourth, so `1 + 1 + CORPUS_COUNT - CORPUS_LOCAL` is
+# right there and one short here. The telemetry coherence check compares this number against the endpoint's
+# own per-object arrays and refused the run: "the before snapshot's objectBytes has 45 entries, not the 44
+# objects this gate registered" — the endpoint counting correctly and the gate counting from a formula that
+# predates the object it added.
+REGISTERED_OBJECTS=$(( 1 + 1 + 1 + CORPUS_COUNT - CORPUS_LOCAL ))
 echo "  $REMOTE_ENTRIES remote entries; $LARGE_REMOTE_BYTES bytes above the single-probe threshold and"
 echo "  $SMALL_REMOTE_BYTES below it; $REGISTERED_OBJECTS objects registered at the endpoint"
 # ----------------------------------------------------------------------------------------------------------
@@ -1159,8 +1225,10 @@ drive verify-corpus --server emby     --catalogue "$ARM_REL/out/catalogue-emby.j
 # ----------------------------------------------------------------------------------------------------------
 step "G14a-G17 across the simultaneous window, unchanged"
 # ----------------------------------------------------------------------------------------------------------
+# TWO non-corpus objects here, not G18's one: the canary AND the rotated object are served by the endpoint
+# from the first instant, and neither is inside the library the servers scan.
 drive window --before "$ARM_REL/out/counters-before.json" --after "$ARM_REL/out/counters-after.json" \
-  --gate TS3 --objects "$REGISTERED_OBJECTS" --non-corpus-objects 1 \
+  --gate TS3 --objects "$REGISTERED_OBJECTS" --non-corpus-objects 2 \
   --remote-entries "$REMOTE_ENTRIES" \
   --large-bytes "$LARGE_REMOTE_BYTES" --small-bytes "$SMALL_REMOTE_BYTES" \
   --probe-cache-before "${PROBE_CACHE_BEFORE:-0}" --probe-cache-after "${PROBE_CACHE_AFTER:-0}"
@@ -1218,6 +1286,10 @@ test "$R2_BEFORE_SHA" = "$ROT_SHA" \
 # ROTATE THE ENDPOINT: the new credential goes into the same file, and the endpoint restarts against it.
 printf '%s' "$ROTATED_TOKEN" > "$WORK/secret/token"
 docker rm -f "$PD_RANGE_CONTAINER" >/dev/null
+# ORDER IS LOAD-BEARING BELOW, and inserting the rotated object broke it. The `window` assertion treats
+# the FIRST --non-corpus-objects ordinals as non-corpus, so the canary and the rotated object must BOTH
+# precede the barrier. With the barrier registered second it was scored as non-corpus, and the 11 MiB
+# the scan legitimately read from it came back as "bytes outside the corpus".
 docker run -d --name "$PD_RANGE_CONTAINER" --network "$NETWORK" --network-alias fakerange \
   -p "127.0.0.1:${PD_RANGE_PORT}:8099" \
   -v "$PWD:/workspace" -w /workspace/projectiond -v "$WORK/out:/out" -v "$WORK/remote:/remote:ro" \
@@ -1226,8 +1298,8 @@ docker run -d --name "$PD_RANGE_CONTAINER" --network "$NETWORK" --network-alias 
   "$GO_IMAGE" go run ./cmd/fakerange --addr 0.0.0.0:8099 --lease-prefix "$LEASE_MARKER" \
   --token-file /secret/token --public-base-url "http://fakerange:8099" --max-hold "$HOLD_MAX" \
   --file-object "${CANARY_REF}=/remote/${CANARY_FILE}" \
-  --file-object "${LARGE_REF}=/remote/${LARGE_FILE}" \
   --file-object "${ROT_REF}=/remote/${ROT_FILE}" \
+  --file-object "${LARGE_REF}=/remote/${LARGE_FILE}" \
   "${CORPUS_OBJECT_FLAGS[@]}" --emit /out/objects.json >/dev/null
 wait_ready "$PD_RANGE_CONTAINER" "http://fakerange:8099/counters"
 echo "  the endpoint restarted onto the rotated credential"
@@ -1490,7 +1562,7 @@ run_rclone_arm() {
   ARM_DIR="$WORK/$arm"
   FRONTEND_CONTAINER="$RC_MOUNT_CONTAINER"
   ARM_TOKEN="$DAV_TOKEN"
-  ENDPOINT_ALIAS="fakedav"
+  ENDPOINT_ALIAS="fakedav:8098"
   ARM_CLI="src/ops/projection-rclone-comparison-cli.ts"
   DAV_BASE="http://127.0.0.1:${RC_DAV_PORT}"
   RC_BASE="http://127.0.0.1:${RC_RC_PORT}"
@@ -1595,6 +1667,13 @@ run_rclone_arm() {
   plex scan --state "$PLEX_STATE" --expect-file "$rel_arm/out/seed-expected.json" \
     --out "$rel_arm/out/plex-seed-items.json" --label seed \
     || { logs_tail "$RC_PLEX_CONTAINER"; die "Plex never settled after its own library-creation scan"; }
+  # Jellyfin and Emby settle on the seed too, for the reason arm A's block gives.
+  jellyfin scan --state "$JF_STATE" --expect-file "$rel_arm/out/seed-expected.json" \
+    --out "$rel_arm/out/jellyfin-seed-items.json" --label seed \
+    || { logs_tail "$RC_JF_CONTAINER"; die "Jellyfin never settled on the seed entry before the corpus"; }
+  emby scan --state "$EMBY_STATE" --expect-file "$rel_arm/out/seed-expected.json" \
+    --out "$rel_arm/out/emby-seed-items.json" --label seed \
+    || { logs_tail "$RC_EMBY_CONTAINER"; die "Emby never settled on the seed entry before the corpus"; }
 
   # ------------------------------------------------------------------------------------------------------
   step "ARM $arm: revealing the corpus — AFTER every library exists, and BEFORE anything has listed or read it"
