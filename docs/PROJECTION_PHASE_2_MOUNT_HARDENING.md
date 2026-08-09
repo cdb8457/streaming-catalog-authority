@@ -291,6 +291,15 @@ This section is the tranche's evidence ledger. It has two halves and they are ke
 real Unraid host `tower`. Only the second half is gate evidence. The first half is what makes a run worth
 attempting.
 
+**WHICH COMMIT THE RUNS BELONG TO, since the record cannot be written before the run it records.** The nine
+runs were taken on **`b86af018b0145abdb95df090389c8f13984d4cc2`**, and the commit that writes these figures
+necessarily comes after them. Its diff against that tree is **documentation only** — `git diff --name-only
+b86af01..HEAD` lists exactly this file and the roadmap, and `deploy/`, `projectiond/`, `test/` and
+`package.json` are byte-identical. So the executable bytes these runs exercised are the bytes in the tree
+now. **Any later change to those directories voids the nine counts**, and the rule is not softened by the
+fact that a record is inconvenient to place: it is satisfied because nothing executable moved, not because
+the recording was exempted.
+
 **THE NINE RUNS HAPPENED, AND THEY ARE WHAT FOUND EVERYTHING THAT MATTERED.** Six defects were discovered by
 executing these gates for the first time, and not one of them was visible by reading — including the one that
 made `--auto-remount` recover for the daemon and for nobody else. The run records in §1–§3 carry the figures;
