@@ -1883,6 +1883,18 @@ run_rclone_arm() {
   # ------------------------------------------------------------------------------------------------------
   R3_START="$(date +%s%3N)"
   docker rm -f "$RC_MOUNT_CONTAINER" >/dev/null
+  # THE CORPSE IS CLEARED BEFORE THE CLIENT COMES BACK, because rclone cannot stack over one.
+  #
+  # Killing a FUSE client leaves a dead mount at the mountpoint — the same corpse arm A's daemon meets at
+  # startup and deliberately STACKS over, which is the whole subject of `go:stale-mount-gate`. rclone has no
+  # such behaviour: its remount runs `fusermount` against a path that still carries a dead mount and dies
+  # with `failed to mount FUSE fs: fusermount: exit status 1`, so R3 reported "the mount never came back".
+  #
+  # That difference is a FINDING about the two frontends and not a fault in the harness, so the corpse is
+  # cleared here rather than pretended away: the lazy unmount is the same one `projection_gate_cleanup_run`
+  # performs, run through the shared helper so this arm's restart measures the client coming back rather than
+  # the mountpoint it was handed.
+  projection_gate_unmount_run "$GATE_ROOT" "$WORK" "$VERIFY_IMAGE" || true
   start_rc_mount "$cache_mode" "$work_arm"
   await_path "$SEED_PATH" \
     || { logs_tail "$RC_MOUNT_CONTAINER"; die "the mount never came back after the restart"; }
@@ -1966,8 +1978,16 @@ run_rclone_arm() {
   docker rm -f "$RC_PLEX_CONTAINER" "$RC_JF_CONTAINER" "$RC_EMBY_CONTAINER" >/dev/null 2>&1 || true
   docker stop -t 30 "$RC_MOUNT_CONTAINER" >/dev/null
   namespace_gone "the mount client" || die "the namespace is still visible after the mount client stopped"
+  # THE MOUNT CLIENT IS REMOVED, NOT JUST STOPPED, because arm C reuses its name.
+  #
+  # This arm ran twice — once as arm-b, once as arm-c — and the header says so: "the two rclone arms reuse
+  # the same name templates because they run sequentially". Sequential reuse requires the name to be FREE,
+  # and a stopped container still holds it. Arm B stopped the client and removed only the media servers and
+  # the endpoint, so arm C's `docker run` died with `Conflict. The container name
+  # "/projection-mf-rc-mount-<pid>" is already in use`. It went unseen until arm B first ran to completion.
+  docker rm -f "$RC_MOUNT_CONTAINER" >/dev/null 2>&1 || true
   docker rm -f "$RC_DAV_CONTAINER" >/dev/null 2>&1 || true
-  echo "  $arm stopped; the namespace is gone"
+  echo "  $arm stopped; the namespace is gone and its containers are removed"
 }
 
 run_rclone_arm "arm-b" "off"
