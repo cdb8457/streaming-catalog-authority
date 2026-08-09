@@ -428,6 +428,116 @@ test('NO GATE READS DOCKER RUN\'S OWN REFUSAL AS THE MOUNT\'S OR THE DAEMON\'S A
     'timed_read_fail no longer distinguishes a read that failed from a probe that never ran');
 });
 
+test('THE REMOUNT LOOP UNMOUNTS ONLY WHAT IS OURS, so --auto-remount recovers for consumers too', () => {
+  // Found by the first real execution of this gate, on the Unraid host. The cleanup unmount ran
+  // unconditionally — but a serve-loop death means our FUSE mount is ALREADY gone, so it unmounted whatever
+  // was underneath: the operator's bind, the mount carrying the namespace out of the container. Measured in
+  // the daemon's namespace: `/mnt/projection … shared:11 - fuse.shfs` before the remount, gone after, leaving
+  // only `fuse.projectiond … shared:59` in a peer group with no host peer. The daemon logged a successful
+  // remount, /readyz said ready, the process lived — and no consumer could see a file.
+  const main = read('projectiond/cmd/projectiond/main.go');
+  const loop = main.slice(main.indexOf('func remountLoop('));
+  assert(loop.length > 0, 'main.go no longer has a remountLoop');
+  const guard = loop.indexOf('shouldUnmountBeforeRemount(');
+  const unmount = loop.indexOf('.Unmount()');
+  assert(guard >= 0, 'the remount loop no longer consults a guard before its cleanup unmount');
+  assert(unmount >= 0 && guard < unmount,
+    'the remount loop unmounts before deciding whether the mount is ours, so it can remove the bind that '
+    + 'carries the namespace to every consumer');
+  assert(/fusefs\.ProbeMountpoint\(cfg\.MountPoint\)/.test(loop),
+    'the guard is not driven by the mountpoint probe, so it is guessing what is at the path');
+  // The decision is a named function so a test can drive the shipped one, and it must refuse a foreign mount.
+  assert(/func shouldUnmountBeforeRemount\(probe fusefs\.ProbeResult\) bool/.test(main),
+    'the unmount decision is inlined, so no off-host test can drive the shipped decision');
+  assert(read('projectiond/cmd/projectiond/remount_linux_test.go').includes('shouldUnmountBeforeRemount('),
+    'no test drives the shipped unmount decision');
+  const decision = main.slice(main.indexOf('func shouldUnmountBeforeRemount('));
+  assert(/case fusefs\.ProbeForeign, fusefs\.ProbeEmpty:\s*\n\s*return false/.test(decision),
+    'the decision no longer explicitly refuses a foreign or empty mount point');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// THE INSTRUMENT MUST NOT PREVENT THE PHENOMENON. Found on the real host, on the first run that ever happened.
+//
+// Phase B was unpassable, and nothing in its output said why. The readyz poller was started with
+// `-v "$WORK:/work:ro"`, and `$WORK` CONTAINS `$WORK/mnt` — so binding it copied the live `fuse.projectiond`
+// mount into the poller's own namespace, at docker's default rprivate propagation. That copy is a reference
+// the host cannot revoke. The external `umount -l` then removed the mount from the host and from the daemon,
+// but the FUSE CONNECTION stayed alive because the poller still held it: the serve loop never read EOF, never
+// died, never remounted, and kept answering `/readyz` with `ready:true` over a namespace unmounted everywhere
+// else. Measured after the umount: `fuse.projectiond` present 0 times in the daemon's namespace, 0 times on
+// the host, and once in the poller's, at `/work/mnt`.
+//
+// The gate then blamed the daemon for a mount the gate itself had pinned.
+// ---------------------------------------------------------------------------------------------------------
+
+test('NO CONTAINER TAKES A PRIVATE COPY OF THE RUN DIRECTORY, which would pin the mount it is watching', () => {
+  // The rule is about propagation, not about which container. A bind of the run root or the gate root at
+  // docker's DEFAULT propagation is a private copy of every mount underneath it, including the one the gate
+  // is about to unmount. `rshared` participates in propagation instead of snapshotting it, and a single FILE
+  // bind copies no subtree at all. Those are the only two safe shapes.
+  for (const gate of GATES) {
+    const text = read(`deploy/projection-${gate}-gate.sh`);
+    const body = text.split('\n').filter((line) => !line.trimStart().startsWith('#')).join('\n');
+    for (const match of body.matchAll(/-v "\$(WORK|GATE_ROOT|_gate_root)(:[^"]*)"/g)) {
+      const spec = `${match[1] as string}${match[2] as string}`;
+      assert(/:rshared(:ro)?$|:ro,rshared$/.test(match[2] as string),
+        `${gate}: '-v "$${spec}"' binds the run directory at default propagation, taking a private copy of `
+        + 'every mount under it — including the mountpoint. An external umount then cannot reach the FUSE '
+        + 'connection, and the serve-loop death the gate is trying to cause simply does not happen');
+    }
+  }
+  // ...and the serve-death poller specifically takes the one file it needs.
+  const serveDeath = read('deploy/projection-serve-death-gate.sh');
+  const poller = serveDeath.slice(serveDeath.indexOf('docker run -d --name "$PROBE_CONTAINER"'));
+  assert(/-v "\$WORK\/readyz-probe\.sh:\/readyz-probe\.sh:ro"/.test(poller.slice(0, 400)),
+    'the readyz poller no longer binds just the probe script, so it may be holding the mount open again');
+  assert(!/-v "\$WORK:/.test(poller.slice(0, 400)),
+    'the readyz poller binds the whole run directory again, which pins the mount and prevents the death');
+});
+
+test('PHASE B PROVES THE DEATH WAS OBSERVED BEFORE IT CONCLUDES ANYTHING FROM READINESS', () => {
+  // With the mount pinned, `/readyz` never stopped answering ready — so `await_readyz` passed, and the first
+  // assertion to FAIL was the identity comparison, which reported "the entry identity changed across the
+  // remount". There had been no remount. An assertion order that makes the wrong subject fail first turns a
+  // one-line diagnosis into an investigation.
+  // Comments discuss these names too, so the order is read from CODE only.
+  const text = read('deploy/projection-serve-death-gate.sh')
+    .split('\n').map((line) => (line.trimStart().startsWith('#') ? '' : line)).join('\n');
+  const phaseB = text.indexOf('step "phase B');
+  assert(phaseB > 0, 'the serve-death gate no longer has a phase B');
+  const rest = text.slice(phaseB);
+  const transition = rest.indexOf('docker wait "$PROBE_CONTAINER"');
+  const readiness = rest.indexOf('await_readyz 80');
+  const identity = rest.indexOf('STAT_AFTER=');
+  assert(transition > 0 && readiness > 0 && identity > 0, 'phase B lost one of its three recovery assertions');
+  assert(transition < readiness,
+    'phase B concludes the daemon "came back" from /readyz before reading the transition the poller was '
+    + 'started to witness; a daemon that never noticed the umount passes that check');
+  assert(transition < identity,
+    'phase B compares the entry identity before it has established that a death occurred at all');
+});
+
+test('AN ENTRY STAT THROUGH THE MOUNT FAILS AS A GATE ASSERTION, not as a raw shell abort', () => {
+  // `STAT_AFTER="$(docker run ... stat ...)"` under `set -e` ends the script the moment the entry is missing:
+  // the transcript's last line is busybox's `stat: can't stat '/mnt/...'`, the gate's own `die` never runs,
+  // and the run's final word names no assertion and no subject. That was the single most important failure
+  // this phase can have, and it was the one the gate could not describe.
+  const text = read('deploy/projection-serve-death-gate.sh');
+  assert(/^stat_entry\(\)/m.test(text),
+    'the identity stat is not a function, so its failure cannot be caught and reported');
+  const body = text.split('\n').filter((line) => !line.trimStart().startsWith('#')).join('\n');
+  assert(!/STAT_(BEFORE|AFTER)="\$\(docker run/.test(body),
+    'an identity stat inlines `docker run` in a command substitution, so a missing entry aborts the shell '
+    + 'before the gate can say which assertion failed');
+  for (const which of ['STAT_BEFORE', 'STAT_AFTER']) {
+    const at = body.indexOf(`${which}="$(stat_entry)"`);
+    assert(at >= 0, `${which} no longer goes through stat_entry`);
+    assert(/\|\|\s*\\?\s*$|\|\| die/.test(body.slice(at, at + 120)),
+      `${which} does not handle a failed stat, so it still aborts rather than reporting`);
+  }
+});
+
 test('THE SERVE-DEATH POLLER PROVES AN ORDER, not a population of samples', () => {
   // `ready_ok >= 2` was described as "ready before and after the death" and satisfied by two ready samples
   // half a second apart BEFORE it — so a daemon that died and never came back passed the assertion whose

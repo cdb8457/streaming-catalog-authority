@@ -209,13 +209,60 @@ func main() {
 // backoff, so a dying host does not burn CPU remounting forever. Each attempt first does a best-effort
 // unmount of the dead handle, because a serve-loop death can leave the mountpoint half-attached and the next
 // Mount() is a stack over whatever is there. On success the caller's handle is replaced and it returns true.
+// shouldUnmountBeforeRemount reports whether the remount loop's cleanup unmount is allowed to run, given what
+// the probe found at the mount point.
+//
+// IT IS A NAMED FUNCTION RATHER THAN AN `if` INSIDE THE LOOP so that a test can drive the shipped decision
+// instead of an imitation of it, and so the table below is exhaustive on ProbeResult rather than being a
+// condition somebody widens later. The rule is one sentence: unmount only what is ours.
+//
+//   - ProbeLiveProjectiond / ProbeStaleProjectiond — ours, alive or a corpse. Ours to remove.
+//   - ProbeForeign — somebody else's, and in every containerised topology it is the OPERATOR'S BIND, the one
+//     thing that must survive for the remount to be visible to anyone. Unmounting it is the defect.
+//   - ProbeEmpty — nothing to unmount; calling unmount would act on whatever is underneath.
+func shouldUnmountBeforeRemount(probe fusefs.ProbeResult) bool {
+	switch probe {
+	case fusefs.ProbeLiveProjectiond, fusefs.ProbeStaleProjectiond:
+		return true
+	case fusefs.ProbeForeign, fusefs.ProbeEmpty:
+		return false
+	default:
+		// An unrecognised result is not a licence to unmount something unidentified.
+		return false
+	}
+}
+
 func remountLoop(d *daemon.Daemon, cfg daemon.Config, debug, strictMount bool, mount **fusefs.Mounted) bool {
 	const attempts = 3
 	for attempt := 1; attempt <= attempts; attempt++ {
 		time.Sleep(time.Duration(attempt) * time.Second)
 		logLine(fmt.Sprintf("remount attempt %d/%d", attempt, attempts))
-		if err := (*mount).Unmount(); err != nil {
-			logLine("cleanup unmount refused: " + err.Error())
+		// THE CLEANUP UNMOUNT MAY ONLY EVER TOUCH OUR OWN MOUNT, AND WITHOUT THIS GUARD IT TOOK SOMEBODY
+		// ELSE'S — WHICH MADE --auto-remount RECOVER FOR THE DAEMON AND FOR NOBODY ELSE.
+		//
+		// A serve-loop death means the FUSE mount is ALREADY gone; that is what killed the loop. What is left
+		// at the mount point is whatever was underneath it, and in every containerised topology this daemon
+		// ships in that is the bind the operator mounted the directory through — the mount that carries the
+		// namespace out to the host and to the media servers. Unconditionally unmounting here removed it.
+		//
+		// Measured on the real Unraid host, in the serve-death gate's phase B: before the remount the
+		// daemon's namespace had `/mnt/projection … shared:11 - fuse.shfs` (the bind, peered with the host);
+		// after it, that line was gone and only `fuse.projectiond … shared:59` remained. The remount had
+		// landed on a plain directory in the container's own root, in a fresh peer group with no host peer.
+		// The daemon logged "remounted; serving generation 1", /readyz answered ready, the process stayed
+		// alive — and no consumer outside the container could see a single file. Every assertion the daemon
+		// makes about itself was true and the recovery was worthless.
+		//
+		// So the probe decides. It is one statfs and one read of mountinfo, it never waits, and it answers
+		// the only question that matters here: is the thing at this path OURS to unmount?
+		probe := fusefs.ProbeMountpoint(cfg.MountPoint)
+		if shouldUnmountBeforeRemount(probe) {
+			if err := (*mount).Unmount(); err != nil {
+				logLine("cleanup unmount refused: " + err.Error())
+			}
+		} else {
+			logLine(fmt.Sprintf("nothing of ours at %s to clean up (%s); leaving it mounted",
+				cfg.MountPoint, probe))
 		}
 		next, err := fusefs.Mount(d, cfg.MountPoint, fusefs.MountSettings{
 			Debug: debug, StrictDirectMount: strictMount,

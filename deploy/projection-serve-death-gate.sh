@@ -316,8 +316,18 @@ echo "  /readyz answers ready=true again and the entry is visible through the fr
 # a remount that served something different — another generation, an empty namespace, a fresh inode — would
 # change what a consumer sees. Inode and mtime are the two things G7's churn assertions already watch; the
 # remount must not move either.
-STAT_BEFORE="$(docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" \
-  sh -c "stat -c '%i:%s:%Y' '/mnt/$ENTRY_PATH'")"
+# THE STAT IS A FUNCTION SO ITS FAILURE IS THE GATE'S TO REPORT, NOT THE SHELL'S.
+#
+# Inline, `STAT_AFTER="$(docker run ... stat ...)"` under `set -e` aborts the whole script the instant the
+# entry is missing — the transcript ends with busybox's `stat: can't stat '/mnt/...'` and the gate's own
+# `die` never runs, so the run's last word is a message that names no assertion and no subject. The failure
+# that mattered most in this phase is exactly that one, and it was the one the gate could not describe.
+stat_entry() {
+  docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" \
+    sh -c "stat -c '%i:%s:%Y' '/mnt/$ENTRY_PATH' 2>&1"
+}
+STAT_BEFORE="$(stat_entry)" \
+  || die "the entry could not be stat'd through the mount before the death: $STAT_BEFORE"
 echo "  entry identity before the death: inode:size:mtime=$STAT_BEFORE"
 
 # THE READYZ POLLER. It shares the daemon's network namespace and samples /readyz every half second through
@@ -358,39 +368,57 @@ while [ "$i" -lt 120 ]; do
 done
 echo "ready_seq=$seq ready_ok=$ok ready_dead=$dead"
 PROBE
+# THE POLLER IS GIVEN ONE FILE, NOT THE RUN DIRECTORY, AND THAT IS THE DIFFERENCE BETWEEN OBSERVING THE DEATH
+# AND PREVENTING IT.
+#
+# THIS USED TO BE `-v "$WORK:/work:ro"`, AND IT MADE PHASE B UNPASSABLE FOR A REASON NOTHING IN THE OUTPUT
+# NAMED. `$WORK` CONTAINS `$WORK/mnt`, so binding it copied the live `fuse.projectiond` mount into the
+# poller's own mount namespace — docker's default propagation for `-v` is rprivate, so that copy is a
+# reference the poller holds and the host cannot revoke. The external `umount -l` then detached the mount
+# from the host and from the daemon, but the FUSE **connection** stayed alive because the poller was still
+# holding it: the daemon's serve loop never read EOF, never died, never remounted, and went on answering
+# `/readyz` with `ready:true` over a namespace that had been unmounted everywhere else. Measured on the host:
+# after the umount, `fuse.projectiond` appeared 0 times in the daemon's namespace and 0 times on the host —
+# and once in the poller's, at `/work/mnt`.
+#
+# So the instrument was the reason there was nothing to observe. The gate blamed the daemon ("the entry
+# identity changed across the remount") for a mount the gate itself had pinned.
+#
+# A SINGLE-FILE BIND CANNOT DO THIS. `$WORK/readyz-probe.sh` is one regular file; binding it copies no
+# subtree and takes no reference to any mount under `$WORK`. The poller still shares the daemon's NETWORK
+# namespace, which is all it ever needed — it reads `/readyz` over loopback and never touches the mount.
 docker run -d --name "$PROBE_CONTAINER" --network "container:$MOUNT_CONTAINER" \
-  -v "$WORK:/work:ro" "$VERIFY_IMAGE" sh /work/readyz-probe.sh >/dev/null
-echo "  the readyz poller is sampling through the daemon's network namespace"
+  -v "$WORK/readyz-probe.sh:/readyz-probe.sh:ro" "$VERIFY_IMAGE" sh /readyz-probe.sh >/dev/null
+echo "  the readyz poller is sampling through the daemon's network namespace (and holds no reference to the mount)"
+
+# AND THE GATE PROVES THE POLLER IS NOT HOLDING IT, rather than trusting the bind spec above to stay right.
+#
+# This is the assertion the previous shape needed and did not have. The bind is one line and easy to change
+# back; the property — that the observer has no reference to the mount it is watching — is what phase B
+# actually depends on, and it is checkable directly: the poller's own mount namespace, read from the host
+# through /proc, must contain no `fuse.projectiond` entry. If it does, the umount below cannot reach the FUSE
+# connection and the death this phase exists to cause will not happen.
+PROBE_PID="$(docker inspect -f '{{.State.Pid}}' "$PROBE_CONTAINER" 2>/dev/null || echo 0)"
+PROBE_HOLDS="$(grep -c 'fuse.projectiond' "/proc/$PROBE_PID/mountinfo" 2>/dev/null || true)"
+PROBE_HOLDS="${PROBE_HOLDS:-0}"
+test "$PROBE_HOLDS" = "0" \
+  || die "the readyz poller holds $PROBE_HOLDS reference(s) to the projectiond mount in its own namespace;" \
+         "the external umount cannot then sever the FUSE connection, and the serve loop will not die"
+echo "  the poller holds no reference to the mount, so the umount below can actually sever the connection"
 
 # THE DEATH: an external unmount through the shared mount, exactly as in phase A.
 projection_gate_unmount_run "$GATE_ROOT" "$WORK" "$VERIFY_IMAGE"
 echo "  umounted the mountpoint from a sibling container; the daemon must notice and remount"
 
-# THE RECOVERY, bounded. The remount loop sleeps 1s, 2s and 3s before its three attempts, so a generous
-# bound here still lets the gate fail loudly if the remount never happens.
-await_readyz 80 || { docker logs "$MOUNT_CONTAINER" 2>&1 | tail -30 >&2; die "the daemon never came back after the serve-loop death"; }
-echo "  /readyz answers ready=true again"
-
-STATUS_NOW="$(docker inspect -f '{{.State.Status}}' "$MOUNT_CONTAINER")"
-test "$STATUS_NOW" = "running" || die "the daemon is $STATUS_NOW; --auto-remount must keep the process alive"
-echo "  the daemon process survived the serve-loop death"
-
-STAT_AFTER="$(docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" \
-  sh -c "stat -c '%i:%s:%Y' '/mnt/$ENTRY_PATH'")"
-test "$STAT_BEFORE" = "$STAT_AFTER" \
-  || die "the entry identity changed across the remount: inode:size:mtime $STAT_BEFORE -> $STAT_AFTER"
-echo "  the entry's inode, size and mtime are unchanged across the remount ($STAT_AFTER)"
-
-docker logs "$MOUNT_CONTAINER" 2>&1 | grep -q "serve loop died" \
-  || die "the daemon did not report the serve-loop death"
-docker logs "$MOUNT_CONTAINER" 2>&1 | grep -q "remounted; serving generation" \
-  || die "the daemon did not report a successful remount"
-echo "  the daemon's log reports both the death and the successful remount"
-
-# THE DEATH WAS OBSERVED, IN ORDER. The poller's transition string must OPEN with `RDR`: ready before the
-# umount, not-ready while the serve loop was dead, and ready again after the remount. Anything else is a
-# different story — `R` alone is a daemon that never noticed the umount, `RD` is one that died and stayed
-# dead, and `DR` is one that was never ready to begin with — and none of them is the recovery phase B claims.
+# THE DEATH IS PROVED OBSERVED BEFORE ANY RECOVERY IS ASSERTED, AND THAT ORDER IS THE FIX FOR A MISLEADING
+# FAILURE, NOT A TIDY-UP.
+#
+# The recovery assertions used to come first, and `await_readyz` was the first of them — so when the daemon
+# never noticed the umount at all, `/readyz` was still answering `ready:true` from before the death and the
+# check passed. The gate then walked into the identity comparison and died with "the entry identity changed
+# across the remount", which describes a remount that served the wrong thing. There had been no remount. The
+# first assertion to fail should be the one whose subject actually failed, so the transition the poller was
+# started to witness is now read here, before anything is concluded from readiness.
 docker wait "$PROBE_CONTAINER" >/dev/null 2>&1 || true
 PROBE_LOG="$(docker logs "$PROBE_CONTAINER" 2>&1 | tail -1)"
 PROBE_SEQ="$(printf '%s' "$PROBE_LOG" | sed -n 's/.*ready_seq=\([RD]*\).*/\1/p')"
@@ -402,6 +430,31 @@ case "$PROBE_SEQ" in
   *) die "the poller saw '$PROBE_SEQ', not ready -> not-ready -> ready; the death and the recovery were not both observed" ;;
 esac
 echo "  the poller observed ready -> not-ready -> ready ($PROBE_SEQ: $PROBE_OK ready, $PROBE_DEAD not-ready samples)"
+
+# NOW THE RECOVERY, with the death established. The remount loop sleeps 1s, 2s and 3s before its three
+# attempts, so a generous bound still lets the gate fail loudly if the remount never happens.
+await_readyz 80 || { docker logs "$MOUNT_CONTAINER" 2>&1 | tail -30 >&2; die "the daemon never came back after the serve-loop death"; }
+echo "  /readyz answers ready=true again"
+
+STATUS_NOW="$(docker inspect -f '{{.State.Status}}' "$MOUNT_CONTAINER")"
+test "$STATUS_NOW" = "running" || die "the daemon is $STATUS_NOW; --auto-remount must keep the process alive"
+echo "  the daemon process survived the serve-loop death"
+
+docker logs "$MOUNT_CONTAINER" 2>&1 | grep -q "serve loop died" \
+  || die "the daemon did not report the serve-loop death"
+docker logs "$MOUNT_CONTAINER" 2>&1 | grep -q "remounted; serving generation" \
+  || die "the daemon did not report a successful remount"
+echo "  the daemon's log reports both the death and the successful remount"
+
+# THE IDENTITY, THROUGH THE MOUNT, FROM A SIBLING — which is also the only assertion here that proves the
+# remount reached the HOST rather than only the daemon's own namespace. A mount that came back inside the
+# container and nowhere else is invisible to every media server, and `/readyz` cannot tell the difference.
+STAT_AFTER="$(stat_entry)" \
+  || die "the entry could not be stat'd through the mount after the remount, so the namespace did not come" \
+         "back where a consumer reads it: $STAT_AFTER"
+test "$STAT_BEFORE" = "$STAT_AFTER" \
+  || die "the entry identity changed across the remount: inode:size:mtime $STAT_BEFORE -> $STAT_AFTER"
+echo "  the entry's inode, size and mtime are unchanged across the remount ($STAT_AFTER)"
 
 echo
 echo "PHASE B COMPLETE: the serve loop died, was reported, and was remounted in place over the same"
