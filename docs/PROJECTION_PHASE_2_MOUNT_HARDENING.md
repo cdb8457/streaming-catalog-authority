@@ -235,3 +235,89 @@ that looks like a pass is the failure mode this whole section is about.
 **AND FIXING THESE CLOSES NOTHING.** All three run records above still read `NOT RUN`. What changed is that
 the gates can now compile, run whole, and fail for the reasons they name — which is the precondition for the
 nine runs, not a substitute for them.
+
+---
+
+## 8. What has actually been validated, and what is blocked
+
+This section is the tranche's evidence ledger. Everything in it was observed on **this Windows host with
+Docker Desktop**, in the worktree `projection-phase2-claude`. Nothing in it was observed on Unraid, and the
+distinction is the whole content of §8.2.
+
+### 8.1 Observed, with the command that observed it
+
+| What | How it was checked | Result |
+|---|---|---|
+| `projectiond` compiles | `npm run go:build` / `go:vet` in the pinned `golang:1.26.5-bookworm` image | clean. **This is new**: at `373df01` the supervisor called three `Mounted` accessors that did not exist and `smoke_linux_test.go` used `time` unimported, so the tree did not build |
+| the Go suite | `npm run go:test` | every package `ok`, including `internal/fusefs` |
+| the serve-death classification | `go test -v -run 'TestServeExit\|TestServeErrWaits' ./internal/fusefs/` | 3 tests **ran** and passed — they need no `/dev/fuse`, which is why they exist |
+| TypeScript | `npm run typecheck` | clean |
+| the nine gate scripts + the harness + its wrapper | `bash -n` on each | parse |
+| every shipped `.sh` under LF and CRLF | `npx tsx test/custody-runtime-closure.ts` | 39/0 |
+| the Phase 2 gate pins | `npx tsx test/projection-mount-hardening.ts` | 20/0, **0 blocks skipped** on this host |
+| the harness pins | `npx tsx test/projection-multi-frontend.ts` | 15/0, **0 blocks skipped**. **13 of the 15 fail** against the harness as it was inherited — three of those because it could not have run at all (see that document's §7) |
+| the two shipped embedded programs | the pins **execute** `readyz-probe.sh` against a stub `wget`, and `rounds.cjs` and `namespace_gone` against stub inputs including a `docker` that exits 125 | each produced the output its gate depends on |
+| the harness's skip contract | the shipped skip block was extracted and run under `set -Eeuo pipefail` with the `/dev/fuse` probe forced to fail, with and without the `GATE_SKIP_STATUS` assignment | **without it**: `GATE_SKIP_STATUS: unbound variable`, **exit 1**, no message. **With it**: the `SKIPPED (status 77)` text and **exit 77**. This is the bake-off document's §7 defect 1, observed rather than reasoned about |
+| the harness's compose file | `docker compose -f docker-compose.projection-multi-frontend.yml config -q` | valid. It is a **committed** file now rather than one the harness wrote into the repository root on every run |
+| the whole offline group | `npm run test:offline` | **307 selected, 306 passed, 672s** (307 rather than 306 because this tranche adds `projection-multi-frontend.ts`). The one failure is `test/torbox-resolver.ts`, which fails on this host because win32 cannot make a PATH-injected `bash` that refuses to run a script. It is **pre-existing**, unrelated to this tranche, and touches none of these files |
+
+### 8.2 Not observed — the blockers, stated as blockers
+
+- **NO GATE HAS RUN. NOT ONE, NOT ONCE.** The three run records in §1–§3 and the bake-off's in
+  `docs/PROJECTION_PHASE_2_RCLONE_BAKEOFF.md` §4 are empty because they are true. Everything in §8.1 is a
+  check on **source and on embedded programs**; none of it starts a daemon, mounts a filesystem or reads a
+  byte through one.
+- **THE UNRAID HOST WAS NOT TOUCHED.** Closing this tranche needs nine runs (three gates × three consecutive
+  fresh) on a host where `/dev/fuse` is reachable from a container, plus at least one harness run. That host
+  is the Unraid box Phase 1 closed on. This work had no access to it and no authorization to deploy to it, so
+  **the runs are not skipped — they are not attempted, and an unattempted run is not a pass.**
+- **NO REAL PROVIDER, NO MEDIA SERVER, NO LIVE JELLYFIN.** No provider account was contacted and no live
+  media system was touched by any of this. The endpoints the gates and the harness use are the
+  in-repository fakes.
+- **THE `--refuse-stale` REFUSAL HAS STILL NEVER EXECUTED.** §7 defect 2 removed the switch that was hiding
+  it, so the evidence command now reaches it. Reaching it is not running it.
+- **AND THE MULTI-FRONTEND HARNESS HAS NEVER COMPLETED A STEP THAT NEEDED DOCKER.** Three of the eight
+  defects in its §7 mean it aborted within its first fifty lines on any host; they were found by executing it
+  against a stub `docker`, which is how far this host can take it. Getting past them is not a run — the
+  furthest it has been driven is the corpus step, where a stub cannot produce media.
+
+### 8.3 One inconsistency in the inherited baseline, reported rather than resolved
+
+`99a6828` recorded three fresh Unraid runs of the G22 rclone comparison and updated three files to match.
+The revert at `373df01` restored **two** of them — `deploy/projection-rclone-comparison-gate.sh` and
+`src/core/projection/rclone-comparison.ts`, which now both state that **no run of that gate has ever happened
+on a real Linux or Unraid host** — and left the third, `docs/PROJECTION_PHASE_1_RCLONE_COMPARISON.md`, still
+carrying §7.7 and its runs 18–20 table.
+
+So the repository currently says both things. **No test catches it**, because nothing cross-checks that
+document against the nonclaims list. It is left exactly as found: the revert is recorded as intentional, and
+which side is true — whether those Unraid runs happened — is not a question this tranche can answer from the
+tree. Resolving it means either re-reverting the document or restoring the two nonclaims, and both are
+decisions about what is known to have happened, not edits to make on inference.
+
+### 8.4 Reproducing all of it safely
+
+Every command below is offline, touches no provider, no media server and no host outside this worktree.
+
+```sh
+npm run typecheck
+npm run go:vet && npm run go:build && npm run go:test   # needs Docker; no /dev/fuse required
+npx tsx test/projection-mount-hardening.ts              # the three gates' pins
+npx tsx test/projection-multi-frontend.ts               # the harness's pins
+npx tsx test/custody-runtime-closure.ts                 # every shipped .sh parses, LF and CRLF
+npx tsx test/projectiond-wiring.ts
+npm run test:offline                                    # the whole offline group, ~11 min
+```
+
+The gates themselves need the host, and each propagates **77** when it cannot run there:
+
+```sh
+npm run go:serve-death-gate:three
+npm run go:stale-mount-gate:three
+npm run go:sustained-outage-gate:three
+npm run go:multi-frontend-comparison                    # the harness; no :three, by design
+```
+
+Run those on a host where `/dev/fuse` is reachable from a container. A `77` from any of them is a **skip**,
+and for the `:three` wrappers a skip is a failure — which is the contract that keeps an unrunnable host from
+producing a green record.

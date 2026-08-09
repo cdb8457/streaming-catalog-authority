@@ -1,0 +1,20 @@
+name: projection-multi-frontend-comparison
+
+services:
+  postgres:
+    image: postgres:16@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20
+    environment:
+      POSTGRES_DB: catalog
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "${PROJECTION_MULTI_FRONTEND_GATE_PG_PORT:-5515}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d catalog"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    tmpfs:
+      # THROWAWAY, AND IT SAYS SO IN THE ONLY WAY THAT CANNOT BE FORGOTTEN: its storage does not survive the
+      # container.
+      - /var/lib/postgresql/data

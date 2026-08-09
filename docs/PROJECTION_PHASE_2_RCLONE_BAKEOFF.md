@@ -112,11 +112,19 @@ it can run beside `go:rclone-comparison-gate` rather than colliding with it.
 
 ---
 
-## 7. Four defects found porting this harness, before its first run
+## 7. Nine defects found porting this harness, before its first run
 
 **None of these was found by running it**, because it has not run. They were found by reading the harness
 against the claims it makes, and each is pinned by a test in `test/projection-multi-frontend.ts` that fails
-against the harness as it arrived and passes after.
+against the harness as it arrived and passes after — **13 of that suite's 15 tests fail against the file as
+it was inherited**, and the two that do not are about documents rather than about the harness.
+
+**THREE OF THE EIGHT MEAN IT COULD NEVER HAVE RUN AT ALL**, on any host, for reasons that have nothing to do
+with FUSE or with a provider: a directory that was never created, a program run before it was written, and a
+configuration file that was created as a directory. They are #5–#7 below, and each aborts the harness under
+`set -e` before an endpoint starts. They are recorded first because they change what the previous
+coordinator's handoff meant: this was not a finished harness awaiting a host, it was a harness that had never
+been executed once.
 
 | # | What was wrong | What it cost |
 |---|---|---|
@@ -124,8 +132,13 @@ against the harness as it arrived and passes after.
 | 2 | **Teardown removed containers and left mounts.** `cleanup` removed the containers, the compose project and the network, and did not source `deploy/projection-gate-cleanup.sh` at all — so no unmount, no run-directory removal, and no cleanliness report. Three arms × three media servers holding handles on a FUSE mount is nine chances to leave one attached to the host, and `rm -rf` over a dead FUSE mount does not do what it looks like it does | teardown routes through `projection_gate_cleanup_run` and then `projection_gate_report_cleanliness`, which reports rather than asserts because it runs inside an EXIT trap where a non-zero return would overwrite the harness's own status |
 | 3 | **The port block belonged to the gate this harness extends.** The defaults were 8130/8131/8132/32530/5573 — five ports held by `deploy/projection-rclone-comparison-gate.sh`, and 8130 also by `deploy/projection-real-provider-gate.sh` — under a comment claiming that **no other gate can collide**. G22 is precisely the gate an operator runs beside this one | moved to 8170–8175 / 32550–32551 / 5576, and the pin cross-checks the block against every other gate in `deploy/` so the comment stays true |
 | 4 | **Both teardown assertions passed on docker's own refusal.** `if ! docker run … test -d /mnt/Movies; then gone=1` cannot fail for the reason it states: `docker run` reports its own refusals as 125/126/127 before `test` executes an instruction, and the leading `!` scores every one of them as "the namespace is gone". The step whose entire subject is whether a FUSE mount was left behind passed hardest when nothing had been looked at | one `namespace_gone` helper for both arms: the probe prints `ns:present` / `ns:absent`, the loop reads the token, and a run that produced **neither** is a third outcome that **dies** rather than being counted as either |
+| 5 | **`$WORK/out` was never created.** Every shared program is written into it — `jq.cjs`, `sha.cjs`, `corpus.cjs`, `probe.sh`, `leakcheck.sh`, the lot — and no `mkdir` in the harness made the directory. Under `set -e` the **first** `cat >` aborted the run, before an endpoint started or an arm existed | one `mkdir -p "$WORK/secret" "$WORK/out"`, and a pin that checks **every** `cat >` target in the file has a parent some earlier `mkdir -p` creates — counting the ancestors `-p` makes implicitly |
+| 6 | **`sha.cjs` was written two hundred lines below the first thing that runs it.** The corpus step calls `digest`, and `digest` is `node "$REL/out/sha.cjs"`, so the step died with `MODULE_NOT_FOUND` | the program is written beside the `mkdir` that makes its directory, above the corpus step. The pin resolves each helper to the program its body runs and compares the write against the helper's first **call** — a definition that names a program is fine, a call before the write is not |
+| 7 | **`mkdir -p "$WORK/arm-a/config.json"` made the daemon's configuration file a DIRECTORY**, so the `cat > "$WORK/arm-a/config.json"` below it could not write and **arm A could not start** | the path is out of the `mkdir` list, and a pin refuses any path that is made a directory and later written as a file. That pin has to join backslash continuations to work: the `mkdir` listed nine paths over three lines and `config.json` was on the third, so a per-line scan reads `mkdir -p`, sees the first argument, and never looks at the one that caused the bug |
+| 8 | **The harness generated its own compose file into the repository root on every run and never removed it**, so a run left an untracked `docker-compose.projection-multi-frontend.yml` in the working tree — and the only description of the shared Postgres lived inside an 1,800-line script, where no reviewer reads a compose file and no diff shows it change. The gate root was **not gitignored** either, though it holds two throwaway endpoint credentials and three arms' caches, so an interrupted run left them where `git add -A` reaches | the compose file is committed and merely named, like every other `docker-compose.projection-*.yml` here, and the harness dies if it is missing rather than silently writing one; `.projection-multi-frontend-comparison-gate/` joins the other gate roots in `.gitignore`. `${...:-5515}` is resolved by docker compose itself, so nothing about the behaviour changed |
+| 9 | **Six call sites handed `node` the absolute spelling of the run directory**, against the rule the harness's own header states — docker gets `$WORK`, node and tsx get `$REL`, "because an MSYS absolute path is not something a Windows node binary can open". A Windows node resolved `/c/Users/…` against the current drive and opened `C:\c\Users\…` | the six use `$REL`/`$ARM_REL`, and the pin allows a shell **redirection** of an absolute path (the shell opens that, not node) while refusing an absolute path as a node **argument**. Linux was never affected; the repository is developed on Windows, so this was the difference between iterating on the harness and not |
 
-**AND A FIFTH THAT WAS NOT A DEFECT IN THE HARNESS BUT IN WHAT COULD BE CHECKED ABOUT IT.** Both
+**AND ONE THAT WAS NOT A DEFECT IN THE HARNESS BUT IN WHAT COULD BE CHECKED ABOUT IT.** Both
 operational-round writers were multi-line `node -e '…'` arguments. `parseShellSource` — the reader
 `test/custody-runtime-closure.ts` runs over every shipped script under all three line endings — stops at the
 unterminated quote, so **the whole file was unparseable and every test in this repository skipped over it**.
@@ -139,6 +152,14 @@ times in the TorBox gate's read-only refusals and Phase 2's mount-hardening tran
 its own three gates. The answer is the same each time: **an assertion must fail when the product misbehaves
 AND when the measurement does not happen.**
 
-**AND FIXING THESE MEASURES NOTHING.** §4 still reads NOT RUN. What changed is that the harness can now skip
-correctly, clean up after itself, run beside G22, and fail for the reasons it names — which is the
-precondition for a first run, not a substitute for one.
+**#5, #6 AND #7 ARE A DIFFERENT AND PLAINER LESSON, AND IT IS THE MORE UNCOMFORTABLE ONE.** They are not
+subtle reasoning errors about evidence; they are a missing `mkdir`, a statement in the wrong order, and a
+file created as a directory. No amount of care in the prose finds them and no reviewer reading for
+correctness-of-argument catches them, because the argument is fine — the code just never ran. **Every one of
+them would have been found by executing the script once.** That is why all three are now pinned as
+*classes* over the whole file rather than as three fixed lines, and why the suite executes the harness's
+embedded programs instead of describing them.
+
+**AND FIXING THESE MEASURES NOTHING.** §4 still reads NOT RUN. What changed is that the harness can now get
+past its own first fifty lines, skip correctly, clean up after itself, run beside G22, and fail for the
+reasons it names — which is the precondition for a first run, not a substitute for one.

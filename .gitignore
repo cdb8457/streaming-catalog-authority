@@ -62,6 +62,12 @@ deploy/ci/acceptance/playwright-report/
 # leaving that file where `git add -A` could reach it.
 .projection-rclone-gate/
 
+# ...and for the PHASE 2b MULTI-FRONTEND COMPARISON harness, which is the same reason with three times the
+# exposure: it mints TWO throwaway endpoint credentials per run (the original and the one R2 rotates to),
+# writes both to files inside its run directory, and stands up three arms whose mounts and client caches all
+# live under that root. An interrupted run leaves all of it where `git add -A` could reach it.
+.projection-multi-frontend-comparison-gate/
+
 # ...and for the ACCESS-LEASE gate (G24–G26) and the PATH-LIFECYCLE gate (G27). Both declare a gate root the
 # same way the entries above do and neither had one here; the reason every entry above gives applies to them
 # unchanged.

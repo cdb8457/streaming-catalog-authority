@@ -77,6 +77,27 @@ test('THE HARNESS AND ITS OPTIONAL ENTRY POINT EXIST AND ARE WIRED', () => {
     'this suite is not in the inventory, so the aggregate run never executes it');
 });
 
+test('THE COMPOSE FILE IS COMMITTED AND THE GATE ROOT IS IGNORED, like every other gate here', () => {
+  // The harness wrote its compose file into the repository root on every run and never removed it, so a run
+  // left an untracked file behind and the only description of the shared Postgres lived inside an
+  // 1,800-line script. Every other `docker-compose.projection-*.yml` is a tracked file the gate merely names.
+  const gate = read(GATE);
+  assert(!/cat > "\$COMPOSE_FILE"/.test(gate),
+    'the harness generates its compose file, so a run leaves an untracked file in the working tree');
+  assert(gate.includes('COMPOSE_FILE="docker-compose.projection-multi-frontend.yml"'),
+    'the harness does not name the committed compose file');
+  const compose = read('docker-compose.projection-multi-frontend.yml');
+  assert(/name: projection-multi-frontend-comparison/.test(compose), 'the compose project is unnamed');
+  assert(/tmpfs:/.test(compose) && /\/var\/lib\/postgresql\/data/.test(compose),
+    'the compose Postgres keeps its storage across runs, so an arm can inherit state from a previous one');
+  assert(/\$\{PROJECTION_MULTI_FRONTEND_GATE_PG_PORT:-5515\}/.test(compose),
+    'the compose file does not take its port from the same variable the harness exports');
+
+  // ...and the run directory, which holds two throwaway credentials and three arms' caches, is ignored.
+  assert(read('.gitignore').split('\n').some((line) => line.trim() === '.projection-multi-frontend-comparison-gate/'),
+    'the gate root is not gitignored, so an interrupted run leaves credentials where `git add -A` reaches them');
+});
+
 test('THERE IS NO :three WRAPPER, because a harness closes nothing', () => {
   // Every acceptance gate has one and this deliberately does not. A `:three` on a thing with no pass
   // threshold would announce a closure it cannot deliver, which is the exact class Phase 1 spent four
@@ -210,6 +231,129 @@ test('EVERY EMBEDDED PROGRAM IS A QUOTED HEREDOC, and the whole script parses', 
   }
   // Unquoted heredoc delimiters let the shell expand the program before it is written.
   assert(!/<<-?[A-Za-z_]/.test(gate), 'an unquoted heredoc lets the shell rewrite an embedded program');
+});
+
+// -----------------------------------------------------------------------------------------------------------
+// DEFECTS 6-8 — THREE WAYS THE HARNESS COULD NOT HAVE RUN AT ALL, pinned as CLASSES rather than as instances.
+//
+// None of these is subtle and none of them needed a host to find: they are ordinary "the file is not there
+// yet" mistakes, and every one of them aborts the harness under `set -e` before an arm exists. They are
+// checked generically — every write, every mkdir, every program — because the next one will be in a
+// different line than the last one was.
+// -----------------------------------------------------------------------------------------------------------
+
+/** Non-comment lines, 1-indexed, with comment lines blanked so line numbers stay true. */
+const codeLines = (text: string): string[] =>
+  text.split('\n').map((line) => (line.trimStart().startsWith('#') ? '' : line));
+
+/**
+ * Logical statements with the line each STARTS on, backslash continuations joined.
+ *
+ * THIS IS NOT TIDINESS. The `mkdir -p` that made the daemon's config file a directory listed nine paths over
+ * three continued lines, and `config.json` was on the third — a per-line scan reads the first line, sees
+ * `mkdir -p`, and never looks at the argument that caused the bug. A check that only sees the head of a
+ * wrapped command is a check with a blind spot exactly where long argument lists live.
+ */
+function statements(text: string): Array<[number, string]> {
+  const out: Array<[number, string]> = [];
+  const lines = codeLines(text);
+  for (let index = 0; index < lines.length; index += 1) {
+    const start = index;
+    let joined = lines[index] as string;
+    while (joined.endsWith('\\') && index + 1 < lines.length) {
+      index += 1;
+      joined = `${joined.slice(0, -1)} ${lines[index] as string}`;
+    }
+    out.push([start + 1, joined]);
+  }
+  return out;
+}
+
+test('EVERY FILE THE HARNESS WRITES HAS A DIRECTORY TO WRITE IT INTO', () => {
+  // `$WORK/out` held every shared program — jq.cjs, sha.cjs, corpus.cjs, probe.sh, leakcheck.sh — and no
+  // `mkdir` in the harness ever created it, so the first `cat >` aborted the run on every host before an
+  // endpoint started. The two spellings of the run directory ($WORK absolute, $REL relative) are the same
+  // place, so they are normalised before comparison.
+  const norm = (path: string): string => path.replace('$ARM_REL', '$ARM_DIR').replace('$REL', '$WORK');
+  const made: Array<[number, string]> = [];
+  for (const [at, statement] of statements(read(GATE))) {
+    if (!statement.trimStart().startsWith('mkdir -p')) continue;
+    for (const match of statement.matchAll(/"([^"]+)"/g)) made.push([at, norm(match[1] as string)]);
+  }
+  for (const [at, statement] of statements(read(GATE))) {
+    const match = /^cat > "([^"]+)"/.exec(statement.trim());
+    if (match === null) continue;
+    const target = norm(match[1] as string);
+    if (!target.includes('/')) continue; // a file in the repository root needs no directory
+    const parent = target.slice(0, target.lastIndexOf('/'));
+    // `mkdir -p a/b/c` creates a, a/b and a/b/c, so an earlier mkdir satisfies this parent if it names the
+    // parent, an ancestor of it, or a descendant of it.
+    assert(made.some(([madeAt, dir]) => madeAt < at
+      && (dir === parent || parent.startsWith(`${dir}/`) || dir.startsWith(`${parent}/`))),
+    `line ${at}: ${match[1]} is written into ${parent}, which no earlier mkdir creates`);
+  }
+});
+
+test('NO PATH IS MADE A DIRECTORY AND THEN WRITTEN TO AS A FILE', () => {
+  // `mkdir -p "$WORK/arm-a/config.json"` made the daemon's configuration file a DIRECTORY, so the
+  // `cat > "$WORK/arm-a/config.json"` below it could not write and arm A could not start.
+  const norm = (path: string): string => path.replace('$ARM_REL', '$ARM_DIR').replace('$REL', '$WORK');
+  const written = new Set<string>();
+  for (const [, statement] of statements(read(GATE))) {
+    const match = /^cat > "([^"]+)"/.exec(statement.trim());
+    if (match !== null) written.add(norm(match[1] as string));
+  }
+  for (const [at, statement] of statements(read(GATE))) {
+    if (!statement.trimStart().startsWith('mkdir -p')) continue;
+    for (const match of statement.matchAll(/"([^"]+)"/g)) {
+      const dir = norm(match[1] as string);
+      assert(!written.has(dir),
+        `line ${at}: mkdir creates ${match[1]} as a directory, but the harness later writes it as a file`);
+    }
+  }
+});
+
+test('EVERY EMBEDDED PROGRAM IS WRITTEN BEFORE THE FIRST THING THAT RUNS IT', () => {
+  // `digest` is `node "$REL/out/sha.cjs"`, and the corpus step called it two hundred lines above the heredoc
+  // that wrote the program — MODULE_NOT_FOUND, before any arm existed. A function DEFINITION naming a program
+  // is fine; a CALL before the write is not.
+  const text = read(GATE);
+  const lines = codeLines(text);
+  const writtenAt = new Map<string, number>();
+  lines.forEach((line, index) => {
+    const match = /^cat > "([^"]+)"/.exec(line.trim());
+    if (match !== null) {
+      const path = match[1] as string;
+      writtenAt.set(path.slice(path.lastIndexOf('/') + 1), index + 1);
+    }
+  });
+  // Helper name -> the program its body runs. Each is checked at its first CALL site.
+  for (const [helper, program] of [['field', 'jq.cjs'], ['digest', 'sha.cjs'], ['wait_ready', 'alive.sh']]) {
+    const write = writtenAt.get(program as string);
+    assert(write !== undefined, `the harness no longer writes ${program}`);
+    const definition = lines.findIndex((line) => new RegExp(`^${helper}\\(\\)`).test(line.trim()));
+    assert(definition >= 0, `the harness no longer defines ${helper}()`);
+    const call = lines.findIndex((line, index) =>
+      index !== definition && new RegExp(`(^|[\\s("$])${helper}(\\s|$)`).test(line));
+    if (call === -1) continue;
+    assert(call + 1 > (write as number),
+      `${helper} is first called at line ${call + 1}, but it runs ${program}, which is not written until line ${write}`);
+  }
+});
+
+test('NODE IS NEVER HANDED THE ABSOLUTE SPELLING OF THE RUN DIRECTORY', () => {
+  // The harness's own header states the rule: docker bind mounts get `$WORK` (absolute), node and tsx get
+  // `$REL` (relative), "because an MSYS absolute path is not something a Windows node binary can open".
+  // Six call sites broke it — `digest "$WORK/..."` and one `node ... "$WORK/..."` — and a Windows node
+  // resolved `/c/Users/…` against the current drive and opened `C:\c\Users\…`, which is not a file.
+  // A shell REDIRECTION of the same path is fine: the shell opens it, not node.
+  for (const [index, line] of codeLines(read(GATE)).entries()) {
+    const stripped = line.replace(/<\s*"\$(WORK|ARM_DIR)[^"]*"/g, '');
+    assert(!/\b(node|npx tsx)\b[^|;]*"\$(WORK|ARM_DIR)\//.test(stripped),
+      `line ${index + 1} hands node an absolute run-directory path: ${line.trim()}`);
+  }
+  assert(/digest\(\)\s*{\s*node "\$REL\/out\/sha\.cjs"/.test(read(GATE)),
+    'digest() no longer runs the relative spelling of sha.cjs');
 });
 
 /**

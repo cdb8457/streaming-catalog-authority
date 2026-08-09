@@ -337,7 +337,28 @@ step "minting the endpoint credential, into a file and never into an argument"
 # (mode 0644, the same idiom G22 documents for its token), and every leak search below searches for it by
 # exact value. The rclone client reads it through its own bearer-token-command hook; the endpoints through
 # --token-file.
-mkdir -p "$WORK/secret"
+# `$WORK/out` IS CREATED HERE, AND IT WAS NOT CREATED ANYWHERE. Every shared program below is written into
+# it — `jq.cjs`, `sha.cjs`, `corpus.cjs`, `probe.sh`, `leakcheck.sh` and the rest — and not one `mkdir` in
+# this harness ever made the directory. Under `set -e` the first `cat > "$REL/out/jq.cjs"` aborted the run,
+# before an endpoint started or an arm existed, on every host.
+mkdir -p "$WORK/secret" "$WORK/out"
+
+# AND sha.cjs IS WRITTEN BEFORE THE FIRST THING THAT RUNS IT, which is the other half of the same mistake.
+# The corpus step below calls `digest`, and `digest` is `node "$REL/out/sha.cjs"` — but the program was
+# written two hundred lines further down, so the corpus step died with MODULE_NOT_FOUND. A program has to
+# exist before the helper that runs it is called, and the shortest way to keep that true is for the write to
+# sit next to the directory that holds it.
+cat > "$REL/out/sha.cjs" <<'SHA'
+// The sha256 of a file, STREAMED — the barrier fixture is 94 MiB and this program is run on it, so reading
+// it whole into a buffer to hash it is a real cost rather than a style preference.
+const { createHash } = require('node:crypto');
+const { createReadStream } = require('node:fs');
+const hash = createHash('sha256');
+createReadStream(process.argv[2])
+  .on('data', (chunk) => hash.update(chunk))
+  .on('end', () => console.log(hash.digest('hex')));
+SHA
+
 DAV_TOKEN="PJDDAV$(node -e "console.log(require('node:crypto').randomBytes(16).toString('hex'))" | tr -d ' \r\n')"
 printf '%s' "$DAV_TOKEN" > "$WORK/secret/token"
 cat > "$WORK/secret/token.sh" <<'TOKENSH'
@@ -361,7 +382,7 @@ ffmpeg_run -hide_banner -loglevel error -y \
   -f lavfi -i "sine=frequency=311:duration=3" \
   -c:v mpeg4 -qscale:v 5 -c:a aac -b:a 32k -shortest -movflags +faststart "/work/media/seed/$SEED_FILE"
 SEED_SIZE="$(wc -c < "$WORK/media/seed/$SEED_FILE" | tr -d ' ')"
-SEED_SHA="$(digest "$WORK/media/seed/$SEED_FILE")"
+SEED_SHA="$(digest "$REL/media/seed/$SEED_FILE")"
 echo "  the seed entry is $SEED_SIZE bytes"
 
 # THE CANARY: A REGISTERED OBJECT OUTSIDE THE LIBRARY ROOT, served from a path no library root contains,
@@ -426,14 +447,8 @@ const value = key.split('.').reduce((acc, k) => (acc == null ? acc : acc[k]), do
 if (value === undefined) process.exit(1);
 console.log(String(value));
 JQ
-cat > "$REL/out/sha.cjs" <<'SHA'
-const { createHash } = require('node:crypto');
-const { createReadStream } = require('node:fs');
-const hash = createHash('sha256');
-createReadStream(process.argv[2])
-  .on('data', (chunk) => hash.update(chunk))
-  .on('end', () => console.log(hash.digest('hex')));
-SHA
+# sha.cjs is NOT written here. It is written beside `mkdir -p "$WORK/out"` above, because the corpus step
+# between there and here calls `digest`, which runs it.
 cat > "$REL/out/resources.cjs" <<'RESOURCES'
 // Turns a docker-stats TSV series (name, cpu%, mem-used) into the average/peak CPU and RAM figures the
 // comparison reads. A line with no separator is a moment the stats feed returned nothing; it is skipped, not
@@ -470,7 +485,7 @@ ffmpeg_run -hide_banner -loglevel error -y \
   -f lavfi -i "sine=frequency=233:duration=2" \
   -c:v mpeg4 -qscale:v 5 -c:a aac -b:a 32k -shortest -movflags +faststart "/work/remote/$ROT_FILE"
 ROT_SIZE="$(wc -c < "$WORK/remote/$ROT_FILE" | tr -d ' ')"
-ROT_SHA="$(digest "$WORK/remote/$ROT_FILE")"
+ROT_SHA="$(digest "$REL/remote/$ROT_FILE")"
 # THE CREDENTIAL THE ENDPOINT IS ROTATED TO IN R2. Both the original and this value are searched for by the
 # leak checks, because both were in force during this run.
 ROTATED_TOKEN="PJDDAV$(node -e "console.log(require('node:crypto').randomBytes(16).toString('hex'))" | tr -d ' \r\n')"
@@ -481,28 +496,15 @@ step "the PostgreSQL every arm's control plane shares"
 # It takes its own project name, its own port, and throwaway storage, for the same reason G18's sixth compose
 # file says it does: a previous run, or another gate, or an installation, must not be able to lend this run
 # state.
-cat > "$COMPOSE_FILE" <<'COMPOSE'
-name: projection-multi-frontend-comparison
-
-services:
-  postgres:
-    image: postgres:16@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20
-    environment:
-      POSTGRES_DB: catalog
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    ports:
-      - "${PROJECTION_MULTI_FRONTEND_GATE_PG_PORT:-5515}:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d catalog"]
-      interval: 3s
-      timeout: 5s
-      retries: 20
-    tmpfs:
-      # THROWAWAY, AND IT SAYS SO IN THE ONLY WAY THAT CANNOT BE FORGOTTEN: its storage does not survive the
-      # container.
-      - /var/lib/postgresql/data
-COMPOSE
+# THE COMPOSE FILE IS COMMITTED, NOT GENERATED, and that is the convention every other gate here follows.
+#
+# This harness used to write `docker-compose.projection-multi-frontend.yml` into the repository root through
+# a heredoc on every run, and never remove it — so a run left an untracked file in the working tree, and the
+# only description of the shared Postgres lived buried inside an 1,800-line script where no reviewer reads a
+# compose file and no diff shows it changing. Every `docker-compose.projection-*.yml` the other gates use is
+# a tracked file they merely name; this one is now too. The `${...:-5515}` in it is resolved by docker
+# compose itself, so the behaviour is identical to the generated version.
+test -f "$COMPOSE_FILE" || die "the compose file $COMPOSE_FILE is missing from the repository"
 docker compose -f "$COMPOSE_FILE" config -q
 docker compose -f "$COMPOSE_FILE" up -d --wait postgres
 echo "  postgres is ready"
@@ -767,9 +769,12 @@ control_release() { docker run --rm --network "$NETWORK" "$VERIFY_IMAGE" \
 # ----------------------------------------------------------------------------------------------------------
 step "starting the endpoints, the daemon and the media servers for ARM A (projectiond-FUSE)"
 # ----------------------------------------------------------------------------------------------------------
+# `$WORK/arm-a/config.json` IS NOT IN THIS LIST, AND THAT IS THE FIX. It was, and `mkdir -p` on a path makes
+# a DIRECTORY at it — so the daemon's configuration file was a directory, and the `cat > "$WORK/arm-a/config.json"`
+# a few dozen lines below could not write to it. Arm A could not start, on any host.
 mkdir -p "$WORK/arm-a/out" "$WORK/arm-a/manifest" "$WORK/arm-a/cache" "$WORK/arm-a/mnt" \
          "$WORK/arm-a/jf-config" "$WORK/arm-a/jf-cache" "$WORK/arm-a/emby-config" "$WORK/arm-a/plex-config" \
-         "$WORK/arm-a/plex-transcode" "$WORK/arm-a/config.json"
+         "$WORK/arm-a/plex-transcode"
 chmod 755 "$GATE_ROOT" "$WORK" "$WORK/arm-a" "$WORK/arm-a/mnt"
 
 # THE ENDPOINT IS internal/fakeprovider, the only "provider" any automated gate here contacts. It runs in
@@ -900,7 +905,7 @@ test "$(field sequence < "$ARM_OUT/publish-1.json")" = "1"         || die "the f
 
 ARTIFACT="$(field artifactName < "$ARM_OUT/publish-1.json")"
 POINTER_DIGEST="$(field manifestDigest < "$WORK/arm-a/manifest/pointer.json")"
-ACTUAL_DIGEST="sha256:$(node "$REL/out/sha.cjs" "$WORK/arm-a/manifest/$ARTIFACT")"
+ACTUAL_DIGEST="sha256:$(node "$REL/out/sha.cjs" "$ARM_REL/manifest/$ARTIFACT")"
 test "$POINTER_DIGEST" = "$ACTUAL_DIGEST" || die "the pointer digest does not describe the artifact"
 echo "  pointer digest verified against the artifact file"
 
@@ -1102,7 +1107,7 @@ step "R1: a provider stall, and what a full read does under it"
 # frontend that cached it can serve it, a frontend that cannot must wait on the provider hold. The stall
 # outcome is RECORDED, not assumed — a cache hit here is a finding, not a failure — and the RECOVERY is
 # required: the same read, after the release, must return the bytes recorded outside the mount.
-LARGE_SHA="$(digest "$WORK/remote/$LARGE_FILE")"
+LARGE_SHA="$(digest "$REL/remote/$LARGE_FILE")"
 control_hold "$LARGE_REF"
 R1_STALL_START="$(date +%s%3N)"
 R1_HELD_SHA="$(docker run --rm --user 1000:1000 -v "$ARM_MNT:/mnt:rslave" -v "$WORK/out:/out:ro" \
@@ -1600,7 +1605,7 @@ run_rclone_arm() {
   # frontend that cached it can serve it, a frontend that cannot must wait on the provider hold. The stall
   # outcome is RECORDED, not assumed, and the RECOVERY is required: the same read, after the release, must
   # return the bytes recorded outside the mount.
-  LARGE_SHA="$(digest "$WORK/remote/$LARGE_FILE")"
+  LARGE_SHA="$(digest "$REL/remote/$LARGE_FILE")"
   control_hold "$LARGE_REF"
   R1_STALL_START="$(date +%s%3N)"
   R1_HELD_SHA="$(docker run --rm --user 65534:65534 -v "$ARM_MNT:/mnt:rslave" -v "$WORK/out:/out:ro" \
@@ -1627,7 +1632,7 @@ run_rclone_arm() {
   # library root, and it is the one object nothing in the measured window ever read whole. The endpoint is
   # rotated onto a NEW credential, the old one must be refused and the new one accepted, and the mount client
   # — which re-reads its bearer token from the file on every request — must converge on the following read.
-  CANARY_SHA="$(digest "$WORK/remote/$CANARY_FILE")"
+  CANARY_SHA="$(digest "$REL/remote/$CANARY_FILE")"
   R2_BEFORE_SHA="$(docker run --rm --user 65534:65534 -v "$ARM_MNT:/mnt:rslave" -v "$WORK/out:/out:ro" \
     "$VERIFY_IMAGE" sh /out/fullread.sh "/mnt/Canary/$CANARY_FILE")"
   test "$R2_BEFORE_SHA" = "$CANARY_SHA" \
