@@ -137,6 +137,8 @@
     "go:sustained-outage-gate": "bash deploy/projection-sustained-outage-gate.sh",
     "go:sustained-outage-gate:three": "bash deploy/projection-sustained-outage-gate-three.sh",
     "go:sustained-outage-gate:optional": "bash deploy/projection-sustained-outage-gate-optional.sh",
+    "go:multi-frontend-comparison": "bash deploy/projection-multi-frontend-comparison-gate.sh",
+    "go:multi-frontend-comparison:optional": "bash deploy/projection-multi-frontend-comparison-gate-optional.sh",
     "go:plex-dataplane-gate": "bash deploy/projection-plex-dataplane-gate.sh",
     "go:plex-dataplane-gate:three": "bash deploy/projection-plex-dataplane-gate-three.sh",
     "go:plex-dataplane-gate:optional": "bash deploy/projection-plex-dataplane-gate-optional.sh",

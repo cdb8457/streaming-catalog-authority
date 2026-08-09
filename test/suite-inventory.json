@@ -436,6 +436,10 @@
       "group": "offline"
     },
     {
+      "file": "projection-multi-frontend.ts",
+      "group": "offline"
+    },
+    {
       "file": "provider-availability-bridge.ts",
       "group": "offline"
     },
