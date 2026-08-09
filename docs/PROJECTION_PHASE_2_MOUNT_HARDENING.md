@@ -45,14 +45,14 @@ and fail this gate.
 
 | Run | Host | Confirmed checks | Failed | Skipped | Evidence |
 |---|---|---|---|---|---|
-| 1/3 | **Unraid `tower`** | **22** | 0 | 0 | PASS in 15,633 ms |
-| 2/3 | **Unraid `tower`** | **22** | 0 | 0 | PASS in 15,905 ms |
-| 3/3 | **Unraid `tower`** | **22** | 0 | 0 | PASS in 15,929 ms |
+| 1/3 | **Unraid `tower`** | **22** | 0 | 0 | PASS in 15,699 ms |
+| 2/3 | **Unraid `tower`** | **22** | 0 | 0 | PASS in 15,778 ms |
+| 3/3 | **Unraid `tower`** | **22** | 0 | 0 | PASS in 15,950 ms |
 
-> **RUN 3/3, exit 0**, 2026-08-09T12:25:10−05:00 → 12:25:58−05:00 (48 s wall), via
+> **RUN 3/3, exit 0**, 2026-08-09T12:52:18−05:00 → 12:53:06−05:00 (48 s wall), via
 > `npm run go:serve-death-gate:three` with `PROJECTIOND_IMAGE=projectiond:phase2-frozen`.
-> Commit **`fcbf0c6f913909157c2e3427264710eca53e2d4d`**, tree sha256
-> `b6e5f5487c3f41d30de1a6e250ecc779be75879c59fb9a80b74abc0b365ede2f` (1601 tracked files, byte-identity
+> Commit **`b86af018b0145abdb95df090389c8f13984d4cc2`**, tree sha256
+> `47dfe7dc7e669e8cb0e432d24b7952baa09ae2c8ed9c4740fe5c6ae3e274d9e6` (1602 tracked files, byte-identity
 > verified against the local checkout in both directions); image
 > **`sha256:9b701935af43bf71c126c9e59855bce7da33752e18dc5d1929c54320ab2c2798`**.
 > Host: Unraid 7.2.3, kernel 6.12.54-Unraid, Docker 27.5.1, Compose 2.40.3, Node v22.18.0.
@@ -102,11 +102,11 @@ the table above is the flag the gate passes to the **daemon** in phase 2, not a 
 
 | Run | Host | Confirmed checks | Failed | Skipped | Evidence |
 |---|---|---|---|---|---|
-| 1/3 | **Unraid `tower`** | **16** | 0 | 0 | PASS in 16,799 ms |
-| 2/3 | **Unraid `tower`** | **16** | 0 | 0 | PASS in 17,129 ms |
-| 3/3 | **Unraid `tower`** | **16** | 0 | 0 | PASS in 17,247 ms |
+| 1/3 | **Unraid `tower`** | **16** | 0 | 0 | PASS in 17,363 ms |
+| 2/3 | **Unraid `tower`** | **16** | 0 | 0 | PASS in 17,038 ms |
+| 3/3 | **Unraid `tower`** | **16** | 0 | 0 | PASS in 17,160 ms |
 
-> **RUN 3/3, exit 0**, 2026-08-09T12:25:58−05:00 → 12:26:50−05:00 (52 s wall), via
+> **RUN 3/3, exit 0**, 2026-08-09T12:53:06−05:00 → 12:53:58−05:00 (52 s wall), via
 > `npm run go:stale-mount-gate:three` with `PROJECTIOND_IMAGE=projectiond:phase2-frozen`.
 > Same frozen commit, tree sha256 and image as §1.
 > **Real subjects, three times each:** phase 1 stacked over the corpse and served generation 1, and a
@@ -156,11 +156,11 @@ product behaviour exists; the evidence is what was missing.
 
 | Run | Host | Confirmed checks | Failed | Skipped | Evidence |
 |---|---|---|---|---|---|
-| 1/3 | **Unraid `tower`** | **32** | 0 | 0 | PASS in 89,569 ms |
-| 2/3 | **Unraid `tower`** | **32** | 0 | 0 | PASS in 89,810 ms |
-| 3/3 | **Unraid `tower`** | **32** | 0 | 0 | PASS in 89,636 ms |
+| 1/3 | **Unraid `tower`** | **32** | 0 | 0 | PASS in 89,991 ms |
+| 2/3 | **Unraid `tower`** | **32** | 0 | 0 | PASS in 90,247 ms |
+| 3/3 | **Unraid `tower`** | **32** | 0 | 0 | PASS in 89,223 ms |
 
-> **RUN 3/3, exit 0**, 2026-08-09T12:26:50−05:00 → 12:31:19−05:00 (269 s wall), via
+> **RUN 3/3, exit 0**, 2026-08-09T12:53:58−05:00 → 12:58:28−05:00 (270 s wall), via
 > `npm run go:sustained-outage-gate:three` with `PROJECTIOND_IMAGE=projectiond:phase2-frozen`.
 > Same frozen commit, tree sha256 and image as §1. Each run is ~90 s because the gate holds the object down
 > through the breaker's full **60 s cooldown** before releasing; that wait is the product's number, not the
@@ -169,9 +169,9 @@ product behaviour exists; the evidence is what was missing.
 >
 > | | run 1 | run 2 | run 3 |
 > |---|---|---|---|
-> | faulted reads to open the breaker | 40MiB **1009 ms/3 req**, 44MiB **585 ms/1 req**, 48MiB **354 ms/0 req** | 40MiB 1020 ms/3 req, 44MiB 574 ms/1 req, 48MiB 391 ms/0 req | 40MiB 1003 ms/3 req, 44MiB 594 ms/1 req, 48MiB 348 ms/0 req |
+> | faulted reads to open the breaker | 40MiB **996 ms/3 req**, 44MiB **577 ms/1 req**, 48MiB **347 ms/0 req** | 40MiB 983 ms/3 req, 44MiB **980 ms/2 req**, 48MiB 375 ms/0 req | 40MiB 966 ms/3 req, 44MiB 580 ms/1 req, 48MiB 371 ms/0 req |
 >
-> The third read failing with **zero requests reaching the endpoint** is the open breaker refusing locally —
+> Run 2 needed **two** requests at 44MiB where runs 1 and 3 needed one — the budget is spent where it is spent, which is why the gate asserts the open breaker and not the arithmetic. The third read failing with **zero requests reaching the endpoint** is the open breaker refusing locally —
 > the only thing that produces that signature. Then, every run: **zero provider traffic during the hold**;
 > the namespace stayed the snapshot (same identity, same listing, same generation); and after the cooldown
 > the **first read after release succeeded and matched the tail probe digest** — the half-open probe closing
@@ -323,7 +323,7 @@ made `--auto-remount` recover for the daemon and for nobody else. The run record
 | the two shipped embedded programs | the pins **execute** `readyz-probe.sh` against a stub `wget`, and `rounds.cjs` and `namespace_gone` against stub inputs including a `docker` that exits 125 | each produced the output its gate depends on |
 | the harness's skip contract | the shipped skip block was extracted and run under `set -Eeuo pipefail` with the `/dev/fuse` probe forced to fail, with and without the `GATE_SKIP_STATUS` assignment | **without it**: `GATE_SKIP_STATUS: unbound variable`, **exit 1**, no message. **With it**: the `SKIPPED (status 77)` text and **exit 77**. This is the bake-off document's §7 defect 1, observed rather than reasoned about |
 | the harness's compose file | `docker compose -f docker-compose.projection-multi-frontend.yml config -q` | valid. It is a **committed** file now rather than one the harness wrote into the repository root on every run |
-| the whole offline group | `npm run test:offline` | **307 selected, 306 passed, 672s** (307 rather than 306 because this tranche adds `projection-multi-frontend.ts`). The one failure is `test/torbox-resolver.ts`, which fails on this host because win32 cannot make a PATH-injected `bash` that refuses to run a script. It is **pre-existing**, unrelated to this tranche, and touches none of these files |
+| the whole offline group | `npm run test:offline` | **308 selected, 307 passed, 673 s** (308 rather than 306 because this tranche adds `projection-multi-frontend.ts` and `projection-evidence-consistency.ts`). The one failure is `test/torbox-resolver.ts`, which fails on this host because win32 cannot make a PATH-injected `bash` that refuses to run a script. It is **pre-existing**, unrelated to this tranche, and touches none of these files |
 
 ### 8.2 Not observed — the blockers, stated as blockers
 
