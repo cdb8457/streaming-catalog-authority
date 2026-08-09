@@ -72,6 +72,52 @@ construction).
 Resource accounting samples **the frontend container only** — the daemon on arm A, the mount client on B and C
 — once a second, and reports averages and peaks.
 
+## 3.1 Measurement mode, and exactly what it relaxes
+
+The concurrency observation is shared with Phase 1: both `verify-overlap` implementations call G18's own
+`analyseOverlap` and `overlapProblems`. Two of its checks are **floors on the longest unbroken three-way
+run** — at least 3 samples and at least 2 credited seconds — and in an acceptance gate that is right: three
+scattered simultaneous samples are not three servers scanning together.
+
+**In this harness that same quantity is the thing being compared.** `projectiond` serves the scan window from
+its probe cache, so its three scans do not queue behind the provider and finish closer together than an
+rclone arm's do. Measured on Unraid, arm A's longest unbroken run was **1 sample**, and the run said why:
+*"the barrier was released after 0s of a provider read actually being blocked."* A harness that aborts on the
+figure it exists to report cannot report it.
+
+So `verify-overlap` takes **`--overlap-mode`**, and it is the only thing that changes:
+
+| | `strict` (the default) | `measurement` |
+|---|---|---|
+| the two continuous-run floors | **enforced** — this is the acceptance interpretation | **recorded** under the two `:measured` gate ids (the sample count, and the credited duration), held against no floor |
+| the scan having run at all | required | required |
+| all three servers observed scanning | required | required |
+| full three-way attribution seen at least once | required | required |
+| readable telemetry | required | required |
+| a zero, absent, negative, fractional or non-finite figure | fails | **fails** — `measurementClosureProblems` |
+| scan failures, corpus, telemetry, leak searches, every other gate | unchanged | unchanged |
+
+**Containment is the point, and it is enforced rather than promised:**
+
+- **The default is `strict`.** Every Phase 1 gate — G18, G22, the three data-plane gates, G27 — passes no
+  `--overlap-mode` and is bit-for-bit unaffected. `test/projection-overlap-measurement-mode.ts` asserts that
+  no gate in `deploy/` except this harness contains the flag.
+- **An unrecognised value is refused**, never defaulted in either direction, so a typo cannot pick a mode.
+- **The floors themselves did not move.** `MIN_SIMULTANEOUS_SAMPLES` is still 3 and
+  `MIN_SIMULTANEOUS_SPAN_SECONDS` still 2, pinned by test, so **no historical Phase 1 result means anything
+  different than it did before this change**.
+- **The relaxed figures carry a different gate id and the nonclaim**, so a results file cannot be read as an
+  acceptance pass:
+
+  > *MEASUREMENT MODE CLOSES NO GATE: the continuous three-way overlap is RECORDED as a comparison figure and
+  > is held against no floor. It is not an acceptance result, it closes no G-number, and it says nothing about
+  > whether this frontend would pass the strict interpretation every Phase 1 gate applies.*
+
+**Both floors are relaxed together, and that is deliberate.** They are two views of one observation — the
+same unbroken run counted in samples and credited in seconds. Relaxing only the count would leave the
+duration floor failing for the identical reason at the identical place: a distinction with no behaviour
+behind it.
+
 ## 4. Run record
 
 **NOT RUN.** No arm has completed, so no arm has a row. A row is filled only by a run that completed, and a

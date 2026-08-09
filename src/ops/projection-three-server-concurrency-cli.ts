@@ -12,7 +12,8 @@ import {
   CANONICAL_SCAN_WINDOWS_PER_ENTRY, breachedShapes, canonicalRangeRequestCeiling,
   canonicalResolutionCeiling, canonicalScanByteCeiling, corpusAttribution, daemonBlockByteCeiling,
   objectByteVerdicts, objectShapeVerdicts, overlapProblems, parseProviderCounters, triggerSpreadSeconds,
-  type OverlapSample, type ProviderCounters, type ThreeServerId,
+  OVERLAP_MEASUREMENT_NONCLAIM, parseOverlapMode,
+  type OverlapMode, type OverlapSample, type ProviderCounters, type ThreeServerId,
 } from '../core/projection/three-server-concurrency.js';
 import { PLEX_LARGE_FIXTURE, PLEX_SCAN_ENVELOPE } from '../core/projection/plex-dataplane.js';
 import {
@@ -31,7 +32,7 @@ import {
 //
 //   concurrent-scan   --state-emby F --state-jellyfin F --state-plex F --endpoint U --barrier-ref R
 //                     --out F --catalogue-dir D [--sample-interval-ms N] [--hold-arm-ms N]
-//   verify-overlap    --scan F
+//   verify-overlap    --scan F [--overlap-mode strict|measurement]
 //   verify-corpus     --server ID --catalogue F --expect-file F
 //   counters          --url U --out F
 //   window            --before F --after F --gate G --large-bytes N --small-bytes N --remote-entries N
@@ -184,7 +185,16 @@ async function main(): Promise<void> {
       // WHERE THE WORD "SIMULTANEOUSLY" IS EITHER EARNED OR NOT.
       const outcome = readScanOutcome(need(args, 'scan'));
       const analysis = analyseOverlap(outcome.timeline as OverlapSample[], THREE_SERVER_IDS);
-      const problems = overlapProblems(analysis);
+      // STRICT UNLESS A CALLER EXPLICITLY ASKS OTHERWISE. G18 and every other Phase 1 caller pass no
+      // --overlap-mode, so they get the acceptance interpretation and cannot inherit the relaxed one by
+      // accident; an unrecognised value is refused rather than defaulted either way.
+      let mode: OverlapMode;
+      try {
+        mode = parseOverlapMode(args.flags.get('overlap-mode'));
+      } catch (error) {
+        fail(error instanceof Error ? error.message : String(error));
+      }
+      const problems = overlapProblems(analysis, mode);
 
       record(args, exactly('TS1-servers-observed-scanning', analysis.serversObservedInFlight,
         REQUIRED_SERVER_COUNT,
@@ -201,18 +211,33 @@ async function main(): Promise<void> {
       // a count of three and a span of two seconds while nothing had overlapped for two seconds at any
       // point. `last - first` is not a duration: it counts every disqualifying sample in between as though
       // it had been overlap, and it counts time in which nothing was sampled at all.
-      record(args, atLeast('TS1-continuous-simultaneous-samples',
-        analysis.longestContinuousSimultaneousSamples, CONCURRENCY_RULES.MIN_SIMULTANEOUS_SAMPLES,
-        'the longest UNBROKEN run of samples with every server scanning. A run is broken by any sample that '
-        + 'is idle, unreadable or too wide to describe one instant, and by any gap over '
-        + `${CONCURRENCY_DEADLINES_MS.MAX_CONTINUOUS_GAP}ms — twice the nominal tick, so at most one missed `
-        + 'poll — because unobserved time is not overlap'));
-      record(args, atLeast('TS1-continuous-simultaneous-seconds',
-        Math.round(analysis.longestContinuousSimultaneousSeconds * 10) / 10,
-        CONCURRENCY_RULES.MIN_SIMULTANEOUS_SPAN_SECONDS,
-        `how long that unbroken run lasted, CREDITED: each gap is worth at most one nominal tick, so an `
-        + `observer that fell behind cannot charge the time it did not poll. Wall span of the same run: `
-        + `${Math.round(analysis.longestContinuousWallSeconds * 10) / 10}s`));
+      if (mode === 'measurement') {
+        // THE FIGURE, UNDER A DIFFERENT GATE NAME, so it can never be mistaken in a results file for the
+        // acceptance assertion it is not. `:measured` carries the nonclaim with it.
+        console.log(`  ${OVERLAP_MEASUREMENT_NONCLAIM}`);
+        record(args, figure3('TS1-continuous-simultaneous-samples:measured',
+          `${analysis.longestContinuousSimultaneousSamples} sample(s) in the longest unbroken run with all `
+          + `${REQUIRED_SERVER_COUNT} servers scanning; the strict floor this harness does NOT apply is `
+          + `${CONCURRENCY_RULES.MIN_SIMULTANEOUS_SAMPLES}. ${OVERLAP_MEASUREMENT_NONCLAIM}`));
+        record(args, figure3('TS1-continuous-simultaneous-seconds:measured',
+          `${Math.round(analysis.longestContinuousSimultaneousSeconds * 10) / 10}s credited (wall span `
+          + `${Math.round(analysis.longestContinuousWallSeconds * 10) / 10}s); the strict floor this harness `
+          + `does NOT apply is ${CONCURRENCY_RULES.MIN_SIMULTANEOUS_SPAN_SECONDS}s. `
+          + OVERLAP_MEASUREMENT_NONCLAIM));
+      } else {
+        record(args, atLeast('TS1-continuous-simultaneous-samples',
+          analysis.longestContinuousSimultaneousSamples, CONCURRENCY_RULES.MIN_SIMULTANEOUS_SAMPLES,
+          'the longest UNBROKEN run of samples with every server scanning. A run is broken by any sample '
+          + 'that is idle, unreadable or too wide to describe one instant, and by any gap over '
+          + `${CONCURRENCY_DEADLINES_MS.MAX_CONTINUOUS_GAP}ms — twice the nominal tick, so at most one `
+          + 'missed poll — because unobserved time is not overlap'));
+        record(args, atLeast('TS1-continuous-simultaneous-seconds',
+          Math.round(analysis.longestContinuousSimultaneousSeconds * 10) / 10,
+          CONCURRENCY_RULES.MIN_SIMULTANEOUS_SPAN_SECONDS,
+          `how long that unbroken run lasted, CREDITED: each gap is worth at most one nominal tick, so an `
+          + `observer that fell behind cannot charge the time it did not poll. Wall span of the same run: `
+          + `${Math.round(analysis.longestContinuousWallSeconds * 10) / 10}s`));
+      }
       // TOTALS, RECORDED. The distance between them and the continuous run is itself informative: equal
       // means one uninterrupted overlap, far apart means it kept breaking.
       record(args, {

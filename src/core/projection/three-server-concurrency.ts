@@ -614,7 +614,90 @@ export function analyseOverlap(
  * overlap" and "one server never scanned" are different defects with different first suspects, and a gate
  * that printed `false` for both would cost a whole run to interpret.
  */
-export function overlapProblems(analysis: OverlapAnalysis): string[] {
+/**
+ * How the two CONTINUOUS-OVERLAP floors are interpreted. Everything else is identical in both modes.
+ *
+ * `strict` is the acceptance interpretation and the DEFAULT: the longest unbroken three-way run must clear
+ * `MIN_SIMULTANEOUS_SAMPLES` and `MIN_SIMULTANEOUS_SPAN_SECONDS`, or the observation is not simultaneous
+ * scanning. Every Phase 1 gate uses it, unchanged, because it is what `verify-overlap` does when nobody says
+ * otherwise.
+ *
+ * `measurement` exists for the PHASE 2 MULTI-FRONTEND COMPARISON HARNESS and for nothing else. There, the
+ * length of the three-way overlap is the QUANTITY BEING COMPARED between frontends, not a property the
+ * frontend has to have: `projectiond` serves the scan window from its probe cache, so its scans do not queue
+ * behind the provider and finish closer together than an rclone arm's do. Measured on Unraid, arm A's longest
+ * unbroken run was ONE sample against a floor of three — and a harness that aborts on the figure it exists to
+ * report cannot report it.
+ *
+ * WHAT MEASUREMENT MODE DOES NOT DO. It does not lower a floor, widen a tolerance, or reinterpret any Phase 1
+ * result. It removes the two continuous-run floors from the FAIL set and requires, in their place, that the
+ * observation was actually taken and is well formed — see `measurementClosureProblems`. Every other check is
+ * the strict one, unchanged: the scan must have run, all three servers must have been observed scanning, and
+ * full three-way attribution must have been seen at least once.
+ */
+export type OverlapMode = 'strict' | 'measurement';
+
+/** The interpretation applied when a caller says nothing. Phase 1 depends on this being `strict`. */
+export const OVERLAP_MODE_DEFAULT: OverlapMode = 'strict';
+
+/**
+ * What a measurement-mode overlap figure is NOT. Printed by the CLIs and recorded beside the figure, because
+ * a number without this sentence beside it is one somebody will later read as a threshold that passed.
+ */
+export const OVERLAP_MEASUREMENT_NONCLAIM =
+  'MEASUREMENT MODE CLOSES NO GATE: the continuous three-way overlap is RECORDED as a comparison figure and '
+  + 'is held against no floor. It is not an acceptance result, it closes no G-number, and it says nothing '
+  + 'about whether this frontend would pass the strict interpretation every Phase 1 gate applies.';
+
+/**
+ * Turn a caller-supplied mode into an `OverlapMode`, refusing anything it does not recognise.
+ *
+ * ABSENT MEANS STRICT, AND AN UNKNOWN VALUE IS AN ERROR RATHER THAN A FALLBACK. A typo that quietly resolved
+ * to `measurement` would relax a Phase 1 gate; a typo that quietly resolved to `strict` would silently
+ * re-block the harness. Neither is allowed to happen by spelling.
+ */
+export function parseOverlapMode(raw: string | undefined): OverlapMode {
+  if (raw === undefined || raw === '') return OVERLAP_MODE_DEFAULT;
+  if (raw === 'strict' || raw === 'measurement') return raw;
+  throw new Error(`unknown overlap mode "${raw}": expected "strict" or "measurement"`);
+}
+
+/**
+ * What measurement mode requires INSTEAD of the two floors, so that relaxing them cannot turn "we did not
+ * observe it" into a silent pass.
+ *
+ * A figure is only a measurement if an observation actually produced it. Zero, absent, negative and
+ * non-finite are all refused here, and so is a run in which no sample ever saw all three servers at once —
+ * because a continuous-overlap figure derived from a window that never had three-way overlap is not a small
+ * measurement, it is no measurement.
+ */
+export function measurementClosureProblems(analysis: OverlapAnalysis): string[] {
+  const problems: string[] = [];
+  const samples = analysis.longestContinuousSimultaneousSamples;
+  const seconds = analysis.longestContinuousSimultaneousSeconds;
+
+  if (!Number.isInteger(samples) || samples < 1) {
+    problems.push('measurement mode still requires an observation: the longest unbroken three-way run is '
+      + `${String(samples)}, and a zero, absent or non-integer count is not a figure to compare — it is the `
+      + 'absence of one');
+  }
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    problems.push(`measurement mode still requires a well-formed duration: the credited run is ${
+      String(seconds)}s`);
+  }
+  if (analysis.maxServersInFlight < REQUIRED_SERVER_COUNT) {
+    problems.push(`measurement mode still requires full three-way attribution at least once: the most `
+      + `servers ever seen scanning together was ${analysis.maxServersInFlight} of ${REQUIRED_SERVER_COUNT}`);
+  }
+  if (analysis.unreadableSamples >= analysis.samples) {
+    problems.push(`measurement mode still requires readable telemetry: all ${analysis.samples} sample(s) had `
+      + 'a server that could not be read, so nothing was observed to measure');
+  }
+  return problems;
+}
+
+export function overlapProblems(analysis: OverlapAnalysis,
+  mode: OverlapMode = OVERLAP_MODE_DEFAULT): string[] {
   const problems: string[] = [];
   if (analysis.samples === 0) {
     problems.push('the observer took no samples at all, so nothing about concurrency was measured');
@@ -638,6 +721,16 @@ export function overlapProblems(analysis: OverlapAnalysis): string[] {
   // cleared a count of three and a span of two seconds while nothing had overlapped for two seconds at any
   // point. The span was the worse of the two, because it silently counted every disqualifying sample between
   // the first and the last as though it had been overlap.
+  // THE TWO CONTINUOUS-RUN FLOORS, AND THE ONE PLACE THE MODE CHANGES ANYTHING.
+  //
+  // They are relaxed TOGETHER or not at all, because they are two views of one observation: the same
+  // unbroken run counted in samples and credited in seconds. Relaxing only the count would leave the
+  // duration floor failing for the identical reason and the harness blocked at the identical place, which
+  // is a distinction with no behaviour behind it.
+  if (mode === 'measurement') {
+    problems.push(...measurementClosureProblems(analysis));
+    return problems;
+  }
   if (analysis.longestContinuousSimultaneousSamples < CONCURRENCY_RULES.MIN_SIMULTANEOUS_SAMPLES) {
     problems.push(`the longest UNBROKEN run of samples with all `
       + `${CONCURRENCY_RULES.MIN_SERVERS_OBSERVED_IN_FLIGHT} servers scanning was `

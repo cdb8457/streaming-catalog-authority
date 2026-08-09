@@ -6,7 +6,8 @@ import {
 import {
   CONCURRENCY_DEADLINES_MS, CONCURRENCY_RULES, REQUIRED_SERVER_COUNT, THREE_SERVER_IDS,
   analyseOverlap, overlapProblems, triggerSpreadSeconds,
-  type OverlapSample, type ThreeServerId,
+  OVERLAP_MEASUREMENT_NONCLAIM, parseOverlapMode,
+  type OverlapMode, type OverlapSample, type ThreeServerId,
 } from '../core/projection/three-server-concurrency.js';
 import {
   COMPARISON_CORPUS_ENTRIES, COMPARISON_HOLD_ARM_MS, PRODUCT_REMOTE_ENTRIES,
@@ -45,7 +46,7 @@ import {
 //   client-alive   --rc U
 //   concurrent-scan --state-emby F --state-jellyfin F --state-plex F --endpoint U --barrier-ref R
 //                   --out F --catalogue-dir D [--sample-interval-ms N] [--hold-arm-ms N]
-//   verify-overlap --scan F
+//   verify-overlap --scan F [--overlap-mode strict|measurement]
 //   verify-corpus  --server ID --catalogue F --expect-file F
 //   telemetry      --before F --after F --objects N --gate G
 //   cold-window    --before F --after F --gate G --first-corpus-ordinal N --corpus-objects N
@@ -275,7 +276,15 @@ async function main(): Promise<void> {
       // G18's own, applied by G18's own analysis, for exactly that reason.
       const outcome = readScanOutcome(need(args, 'scan'));
       const analysis = analyseOverlap(outcome.timeline as OverlapSample[], THREE_SERVER_IDS);
-      const problems = overlapProblems(analysis);
+      // STRICT UNLESS ASKED. G22 passes no --overlap-mode and keeps the acceptance interpretation exactly;
+      // only the Phase 2 comparison harness passes `measurement`, and only for its own arms.
+      let mode: OverlapMode;
+      try {
+        mode = parseOverlapMode(args.flags.get('overlap-mode'));
+      } catch (error) {
+        fail(error instanceof Error ? error.message : String(error));
+      }
+      const problems = overlapProblems(analysis, mode);
 
       record(args, exactly('RC1-servers-observed-scanning', analysis.serversObservedInFlight,
         REQUIRED_SERVER_COUNT,
@@ -284,15 +293,28 @@ async function main(): Promise<void> {
         REQUIRED_SERVER_COUNT,
         'one would be what three SEQUENTIAL scans look like, and a sequential window is not the window G18 '
         + 'measured'));
-      record(args, atLeast('RC1-continuous-simultaneous-samples',
-        analysis.longestContinuousSimultaneousSamples, CONCURRENCY_RULES.MIN_SIMULTANEOUS_SAMPLES,
-        'the longest UNBROKEN run of samples with every server scanning, broken by any idle, unreadable or '
-        + `imprecise sample and by any gap over ${CONCURRENCY_DEADLINES_MS.MAX_CONTINUOUS_GAP}ms`));
-      record(args, atLeast('RC1-continuous-simultaneous-seconds',
-        Math.round(analysis.longestContinuousSimultaneousSeconds * 10) / 10,
-        CONCURRENCY_RULES.MIN_SIMULTANEOUS_SPAN_SECONDS,
-        'how long that unbroken run lasted, CREDITED at most one nominal tick per gap. Wall span of the same '
-        + `run: ${Math.round(analysis.longestContinuousWallSeconds * 10) / 10}s`));
+      if (mode === 'measurement') {
+        console.log(`  ${OVERLAP_MEASUREMENT_NONCLAIM}`);
+        record(args, figure('RC1-continuous-simultaneous-samples:measured',
+          `${analysis.longestContinuousSimultaneousSamples} sample(s) in the longest unbroken run with all `
+          + `${REQUIRED_SERVER_COUNT} servers scanning; the strict floor this harness does NOT apply is `
+          + `${CONCURRENCY_RULES.MIN_SIMULTANEOUS_SAMPLES}. ${OVERLAP_MEASUREMENT_NONCLAIM}`));
+        record(args, figure('RC1-continuous-simultaneous-seconds:measured',
+          `${Math.round(analysis.longestContinuousSimultaneousSeconds * 10) / 10}s credited (wall span `
+          + `${Math.round(analysis.longestContinuousWallSeconds * 10) / 10}s); the strict floor this harness `
+          + `does NOT apply is ${CONCURRENCY_RULES.MIN_SIMULTANEOUS_SPAN_SECONDS}s. `
+          + OVERLAP_MEASUREMENT_NONCLAIM));
+      } else {
+        record(args, atLeast('RC1-continuous-simultaneous-samples',
+          analysis.longestContinuousSimultaneousSamples, CONCURRENCY_RULES.MIN_SIMULTANEOUS_SAMPLES,
+          'the longest UNBROKEN run of samples with every server scanning, broken by any idle, unreadable or '
+          + `imprecise sample and by any gap over ${CONCURRENCY_DEADLINES_MS.MAX_CONTINUOUS_GAP}ms`));
+        record(args, atLeast('RC1-continuous-simultaneous-seconds',
+          Math.round(analysis.longestContinuousSimultaneousSeconds * 10) / 10,
+          CONCURRENCY_RULES.MIN_SIMULTANEOUS_SPAN_SECONDS,
+          'how long that unbroken run lasted, CREDITED at most one nominal tick per gap. Wall span of the '
+          + `same run: ${Math.round(analysis.longestContinuousWallSeconds * 10) / 10}s`));
+      }
       record(args, figure('RC1-simultaneous-totals',
         `${analysis.simultaneousSamples} simultaneous samples in total across ${analysis.simultaneousRuns} `
         + `run(s), ${analysis.brokenByGap} broken by a gap too wide to join. RECORDED; the floors are on the `

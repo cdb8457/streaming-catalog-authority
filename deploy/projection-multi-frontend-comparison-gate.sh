@@ -1142,7 +1142,7 @@ PROBE_CACHE_AFTER="$(field probeCacheBytes < "$WORK/out/daemon-after.json")"
 # ----------------------------------------------------------------------------------------------------------
 step "was it actually simultaneous?"
 # ----------------------------------------------------------------------------------------------------------
-drive verify-overlap --scan "$ARM_REL/out/concurrent-scan.json"
+drive verify-overlap --scan "$ARM_REL/out/concurrent-scan.json" --overlap-mode measurement
 
 # ----------------------------------------------------------------------------------------------------------
 step "did each server see the SAME ~50 identities, through ITS OWN semantics?"
@@ -1636,7 +1636,7 @@ run_rclone_arm() {
   # ------------------------------------------------------------------------------------------------------
   step "ARM $arm: was it actually simultaneous, and did each server see the SAME ~50 identities?"
   # ------------------------------------------------------------------------------------------------------
-  drive verify-overlap --scan "$rel_arm/out/concurrent-scan.json"
+  drive verify-overlap --scan "$rel_arm/out/concurrent-scan.json" --overlap-mode measurement
   drive verify-corpus --server jellyfin --catalogue "$rel_arm/out/catalogue-jellyfin.json" \
     --expect-file "$REL/out/expected.json"
   drive verify-corpus --server plex     --catalogue "$rel_arm/out/catalogue-plex.json" \

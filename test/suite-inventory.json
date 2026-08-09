@@ -444,6 +444,10 @@
       "group": "offline"
     },
     {
+      "file": "projection-overlap-measurement-mode.ts",
+      "group": "offline"
+    },
+    {
       "file": "provider-availability-bridge.ts",
       "group": "offline"
     },
