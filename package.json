@@ -144,6 +144,7 @@
     "go:reliability-loop-gate:three": "bash deploy/projection-reliability-loop-gate-three.sh",
     "go:reliability-loop-gate:optional": "bash deploy/projection-reliability-loop-gate-optional.sh",
     "go:consumer-attachment-check": "bash deploy/projection-consumer-attachment-check.sh",
+    "go:provider-origin-recheck": "bash deploy/projection-provider-origin-recheck.sh",
     "go:plex-dataplane-gate": "bash deploy/projection-plex-dataplane-gate.sh",
     "go:plex-dataplane-gate:three": "bash deploy/projection-plex-dataplane-gate-three.sh",
     "go:plex-dataplane-gate:optional": "bash deploy/projection-plex-dataplane-gate-optional.sh",
