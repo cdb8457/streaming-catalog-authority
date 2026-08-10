@@ -1,6 +1,10 @@
 import {
   existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync,
 } from 'node:fs';
+// TYPE-ONLY, so it is erased at run time and drags no media-server driver into this suite. It is imported so
+// the overlap-timeline fixture below is built from the interface the producer actually returns rather than
+// from a reading of its local variables.
+import type { ConcurrentScanOutcome } from '../src/ops/projection-three-server-concurrency.js';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1507,8 +1511,14 @@ test('the overlap timeline outlives the failure that makes it worth reading, and
   const dir = mkdtempSync(join(tmpdir(), 'rl-pin-'));
   const scan = join(dir, 'scan.json');
   const kept = join(dir, 'kept.json');
+  // THE FIXTURE'S FIELD NAMES COME FROM `ConcurrentScanOutcome`, NOT FROM A READING OF THE PRODUCER'S LOCAL
+  // VARIABLES -- which is how the first version of this pin passed over a rebuilder that read `outcomes` and
+  // therefore filed `perServer: []` on the one real failure it existed for. A fixture written from the same
+  // wrong assumption as the code under test asserts nothing.
+  assert(([] as Array<keyof ConcurrentScanOutcome>).concat(['perServer', 'timeline']).length === 2,
+    'the outcome interface no longer declares perServer and timeline');
   writeFileSync(scan, JSON.stringify({
-    outcomes: [
+    perServer: [
       { id: 'emby', triggeredAtMs: 10, finishedAtMs: 900, elapsedSeconds: 0.89, observedInFlight: true },
       { id: 'plex', triggeredAtMs: 12, finishedAtMs: 40_000, elapsedSeconds: 40, observedInFlight: true,
         failure: 'GET https://cdn.example.invalid/secret-path answered 500' },
@@ -1527,7 +1537,8 @@ test('the overlap timeline outlives the failure that makes it worth reading, and
     perServer: Array<{ id: string; failed: boolean }>;
     timeline: Array<{ inFlightCount: number }>;
   };
-  assertEq(document.perServer.length, 2, 'the kept timeline lost a server');
+  assertEq(document.perServer.length, 2,
+    'the kept timeline lost a server -- which is what an unrecognised field name looks like from here');
   assertEq(document.perServer[1]?.failed, true, 'a failure was dropped entirely rather than de-messaged');
   assertEq(document.timeline.map((sample) => sample.inFlightCount).join(','), '2,2',
     'the kept timeline does not count how many were in flight per tick, which is the whole question');

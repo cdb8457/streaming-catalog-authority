@@ -858,6 +858,14 @@ cat > "$WORK/out/overlaptimeline.cjs" <<'OVERLAP'
 // could carry a URL. Like the cycles document in section 6, it structurally cannot hold a secret.
 const { readFileSync, writeFileSync } = require('node:fs');
 const scan = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+// AN ABSENT `perServer` MEANS THIS PROGRAM IS READING A SHAPE IT DOES NOT UNDERSTAND, and a timeline kept
+// without the per-server times is the "did not look" reading of an empty list. It refuses rather than
+// filing a document that would be read as "no server reported anything".
+if (!Array.isArray(scan.perServer) || !Array.isArray(scan.timeline)) {
+  console.error('  overlaptimeline: the scan outcome has no perServer/timeline array; the shape has moved '
+    + 'and a kept document would be missing exactly what it is kept for');
+  process.exit(3);
+}
 const int = (value) => (typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : null);
 const flags = (value) => {
   const out = {};
@@ -866,7 +874,13 @@ const flags = (value) => {
 };
 writeFileSync(process.argv[3], `${JSON.stringify({
   keptBecause: 'the three-way overlap assertion failed and the run directory is about to be removed',
-  perServer: (scan.outcomes ?? []).map((outcome) => ({
+  // `perServer` IS THE FIELD `ConcurrentScanOutcome` DECLARES, and the first draft of this program read
+  // `outcomes` -- a name taken from the local variable inside `runConcurrentScans` rather than from the
+  // interface it returns. It cost the first real failure this instrument was built for: the timeline came
+  // out correct and `perServer: []`, so the per-server trigger and finish times -- exactly the stagger
+  // evidence the arm needs -- were silently absent from the one document kept to explain the failure.
+  // A MISSING FIELD IS NOT AN EMPTY ONE, so it is refused rather than defaulted.
+  perServer: (scan.perServer ?? []).map((outcome) => ({
     id: String(outcome.id),
     triggeredAtMs: int(outcome.triggeredAtMs),
     finishedAtMs: int(outcome.finishedAtMs),
