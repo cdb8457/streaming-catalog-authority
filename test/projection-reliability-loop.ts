@@ -23,6 +23,7 @@ import {
   PROJECTIOND_READ_POLICY,
   PROJECTIOND_ADMISSION_LIMITS,
   PROJECTIOND_CIRCUIT_BREAKER,
+  PROJECTIOND_ACCESS_RESOLUTION,
   PROJECTION_PHASE_1_BUDGETS,
   PROJECTIOND_CONSUMER_ATTACHMENT,
 } from '../src/core/projection/runtime-contract.js';
@@ -137,9 +138,15 @@ test('the outage arm\'s hold window ends strictly inside the breaker cooldown', 
     'the outage arm does not bound its hold by the derived window');
   // ...AND THE ENDPOINT IS MADE HEALTHY BEFORE THE PROBE, NOT AFTER. Restoring it later would send the one
   // half-open probe at a broken endpoint, and the breaker would correctly re-open for another cooldown.
-  const restoreAt = body.indexOf('chmod 0600');
-  const holdAt = body.indexOf('hold_until');
-  const releaseAt = body.indexOf('RL-F-A4-recovery-ms');
+  //
+  // THE ORDER IS TAKEN OVER EXECUTABLE TEXT, WHICH IS THE SAME LESSON THE A3 PIN BELOW RECORDS ABOUT
+  // ITSELF. Read over the whole body, this check failed against a CORRECT gate the moment a comment
+  // explaining where the recovery measurement lives happened to name the id before the hold ran. A comment
+  // may say an id; only executable text may be ordered by it.
+  const executable = shellCodeOf(body);
+  const restoreAt = executable.indexOf('chmod 0600');
+  const holdAt = executable.indexOf('hold_until');
+  const releaseAt = executable.indexOf('RL-F-A4-recovery-ms');
   assert(holdAt > 0 && restoreAt > holdAt && releaseAt > restoreAt,
     'the credential is not restored between the hold and the recovery measurement');
 });
@@ -173,6 +180,7 @@ test('the contract document and the module agree on every number', () => {
     ['OUTAGE_RECOVERY_BUDGET_MS', RELIABILITY_LOOP_RULES.OUTAGE_RECOVERY_BUDGET_MS],
     ['ROTATION_CONVERGENCE_READS', RELIABILITY_LOOP_RULES.ROTATION_CONVERGENCE_READS],
     ['ROTATION_REFUSAL_READS_MAX', RELIABILITY_LOOP_RULES.ROTATION_REFUSAL_READS_MAX],
+    ['ROTATION_READ_SPACING_MS', RELIABILITY_LOOP_RULES.ROTATION_READ_SPACING_MS],
     ['PLAY_START_BUDGET_MS', RELIABILITY_LOOP_RULES.PLAY_START_BUDGET_MS],
     ['PLAY_DECODED_SECONDS_MIN', RELIABILITY_LOOP_RULES.PLAY_DECODED_SECONDS_MIN],
   ];
@@ -1247,6 +1255,107 @@ test('A3 reads PERMANENT evidence, because /readyz clears the serve death the mo
   // not say the daemon did it.
   assert(executable.includes('recovered && [ "$remount_logged" -eq 1 ]'),
     'remounted-in-place rests on only one of the two witnesses');
+});
+
+test('READINESS IS A BYTE, NOT A STAT, and it is read from the entry that needs no provider', () => {
+  // THE DEFECT THIS CLOSES SCORED A CORRECT RECOVERY AS A FAILURE ON THE FIRST RUN THAT REACHED A3.
+  // `await_recovery` was `await_path`, which is `test -f`, and a dead FUSE mount answers `stat` out of the
+  // kernel's attribute cache for a full `attrTimeout` after the connection is gone — §13.6's warm-cache
+  // asymmetry met from the other side. So the clock stopped over a corpse: 695 ms from before the abort to
+  // "recovered", `remounted-in-place` judged against a daemon that had not remounted, and the three
+  // consumers read before the new mount had propagated to them. An `open` is what a corpse refuses.
+  const gate = read(GATE);
+  const body = functionBodyOf(gate, 'await_readable');
+  assert(/dd "if=\/mnt\/\$SEED_PATH"/.test(body),
+    'the readiness probe does not open and read a byte, so a warm attribute cache can still answer it');
+  // THE SEED AND NOT THE OPERATOR'S OBJECT, for three reasons that are all load-bearing: READY_BUDGET_MS is
+  // derived with no endpoint on the path, a poll loop must not spend a metered account, and A4 has to be
+  // able to measure a daemon coming back DURING its own deliberate provider outage.
+  assert(!body.includes('$REAL_PATH'),
+    'the readiness probe reads the operator\'s object, so it measures the provider and not the daemon');
+  const recovery = shellCodeOf(functionBodyOf(gate, 'await_recovery'));
+  assert(recovery.includes('await_readable'),
+    'await_recovery still decides recovery from metadata');
+  assert(!recovery.includes('await_path'),
+    'await_recovery still calls the metadata probe');
+});
+
+test('A3 WAITS for the remount it is asking about rather than sampling once', () => {
+  // The other half of the same defect: the remount counter was read the instant `await_recovery` returned,
+  // and `await_recovery` returned over a warm cache — so the arm asked "has the daemon remounted yet?"
+  // before it could possibly have, and recorded the answer as the verdict. The daemon writes the line when
+  // the event happens; the event is what the arm is about, so the line is waited for.
+  const body = shellCodeOf(functionBodyOf(read(GATE), 'arm_A3'));
+  const wait = body.indexOf('-gt "$remounts_before"');
+  const clock = body.indexOf('await_recovery');
+  assert(wait >= 0 && clock >= 0, 'A3 no longer both waits for the remount and takes a recovery clock');
+  assert(wait < clock,
+    'A3 still samples the remount counter after the recovery clock instead of waiting for the event');
+  assert(/while \[ "\$n" -lt 240 \][\s\S]{0,400}-gt "\$remounts_before"/.test(body),
+    'the remount is not waited for under a bounded poll');
+});
+
+test('A4 measures daemon readiness where it can be measured, not across its own hold', () => {
+  // A CHECK THAT COULD NOT PASS, WHICH IS THE MIRROR OF ONE THAT CANNOT FAIL. `RL-R-ready-ms` was clocked
+  // from the daemon start at the top of A4 and taken at the BOTTOM, so it spanned the trip, the whole
+  // HOLD_WINDOW_MS hold and the recovery, against READY_BUDGET_MS. The hold alone is longer than that
+  // budget in every run that could ever be taken. Its first real execution recorded 34,081 against 22,000
+  // while every other measurement in the arm passed.
+  assert(RELIABILITY_LOOP_RULES.HOLD_WINDOW_MS > RELIABILITY_LOOP_RULES.READY_BUDGET_MS,
+    'the derivation this pin rests on has changed: the hold no longer outlasts the readiness budget');
+  const body = shellCodeOf(functionBodyOf(read(GATE), 'arm_A4'));
+  const clock = body.indexOf('await_recovery "$DAEMON_STARTED_MS"');
+  const hold = body.indexOf('hold_until');
+  assert(clock >= 0, 'A4 takes no readiness measurement at all');
+  assert(hold >= 0 && clock < hold,
+    'A4 still measures its readiness across the hold that is longer than the budget it is compared against');
+  assertEq(body.split('await_recovery').length - 1, 1,
+    'A4 takes more than one readiness measurement, so which one lands in RL-R-ready-ms is an accident');
+  // AND THE PROVIDER HALF IS STILL MEASURED, against the budget §4 names for this arm. Moving the readiness
+  // clock must not quietly leave the outage recovery unbounded.
+  assert(body.includes('RL_OUTAGE_RECOVERY_BUDGET_MS'),
+    'A4 no longer bounds its outage recovery against its own budget');
+});
+
+test('A5 spaces its reads across the cooldown that decides whether a read may resolve at all', () => {
+  // THE DERIVATION ABOVE THIS ONE IS SILENT ABOUT THE COOLDOWN AND A REAL RUN WALKED INTO THE GAP.
+  // MAX_REFRESHES_PER_SOURCE_PER_COOLDOWN is 1, so a read issued inside REFRESH_COOLDOWN_MS of the last
+  // refresh is refused by the daemon locally, never reaches the resolver, and cannot present a rotated
+  // credential. Four reads inside a few seconds bought one resolution; the arm converged on nothing and
+  // cycle 5's phase R came up three windows short one check later.
+  assertEq(RELIABILITY_LOOP_RULES.ROTATION_READ_SPACING_MS,
+    PROJECTIOND_ACCESS_RESOLUTION.REFRESH_COOLDOWN_MS,
+    'the spacing is not the product\'s own refresh cooldown');
+  const body = shellCodeOf(functionBodyOf(read(GATE), 'arm_A5'));
+  assertEq(body.split('sleep "$(( RL_ROTATION_READ_SPACING_MS / 1000 ))"').length - 1, 2,
+    'A5 does not space BOTH of its read halves across the refresh cooldown');
+  // AND THE COUNTS DID NOT MOVE. Raising either one is the other way to make this arm pass, and it would be
+  // a threshold fitted to a run.
+  assertEq(RELIABILITY_LOOP_RULES.ROTATION_CONVERGENCE_READS,
+    1 + PROJECTIOND_READ_POLICY.MAX_ACCESS_REFRESHES_PER_READ, 'the convergence count moved');
+  assertEq(RELIABILITY_LOOP_RULES.ROTATION_REFUSAL_READS_MAX,
+    1 + PROJECTIOND_READ_POLICY.MAX_ACCESS_REFRESHES_PER_READ, 'the refusal count moved');
+});
+
+test('A5\'s two remaining checks can each fail, and one of them consults the breaker it names', () => {
+  const body = shellCodeOf(functionBodyOf(read(GATE), 'arm_A5'));
+  // `le "$reads" 2` against a loop that stops at two is unfailable: a rotation that never converged
+  // recorded 2/2 and passed. A non-convergence records an ABSENT measurement now — empty, which
+  // `record.cjs` fails as a non-number, rather than an invented figure that argues about magnitude.
+  assert(/RL-F-A5-convergence-reads[\s\S]{0,200}\[ "\$converged" -eq 1 \] && echo "\$reads" \|\| echo ""/
+    .test(body),
+    'the convergence count still passes for a rotation that never converged');
+  // AND THE BREAKER CHECK CONSULTED NOTHING ABOUT THE BREAKER: it was `converged` under a second name, so
+  // RL-F-A5 and RL-F-A5-breaker-stayed-closed were one measurement reported twice. An open breaker is
+  // defined in A4 as zero requests reaching the endpoint's own log; a closed one is that same instrument
+  // read the other way.
+  const breaker = /RL-F-A5-breaker-stayed-closed[^\n]*\n?[^\n]*/.exec(body)?.[0] ?? '';
+  assert(breaker.includes('requests_after - requests_before'),
+    'the breaker check does not measure requests reaching the endpoint');
+  assert(!/local closed=1/.test(body),
+    'the breaker check is still convergence under a second name');
+  assert(body.includes('requests_before="$(resolver_requests)"'),
+    'the breaker check has no pre-fault baseline to count from');
 });
 
 test('the CLI publishes the thresholds as shell assignments the gate can evaluate', () => {

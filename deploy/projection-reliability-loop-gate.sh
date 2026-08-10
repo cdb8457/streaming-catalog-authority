@@ -1315,6 +1315,39 @@ await_path() {
   return 1
 }
 
+# ...AND WHETHER A FRESH SIBLING CAN ACTUALLY READ A BYTE THROUGH IT, WHICH IS A DIFFERENT QUESTION AND IT
+# IS THE ONE RECOVERY IS ABOUT.
+#
+# `await_path` is `test -f`, and THAT IS METADATA. A dead FUSE mount answers `stat` out of the kernel's
+# attribute cache for a full `attrTimeout` after the connection is gone — the same warm-cache asymmetry
+# §13.6 found inside the mount syscall itself, met here from the other side. A recovery clock built on it
+# therefore starts and stops over a corpse. A3's first real execution recorded 695 ms from before the abort
+# to "recovered", judged `RL-F-A3-remounted-in-place` against a daemon that had not remounted yet, and read
+# the three consumers before the new mount had propagated into their namespaces. All three could read
+# moments later — the gate's own diagnostic block printed exactly that, three lines under the FAIL it had
+# already recorded. The product had done its job; the instrument could not see it.
+#
+# AN `open` IS WHAT A CORPSE REFUSES, so readiness is ONE BYTE READ by a fresh sibling, and it is read from
+# the LOCAL SEED ENTRY rather than the operator's object. Three things follow from the seed, and each is a
+# reason it is the seed and not the real path:
+#   - it needs NO PROVIDER CONTACT, so `READY_BUDGET_MS`'s derivation — a pointer poll plus one read
+#     deadline, with no endpoint on the path — stays the thing being measured;
+#   - a poll loop cannot spend the operator's metered account, however long it waits;
+#   - A4 can measure a daemon coming back DURING its own deliberate provider outage, where the remote path
+#     is unreadable by design and a real-path probe would be measuring the outage instead.
+# A fault aimed at the mount stops the seed too, which is §2's whole reason for having a control entry.
+await_readable() {
+  local attempts="${1:-240}" n=0
+  while [ "$n" -lt "$attempts" ]; do
+    if docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" \
+         dd "if=/mnt/$SEED_PATH" of=/dev/null bs=1 count=1 >/dev/null 2>&1; then
+      return 0
+    fi
+    n=$((n + 1)); sleep 0.5
+  done
+  return 1
+}
+
 # HOW LONG IT TOOK FOR THE NAMESPACE TO BE READABLE BY A SIBLING AGAIN, in milliseconds, measured from a
 # caller-supplied start. It is a SIBLING and not the daemon on purpose: `/readyz` answering ready is the
 # claim Phase 2 found to be insufficient.
@@ -1330,12 +1363,12 @@ await_path() {
 # perfectly true. An arm that takes no measurement must fail, not pass by arithmetic.
 RECOVERY_MS=""
 await_recovery() {
-  local started="$1" target="$2"
+  local started="$1"
   if [ -z "$started" ]; then
     RECOVERY_MS=""
     return 1
   fi
-  if await_path "$target" 240; then
+  if await_readable 240; then
     RECOVERY_MS=$(( $(date +%s%3N) - started ))
     return 0
   fi
@@ -1888,9 +1921,9 @@ arm_A1() {
   record "RL-F-A1-namespace-went-away:c$cycle" bool "$gone" "" \
     "a requested stop takes the namespace with it" || true
   restart_daemon
-  await_recovery "$DAEMON_STARTED_MS" "$REAL_PATH" || true
+  await_recovery "$DAEMON_STARTED_MS" || true
   record "RL-F-A1-ready-ms:c$cycle" le "$RECOVERY_MS" "$RL_READY_BUDGET_MS" \
-    "from the daemon start to a sibling container reading the real entry again" || true
+    "from the daemon start to a sibling container reading a byte through the mount again" || true
   record "RL-F-A1:c$cycle" bool "$( [ "$gone" -eq 1 ] && recovered && echo 1 || echo 0 )" "" \
     "graceful daemon restart" || true
 }
@@ -1913,7 +1946,7 @@ arm_A2() {
   docker rm -f "$MOUNT_CONTAINER" >/dev/null 2>&1 || true
   start_daemon
   start_resolver
-  await_recovery "$DAEMON_STARTED_MS" "$REAL_PATH" || true
+  await_recovery "$DAEMON_STARTED_MS" || true
   local named=0
   if docker logs "$MOUNT_CONTAINER" 2>&1 | grep -q "stale projectiond mount detected"; then named=1; fi
   record "RL-F-A2-probe-named-the-corpse:c$cycle" bool "$named" "" \
@@ -2010,12 +2043,24 @@ nothing could be measured" ;;
   done
   record "RL-F-A3-serve-death-observed:c$cycle" bool "$saw_death" "" \
     "the daemon's own status surface names a serve-loop death, so the connection really was severed" || true
-  await_recovery "$started" "$REAL_PATH" || true
   # REMOUNTED IN PLACE IS THE DAEMON SAYING SO, AND THE NAMESPACE BEING READABLE AGAIN. Either alone is
   # weaker: a log line without a readable namespace is Phase 2's own worst defect, and a readable namespace
   # without the line does not say the DAEMON did it.
+  #
+  # AND THE LINE IS WAITED FOR RATHER THAN SAMPLED ONCE, which is the other half of the defect the byte-read
+  # readiness probe fixed. This counter used to be read the instant `await_recovery` returned — and
+  # `await_recovery` was `test -f`, which a warm attribute cache answers over a corpse — so the arm asked
+  # "has the daemon remounted yet?" before the daemon could possibly have remounted, and recorded a correct
+  # recovery as a failure. The wait is bounded by the same number of polls every other wait in this gate
+  # uses; the daemon writes the line when the event happens, and the event is what the arm is about.
   local remounted=0 remount_logged=0
-  if [ "$(docker logs "$MOUNT_CONTAINER" 2>&1 | grep -c 'remounted; serving generation' || true)"        -gt "$remounts_before" ]; then remount_logged=1; fi
+  n=0
+  while [ "$n" -lt 240 ]; do
+    if [ "$(docker logs "$MOUNT_CONTAINER" 2>&1 | grep -c 'remounted; serving generation' || true)" \
+         -gt "$remounts_before" ]; then remount_logged=1; break; fi
+    n=$((n + 1)); sleep 0.5
+  done
+  await_recovery "$started" || true
   if recovered && [ "$remount_logged" -eq 1 ]; then remounted=1; fi
   record "RL-F-A3-remounted-in-place:c$cycle" bool "$remounted" "" \
     "the namespace came back at the same mountpoint without the process exiting" || true
@@ -2093,7 +2138,21 @@ arm_A4() {
   # `readSecretFile` refuses on EVERY request — so the resolver stays up, logs every request it refuses,
   # answers 503, and CONTACTS THE PROVIDER NOT AT ALL. The operator's own file is never touched.
   chmod 0644 "$WORK/inputs/torbox-credential"
-  await_path "$REAL_PATH" 240 || die "cycle $cycle A4: the namespace did not come back before the outage"
+  # THIS ARM'S READINESS MEASUREMENT, AND IT IS TAKEN HERE BECAUSE HERE IS THE ONLY PLACE IT MEANS ANYTHING.
+  #
+  # IT USED TO BE TAKEN AT THE BOTTOM OF THE ARM, STILL CLOCKED FROM THE DAEMON START — so it spanned the
+  # trip, the whole `HOLD_WINDOW_MS` hold and the recovery, and was then compared against `READY_BUDGET_MS`.
+  # The hold ALONE is longer than that budget, by construction and in every run that could ever be taken, so
+  # `RL-R-ready-ms` for this cycle was a check that could not pass — the exact mirror of A5's
+  # `convergence-reads`, which could not fail. Its first real execution recorded 34,081 ms against 22,000
+  # while every other measurement in the arm passed.
+  #
+  # What `READY_BUDGET_MS` bounds is a daemon start to a namespace a sibling can read, with no endpoint on
+  # the path, and the seed byte-read is exactly that whether or not the provider is broken. The PROVIDER
+  # half of this arm's recovery is `RL-F-A4-recovery-ms` against `OUTAGE_RECOVERY_BUDGET_MS`, which is the
+  # budget §4 names for A4 — so nothing here is unmeasured and no budget has moved.
+  await_recovery "$DAEMON_STARTED_MS" \
+    || die "cycle $cycle A4: the namespace did not come back before the outage"
 
   # THE TRIP. Each read fails inside the product's own deadline, and five counted failures open the breaker.
   local trips=0 slowest=0
@@ -2169,11 +2228,6 @@ was supposed to be refusing every request"
     "the half-open probe closing the breaker on real evidence" || true
   record "RL-F-A4:c$cycle" bool "$readable_again" "" \
     "a sustained provider outage past the breaker cooldown, then recovery" || true
-  # THE CYCLE'S OWN RECOVERY MEASUREMENT, TAKEN HERE RATHER THAN INHERITED. This arm restarted the daemon at
-  # its very top and never set `RECOVERY_MS`, so `RL-R-ready-ms` for this cycle would have recorded the
-  # PREVIOUS cycle's figure against the right budget and passed. The namespace question is when a sibling
-  # could read the entry after the daemon came back, and that is what is measured.
-  await_recovery "$DAEMON_STARTED_MS" "$REAL_PATH" || true
 }
 
 arm_A5() {
@@ -2197,9 +2251,27 @@ arm_A5() {
   # compared against a log that starts empty, and every refusal would look like a new one.
   local refused_before refused_after refusal_reads=0
   restart_daemon
-  await_path "$REAL_PATH" 240 || die "cycle $cycle A5: the namespace did not come back after the restart"
+  # THIS ARM'S READINESS MEASUREMENT, TAKEN AT THE RESTART RATHER THAN AT THE BOTTOM OF THE ARM, for the same
+  # reason A4's moved. The rotation below is measured in reads and refusals, never in milliseconds, and it
+  # now waits out the product's own refresh cooldown between them — so a clock left running from the daemon
+  # start to the end of the arm would be timing that cooldown against a daemon-readiness budget.
+  await_recovery "$DAEMON_STARTED_MS" \
+    || die "cycle $cycle A5: the namespace did not come back after the restart"
   refused_before="$(docker logs "$RESOLVER_CONTAINER" 2>&1 | grep -c 'rejected a request' || true)"
+  # EVERY READ IN THIS ARM MUST BE A READ THE PRODUCT IS PERMITTED TO RESOLVE, AND THAT IS WHAT THE SPACING
+  # IS FOR — the defect that cost this arm its first real execution.
+  #
+  # `MAX_REFRESHES_PER_SOURCE_PER_COOLDOWN` is 1. The first resolution after a restart is not a refresh, so
+  # it is free; every later one is charged, and one issued inside `REFRESH_COOLDOWN_MS` of the last is
+  # refused by the daemon LOCALLY — the resolver is never asked, so the rotated credential is never
+  # presented and no reload can converge. Four reads inside a few seconds therefore bought exactly one
+  # resolution: the refusal half looked right, `converged` was 0, and the only thing that showed it was
+  # cycle 5's phase R coming up three windows short one check later.
+  #
+  # THE COUNTS ARE UNCHANGED. `ROTATION_CONVERGENCE_READS` and `ROTATION_REFUSAL_READS_MAX` are still what
+  # the reload mechanism needs; the arm simply stops issuing them where the contract forbids resolving.
   while [ "$refusal_reads" -lt "$RL_ROTATION_REFUSAL_READS_MAX" ]; do
+    [ "$refusal_reads" -eq 0 ] || sleep "$(( RL_ROTATION_READ_SPACING_MS / 1000 ))"
     timed_read
     refusal_reads=$(( refusal_reads + 1 ))
     if [ "$TIMED_READ_VERDICT" = "ok" ]; then break; fi
@@ -2215,26 +2287,38 @@ arm_A5() {
   # AND THEN THE NEW SECRET IS DELIVERED TO THE DAEMON, which re-reads its token file only when a resolution
   # is refused — so the read after the reload is the one that converges.
   install -m 600 "$WORK/inputs/gate-secret" "$WORK/daemon-inputs/gate-secret"
-  local converged=0 reads=0
+  local converged=0 reads=0 requests_before requests_after
+  requests_before="$(resolver_requests)"
   while [ "$reads" -lt "$RL_ROTATION_CONVERGENCE_READS" ]; do
+    sleep "$(( RL_ROTATION_READ_SPACING_MS / 1000 ))"
     timed_read
     reads=$(( reads + 1 ))
     if [ "$TIMED_READ_VERDICT" = "ok" ]; then converged=1; break; fi
-    sleep 2
   done
-  record "RL-F-A5-convergence-reads:c$cycle" le "$reads" "$RL_ROTATION_CONVERGENCE_READS" \
-    "one read spends the reload, the next presents the new value" || true
-  # AND THE BREAKER STAYED CLOSED, which is what makes the two arms different measurements. A refused read
-  # that came back inside the refusal budget would be the breaker answering, not the resolver.
-  local closed=1
-  [ "$converged" -eq 1 ] || closed=0
-  record "RL-F-A5-breaker-stayed-closed:c$cycle" bool "$closed" "" \
-    "the arm converged, so the counted failures never reached the breaker's threshold" || true
+  requests_after="$(resolver_requests)"
+  # A COUNT OF READS IS ONLY A MEASUREMENT IF THE ARM CONVERGED, AND THIS ID USED TO BE UNFAILABLE WITHOUT
+  # THAT. `le "$reads" 2` is compared against a loop that stops at two, so a rotation that never converged
+  # recorded 2/2 and passed — the same shape as §9.2's three arms that scored the previous cycle's number.
+  # A non-convergence now records an ABSENT measurement, empty rather than a large number, because
+  # `record.cjs` fails a measurement that is not numeric while any invented figure would be arguing about
+  # magnitude. Empty is the same remedy §9.2 #5 used, applied to the other kind of unfailable check.
+  record "RL-F-A5-convergence-reads:c$cycle" le \
+    "$( [ "$converged" -eq 1 ] && echo "$reads" || echo "" )" "$RL_ROTATION_CONVERGENCE_READS" \
+    "one read spends the reload, the next presents the new value — and the arm actually converged" || true
+  # AND THE BREAKER STAYED CLOSED, MEASURED WHERE A4 MEASURES ITS OPPOSITE RATHER THAN ASSUMED.
+  #
+  # THIS ID CONSULTED NOTHING ABOUT THE BREAKER. It was `converged` under a second name, so `RL-F-A5` and
+  # `RL-F-A5-breaker-stayed-closed` were one measurement reported twice, and the arm's distinguishing claim
+  # against A4 rested on a check that could only ever repeat the arm's own verdict.
+  #
+  # An OPEN breaker is defined in A4 as zero requests reaching the endpoint, counted in the endpoint's own
+  # log. A breaker that stayed CLOSED is therefore the same instrument read the other way: this half's reads
+  # still arrived at a live, logging resolver. If the counted failures had reached the threshold, the
+  # convergence reads would have been refused locally and the resolver would have seen none of them.
+  record "RL-F-A5-breaker-stayed-closed:c$cycle" ge "$(( requests_after - requests_before ))" 1 \
+    "this half's reads still reached the endpoint's own log, so nothing was being refused locally" || true
   record "RL-F-A5:c$cycle" bool "$converged" "" \
     "credential rotation: invisible under a live lease, refused then converged without one" || true
-  # THIS ARM'S OWN RECOVERY MEASUREMENT. It restarted the daemon in its second half and never set
-  # `RECOVERY_MS`, so this cycle's `RL-R-ready-ms` would have been the previous cycle's figure.
-  await_recovery "$DAEMON_STARTED_MS" "$REAL_PATH" || true
 }
 
 arm_A6() {
@@ -2259,7 +2343,7 @@ arm_A6() {
 $(( ( $(date +%s%3N) - started ) / 1000 ))s, which is recorded and bounded by nothing" || true
   # AND THE NAMESPACE, WHICH IS WHAT `RL-R-ready-ms` IS ABOUT. The daemon never moved in this arm, so this
   # should be close to nothing — and if it is not, something the frontends did reached the mount.
-  await_recovery "$(date +%s%3N)" "$REAL_PATH" || true
+  await_recovery "$(date +%s%3N)" || true
   # IDENTITIES ACROSS THE RESTART ARE MEASURED IN PHASE R's CHURN, which compares this cycle's catalogues
   # against the ones taken before the fault. This id records that the comparison HAS a subject.
   record "RL-F-A6-identities-unchanged:c$cycle" bool "$( [ "$back" -eq 3 ] && echo 1 || echo 0 )" "" \

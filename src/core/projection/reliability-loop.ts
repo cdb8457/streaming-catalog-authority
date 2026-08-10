@@ -133,6 +133,27 @@ export const RELIABILITY_LOOP_RULES = Object.freeze({
    */
   ROTATION_REFUSAL_READS_MAX: 1 + PROJECTIOND_READ_POLICY.MAX_ACCESS_REFRESHES_PER_READ,
 
+  /**
+   * THE INTERVAL A5 LEAVES BETWEEN ITS READS, and it is the product's own resolution cooldown rather than a
+   * number chosen to make the arm pass.
+   *
+   * THE TWO ROTATION COUNTS ABOVE ARE DERIVED FROM THE SECRET FILE AND ARE SILENT ABOUT THE COOLDOWN, which
+   * is the gap a real run walked straight into. "One read spends the reload, the next presents the new
+   * value" is a true statement about `SecretFile.Reload`, and it assumes both reads get to ask the resolver
+   * at all. They do not: `MAX_REFRESHES_PER_SOURCE_PER_COOLDOWN` is 1, so a second refresh issued inside
+   * `REFRESH_COOLDOWN_MS` of the first is refused by the daemon locally, the resolver is never asked, and the
+   * rotated credential is never presented. Four reads a few seconds apart therefore buy exactly one
+   * resolution, and an arm that issues them is measuring the cooldown while believing it is measuring the
+   * rotation — which is what A5's first real execution did, converging on nothing and taking cycle 5's phase
+   * R down with it.
+   *
+   * SO THE ARM SPACES ITS READS INSTEAD OF ISSUING MORE OF THEM. The counts stay exactly what the reload
+   * mechanism needs; what changes is that each of those reads is one the product is permitted to resolve.
+   * Raising the counts would have been the other way to make the arm pass, and it would have been a
+   * threshold fitted to a run.
+   */
+  ROTATION_READ_SPACING_MS: PROJECTIOND_ACCESS_RESOLUTION.REFRESH_COOLDOWN_MS,
+
   /** Items added or removed across any arm, on any server. */
   LIBRARY_CHURN_MAX: PROJECTION_PHASE_1_BUDGETS.MAX_LIBRARY_CHURN_ITEMS,
 
