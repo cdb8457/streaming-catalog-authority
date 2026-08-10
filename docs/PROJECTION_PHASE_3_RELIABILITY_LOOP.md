@@ -679,13 +679,21 @@ one day, and each was served for a stretch:
 | `768788145621` | 18:31:39Z | 19:23:29Z | ≥ 52 min |
 | `4fea5e1bdeaa` | 19:28:23Z | — | current |
 
-**A STRETCH IS FORTY TO FIFTY-FIVE MINUTES. A THREE-RUN SEQUENCE IS ABOUT NINETY.** So a sequence spans one
-or two rotations *by construction*, and allowlisting the origin that happens to be current is not enough on
-its own — what matters is whether the one that comes NEXT is also covered. Run 17 is the demonstration and it
-is worth stating precisely: `768788145621` had already been served for about forty-five minutes when it was
-appended at 19:14:29Z, the run launched at 19:17Z, and it died at 19:28Z. **The append was correct, prompt
-and authorised, and it bought about ten minutes of runway, because it landed near the end of that origin's
-stretch rather than near the beginning.**
+**EVERY FIGURE IN THAT COLUMN IS A LOWER BOUND, AND ONE OF THEM HAS SINCE GROWN A LOT.** The table records
+the span between the first and last observation of each digest, and nothing was sampled between 11:44Z and
+16:23Z, so those are *at least* durations rather than measured stretches. `4fea5e1bdeaa` was then watched
+continuously and ran 19:28Z → 20:27Z, **59 minutes**; `d4064d307d25` took over at 20:27Z and was still being
+served at 21:51Z under once-a-minute sampling — **84 minutes and counting, with no gap in the observation.**
+
+**SO THE HONEST STATEMENT IS NARROWER THAN "A STRETCH IS SHORTER THAN A SEQUENCE".** Stretches observed
+end-to-end run from about forty minutes to at least eighty-four, and a three-run sequence is about ninety, so
+**a sequence may or may not fit inside one stretch depending on where in it the sequence starts.** What
+decides the outcome is therefore not only how many origins are allowlisted but *when in a stretch the append
+lands*. Run 17 is the demonstration and it is worth stating precisely: `768788145621` had already been served
+about forty-five minutes when it was appended at 19:14:29Z, the run launched at 19:17Z, and it died at
+19:28Z. **The append was correct, prompt and authorised, and it bought about ten minutes of runway, because
+it landed near the end of that origin's stretch rather than near the beginning.** An append landing at the
+start of an eighty-four-minute stretch would have covered most of a sequence on its own.
 
 **SEVEN DISTINCT ORIGINS ARE NOW ON RECORD** — the six above plus `4b416e9283c3` from §11.4 — and the
 allowlist holds five of them, one of which (`256c61b89300`) has never been observed resolved. So this is no
