@@ -133,6 +133,24 @@ SHA
 step() { echo; echo "=== $* ==="; }
 die()  { echo "GATE FAILED: $*" >&2; exit 1; }
 
+# DOES THIS CONTAINER'S LOG SAY THIS? Asked without a pipeline, and the reason is a real failure.
+#
+# The form here was `docker logs "$c" 2>&1 | grep -q "..." || die "..."`, and under `set -o pipefail` that can
+# FAIL WHILE THE LINE IS PRESENT: `grep -q` exits the moment it matches, and the producer still writing into
+# the closed pipe dies of SIGPIPE, which pipefail then reports as the pipeline's status. It was observed
+# twice on the real host — the gate died with "the refusing daemon did not name the corpse in its log" while
+# the daemon's log, dumped one line earlier, plainly contained it; measured separately, both `docker logs`
+# and `grep` returned 0.
+#
+# An assertion that can fail while what it asserts is true is worse than no assertion, because it is spent
+# investigating the product. The log is captured whole and matched as a string: no pipe, nothing to signal.
+logs_say() {
+  case "$(docker logs "$1" 2>&1)" in
+    *"$2"*) return 0 ;;
+    *)      return 1 ;;
+  esac
+}
+
 field()    { node "$REL/jq.cjs" "$1"; }
 publish()  { npx tsx src/ops/projection-publish-cli.ts --manifest-dir "$REL/manifest" "$@"; }
 register() { npx tsx src/ops/projection-register-cli.ts "$@"; }
@@ -324,11 +342,11 @@ RECOVERY_SHA="$(docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" \
 test "$RECOVERY_SHA" = "$STALE_SHA" || die "the stacked mount is serving different bytes than the corpse carried"
 echo "  /readyz answers ready=true and the stacked mount serves the same digest the corpse carried"
 
-docker logs "$RECOVERY_CONTAINER" 2>&1 | grep -q "stale projectiond mount detected at /mnt/projection" \
+logs_say "$RECOVERY_CONTAINER" "stale projectiond mount detected at /mnt/projection" \
   || die "the recovery daemon did not name the corpse in its log"
-docker logs "$RECOVERY_CONTAINER" 2>&1 | grep -q "stacking over the stale mount (default); clear it with: umount -l /mnt/projection" \
+logs_say "$RECOVERY_CONTAINER" "stacking over the stale mount (default); clear it with: umount -l /mnt/projection" \
   || die "the recovery daemon did not say what it was doing about the corpse"
-docker logs "$RECOVERY_CONTAINER" 2>&1 | grep -q "serving generation 1" \
+logs_say "$RECOVERY_CONTAINER" "serving generation 1" \
   || die "the recovery daemon did not report serving generation 1"
 echo "  the recovery daemon's log names the corpse, says it is stacking over it, and reports serving generation 1"
 
@@ -374,9 +392,9 @@ if [ -z "$REFUSE_EXIT" ]; then
 fi
 test "$REFUSE_EXIT" = "1" || die "the refusing daemon exited $REFUSE_EXIT, not 1, for a stale mount"
 echo "  the refusing daemon exited with status 1"
-docker logs "$REFUSE_CONTAINER" 2>&1 | grep -q "stale projectiond mount detected at /mnt/projection" \
+logs_say "$REFUSE_CONTAINER" "stale projectiond mount detected at /mnt/projection" \
   || die "the refusing daemon did not name the corpse in its log"
-docker logs "$REFUSE_CONTAINER" 2>&1 | grep -q "refusing to start: stale mount at /mnt/projection" \
+logs_say "$REFUSE_CONTAINER" "refusing to start: stale mount at /mnt/projection" \
   || die "the refusing daemon did not report its refusal"
 echo "  the refusing daemon's log names the corpse and says 'refusing to start: stale mount at /mnt/projection'"
 # AND IT REFUSED WITHOUT MOUNTING. A daemon that stacked and then exited 1 would satisfy every assertion
@@ -388,7 +406,7 @@ echo
 echo "PHASE 2 COMPLETE: with --refuse-stale, the daemon refuses to serve over the corpse and exits 1."
 
 # ----------------------------------------------------------------------------------------------------------
-step "phase 3 (a COLD corpse) — the same corpse again, past the attribute timeout"
+step "phase 3 (a serve death over a COLD corpse) — the shape --auto-remount could never recover"
 # ----------------------------------------------------------------------------------------------------------
 # WHY AGE IS A PHASE OF ITS OWN, AND WHAT IT COST TO FIND OUT.
 #

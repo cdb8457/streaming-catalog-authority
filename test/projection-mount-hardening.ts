@@ -770,6 +770,15 @@ test('THE STALE-MOUNT GATE FACES A COLD CORPSE, which is the only state the defe
     'the baselines are taken after the injection, so the lines they count may be this fault’s own');
   assert(gate.includes('-gt "${DEATHS_BEFORE:-0}"') && gate.includes('-gt "${REMOUNTS_BEFORE:-0}"'),
     'the waits do not require the counts to INCREMENT, so an earlier phase’s line would satisfy them');
+
+  // AND NO ASSERTION IN THIS GATE ASKS THE LOG THROUGH A PIPELINE. `docker logs | grep -q` under pipefail can
+  // fail while the line is present: grep exits on the match, the producer dies of SIGPIPE, and pipefail
+  // reports that as the pipeline's status. Observed twice on the real host, against a log that plainly
+  // contained the line. An assertion that can fail while what it asserts is true gets spent investigating
+  // the product.
+  assert(!/docker logs "\$[A-Z_]+" 2>&1 \| grep -q/.test(gate),
+    'a log assertion still goes through a pipe, so it can fail on a match');
+  assert(/^logs_say\(\) \{$/m.test(gate), 'the whole-log matcher those assertions depend on is gone');
   assert(/docker rm -f "\$SOURCE_CONTAINER" "\$REFUSE_CONTAINER" "\$RECOVERY_CONTAINER" "\$COLD_CONTAINER" \\\n\s*"\$VERIFIER_CONTAINER"/
     .test(gate), 'the phase 3 containers are not all in the cleanup, so a failure strands one');
 });
