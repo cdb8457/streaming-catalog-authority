@@ -2,10 +2,18 @@
 
 **Status: NOT CLOSED, and BLOCKED on an operator input.** Every threshold in §4 was fixed before the first
 measured run and none has moved since. §8 records what the real runs observed and what stopped each; §9 the
-fourteen gate defects and what each cost; **§11 the blocker — the provider answers one reference from a POOL
-of CDN origins and only some of them are in the operator's allowlist, which the daemon refuses exactly as it
-must**; §12 the operational fact this tranche established; §13 the product defect it existed to find, and
-the fix.
+eighteen gate defects and what each cost; **§11 the blocker — the provider serves one CDN origin for a
+stretch and then rotates to another from a recurring set, and a stretch is now the same order of magnitude as
+the ninety minutes a sequence takes, so `allowedOrigins` runs out mid-sequence and the daemon refuses exactly
+as it must**; §12 the operational fact this tranche established; §13 the product defect it existed to find,
+and the fix.
+
+**A COMPLETE RUN NOW CLOSES, AND IT HAS DONE SO TWICE.** Runs 13 and 15 each recorded **6 cycles, 223
+verdicts, 223 pass, 0 fail, 0 skip** and `every predeclared cycle, arm, phase and budget is present, terminal
+and passing` — in two independent sequences, from two separately frozen trees. **That is one third of the
+closure rule, done twice, and it is not the closure rule**, which asks for three consecutive fresh runs in
+one sequence. §8.2 carries every run and what stopped it; §9.4 the four gate defects the closing runs found;
+§11.6 what stops the sequence now.
 
 **ALL SIX ARMS HAVE NOW PASSED, IN ONE RUN, AND THAT RUN DID NOT CLOSE.** Run 9 took A1 through A6 green —
 the first time in this tranche's history that anything past A1 completed — with three real, digest-pinned
@@ -287,7 +295,7 @@ what makes a run worth attempting.
 |---|---|
 | `npx tsc --noEmit` | clean |
 | `npm run go:vet` / `go:build` / `go:test` | every package `ok`, through the pinned `golang:1.26.5-bookworm` image |
-| `npx tsx test/projection-reliability-loop.ts` | **64 passed, 0 failed**, 1 block skipped and named (`win32` carries no POSIX mode). Six of the sixty-four are §9.3's pins, and each fails against the commit before its fix |
+| `npx tsx test/projection-reliability-loop.ts` | **69 passed, 0 failed**, 1 block skipped and named (`win32` carries no POSIX mode). Six of them are §9.3's pins and four more are §9.4's, and every one fails against the commit before its fix |
 | `npx tsx test/custody-runtime-closure.ts` | 39/0 — every shipped `.sh` parses under LF and CRLF |
 | `npx tsx test/projection-three-server-concurrency.ts` | 133/0, with the `--no-barrier` containment |
 | `npx tsx test/projection-mount-hardening.ts` | 28/0 |
@@ -309,6 +317,11 @@ what makes a run worth attempting.
 | 8 | `9f33b261…` (`c5e26f6`) | **the first run ever to reach A2–A6.** A1 and A2 green; A3's product behaviour correct and *scored as a failure*; A4's own six measurements all green | four gate defects at once — §9.3 #10–#13. The gate failed at cycle 5 phase R |
 | 9 | `3ca53a4e…` (`b483d9d`) | **ALL SIX ARMS GREEN.** A1–A6, 6 cycles, three real servers throughout. §13.11 is A3's row | §9.3 #14 — A6 erased Plex's section id while scoring the restart a success, and cycle 6's *phase R* died on the 404 that followed |
 | 10 | `fddafbe4…` (`d490d73`) | the §9.3 #14 fix frozen; host clean; origin verified **allowed** 30 s before launch | **§11.5** — the provider drew a pool member outside `allowedOrigins` during setup. `RL-entry-is-decodable-video`, which is §11's own signature |
+| 11 | `ff82aa36…` (`942d1c7`) | **all six arms and all eighteen phases green**, on the operator's fourth allowlisted origin | §9.4 #15 — the leak scan searched the manifest for the one field it carries by contract. The FIRST run ever to reach the leak scan |
+| 12 | `7e64ded3…` (`570f968`) | — | §9.4 #16 — the cold three-way overlap saw all three servers scanning but never all three on one tick. `TS1-max-servers-in-flight-at-once 2/3` |
+| 13 | `834a9e7d…` (`428b137`) | **everything green, including the new placement check** — `reference occurrences 1, of which 1 are locator.objectRef values, leaving 0` | §9.4 #17 — the run deleted its own recorder and then tried to record four more verdicts about the deletion |
+| 14 | `4971bf2a…` (`b50364d`) | **RUN 1 OF 3 CLOSED: 223/223, 0 fail, 0 skip.** The first complete Phase 3 run | §9.4 #18 — run 2's A3 aborted the floor corpse instead of the served mount, because the kernel recycles mount ids |
+| 15 | `94d64bbb…` (`8bb46cc`) | **RUN 1 OF 3 CLOSED AGAIN: 223/223, 0 fail, 0 skip**, with the abort following the parent chain | **§11.6** — the provider rotated to a FIFTH origin during run 2. `RL-R-windows:c1 1/4` |
 
 A fifth attempt sat between 3 and 4 and was **stopped by hand** rather than failing: busybox's `tail` does
 not seek (§9.1 #4). It left one stale mountpoint, which `projection_gate_cleanup_run` cleared; the host's
@@ -318,9 +331,14 @@ counts returned to 42 containers / 26 running / 17 networks / 45 volumes / 0 `fu
 
 | Run | Host | Cycles | Arms | Failed | Skipped | Evidence |
 |---|---|---|---|---|---|---|
-| 1/3 | — | — | — | — | — | NOT RUN |
-| 2/3 | — | — | — | — | — | NOT RUN |
+| 1/3 | Unraid `tower` | 6 | A1 A2 A3 A4 A5 A6 | **0** | **0** | 223/223 pass — twice, on `b50364d` and on `8bb46cc` |
+| 2/3 | — | — | — | — | — | NOT RUN — §11.6 |
 | 3/3 | — | — | — | — | — | NOT RUN |
+
+**THE FIRST ROW IS NOT A THIRD OF A CLOSURE.** A sequence is three consecutive fresh runs and a sequence that
+stops after one has produced one run, not one third of an answer; the row records what has been observed, and
+§4.1 is what decides closure. Two independent sequences reaching it says the run itself is no longer the
+uncertain part.
 
 Offline checks, taken on the Windows development host, are recorded in §8.1 when they are taken. They are not
 gate evidence: they are what makes a run worth attempting.
@@ -331,7 +349,7 @@ gate evidence: they are what makes a run worth attempting.
 
 ## 9. Defects found, and what each cost
 
-**FOURTEEN SO FAR. ALL FOURTEEN ARE IN THE GATE AND NONE IS IN THE PRODUCT** — and one of them is a finding
+**EIGHTEEN SO FAR. ALL EIGHTEEN ARE IN THE GATE AND NONE IS IN THE PRODUCT** — and one of them is a finding
 *about* the product rather than against it. Three were found by reading the arms against the closure rule;
 four needed the gate to actually execute on the real host, and each was invisible until the one before it was
 fixed. Every one is pinned by a test in `test/projection-reliability-loop.ts` that **fails against the commit
@@ -375,6 +393,26 @@ metadata check standing where a byte read belongs. That one reported *2 of 3 rea
 was gone; this one reported *not recovered* over a namespace that had come back. **The repository has now
 found this shape three times — `test -r` in A3, `test -f` in `await_path`, and `stat` inside the mount
 syscall itself (§13.6) — and each time the fix was to make something actually open the file.**
+
+### 9.4 Found by the runs that reached the end
+
+**FOUR MORE, AND EVERY ONE OF THEM WAS INVISIBLE UNTIL A RUN GOT PAST THE PLACE THE LAST ONE STOPPED.** Two
+were in parts of the gate no run had ever executed — the leak scan and the success path's tail — and two are
+assumptions that held until the host had churned enough state to break them. Commits `570f968`, `428b137`,
+`b50364d`, `8bb46cc`; each is pinned by a test that fails against the commit before its fix, and three of the
+four pins EXECUTE the shipped program rather than reading it.
+
+| # | What was wrong | What it cost |
+|---|---|---|
+| 15 | **The leak scan searched the published manifest for the one field the manifest exists to carry.** `HttpRangeLocator` is `{ endpointId, objectRef }`, so the manifest holds the stable reference by contract — it is the control-plane document naming which object the daemon must resolve, and one without it would name nothing | **the first run ever to reach the leak scan failed it, with all six arms and all eighteen phases green.** `LEAK: needle 1 of 4 appears under the published manifest directory`. Phase 1's own real-provider gate scans the manifest for the two SECRETS only — the same judgement reached a tranche earlier and never written down. The subtraction is narrow and **paid for**: only the manifest, only the reference, everything else still searched for it everywhere, and in exchange `refplacement.cjs` requires every occurrence in the manifest to BE a `locator.objectRef` value. *It is in the manifest* was fatal and unpassable; *it is anywhere in the manifest except its own field* is fatal and passable, and it is the claim §6 wanted. Measured on the next run: **1 occurrence, 1 at `locator.objectRef`, 0 unaccounted** |
+| 16 | **The cold three-way overlap observation destroyed the only document that could explain its own failure.** With `--no-barrier` there is nothing to rendezvous three scanners at, so whether all three are caught on one tick is a property of how the provider paced them | `TS1-servers-observed-scanning 3/3` and `TS1-max-servers-in-flight-at-once 2/3` — all three really scanned, none of the 18 samples caught all three — and `projection_gate_cleanup_run` then deleted the per-tick record. It is kept at 0600 in the evidence directory now, **rebuilt rather than copied** so it carries only ids, integers and booleans; a driver's failure *message* is the one field there that could hold an address and it is reduced to a boolean. This is A3's remedy applied to the other place in the gate that died holding its own diagnosis |
+| 17 | **A complete run failed on its own tidying-up.** `record.cjs` lived in `$WORK/out/`, and `$WORK` is what the cleanup contract deletes — while the last four verdicts of a run are all *about* the cleanup and therefore all run after it | six cycles, all six arms, every leak check, `RL-resolutions-happened 1/1` — then four `MODULE_NOT_FOUND` stack traces and a failed run. **It is the second half of a defect §9 already found once**: the fourth construction defect was a verdict LOG written into the deleted directory; the log was moved and the PROGRAM THAT WRITES IT WAS LEFT BEHIND. Nothing caught the remainder because no run had reached the success path's tail |
+| 18 | **`fuse-abort.sh` chose the connection by mount id, and the kernel RECYCLES mount ids.** It sorted the rows at the mount point and took the highest id, on the assumption that a later mount carries a larger one | **run 2 of the first sequence to close a run met a live mount at id 3234 stacked on a floor at id 3400, and aborted the floor.** `RL-F-A3-serve-death-observed` FAILED, `RL-F-A3-frontends-read-after-remount` PASSED **3/3**, and `RL-R-ready-ms` recorded **250,987 ms** — three consumers reading perfectly across a fault, and a daemon that never reported a death, is what a fault injected into the wrong connection looks like, with the arm then spending both of its 120-second bounded waits proving that a daemon which had never been touched had not recovered. mountinfo names the parent in field 2, so the stack is a chain and its top is the row no other row names as its parent: topology, which cannot be recycled. Run 1 had passed the same arm an hour earlier with the live mount at 3401 over a floor at 3400 — the assumption held, so the arm worked, and nothing about the gate had changed in between |
+
+**WHY #18 IS THE IMPORTANT ROW.** It is the third time this tranche has found a check that passed for a
+reason it did not name. `RL-F-A5-convergence-reads` could not fail, `RL-R-ready-ms:c4` could not pass, and
+this one *did* pass — repeatedly, on a real host, for an hour — while resting on an assumption about kernel
+allocation order that nothing had ever asserted. The pin that closes it is the failing run's own mount table.
 
 **AND THE GATE'S OWN CONSTRUCTION COST FOUR MORE, ALL CAUGHT OFFLINE BY THE PINS BEFORE ANY HOST SAW THEM:**
 two NUL bytes an em-dash pass left in a shell script; three multi-line `node -e` arguments that made the whole
@@ -541,6 +579,36 @@ that closure is hostage to which origin the provider happens to be serving, and 
 obtained that way would be a coincidence dressed as evidence.** Nothing here is a product defect, and §11.1
 and §11.2 are unchanged: this is the egress allowlist doing the one job it exists for, and this tranche will
 not write that file.
+
+### 11.6 A fifth origin, and the rotation now lands INSIDE the sequence
+
+The operator added a fourth origin and it worked: the loop reached the end of a run twice on it, and a third
+allowlisted origin (`b16331429dc1`, one of the original two) was being served when the last sequence started
+— which is §11.5's "cycles back to ones it has used before", confirmed again.
+
+**RUN 1 CLOSED. RUN 2 DIED IN ITS FIRST CYCLE.**
+
+```
+run 1 of 3   6 cycle(s), 223 verdict(s): 223 pass, 0 fail, 0 skip
+run 2 of 3   cycle 1 phase R: RL-R-windows:c1 1/4
+```
+
+The verifier, immediately afterwards and unchanged for the forty minutes since:
+
+```
+allowedOriginCount=4    allowedOriginDigests=256c61b89300 b16331429dc1 09e2a517af25 3cfc7340a785
+resolvedOriginDigest=768788145621    resolvedOriginInAllowlist=NO    verdict=disallowed
+```
+
+`768788145621` is a **fifth** distinct origin and a new one. Phase B of that cycle had matched all four
+windows minutes earlier; phase R matched one. **The rotation happened between two phases of one cycle.**
+
+**THIS IS THE SHAPE OF THE REMAINING PROBLEM, STATED PLAINLY.** A single run takes about thirty minutes and
+now closes reliably; the sequence takes about ninety. Each allowlisted origin buys coverage only while the
+provider is serving it, and the observed stretches are of the same order as the sequence itself — so the
+question is no longer whether the loop works but whether `allowedOrigins` covers enough of the provider's set
+that a ninety-minute window cannot fall off the end of it. Every origin added has held; the answer is more of
+them, not a different mechanism, and **this tranche will not write that file** for the reason in §11.2.
 
 **WHAT AN OPERATOR IS BEING ASKED FOR NOW, AND IT IS NOT WHAT §11.2 SAID.** §11.2 said "take the origin the
 resolver now returns and add it, and the loop resumes". One-at-a-time is what has now been done twice, and
