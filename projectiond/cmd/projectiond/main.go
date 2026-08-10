@@ -308,14 +308,34 @@ func remountLoop(d *daemon.Daemon, cfg daemon.Config, debug, strictMount bool, m
 				logLine("cleanup unmount refused: " + err.Error())
 			}
 		case remountCleanupLazyDetach:
-			// THE CORPSE GOES, AND IT GOES THE ONE WAY THAT WORKS WHILE SOMEBODY IS HOLDING IT. An ordinary
-			// unmount returns without removing a busy mount, and the mount syscall that follows then cannot
-			// resolve a path through the corpse: ENOTCONN, three attempts, no recovery.
-			if err := unix.Unmount(cfg.MountPoint, unix.MNT_DETACH); err != nil {
-				logLine("cleanup lazy detach refused: " + err.Error())
-			} else {
-				logLine("detached the stale mount at " + cfg.MountPoint + " before remounting")
+			// THE CORPSES GO — ALL OF OURS, NOT THE TOP ONE — AND THEY GO THE ONE WAY THAT WORKS WHILE
+			// SOMEBODY IS HOLDING THEM.
+			//
+			// An ordinary unmount returns without removing a busy mount, and the mount syscall that follows
+			// cannot resolve a path through the corpse: ENOTCONN. A single lazy detach fixes that for ONE
+			// layer, and a real run showed one layer is not enough — the daemon detached, tried, and was
+			// refused with ENOTCONN again, because the mount point carried a STACK of our own dead mounts.
+			// It legitimately does: every recovery in this daemon's design stacks over the corpse it found,
+			// so a mount point that has survived two deaths has two corpses under the live one.
+			//
+			// So it drains, re-probing between each one, and it never removes anything the probe does not
+			// call OUR OWN STALE MOUNT — a foreign mount or an empty path ends the loop untouched, which is
+			// the rule the whole table exists to keep. The bound is small and finite because a mount point
+			// that still answers "stale" after this many detaches is not a stack, it is a fault, and a
+			// supervisor that spins on it is worse than one that reports it.
+			const maxDetach = 8
+			detached := 0
+			for ; detached < maxDetach; detached++ {
+				if planRemountCleanup(fusefs.ProbeMountpoint(cfg.MountPoint)) != remountCleanupLazyDetach {
+					break
+				}
+				if err := unix.Unmount(cfg.MountPoint, unix.MNT_DETACH); err != nil {
+					logLine("cleanup lazy detach refused: " + err.Error())
+					break
+				}
 			}
+			logLine(fmt.Sprintf("detached %d stale mount(s) of ours at %s before remounting (now %s)",
+				detached, cfg.MountPoint, fusefs.ProbeMountpoint(cfg.MountPoint)))
 		default:
 			logLine(fmt.Sprintf("nothing of ours at %s to clean up (%s); leaving it mounted",
 				cfg.MountPoint, probe))
