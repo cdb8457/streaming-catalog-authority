@@ -120,8 +120,8 @@ chosen number presented as a derived one is the failure this repository keeps fi
 | `ROTATION_REFUSAL_READS_MAX` | **2** | strictly under `PROJECTIOND_CIRCUIT_BREAKER.FAILURE_THRESHOLD` `5`, because `CondSourceAuthRefused` counts toward the breaker and A5 is not about the breaker |
 | `LIBRARY_CHURN_MAX` | **0** | `PROJECTION_PHASE_1_BUDGETS.MAX_LIBRARY_CHURN_ITEMS` |
 | `RESOLUTIONS_PER_WIRE_READ_MAX` | **1** | `PROJECTIOND_READ_POLICY.MAX_ACCESS_REFRESHES_PER_READ` and `PROJECTIOND_ACCESS_RESOLUTION.MAX_REFRESHES_PER_SOURCE_PER_COOLDOWN`, both 1 |
-| `PLAY_START_BUDGET_MS` | **10,000** | G8 of `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §4, unchanged |
-| `PLAY_DECODED_SECONDS_MIN` | **10** | **CHOSEN.** §2 of the acceptance plan calls the real-provider corpus a correctness corpus and says it is *never a load test*; ten seconds on each of three servers on each of six cycles of each of three runs is 540 decoded seconds against a metered account. **This is not G8 and does not re-close it** — G8's five minutes are closed on the fake corpus, three times, on this host |
+| `PLAY_START_BUDGET_MS` | **10,000** | `MEDIA_SERVER_SOAK.MAX_STARTUP_SECONDS`, which is G8's own ten seconds, imported rather than restated |
+| `PLAY_DECODED_SECONDS_MIN` | **30** | **CHOSEN, with both bounds named.** *Below:* the shipped Jellyfin driver's `paced-play` requires at least 30 progress records from the decoder, roughly one a second, so a shorter window fails that driver's own floor for a reason that is about the window and not about the product — thirty seconds is the shortest window in which all three shipped drivers can report at all. *Above:* §2 of the acceptance plan calls the real-provider corpus a correctness corpus and says it is *never a load test*, and 30 s × 3 servers × 6 cycles × 3 runs = 1,620 decoded seconds is already the outer edge of what one can be asked for. **This is not G8 and does not re-close it** — G8's five minutes are closed on the fake corpus, three times, on this host |
 | `WINDOW_DIGESTS` | **4, exact equality** | the operator's own `probeDigests`, recorded outside the mount by direct HTTPS ranged GETs before any run existed |
 | `SEED_READ_REQUIRED` | every phase B | the local control entry must read correctly wherever the real one does, and must fail with it when the fault is the mount |
 
@@ -157,7 +157,7 @@ three independent starts.
 
 ## 5. What Phase 3 does not claim
 
-- **It is not a load test and it is not a throughput measurement.** One object, four 64 KiB windows and ten
+- **It is not a load test and it is not a throughput measurement.** One object, four 64 KiB windows and thirty
   decoded seconds per server per cycle. No latency, bandwidth or time-to-first-byte figure here is a
   performance claim, and the wall-clock numbers are this host's.
 - **It does not re-close G7–G13, G18 or G22.** Those are Phase 1 gates with their own corpora and their own

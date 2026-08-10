@@ -1,0 +1,858 @@
+import {
+  existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync,
+} from 'node:fs';
+import { createHash } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { logicalLines, parseShellSource } from './helpers/shell-source.js';
+import {
+  RELIABILITY_LOOP_ARMS,
+  RELIABILITY_LOOP_RULES,
+  RELIABILITY_SERVER_IDS,
+  RELIABILITY_POLL_INTERVAL_MS,
+  ROTATION_REFUSAL_BELOW_BREAKER,
+  ARM_DETAIL_GATE_IDS,
+  REQUIRED_RUN_GATE_IDS,
+  budgetKeyFor,
+  requiredCycleGateIds,
+  reliabilityClosureProblems,
+} from '../src/core/projection/reliability-loop.js';
+import {
+  PROJECTIOND_READ_POLICY,
+  PROJECTIOND_ADMISSION_LIMITS,
+  PROJECTIOND_CIRCUIT_BREAKER,
+  PROJECTION_PHASE_1_BUDGETS,
+} from '../src/core/projection/runtime-contract.js';
+
+// Projection Phase 3 — the reliability loop, offline.
+//
+// WHAT THIS SUITE IS FOR. The gate itself needs Docker, /dev/fuse, three real media servers, a real
+// PostgreSQL and the operator's real-provider corpus. This runs everywhere in seconds and pins the things a
+// real run cannot check about itself:
+//
+//   * every threshold the contract predeclared, against the constant it claims to derive from — so a number
+//     cannot be "adjusted" after a run misses it without a test failing;
+//   * that the GATE restates none of those numbers, and reads them out of the module instead;
+//   * that a skipped arm, a missing phase, a duplicated verdict or a budget the run supplied for itself
+//     cannot be read as success;
+//   * that `--no-barrier` is contained to this gate and cannot reach a Phase 1 caller;
+//   * that the port block collides with no other gate in `deploy/`;
+//   * and that the embedded programs are EXECUTED rather than grepped, because Phase 1 spent four dispatches
+//     on programs that were only ever matched by regex and every dispatch found defects a regex cannot see.
+
+let passed = 0;
+let failed = 0;
+const failures: Array<[string, unknown]> = [];
+const skippedBlocks: string[] = [];
+const skipBlock = (what: string): void => {
+  skippedBlocks.push(what);
+  console.log(`  ..  SKIPPED on ${process.platform}: ${what}`);
+};
+
+function test(name: string, fn: () => void): void {
+  try {
+    fn();
+    passed += 1; console.log(`  PASS  ${name}`);
+  } catch (error) {
+    failed += 1; failures.push([name, error]); console.log(`  FAIL  ${name}: ${(error as Error).message}`);
+  }
+}
+
+function assert(condition: unknown, message: string): asserts condition {
+  if (!condition) throw new Error(message);
+}
+function assertEq<T>(actual: T, expected: T, message: string): void {
+  if (actual !== expected) throw new Error(`${message}: expected ${String(expected)}, got ${String(actual)}`);
+}
+
+const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+const read = (relative: string): string => readFileSync(join(repoRoot, relative), 'utf8');
+
+const GATE = 'deploy/projection-reliability-loop-gate.sh';
+const THREE = 'deploy/projection-reliability-loop-gate-three.sh';
+const OPTIONAL = 'deploy/projection-reliability-loop-gate-optional.sh';
+const DOC = 'docs/PROJECTION_PHASE_3_RELIABILITY_LOOP.md';
+
+console.log('Projection Phase 3 — the reliability loop (offline)');
+
+// ---------------------------------------------------------------------------------------------------------
+// The ship set
+// ---------------------------------------------------------------------------------------------------------
+
+test('the gate, both wrappers, the compose file, the module, the CLI and the contract all exist', () => {
+  for (const path of [GATE, THREE, OPTIONAL, DOC,
+    'docker-compose.projection-reliability.yml',
+    'src/core/projection/reliability-loop.ts',
+    'src/ops/projection-reliability-loop-cli.ts']) {
+    assert(existsSync(join(repoRoot, path)), `${path} is missing`);
+  }
+});
+
+test('the npm scripts are wired to the scripts that exist', () => {
+  const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
+  assertEq(pkg.scripts['go:reliability-loop-gate'], `bash ${GATE}`, 'the single-run script');
+  assertEq(pkg.scripts['go:reliability-loop-gate:three'], `bash ${THREE}`, 'the three-run script');
+  assertEq(pkg.scripts['go:reliability-loop-gate:optional'], `bash ${OPTIONAL}`, 'the optional script');
+  assertEq(pkg.scripts['test:projection-reliability-loop'], 'tsx test/projection-reliability-loop.ts',
+    'this suite');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// The thresholds, against what they claim to derive from
+// ---------------------------------------------------------------------------------------------------------
+
+test('every predeclared threshold equals the derivation the contract states for it', () => {
+  assertEq(RELIABILITY_LOOP_RULES.CYCLES_PER_RUN, RELIABILITY_LOOP_ARMS.length,
+    'one cycle per arm: the arm list IS the cycle list');
+  assertEq(RELIABILITY_LOOP_RULES.CONSECUTIVE_FRESH_RUNS, 3, 'the closure convention');
+  assertEq(RELIABILITY_LOOP_RULES.READY_BUDGET_MS,
+    RELIABILITY_POLL_INTERVAL_MS + PROJECTIOND_READ_POLICY.READ_DEADLINE_MS,
+    'the pointer poll plus one read deadline');
+  assertEq(RELIABILITY_LOOP_RULES.READ_FAIL_BUDGET_MS, PROJECTIOND_READ_POLICY.READ_DEADLINE_MS,
+    'the product\'s own read deadline');
+  assertEq(RELIABILITY_LOOP_RULES.BREAKER_REFUSAL_BUDGET_MS, PROJECTIOND_ADMISSION_LIMITS.MAX_QUEUE_WAIT_MS,
+    'a locally refused read must beat the shortest wait an admitted read could incur');
+  assertEq(RELIABILITY_LOOP_RULES.OUTAGE_RECOVERY_BUDGET_MS,
+    PROJECTIOND_CIRCUIT_BREAKER.OPEN_COOLDOWN_MS + PROJECTIOND_READ_POLICY.READ_DEADLINE_MS,
+    'the cooldown plus one read deadline');
+  assertEq(RELIABILITY_LOOP_RULES.HALF_OPEN_PROBES, PROJECTIOND_CIRCUIT_BREAKER.HALF_OPEN_PROBES,
+    'half-open lets exactly one request through');
+  assertEq(RELIABILITY_LOOP_RULES.LIBRARY_CHURN_MAX, PROJECTION_PHASE_1_BUDGETS.MAX_LIBRARY_CHURN_ITEMS,
+    'the Phase 1 churn budget');
+  assertEq(RELIABILITY_LOOP_RULES.HOLD_RESOLVER_REQUESTS_MAX, 0,
+    'zero provider traffic while the breaker is open');
+});
+
+test('the rotation arm cannot open the breaker the outage arm is about', () => {
+  assert(ROTATION_REFUSAL_BELOW_BREAKER,
+    'the rotation refusal bound is not strictly under the breaker threshold, so A5 would be measuring A4');
+  assert(RELIABILITY_LOOP_RULES.ROTATION_REFUSAL_READS_MAX < PROJECTIOND_CIRCUIT_BREAKER.FAILURE_THRESHOLD,
+    'the refusal read bound reaches the breaker threshold');
+});
+
+// THE FLOORS THEMSELVES DID NOT MOVE, which is what makes every historical Phase 1 and Phase 2 result mean
+// exactly what it meant before this tranche existed.
+test('this tranche moved no Phase 1 or Phase 2 constant', () => {
+  assertEq(PROJECTIOND_READ_POLICY.READ_DEADLINE_MS, 20_000, 'the read deadline');
+  assertEq(PROJECTIOND_ADMISSION_LIMITS.MAX_QUEUE_WAIT_MS, 5_000, 'the admission queue wait');
+  assertEq(PROJECTIOND_CIRCUIT_BREAKER.FAILURE_THRESHOLD, 5, 'the breaker failure threshold');
+  assertEq(PROJECTIOND_CIRCUIT_BREAKER.OPEN_COOLDOWN_MS, 60_000, 'the breaker cooldown');
+  assertEq(PROJECTIOND_CIRCUIT_BREAKER.HALF_OPEN_PROBES, 1, 'the half-open probe count');
+  assertEq(PROJECTION_PHASE_1_BUDGETS.MAX_LIBRARY_CHURN_ITEMS, 0, 'the churn budget');
+});
+
+test('the contract document and the module agree on every number', () => {
+  const doc = read(DOC);
+  const expected: Array<[string, number]> = [
+    ['CYCLES_PER_RUN', RELIABILITY_LOOP_RULES.CYCLES_PER_RUN],
+    ['CONSECUTIVE_FRESH_RUNS', RELIABILITY_LOOP_RULES.CONSECUTIVE_FRESH_RUNS],
+    ['READY_BUDGET_MS', RELIABILITY_LOOP_RULES.READY_BUDGET_MS],
+    ['READ_FAIL_BUDGET_MS', RELIABILITY_LOOP_RULES.READ_FAIL_BUDGET_MS],
+    ['BREAKER_REFUSAL_BUDGET_MS', RELIABILITY_LOOP_RULES.BREAKER_REFUSAL_BUDGET_MS],
+    ['OUTAGE_RECOVERY_BUDGET_MS', RELIABILITY_LOOP_RULES.OUTAGE_RECOVERY_BUDGET_MS],
+    ['ROTATION_CONVERGENCE_READS', RELIABILITY_LOOP_RULES.ROTATION_CONVERGENCE_READS],
+    ['ROTATION_REFUSAL_READS_MAX', RELIABILITY_LOOP_RULES.ROTATION_REFUSAL_READS_MAX],
+    ['PLAY_START_BUDGET_MS', RELIABILITY_LOOP_RULES.PLAY_START_BUDGET_MS],
+    ['PLAY_DECODED_SECONDS_MIN', RELIABILITY_LOOP_RULES.PLAY_DECODED_SECONDS_MIN],
+  ];
+  for (const [name, value] of expected) {
+    // The document writes thousands with commas, as documents do; the module does not.
+    const row = new RegExp(`\`${name}\`\\s*\\|\\s*\\*\\*([0-9,]+)\\*\\*`).exec(doc);
+    assert(row !== null, `${name} has no row in the contract's threshold table`);
+    assertEq(Number((row[1] as string).replace(/,/g, '')), value,
+      `the contract and the module disagree about ${name}`);
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// The gate restates no threshold
+// ---------------------------------------------------------------------------------------------------------
+
+test('the gate spells none of the budget numbers, and reads them out of the module instead', () => {
+  const gate = read(GATE);
+  // The `eval` of the module's own output is the only place a number enters the shell.
+  assert(/RL_BUDGETS="\$\(npx tsx src\/ops\/projection-reliability-loop-cli\.ts budgets --sh\)"/.test(gate),
+    'the gate does not read its thresholds out of the module');
+  assert(gate.includes('eval "$RL_BUDGETS"'), 'the gate does not evaluate the thresholds it read');
+
+  // AND NO LITERAL SPELLING OF ANY OF THEM APPEARS ANYWHERE IN IT. Ports, container names and the shell's
+  // own numbers are exempt by construction: none of the values below is small enough to collide with one.
+  const forbidden = new Set<number>();
+  for (const [key, value] of Object.entries(RELIABILITY_LOOP_RULES)) {
+    if (typeof value === 'number' && value >= 1_000) forbidden.add(value);
+    void key;
+  }
+  for (const value of forbidden) {
+    const literal = new RegExp(`(^|[^0-9_.])${value}([^0-9_]|$)`, 'm');
+    const offending = gate.split('\n')
+      .map((line, index) => [index + 1, line] as const)
+      // A COMMENT MAY SAY A NUMBER; ONLY EXECUTABLE TEXT MAY NOT. The rule is about drift between the shell
+      // and the module, and prose that has to be read by a person is where the derivation is explained.
+      .filter(([, line]) => !/^\s*#/.test(line))
+      .filter(([, line]) => literal.test(line));
+    assertEq(offending.length, 0,
+      `the gate spells the budget ${value} literally at line(s) ${offending.map(([n]) => n).join(', ')}`);
+  }
+});
+
+test('the gate configures its daemon with the poll interval the ready budget is derived from', () => {
+  const gate = read(GATE);
+  assert(gate.includes('DAEMON_POLL="$(( RL_POLL_INTERVAL_MS / 1000 ))s"'),
+    'the daemon poll flag is not built from the interval the budget derives from');
+  assert(gate.includes('--poll "$DAEMON_POLL"'), 'the daemon is not started with that interval');
+  assert(!/--poll [0-9]/.test(gate), 'the gate hard-codes a poll interval somewhere');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// The closure rule
+// ---------------------------------------------------------------------------------------------------------
+
+/** A results document in which every required id passes — the only shape that may ever close a run. */
+function completeRun(): { cycles: Array<{ cycle: number; arm: string }>; results: Array<Record<string, unknown>> } {
+  const cycles = RELIABILITY_LOOP_ARMS.map((arm, index) => ({ cycle: index + 1, arm }));
+  const results: Array<Record<string, unknown>> = [];
+  const add = (gate: string): void => {
+    const key = budgetKeyFor(gate);
+    if (key === undefined) {
+      results.push({ gate, verdict: 'pass' });
+      return;
+    }
+    const budget = RELIABILITY_LOOP_RULES[key] as number;
+    // A measurement that satisfies whichever direction the id is compared in.
+    results.push({ gate, verdict: 'pass', measured: budget, budget });
+  };
+  for (const record of cycles) for (const id of requiredCycleGateIds(record.cycle, record.arm)) add(id);
+  for (const id of REQUIRED_RUN_GATE_IDS) add(id);
+  return { cycles, results };
+}
+
+test('a complete run closes, and it is the only shape that does', () => {
+  assertEq(reliabilityClosureProblems(completeRun() as never).length, 0,
+    'a complete run does not satisfy its own closure rule');
+});
+
+test('a run that skipped an arm cannot close', () => {
+  const document = completeRun();
+  document.cycles = document.cycles.slice(0, 5);
+  const problems = reliabilityClosureProblems(document as never);
+  assert(problems.some((p) => p.includes('A6') && p.includes('never run')),
+    `a missing arm was not named: ${problems.join(' | ')}`);
+});
+
+test('a run that ran one arm six times cannot close', () => {
+  const document = completeRun();
+  document.cycles = document.cycles.map((record) => ({ ...record, arm: 'A1' }));
+  const problems = reliabilityClosureProblems(document as never);
+  assert(problems.length > 0, 'six copies of one arm cleared the closure rule');
+  assert(problems.some((p) => p.includes('where the contract names')),
+    `the arm sequence was not compared: ${problems.slice(0, 3).join(' | ')}`);
+});
+
+test('a SKIP verdict on a required id is not a pass', () => {
+  for (const target of ['RL-B-windows:c1', 'RL-F-A3-frontends-read-after-remount:c3',
+    'RL-own-run-directory-removed']) {
+    const document = completeRun();
+    const hit = document.results.find((r) => r.gate === target);
+    assert(hit !== undefined, `${target} is not in a complete run`);
+    hit.verdict = 'skip';
+    const problems = reliabilityClosureProblems(document as never);
+    assert(problems.some((p) => p.startsWith(`${target} is skip`)),
+      `a skipped ${target} closed the run: ${problems.join(' | ')}`);
+  }
+});
+
+test('an ABSENT required id is not a pass either, which is the harder half', () => {
+  const document = completeRun();
+  document.results = document.results.filter((r) => r.gate !== 'RL-R-windows:c4');
+  const problems = reliabilityClosureProblems(document as never);
+  assert(problems.some((p) => p.startsWith('RL-R-windows:c4 is absent')),
+    `a phase that never ran left nothing behind and closed the run: ${problems.join(' | ')}`);
+});
+
+test('a verdict measured against a budget the run supplied for itself is refused', () => {
+  const document = completeRun();
+  const hit = document.results.find((r) => r.gate === 'RL-R-ready-ms:c1');
+  assert(hit !== undefined, 'the ready budget id is not in a complete run');
+  hit.budget = 999_999;
+  hit.measured = 500_000;
+  const problems = reliabilityClosureProblems(document as never);
+  assert(problems.some((p) => p.includes('where the contract names')),
+    `a self-supplied budget was accepted: ${problems.join(' | ')}`);
+});
+
+test('two verdicts under one id are refused rather than the second overwriting the first', () => {
+  const document = completeRun();
+  document.results.push({ gate: 'RL-B-windows:c1', verdict: 'pass',
+    measured: RELIABILITY_LOOP_RULES.OPERATOR_WINDOWS_REQUIRED,
+    budget: RELIABILITY_LOOP_RULES.OPERATOR_WINDOWS_REQUIRED });
+  const problems = reliabilityClosureProblems(document as never);
+  assert(problems.some((p) => p.includes('two verdicts')), `a duplicate id was accepted: ${problems.join(' | ')}`);
+});
+
+test('a recorded failure OUTSIDE the required set still fails the run', () => {
+  const document = completeRun();
+  document.results.push({ gate: 'RL-something-nobody-required', verdict: 'fail' });
+  const problems = reliabilityClosureProblems(document as never);
+  assert(problems.some((p) => p.includes('RL-something-nobody-required')),
+    'a failure outside the required set was ignored');
+});
+
+test('every arm requires its own middle, not just a summary verdict', () => {
+  for (const arm of RELIABILITY_LOOP_ARMS) {
+    const details = ARM_DETAIL_GATE_IDS[arm];
+    assert(details.length >= 2, `${arm} has fewer than two measurements behind its summary`);
+    const ids = requiredCycleGateIds(1, arm);
+    for (const detail of details) {
+      assert(ids.includes(`${detail}:c1`), `${arm} does not require ${detail}`);
+    }
+    assert(ids.includes(`RL-F-${arm}:c1`), `${arm} has no summary verdict`);
+  }
+});
+
+test('every cycle requires all three servers, in both phases, in every way', () => {
+  const ids = requiredCycleGateIds(2, 'A2');
+  for (const server of RELIABILITY_SERVER_IDS) {
+    for (const shape of ['RL-O-catalogue', 'RL-B-inread', 'RL-R-inread', 'RL-R-catalogue', 'RL-R-churn',
+      'RL-O-play-start-ms', 'RL-O-play-decoded-seconds']) {
+      assert(ids.includes(`${shape}:${server}:c2`), `${shape} is not required for ${server}`);
+    }
+  }
+});
+
+test('A3 requires the assertion this whole tranche exists for', () => {
+  // Phase 2's `--auto-remount` recovered the namespace for the daemon and for nobody else. The only check
+  // that can tell those apart is three consumers reading through their own binds afterwards.
+  assert(ARM_DETAIL_GATE_IDS.A3.includes('RL-F-A3-frontends-read-after-remount'),
+    'A3 does not require the consumers to be able to read after the remount');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// Containment of the one shared-code change
+// ---------------------------------------------------------------------------------------------------------
+
+test('--no-barrier reaches no gate but this one', () => {
+  const dir = join(repoRoot, 'deploy');
+  const offenders: string[] = [];
+  for (const entry of readdirNames(dir)) {
+    if (!entry.endsWith('.sh')) continue;
+    if (entry === 'projection-reliability-loop-gate.sh') continue;
+    if (read(`deploy/${entry}`).includes('--no-barrier')) offenders.push(entry);
+  }
+  assertEq(offenders.length, 0, `--no-barrier appears in ${offenders.join(', ')}`);
+});
+
+test('the barrier stays mandatory when nobody asks for it, and the pair is refused', () => {
+  const cli = read('src/ops/projection-three-server-concurrency-cli.ts');
+  assert(cli.includes("noBarrierRaw !== 'true'"),
+    'the flag accepts values other than "true", so a present-but-negative value could choose a mode');
+  assert(cli.includes("noBarrier ? undefined : need(args, 'endpoint')"),
+    'the endpoint is not still required when the flag is absent');
+  assert(cli.includes("noBarrier ? undefined : need(args, 'barrier-ref')"),
+    'the barrier reference is not still required when the flag is absent');
+  assert(/--no-barrier was passed together with/.test(cli),
+    'passing the flag together with a barrier is not refused');
+});
+
+test('the overlap floors did not move, so no historical result means anything different', () => {
+  const source = read('src/core/projection/three-server-concurrency.ts');
+  assert(/MIN_SIMULTANEOUS_SAMPLES:\s*3\b/.test(source), 'the sample floor moved');
+  assert(/MIN_SIMULTANEOUS_SPAN_SECONDS:\s*2\b/.test(source), 'the span floor moved');
+});
+
+test('the gate takes the overlap observation in measurement mode and says so', () => {
+  const gate = read(GATE);
+  assert(gate.includes('--overlap-mode measurement'), 'the gate does not use measurement mode');
+  const doc = read(DOC);
+  assert(/RECORDED, not required/i.test(doc), 'the contract does not say the overlap is recorded, not required');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// The port block
+// ---------------------------------------------------------------------------------------------------------
+
+test('the port block collides with no other gate in deploy/, checked rather than commented', () => {
+  const gate = read(GATE);
+  const mine = new Set<string>();
+  for (const match of gate.matchAll(/:-([0-9]{4,5})\}/g)) mine.add(match[1] as string);
+  assert(mine.size >= 5, `only ${mine.size} default port(s) found in the gate; the block is not readable`);
+
+  const others = new Set<string>();
+  for (const entry of readdirNames(join(repoRoot, 'deploy'))) {
+    if (!entry.endsWith('.sh')) continue;
+    if (entry.startsWith('projection-reliability-loop-gate')) continue;
+    for (const match of read(`deploy/${entry}`).matchAll(/:-([0-9]{4,5})\}/g)) others.add(match[1] as string);
+  }
+  const clash = [...mine].filter((port) => others.has(port));
+  assertEq(clash.length, 0, `this gate's port(s) ${clash.join(', ')} are already claimed by another gate`);
+});
+
+test('the compose file takes its own project name, network and port', () => {
+  const compose = read('docker-compose.projection-reliability.yml');
+  assert(compose.includes('name: projection-reliability-gate'), 'the compose project name is shared');
+  assert(compose.includes('PROJECTION_RELIABILITY_GATE_PG_PORT'), 'the database port is not overridable');
+  assert(/postgres:16@sha256:[0-9a-f]{64}/.test(compose), 'the database image is not pinned by digest');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// The shape rules every gate here is held to
+// ---------------------------------------------------------------------------------------------------------
+
+test('every heredoc in the gate is quoted', () => {
+  // AN UNQUOTED HEREDOC RUNS `$(...)` AND EXPANDS `$VAR` AS IT IS WRITTEN, so a program the gate believes it
+  // is shipping would be a program the shell had already rewritten.
+  const gate = read(GATE);
+  const unquoted = gate.split('\n')
+    .map((line, index) => [index + 1, line] as const)
+    .filter(([, line]) => /<<[A-Z]/.test(line) && !/<<'[A-Z]/.test(line));
+  assertEq(unquoted.length, 0,
+    `unquoted heredoc(s) at line(s) ${unquoted.map(([n]) => n).join(', ')}`);
+});
+
+test('every file the gate writes has a parent some earlier mkdir -p creates', () => {
+  const gate = read(GATE);
+  const made = new Set<string>();
+  // BACKSLASH CONTINUATIONS ARE JOINED FIRST, AND THIS TEST FAILED FOR WANT OF IT ON ITS FIRST RUN. The
+  // gate's `mkdir -p` lists eleven paths over three lines; a per-line scan reads `mkdir -p`, sees the first
+  // few arguments and never looks at the ones on the continuations — which is exactly the defect the Phase 2
+  // bake-off records as #7, where `config.json` was on the third line of such a list and the pin written to
+  // catch it could not see it.
+  const lines = gate.replace(/\\\n\s*/g, ' ').split('\n');
+  const missing: string[] = [];
+  for (const line of lines) {
+    const mk = /^\s*mkdir -p (.+)$/.exec(line);
+    if (mk !== null) {
+      for (const raw of (mk[1] as string).matchAll(/"\$WORK\/([^"]+)"/g)) {
+        // `-p` makes every ancestor too, so each one counts as created.
+        const parts = (raw[1] as string).split('/');
+        for (let index = 1; index <= parts.length; index += 1) made.add(parts.slice(0, index).join('/'));
+      }
+      continue;
+    }
+    const write = /^\s*cat > "\$WORK\/([^"]+)"/.exec(line);
+    if (write === null) continue;
+    const parent = (write[1] as string).split('/').slice(0, -1).join('/');
+    if (parent !== '' && !made.has(parent)) missing.push(write[1] as string);
+  }
+  assertEq(missing.length, 0, `written with no mkdir for its parent: ${missing.join(', ')}`);
+});
+
+test('the whole gate parses as shell source under both line endings', () => {
+  for (const [what, body] of [['LF', read(GATE)], ['CRLF', read(GATE).replace(/\n/g, '\r\n')]] as const) {
+    // A file whose quotes do not close on their own line is one every "does this contain X" test skips over,
+    // and Phase 2 found a harness whose two multi-line `node -e` arguments made the ENTIRE file unreadable.
+    // `logicalLines` is where that is discovered — it joins continuations and refuses an unterminated quote —
+    // so parsing alone would not have caught the defect this test exists for.
+    const lines = logicalLines(parseShellSource(body, GATE));
+    assert(lines.length > 0, `the gate produced no logical lines under ${what}`);
+  }
+});
+
+test('the gate carries no NUL byte and no carriage return', () => {
+  for (const path of [GATE, THREE, OPTIONAL]) {
+    const raw = readFileSync(join(repoRoot, path));
+    assertEq(raw.includes(0), false, `${path} holds a NUL byte, which makes it a binary file to every tool`);
+    assertEq(raw.includes(0x0d), false, `${path} holds a CR; .gitattributes pins shipped shell to LF`);
+  }
+});
+
+test('cleanup goes through the shared helper and the success path ASSERTS it', () => {
+  const gate = read(GATE);
+  assert(gate.includes('. "$(cd "$(dirname "$0")" && pwd)/projection-gate-cleanup.sh"'),
+    'the gate does not source the shared cleanup contract');
+  assert(gate.includes('projection_gate_cleanup_run "$GATE_ROOT" "$WORK" "$VERIFY_IMAGE"'),
+    'the gate does not clean up through the shared helper');
+  assert(gate.includes('RL-own-mountpoints-removed'), 'the success path does not assert its own mountpoints');
+  assert(gate.includes('RL-own-run-directory-removed'), 'the success path does not assert its own directory');
+  assert(gate.includes('trap cleanup EXIT'), 'there is no failure-path cleanup');
+});
+
+test('the skip is 77, it comes before anything is built, and only :optional folds it', () => {
+  const gate = read(GATE);
+  assert(gate.includes('GATE_SKIP_STATUS=77'), 'the skip status is not 77');
+  const skipAt = gate.indexOf('SKIPPED (status ${GATE_SKIP_STATUS}): the operator has supplied no');
+  const buildAt = gate.indexOf('docker build -t "$IMAGE"');
+  assert(skipAt > 0 && buildAt > skipAt, 'the corpus skip does not precede the image build');
+  const three = read(THREE);
+  assert(three.includes('exit "$GATE_SKIP_STATUS"'), 'the three-run wrapper folds a skip into success');
+  assert(!/\bexit 0\b/.test(three.split('if [ "$status" -eq "$GATE_SKIP_STATUS" ]')[1] ?? ''),
+    'the three-run wrapper exits 0 on a skip');
+  const optional = read(OPTIONAL);
+  assert(optional.includes('NOTHING WAS PROVED'), 'the optional wrapper does not say what a fold means');
+});
+
+test('the three-run wrapper cannot announce a sequence it did not complete', () => {
+  const three = read(THREE);
+  assert(three.includes('if [ "$completed" -ne "$RUNS" ] || [ "$completed" -eq 0 ]; then'),
+    'the closing message is not guarded by the completed count');
+});
+
+test('the operator inputs are copied at 0600 and the two consumers get different copies', () => {
+  const gate = read(GATE);
+  assert(gate.includes('install -m 600 "$TORBOX_CREDENTIAL" "$WORK/inputs/torbox-credential"'),
+    'the provider credential is not installed at 0600');
+  assert(gate.includes('install -m 600 "$GATE_SECRET" "$WORK/daemon-inputs/gate-secret"'),
+    'the daemon does not get its own copy of the gate secret, so a rotation could not be staged');
+  assert(gate.includes('chmod 700 "$WORK/inputs" "$WORK/daemon-inputs"'),
+    'the secret directories are not 0700');
+  // AND THE DAEMON NEVER SEES THE PROVIDER KEY. It is given `daemon-inputs`, which holds one file.
+  assert(gate.includes('-v "$WORK/daemon-inputs:/var/lib/projectiond/inputs:ro"'),
+    'the daemon is not given its own inputs directory');
+  assert(!/-v "\$WORK\/inputs:\/var\/lib\/projectiond/.test(gate),
+    'the daemon is given the directory that holds the provider API key');
+});
+
+test('the projected path is the gate\'s own, so the operator\'s label reaches no media server', () => {
+  const gate = read(GATE);
+  assert(gate.includes('Projection Real Object ${n} (2026)'),
+    'the projected path is not built from a gate-chosen name');
+  assert(gate.includes('needles.push(String(object.label))'),
+    'the operator label is not searched for as a leak needle');
+  assert(gate.includes('needles.push(String(object.ref))'),
+    'the stable reference is not searched for as a leak needle');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// The embedded programs, EXECUTED rather than grepped
+// ---------------------------------------------------------------------------------------------------------
+
+/** Pull one quoted heredoc out of the gate by its terminator, so the test runs the SHIPPED bytes. */
+function embedded(name: string): string {
+  const gate = read(GATE);
+  const pattern = new RegExp(`<<'${name}'\\n([\\s\\S]*?)\\n${name}\\n`);
+  const found = pattern.exec(gate);
+  assert(found !== null, `the gate ships no program under the heredoc ${name}`);
+  return found[1] as string;
+}
+
+function runNode(source: string, args: string[]): { status: number | null; stdout: string; stderr: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'rl-pin-'));
+  const file = join(dir, 'program.cjs');
+  writeFileSync(file, source);
+  const run = spawnSync(process.execPath, [file, ...args], { encoding: 'utf8', timeout: 60_000 });
+  return { status: run.status, stdout: run.stdout ?? '', stderr: run.stderr ?? '' };
+}
+
+test('record.cjs refuses a measurement that is not a number rather than scoring it as zero', () => {
+  const source = embedded('RECORD');
+  const dir = mkdtempSync(join(tmpdir(), 'rl-pin-'));
+  const out = join(dir, 'results.jsonl');
+
+  // A REAL MEASUREMENT PASSES.
+  const good = runNode(source, [out, 'RL-x', 'le', '10', '20', 'a note']);
+  assertEq(good.status, 0, `a satisfied budget did not pass: ${good.stdout}${good.stderr}`);
+
+  // AN EMPTY ONE — exactly what a shell hands over when the command that was to measure produced nothing —
+  // is a FAILURE naming the absence, not a zero that clears every ceiling.
+  const empty = runNode(source, [out, 'RL-y', 'le', '', '20', 'a note']);
+  assertEq(empty.status, 1, 'an absent measurement was not a failure');
+  const lines = readFileSync(out, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as
+    { gate: string; verdict: string; note?: string });
+  const absent = lines.find((line) => line.gate === 'RL-y');
+  assert(absent !== undefined && absent.verdict === 'fail', 'the absent measurement was not recorded as fail');
+  assert((absent.note ?? '').includes('not a number'), 'the failure does not say what was wrong');
+
+  // AN UNKNOWN COMPARISON IS A FAILURE TOO, rather than defaulting to one of the three.
+  const bogus = runNode(source, [out, 'RL-z', 'approximately', '10', '20']);
+  assertEq(bogus.status, 1, 'an unknown comparison operator was accepted');
+});
+
+test('record.cjs bool refuses an observation that produced no value', () => {
+  const source = embedded('RECORD');
+  const dir = mkdtempSync(join(tmpdir(), 'rl-pin-'));
+  const out = join(dir, 'results.jsonl');
+  assertEq(runNode(source, [out, 'RL-a', 'bool', '1', '', 'note']).status, 0, 'a true observation failed');
+  assertEq(runNode(source, [out, 'RL-b', 'bool', '0', '', 'note']).status, 1, 'a false observation passed');
+  assertEq(runNode(source, [out, 'RL-c', 'bool', '', '', 'note']).status, 1,
+    'an observation that produced nothing at all passed');
+});
+
+test('churn.cjs refuses an empty catalogue rather than scoring it as no churn', () => {
+  const source = embedded('CHURN');
+  const dir = mkdtempSync(join(tmpdir(), 'rl-pin-'));
+  const full = join(dir, 'a.json');
+  const empty = join(dir, 'b.json');
+  writeFileSync(full, JSON.stringify([{ key: 'one' }, { key: 'two' }]));
+  writeFileSync(empty, JSON.stringify([]));
+
+  const same = runNode(source, [full, full]);
+  assertEq(same.status, 0, `two identical catalogues failed: ${same.stderr}`);
+  assertEq(same.stdout.trim(), '0', 'two identical catalogues did not report zero churn');
+
+  const gone = runNode(source, [full, empty]);
+  assertEq(gone.status, 1, 'an empty catalogue was compared instead of refused');
+  assert(gone.stderr.includes('lists no entries'), `the refusal does not name the reason: ${gone.stderr}`);
+
+  const drifted = join(dir, 'c.json');
+  writeFileSync(drifted, JSON.stringify([{ key: 'one' }, { key: 'three' }]));
+  const churned = runNode(source, [full, drifted]);
+  assertEq(churned.stdout.trim(), '2', 'one added and one removed did not count as two');
+});
+
+test('summary.cjs prints nothing for a field it could not read, so absence is not a zero', () => {
+  const source = embedded('SUMMARY');
+  const dir = mkdtempSync(join(tmpdir(), 'rl-pin-'));
+  const file = join(dir, 'summary.json');
+  writeFileSync(file, JSON.stringify({ problems: 0, windowsMatched: 4 }));
+  assertEq(runNode(source, [file, 'windowsMatched']).stdout.trim(), '4', 'a present field was not printed');
+  assertEq(runNode(source, [file, 'nothingHere']).stdout.trim(), '', 'an absent field printed something');
+  assertEq(runNode(source, [join(dir, 'missing.json'), 'problems']).stdout.trim(), '',
+    'an unreadable file printed something');
+});
+
+test('oneread.cjs reports ok, mismatch and eio as three different things', () => {
+  const source = embedded('ONEREAD');
+  const dir = mkdtempSync(join(tmpdir(), 'rl-pin-'));
+  const mount = join(dir, 'mnt');
+  mkdirSync(join(mount, 'Movies', 'x'), { recursive: true });
+  const body = Buffer.from('the bytes a window would hold, repeated enough to be a window'.repeat(20));
+  writeFileSync(join(mount, 'Movies', 'x', 'x.mkv'), body);
+  const digest = createHash('sha256').update(body.subarray(0, 64)).digest('hex');
+
+  const corpus = join(dir, 'corpus.json');
+  const describe = (sha: string, path: string): void => writeFileSync(corpus, JSON.stringify([{
+    name: 'real-01', path, sizeBytes: body.length,
+    probeDigests: [{ offset: 0, length: 64, sha256: sha }],
+  }]));
+
+  describe(digest, 'Movies/x/x.mkv');
+  const ok = runNode(source, [corpus, mount]);
+  assert(/^read:ok elapsedMs=[0-9]+/.test(ok.stdout.trim()), `a correct read did not say so: ${ok.stdout}`);
+
+  describe('0'.repeat(64), 'Movies/x/x.mkv');
+  const bad = runNode(source, [corpus, mount]);
+  assert(bad.stdout.startsWith('read:mismatch'), `a wrong digest did not say so: ${bad.stdout}`);
+
+  describe(digest, 'Movies/x/absent.mkv');
+  const eio = runNode(source, [corpus, mount]);
+  assert(bad.stdout !== eio.stdout && eio.stdout.startsWith('read:eio'),
+    `an unreadable object did not report an errno: ${eio.stdout}`);
+  assert(/elapsedMs=[0-9]+/.test(eio.stdout), 'a failed read reported no elapsed time');
+});
+
+test('corpus.cjs writes no reference and no operator label into the document everything else reads', () => {
+  const source = embedded('CORPUS');
+  const dir = mkdtempSync(join(tmpdir(), 'rl-pin-'));
+  const objects = join(dir, 'objects.json');
+  const endpoint = join(dir, 'endpoint.json');
+  const out = join(dir, 'meta.json');
+  writeFileSync(objects, JSON.stringify([{
+    label: 'SECRETLABEL', ref: 'torbox:torrent:9999:8888', sizeBytes: 4096,
+    probeDigests: [{ offset: 0, length: 64, sha256: 'a'.repeat(64) }],
+  }]));
+  writeFileSync(endpoint, JSON.stringify({ id: 'vault', allowedOrigins: ['https://example.invalid'] }));
+
+  const run = runNode(source, [out, objects, endpoint]);
+  assertEq(run.status, 0, `the corpus could not be described: ${run.stderr}`);
+  const corpus = readFileSync(join(dir, 'corpus.json'), 'utf8');
+  assert(!corpus.includes('SECRETLABEL'), 'the operator label reached the corpus document');
+  assert(!corpus.includes('torbox:torrent'), 'the stable reference reached the corpus document');
+  // ...and the reference IS in the batch, which is 0600 and only ever named by path.
+  const batch = readFileSync(join(dir, 'register-batch.json'), 'utf8');
+  assert(batch.includes('torbox:torrent:9999:8888'), 'the register batch lost the reference');
+
+  // A WINDOW THAT ENDS PAST THE OBJECT IS REFUSED, because every offset downstream is the manifest's.
+  writeFileSync(objects, JSON.stringify([{
+    label: 'x', ref: 'torbox:torrent:1:2', sizeBytes: 100,
+    probeDigests: [{ offset: 90, length: 64, sha256: 'b'.repeat(64) }],
+  }]));
+  assertEq(runNode(source, [out, objects, endpoint]).status, 1, 'a window past the end was accepted');
+});
+
+test('inread.sh compares every window and refuses a list it cannot read in full', () => {
+  const shell = findShell();
+  if (shell === undefined) {
+    skipBlock('executing the in-container read program (no POSIX shell that can run a temp path)');
+    return;
+  }
+  const source = embedded('INREAD');
+  const dir = mkdtempSync(join(tmpdir(), 'rl-pin-'));
+  const write = writeFileSync;
+  const script = join(dir, 'inread.sh');
+  write(script, source);
+  const target = join(dir, 'object.bin');
+  const body = Buffer.from('0123456789'.repeat(64));
+  write(target, body);
+  const digestOf = (offset: number, length: number): string =>
+    createHash('sha256').update(body.subarray(offset, offset + length)).digest('hex');
+
+  const windows = join(dir, 'windows.txt');
+  const runIt = (): { status: number | null; stdout: string } => {
+    const run = spawnSync(shell, [shPath(script), shPath(target), shPath(windows)],
+      { encoding: 'utf8', timeout: 60_000 });
+    return { status: run.status, stdout: `${run.stdout ?? ''}${run.stderr ?? ''}` };
+  };
+
+  write(windows, `0 32 ${digestOf(0, 32)}\n100 16 ${digestOf(100, 16)}\n`);
+  const ok = runIt();
+  assertEq(ok.status, 0, `two correct windows did not pass: ${ok.stdout}`);
+  assert(ok.stdout.includes('inread:ok 2/2'), `the program did not count both windows: ${ok.stdout}`);
+
+  // A WRONG DIGEST IS A MISMATCH AND NOT A PASS.
+  write(windows, `0 32 ${'f'.repeat(64)}\n`);
+  const bad = runIt();
+  assertEq(bad.status, 1, 'a wrong digest passed');
+  assert(bad.stdout.includes('inread:mismatch'), `the mismatch was not named: ${bad.stdout}`);
+
+  // AN UNTERMINATED LIST SILENTLY DROPS ITS LAST RECORD IN EVERY READER, which would turn a four-window
+  // check into a three-window one and still print inread:ok.
+  write(windows, `0 32 ${digestOf(0, 32)}`);
+  const unterminated = runIt();
+  assertEq(unterminated.status, 1, 'an unterminated window list was read anyway');
+  assert(unterminated.stdout.includes('inread:unterminated-window-list'),
+    `the unterminated list was not named: ${unterminated.stdout}`);
+
+  // AND AN EMPTY-BUT-TERMINATED LIST COMPARES NOTHING, which must not be a clean run.
+  write(windows, '\n');
+  const nothing = runIt();
+  assertEq(nothing.status, 1, 'a list with no window in it reported a clean read');
+});
+
+test('needles.cjs refuses a needle too short to be decisive, and never prints one', () => {
+  const source = embedded('NEEDLES');
+  const dir = mkdtempSync(join(tmpdir(), 'rl-pin-'));
+  const objects = join(dir, 'objects.json');
+  const credential = join(dir, 'credential');
+  const secret = join(dir, 'secret');
+  const out = join(dir, 'needles.txt');
+  writeFileSync(credential, 'a-long-enough-provider-key\n');
+  writeFileSync(secret, 'a-long-enough-gate-secret\n');
+
+  writeFileSync(objects, JSON.stringify([{ ref: 'torbox:torrent:1:2', label: 'LONGLABEL' }]));
+  const good = runNode(source, [objects, credential, secret, out]);
+  assertEq(good.status, 0, `a usable needle list was refused: ${good.stderr}`);
+  const body = readFileSync(out, 'utf8');
+  assertEq(body.endsWith('\n'), true,
+    'the needle list does not end in a newline, so every reader drops its last needle');
+  assertEq(body.trim().split('\n').length, 4, 'the list does not hold both refs and both secrets');
+
+  writeFileSync(objects, JSON.stringify([{ ref: 'torbox:torrent:1:2', label: 'ab' }]));
+  const short = runNode(source, [objects, credential, secret, out]);
+  assertEq(short.status, 1, 'a two-byte needle was searched for anyway');
+  assert(!short.stderr.includes('ab"') && !/needle.*\bab\b/.test(short.stderr),
+    `the refusal printed the needle it refused: ${short.stderr}`);
+});
+
+test('mintsecret.cjs writes 0600 and produces a different value every time', () => {
+  const source = embedded('MINTSECRET');
+  const dir = mkdtempSync(join(tmpdir(), 'rl-pin-'));
+  const out = join(dir, 'secret');
+  const seen = new Set<string>();
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    assertEq(runNode(source, [out]).status, 0, 'the secret could not be minted');
+    const value = readFileSync(out, 'utf8').trim();
+    assert(value.length >= 32, `a ${value.length}-byte secret is not high-entropy enough to be one`);
+    seen.add(value);
+  }
+  assertEq(seen.size, 3, 'the same secret was minted twice, so a rotation would rotate nothing');
+  // THE MODE IS THE HALF THAT MATTERS AND WIN32 CANNOT ANSWER IT. `SecretFile.loadLocked` refuses a
+  // credential with `perm&0o077 != 0` — correctly, because a secret every user on the host can read is not
+  // one — and the Phase 2 harness lost an arm to a token that was 0644. A Windows filesystem carries no
+  // POSIX mode, so the check is SKIPPED BY NAME here rather than passing vacuously.
+  if (process.platform === 'win32') {
+    skipBlock('checking the minted secret is mode 0600 (win32 carries no POSIX mode)');
+    return;
+  }
+  assertEq(statSync(out).mode & 0o077, 0, 'the minted secret is readable by group or other');
+});
+
+test('corpusfield.cjs answers only the fields it will vouch for', () => {
+  const source = embedded('CORPUSFIELD');
+  const dir = mkdtempSync(join(tmpdir(), 'rl-pin-'));
+  const corpus = join(dir, 'corpus.json');
+  writeFileSync(corpus, JSON.stringify([{
+    name: 'Projection Real Object 01 (2026)', file: 'Projection Real Object 01 (2026).mkv',
+    path: 'Movies/Projection Real Object 01 (2026)/Projection Real Object 01 (2026).mkv',
+    sizeBytes: 100,
+    probeDigests: [{ offset: 0, length: 8, sha256: 'a'.repeat(64) },
+      { offset: 40, length: 8, sha256: 'b'.repeat(64) }],
+  }]));
+  assertEq(runNode(source, [corpus, 'file']).stdout.trim(), 'Projection Real Object 01 (2026).mkv',
+    'the projected file name');
+  const windows = runNode(source, [corpus, 'windows']).stdout.trim().split('\n');
+  assertEq(windows.length, 2, 'the window list lost a window');
+  assertEq(windows[0], `0 8 ${'a'.repeat(64)}`, 'the window list is not offset, length, digest');
+  // A FIELD THIS PROGRAM WILL NOT VOUCH FOR IS A FAILURE, not an empty line a shell would read as a value.
+  assertEq(runNode(source, [corpus, 'label']).status, 1,
+    'the program answered for a field it does not own; the operator label must never leave the batch');
+});
+
+test('the gate ships no multi-line `node -e`, which is what made a Phase 2 harness unreadable', () => {
+  // `parseShellSource` stops at an unterminated quote, so a multi-line `-e` argument makes the WHOLE file
+  // unreadable and every "does this script contain X" test in this repository silently skips it. That is the
+  // bake-off's own closing finding, and the rule is enforced here as a class rather than as a fixed line.
+  for (const path of [GATE, THREE, OPTIONAL]) {
+    const offending = read(path).split('\n')
+      .map((line, index) => [index + 1, line] as const)
+      .filter(([, line]) => /node -e/.test(line) && !/^\s*#/.test(line))
+      .filter(([, line]) => {
+        const quotes = (line.match(/"/g) ?? []).length;
+        return quotes % 2 !== 0;
+      });
+    assertEq(offending.length, 0,
+      `${path} carries a multi-line node -e at line(s) ${offending.map(([n]) => n).join(', ')}`);
+  }
+});
+
+test('the CLI publishes the thresholds as shell assignments the gate can evaluate', () => {
+  const run = spawnSync(process.execPath,
+    ['--import', 'tsx', join(repoRoot, 'src/ops/projection-reliability-loop-cli.ts'), 'budgets', '--sh'],
+    { encoding: 'utf8', cwd: repoRoot, timeout: 120_000 });
+  if (run.status !== 0) {
+    skipBlock(`executing the reliability-loop CLI (${(run.stderr ?? '').trim().slice(0, 120)})`);
+    return;
+  }
+  const emitted = new Map<string, string>();
+  for (const line of (run.stdout ?? '').split('\n')) {
+    const match = /^RL_([A-Z_]+)=(.*)$/.exec(line.trim());
+    if (match !== null) emitted.set(match[1] as string, (match[2] as string).replace(/^'|'$/g, ''));
+  }
+  for (const [key, value] of Object.entries(RELIABILITY_LOOP_RULES)) {
+    assertEq(emitted.get(key), String(value), `the CLI publishes a different ${key} than the module holds`);
+  }
+  assertEq(emitted.get('ARMS'), RELIABILITY_LOOP_ARMS.join(' '), 'the arm list');
+  assertEq(emitted.get('SERVERS'), RELIABILITY_SERVER_IDS.join(' '), 'the server list');
+  assertEq(emitted.get('POLL_INTERVAL_MS'), String(RELIABILITY_POLL_INTERVAL_MS), 'the poll interval');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------------------------------------
+
+function readdirNames(dir: string): string[] {
+  return readdirSync(dir);
+}
+
+/**
+ * A POSIX shell that can actually execute a script at this host's temporary path.
+ *
+ * IT IS CHOSEN BY RUNNING ONE, NOT BY `process.platform`. That is `d4f3265`'s lesson applied rather than
+ * restated: keyed on the platform this block would skip on the machine this work was done on, and a skip
+ * that looks like a pass is the failure mode the whole suite is about.
+ */
+function findShell(): string | undefined {
+  const dir = mkdtempSync(join(tmpdir(), 'rl-shell-'));
+  const probe = join(dir, 'probe.sh');
+  writeFileSync(probe, 'echo shell-ok\n');
+  for (const candidate of ['sh', 'bash', '/bin/sh', '/bin/bash']) {
+    const run = spawnSync(candidate, [shPath(probe)], { encoding: 'utf8', timeout: 30_000 });
+    if (run.status === 0 && (run.stdout ?? '').includes('shell-ok')) return candidate;
+  }
+  return undefined;
+}
+
+/** A path a POSIX shell on this host can open, whichever spelling the platform hands us. */
+function shPath(path: string): string {
+  return process.platform === 'win32'
+    ? `/${path[0]?.toLowerCase() ?? 'c'}${path.slice(2).replace(/\\/g, '/')}`
+    : path;
+}
+
+console.log(`\nProjection Phase 3 — the reliability loop: ${passed} passed, ${failed} failed`
+  + (skippedBlocks.length > 0 ? `, ${skippedBlocks.length} block(s) skipped on ${process.platform}` : ''));
+for (const what of skippedBlocks) console.log(`  skipped: ${what}`);
+if (failed > 0) {
+  for (const [name, error] of failures) console.error(`  FAILED: ${name}: ${String(error)}`);
+  process.exit(1);
+}

@@ -88,3 +88,9 @@ deploy/ci/acceptance/playwright-report/
 .projection-torbox-gate/
 .projection-real-provider-gate/
 .projection-torbox-real-gate/
+
+# THE PHASE 3 RELIABILITY LOOP'S ROOT, and it holds MORE than an interrupted run's scratch: its evidence
+# directory is where every run's verdict log lives, deliberately, because the run directory the cleanup
+# contract deletes is no place for the record of what was measured. It also holds two copies of the
+# operator's secrets at 0600 for the length of a run. Neither belongs anywhere `git add -A` reaches.
+.projection-reliability-loop-gate/

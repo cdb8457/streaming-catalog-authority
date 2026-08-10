@@ -436,6 +436,10 @@
       "group": "offline"
     },
     {
+      "file": "projection-reliability-loop.ts",
+      "group": "offline"
+    },
+    {
       "file": "projection-multi-frontend.ts",
       "group": "offline"
     },

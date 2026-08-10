@@ -148,11 +148,38 @@ async function main(): Promise<void> {
         if (!existsSync(path)) fail(`the ${id} state file is missing; its own bootstrap did not run`);
         states.set(id, adapterFor(id).readState(path));
       }
+      // THE BARRIER IS MANDATORY UNLESS A CALLER EXPLICITLY GIVES IT UP, and the shape is the one
+      // `--overlap-mode` already established for the same reason.
+      //
+      // WHY A SECOND MODE EXISTS AT ALL. G18 rendezvouses three scanners at a provider read HELD at its own
+      // fake endpoint. A REAL provider has no control surface, so Projection Phase 3 — which puts these same
+      // three servers on a real TorBox object — cannot arm one. `runConcurrentScans` has always supported
+      // that (it arms nothing when either option is absent); only this CLI made the two flags compulsory.
+      //
+      // CONTAINMENT, ENFORCED RATHER THAN PROMISED. Absent the flag, both remain required and every Phase 1
+      // caller is bit-for-bit unaffected. Passing it TOGETHER with a barrier reference is refused rather than
+      // resolved in either direction, so a half-edited command line cannot silently pick a mode. And
+      // `test/projection-reliability-loop.ts` asserts no gate in `deploy/` except the reliability loop
+      // contains the flag at all.
+      //
+      // THE VALUE IS `true` AND NOTHING ELSE IS ACCEPTED. This parser gives every flag a value, so
+      // `--no-barrier false` would otherwise be present-and-therefore-truthy — a spelling that reads as the
+      // opposite of what it would do. An unrecognised value is refused, never defaulted in either direction.
+      const noBarrierRaw = args.flags.get('no-barrier');
+      if (noBarrierRaw !== undefined && noBarrierRaw !== 'true') {
+        fail(`--no-barrier takes "true" or is omitted; ${JSON.stringify(noBarrierRaw)} is neither, and a `
+          + 'value that is present but not affirmative must not choose a mode');
+      }
+      const noBarrier = noBarrierRaw === 'true';
+      if (noBarrier && (args.flags.has('barrier-ref') || args.flags.has('endpoint'))) {
+        fail('--no-barrier was passed together with --barrier-ref or --endpoint; a run either rendezvouses '
+          + 'at a held provider read or it does not, and refusing the pair is how a typo cannot choose');
+      }
       const outcome = await runConcurrentScans({
         adapters,
         states,
-        endpointBaseUrl: need(args, 'endpoint'),
-        barrierRef: need(args, 'barrier-ref'),
+        endpointBaseUrl: noBarrier ? undefined : need(args, 'endpoint'),
+        barrierRef: noBarrier ? undefined : need(args, 'barrier-ref'),
         sampleIntervalMs: optionalNumber(args, 'sample-interval-ms', CONCURRENCY_DEADLINES_MS.SAMPLE_INTERVAL),
         holdArmMs: optionalNumber(args, 'hold-arm-ms', HOLD_ARM_MS),
         onNote: (message) => console.log(`  ${message}`),
