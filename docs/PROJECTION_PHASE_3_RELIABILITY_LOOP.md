@@ -2,7 +2,7 @@
 
 **Status: NOT CLOSED, and BLOCKED on an operator input.** Every threshold in §4 was fixed before the first
 measured run and none has moved since. §8 records what the real runs observed and what stopped each; §9 the
-eighteen gate defects and what each cost; **§11 the blocker — the provider serves one CDN origin for a
+nineteen gate defects and what each cost; **§11 the blocker — the provider serves one CDN origin for a
 stretch and then rotates to another from a recurring set, and a stretch is now the same order of magnitude as
 the ninety minutes a sequence takes, so `allowedOrigins` runs out mid-sequence and the daemon refuses exactly
 as it must**; §12 the operational fact this tranche established; §13 the product defect it existed to find,
@@ -322,6 +322,8 @@ what makes a run worth attempting.
 | 13 | `834a9e7d…` (`428b137`) | **everything green, including the new placement check** — `reference occurrences 1, of which 1 are locator.objectRef values, leaving 0` | §9.4 #17 — the run deleted its own recorder and then tried to record four more verdicts about the deletion |
 | 14 | `4971bf2a…` (`b50364d`) | **RUN 1 OF 3 CLOSED: 223/223, 0 fail, 0 skip.** The first complete Phase 3 run | §9.4 #18 — run 2's A3 aborted the floor corpse instead of the served mount, because the kernel recycles mount ids |
 | 15 | `94d64bbb…` (`8bb46cc`) | **RUN 1 OF 3 CLOSED AGAIN: 223/223, 0 fail, 0 skip**, with the abort following the parent chain | **§11.6** — the provider rotated to a FIFTH origin during run 2. `RL-R-windows:c1 1/4` |
+| 16 | `8cdc923f…` (`15e96ea`) | the fifth origin allowlisted and verified `allowed`; the overlap timeline kept for the first time | §9.5 — the cold three-way overlap again, and the kept timeline named the cause: **no instant existed at which all three were scanning** |
+| 17 | `a9d3e977…` (`f7c4f46`) | cycle 1 phases O and B green on the fifth origin | **§11.7** — a SIXTH origin, eleven minutes into the run |
 
 A fifth attempt sat between 3 and 4 and was **stopped by hand** rather than failing: busybox's `tail` does
 not seek (§9.1 #4). It left one stale mountpoint, which `projection_gate_cleanup_run` cleared; the host's
@@ -349,7 +351,7 @@ gate evidence: they are what makes a run worth attempting.
 
 ## 9. Defects found, and what each cost
 
-**EIGHTEEN SO FAR. ALL EIGHTEEN ARE IN THE GATE AND NONE IS IN THE PRODUCT** — and one of them is a finding
+**NINETEEN SO FAR. ALL NINETEEN ARE IN THE GATE AND NONE IS IN THE PRODUCT** — and one of them is a finding
 *about* the product rather than against it. Three were found by reading the arms against the closure rule;
 four needed the gate to actually execute on the real host, and each was invisible until the one before it was
 fixed. Every one is pinned by a test in `test/projection-reliability-loop.ts` that **fails against the commit
@@ -413,6 +415,59 @@ four pins EXECUTE the shipped program rather than reading it.
 reason it did not name. `RL-F-A5-convergence-reads` could not fail, `RL-R-ready-ms:c4` could not pass, and
 this one *did* pass — repeatedly, on a real host, for an hour — while resting on an assumption about kernel
 allocation order that nothing had ever asserted. The pin that closes it is the failing run's own mount table.
+
+### 9.5 The three-way overlap, and what its own timeline says
+
+**IT IS NOT RELIABLY SATISFIABLE, AND THAT IS NOW A MEASUREMENT RATHER THAN A SUSPICION.** §9.4 #16 kept the
+per-tick record instead of deleting it, and the first failure after that fix produced this — four ticks, and
+the whole observation over in 1.6 seconds:
+
+| tick | emby | jellyfin | plex | in flight |
+|---|---|---|---|---|
+| 20 ms | – | – | – | 0 |
+| 552 ms | **scanning** | **scanning** | – | 2 |
+| 1,058 ms | – | – | – | 0 |
+| 1,565 ms | – | – | **scanning** | 1 |
+
+**There was no instant at which all three were scanning.** Emby and Jellyfin ran together and had finished by
+1,058 ms; Plex had not started at 1,058 ms and was scanning alone at 1,565 ms. So this is not a sampler that
+missed a rendezvous — sampling faster would not manufacture one — it is **a rendezvous that did not happen**,
+because Plex begins about a second after the other two and a warm re-scan of a two-entry namespace is over in
+half of that.
+
+**WHY THE ARM CANNOT SIMPLY BE MADE TO PASS.** §5 predeclares that at least one fully attributed three-way
+sample is REQUIRED, and `RL-overlap-three-way-observed` is in the required run ids; the two continuous-run
+floors are what is recorded against nothing, and that distinction is the whole of §5's honesty. Lowering the
+requirement to "all three were observed scanning" — which passes every time, and did here
+(`TS1-servers-observed-scanning 3/3`) — is the threshold-fitted-to-a-run move this document exists to refuse.
+
+**WHAT IS ACTUALLY GOING ON, STATED AS A GAP RATHER THAN A THEORY.** G18 rendezvouses three scanners by
+holding a provider read at its own fake endpoint; a real provider has no control surface, so §7 passes
+`--no-barrier` and the overlap becomes whatever the three servers happen to do. `runConcurrentScans` launches
+all three in one tick, so the stagger is not in this repository's scheduling — it is in how quickly each
+server begins scanning after being told to, and Plex is the slow one. **Whether that is fixable without
+changing `projection-three-server-concurrency.ts`, which is Phase 1 code that G18 closed on, is not yet
+known, and no change should be made to it until the per-server trigger and finish times have been read on a
+failing run.** §9.6 is why those were not available for this one.
+
+**THE OBSERVED RATE, RECORDED RATHER THAN GLOSSED.** Across the runs that reached cycle 1 this arm has passed
+six times and failed twice. It is not a rare event and it is not a reliable one, and a three-run sequence
+needs it three times.
+
+### 9.6 The instrument built to explain a failure filed the half that explains it as empty
+
+`overlaptimeline.cjs` read `scan.outcomes`. `ConcurrentScanOutcome` declares **`perServer`** — `outcomes` is
+the name of a local variable inside `runConcurrentScans`. So the timeline above came out correct and
+`perServer: []`, and the per-server trigger and finish times, which are exactly the stagger evidence §9.5
+needs, were absent from the one document kept to supply them.
+
+**THE PIN PASSED OVER IT, AND THAT IS THE PART WORTH KEEPING.** Its fixture was written from the same wrong
+reading as the program under test, so it asserted that a rebuilder which understood `outcomes` could read a
+document containing `outcomes`. **A fixture built from the same assumption as its subject asserts nothing.**
+The fixture now takes its field names from the interface itself, imported type-only, and a missing
+`perServer` or `timeline` is refused rather than defaulted — `?? []` had turned *this program is reading a
+shape it does not understand* into *no server reported anything*, which is the did-not-look reading of an
+empty list, pointed at the instrument instead of at the product.
 
 **AND THE GATE'S OWN CONSTRUCTION COST FOUR MORE, ALL CAUGHT OFFLINE BY THE PINS BEFORE ANY HOST SAW THEM:**
 two NUL bytes an em-dash pass left in a shell script; three multi-line `node -e` arguments that made the whole
@@ -609,6 +664,38 @@ provider is serving it, and the observed stretches are of the same order as the 
 question is no longer whether the loop works but whether `allowedOrigins` covers enough of the provider's set
 that a ninety-minute window cannot fall off the end of it. Every origin added has held; the answer is more of
 them, not a different mechanism, and **this tranche will not write that file** for the reason in §11.2.
+
+### 11.7 The arithmetic, measured: a stretch is shorter than a sequence
+
+Every origin observation kept on 2026-08-10, digests only, is the record. Six distinct origins resolved in
+one day, and each was served for a stretch:
+
+| digest | first seen | last seen | stretch |
+|---|---|---|---|
+| `09e2a517af25` | 10:06:46Z | 11:01:06Z | ≥ 55 min |
+| `d4064d307d25` | 11:06:19Z | 11:44:28Z | ≥ 38 min |
+| `3cfc7340a785` | 16:23:39Z | 17:03:27Z | ≥ 40 min |
+| `b16331429dc1` | 17:26:30Z | 18:06:11Z | ≥ 40 min |
+| `768788145621` | 18:31:39Z | 19:23:29Z | ≥ 52 min |
+| `4fea5e1bdeaa` | 19:28:23Z | — | current |
+
+**A STRETCH IS FORTY TO FIFTY-FIVE MINUTES. A THREE-RUN SEQUENCE IS ABOUT NINETY.** So a sequence spans one
+or two rotations *by construction*, and allowlisting the origin that happens to be current is not enough on
+its own — what matters is whether the one that comes NEXT is also covered. Run 17 is the demonstration and it
+is worth stating precisely: `768788145621` had already been served for about forty-five minutes when it was
+appended at 19:14:29Z, the run launched at 19:17Z, and it died at 19:28Z. **The append was correct, prompt
+and authorised, and it bought about ten minutes of runway, because it landed near the end of that origin's
+stretch rather than near the beginning.**
+
+**SEVEN DISTINCT ORIGINS ARE NOW ON RECORD** — the six above plus `4b416e9283c3` from §11.4 — and the
+allowlist holds five of them, one of which (`256c61b89300`) has never been observed resolved. So this is no
+longer "refresh a perishable entry"; it is **cover the provider's set**, and the loop stops being hostage to
+where in the rotation a sequence happens to start.
+
+**NONE OF THIS IS A PRODUCT DEFECT AND NONE OF IT WEAKENS THE ALLOWLIST.** The daemon refuses a resolved URL
+whose origin nobody configured, which is the one control standing between provider-supplied data and its own
+egress, and every one of these runs died exactly where it should have. §11.2 stands: this tranche does not
+write that file.
 
 **WHAT AN OPERATOR IS BEING ASKED FOR NOW, AND IT IS NOT WHAT §11.2 SAID.** §11.2 said "take the origin the
 resolver now returns and add it, and the loop resumes". One-at-a-time is what has now been done twice, and
