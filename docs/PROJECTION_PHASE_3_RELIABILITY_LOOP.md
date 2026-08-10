@@ -424,6 +424,32 @@ direct-playing this object through the production mount, four operator windows d
 mount and inside each server's own container, and a three-way concurrent scan observed with all three in
 flight.
 
+### 11.4 Re-observed on 2026-08-10, and the origin had rotated AGAIN
+
+The fix in §13.7 was frozen and the loop restarted. It stopped in the same place, on the same check, and the
+recheck was run again — same script, same redaction boundary, one boolean out:
+
+```
+observedAtUnixMs=1786348429994        resolverStatus=200        resolved=yes
+allowedOriginCount=2                  resolvedOriginScheme=https
+allowedOriginDigests=256c61b89300     allowedOriginDigests=b16331429dc1
+resolvedOriginDigest=4b416e9283c3     resolvedOriginInAllowlist=NO      verdict=disallowed
+```
+
+**The two allowlisted origins are unchanged. The resolved origin is not the one seen before** —
+`4b416e9283c3` now, `d4064d307d25` at the first observation. The provider has rotated its CDN origin **a
+second time, between two observations of the same blocker**.
+
+That changes what an operator is being asked for, so it is recorded rather than left implicit: adding the
+single origin observed at some moment may not hold, because this provider appears to rotate faster than a
+one-time allowlist edit survives. **The decision is the operator's** — refresh `allowedOrigins` and accept
+that the loop must start promptly afterwards, or widen the entry to whatever stable form the provider
+publishes. This tranche will not write that file either way, for the reason in §11.2.
+
+**Everything that does not need a provider byte was completed while blocked**, and it is in §13.7–§13.9: the
+mechanism proven by reading the dependency, the fix, the host regression for it, and the Phase 2 tranche
+re-run three consecutive times against the frozen image.
+
 ## 12. CONSUMER ATTACHMENT — a contract now, demonstrated on all three real servers
 
 **THE FACT.** A consumer that attaches to the projected path **after** `projectiond` has mounted there

@@ -60,6 +60,7 @@ SOURCE_CONTAINER="projection-stale-mount-source-$$"
 REFUSE_CONTAINER="projection-stale-mount-refuse-$$"
 RECOVERY_CONTAINER="projection-stale-mount-recovery-$$"
 COLD_CONTAINER="projection-stale-mount-cold-$$"
+VERIFIER_CONTAINER="projection-stale-mount-verifier-$$"
 # HOW LONG A CORPSE HAS TO SIT BEFORE IT IS COLD, and the number is not arbitrary. `attrTimeout` in
 # projectiond/internal/fusefs/fusefs.go is 60 seconds, and it is what the daemon puts in `attr_valid` on every
 # attribute reply — including the mount root's. Past it the kernel can no longer answer a `stat` of the root
@@ -138,7 +139,7 @@ register() { npx tsx src/ops/projection-register-cli.ts "$@"; }
 
 cleanup() {
   docker rm -f "$SOURCE_CONTAINER" "$REFUSE_CONTAINER" "$RECOVERY_CONTAINER" "$COLD_CONTAINER" \
-    >/dev/null 2>&1 || true
+    "$VERIFIER_CONTAINER" >/dev/null 2>&1 || true
   docker compose -f "$COMPOSE_FILE" down -v --remove-orphans >/dev/null 2>&1 || true
   docker network rm "$NETWORK" >/dev/null 2>&1 || true
   if [ -n "${WORK:-}" ]; then
@@ -275,6 +276,24 @@ cat > "$WORK/config.json" <<'JSON'
 }
 JSON
 
+# THE VERIFIER ATTACHES BEFORE ANYTHING HAS EVER BEEN MOUNTED HERE, and both halves of that are required.
+#
+# BEFORE, because that is the shipped consumer-attachment contract: a bind taken while the path is a plain
+# directory is a slave of the PARENT's peer group and follows every later mount at that path, while a bind
+# taken over an existing mount belongs to that mount's group alone and is stranded the moment it goes. Phase
+# 3 of this gate removes a mount and puts another one back, so a late binder would see nothing and the gate
+# would be measuring its own instrument.
+#
+# AND PERSISTENT, because a FRESH bind cannot be created at all once the mount point is a cold corpse: Docker
+# touches the source path while setting one up and gets *error while creating mount source path ... file
+# exists*. That is the same root cause one level up — it is Docker's own traversal failing, not the product —
+# so it is kept out of the assertions entirely rather than scored as behaviour. Every check in the cold
+# window goes through `docker exec` into this container, whose bind already exists.
+docker run -d --name "$VERIFIER_CONTAINER" --user 1000:1000 \
+  -v "$WORK/mnt:/media/projection:rslave" "$VERIFY_IMAGE" \
+  sh -c 'while :; do sleep 3600; done' >/dev/null
+echo "  a persistent unprivileged verifier is attached to the mount point BEFORE anything is mounted there"
+
 start_daemon "$SOURCE_CONTAINER"
 echo "  waiting for the daemon to be ready and the namespace to be visible"
 await_readyz "$SOURCE_CONTAINER" || die "the source daemon never became ready"
@@ -390,43 +409,105 @@ step "phase 3 (a COLD corpse) — the same corpse again, past the attribute time
 # The daemon therefore supplies `rootmode` from S_IFDIR — the mount point is a directory by contract — and
 # performs the mount itself. This phase is the regression for that, and it is the same corpse phases 1 and 2
 # used, so what changed between them is only how long it has been dead.
+# THE SHAPE IS A LONG-LIVED DAEMON, NOT A FRESH CONTAINER, AND A FAILED ATTEMPT AT THE OTHER SHAPE IS WHY.
+#
+# The obvious construction — start a new daemon container over a corpse that has gone cold — cannot be built
+# at all: `docker run -v <corpse>:...` fails with *error while creating mount source path ... file exists*,
+# because Docker's own bind setup touches the path and a cold FUSE root refuses it. That is the same root
+# cause one level up, and it makes the fresh-container shape untestable rather than passing or failing.
+#
+# It is also not the production case. The case that matters is a daemon that has ALREADY restarted over a
+# corpse — established its bind while that corpse was still warm, which is what A2 and phase 1 above do — and
+# is then still running when its own connection dies, minutes later, with the corpse underneath now cold.
+# That is exactly the topology Projection Phase 3's A3 injects, and this phase is it, without a provider and
+# without a media server.
+start_daemon "$COLD_CONTAINER" "--auto-remount"
+echo "  a daemon is up over the corpse while it is still warm, with --auto-remount"
+await_readyz "$COLD_CONTAINER" || { docker logs "$COLD_CONTAINER" >&2 2>&1; die "the phase 3 daemon never became ready"; }
+await_namespace || { docker logs "$COLD_CONTAINER" >&2 2>&1; die "the phase 3 mount never became visible"; }
+# THE VERIFIER CAN READ IT NOW, which is what makes the same question after the fault worth asking. Without
+# this, a consumer that could never read would look identical to one that stopped being able to.
+docker exec -u 1000:1000 "$VERIFIER_CONTAINER" test -f "/media/projection/$ENTRY_PATH" >/dev/null 2>&1 \
+  || die "the pre-attached verifier cannot see the namespace even before the fault"
+echo "  it stacked over the warm corpse and is serving, and the pre-attached verifier can read it"
+
 COLD_AGE=$(( $(date +%s) - CORPSE_BORN_AT ))
 if [ "$COLD_AGE" -lt "$COLD_CORPSE_SECONDS" ]; then
-  echo "  the corpse is ${COLD_AGE}s old; waiting until it is ${COLD_CORPSE_SECONDS}s old so its root's"
-  echo "  attribute cache has certainly expired"
+  echo "  the corpse underneath is ${COLD_AGE}s old; waiting until it is ${COLD_CORPSE_SECONDS}s old so its"
+  echo "  root's attribute cache has certainly expired"
   sleep $(( COLD_CORPSE_SECONDS - COLD_AGE ))
 fi
-echo "  the corpse is now $(( $(date +%s) - CORPSE_BORN_AT ))s old"
-corpse_is_stale
+echo "  the corpse underneath is now $(( $(date +%s) - CORPSE_BORN_AT ))s old"
 
-# AND IT IS COLD, PROVEN RATHER THAN ASSUMED. `stat` is the call the mount path makes; while the cache is warm
-# it succeeds over a dead mount, which is exactly the trap. If it still succeeds here the wait was too short
-# and this phase would pass without ever testing the thing it exists for, so a warm root is a gate failure and
-# not a shrug.
-if docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" stat -c '%i' /mnt >/dev/null 2>&1; then
+# THE BASELINES, TAKEN BEFORE THE FAULT, AND WITHOUT THEM THIS PHASE COULD PASS HAVING PROVED NOTHING.
+#
+# `await_readyz` asks whether the daemon is ready NOW, and the daemon IS ready now — it has been serving for
+# a minute. Poll it a moment after the injection and it can answer ready before it has even noticed the
+# death, so the phase would report a recovery that had not happened yet and might never happen. The two log
+# lines are permanent and are counted from here, so a line an earlier phase left behind cannot be read as
+# this one's. This is the same correction the reliability loop's A3 had to make against /readyz.
+DEATHS_BEFORE="$(docker logs "$COLD_CONTAINER" 2>&1 | grep -c 'serve loop died' || true)"
+REMOUNTS_BEFORE="$(docker logs "$COLD_CONTAINER" 2>&1 | grep -c 'remounted; serving generation' || true)"
+echo "  baselines before the fault: ${DEATHS_BEFORE:-0} serve deaths, ${REMOUNTS_BEFORE:-0} remounts"
+
+# THE DEATH: the host removes the daemon's own mount and leaves the cold corpse exposed underneath. This is
+# the same injection the serve-death gate's phase B uses, and the ONLY difference here is what is left behind
+# for the remount to land on — a plain directory there, one of our own cold corpses here.
+umount -l "$WORK/mnt" || die "the host could not lazily detach the daemon's own mount"
+echo "  the host lazily detached the daemon's mount; what is left at the mount point is the cold corpse"
+
+# AND IT REALLY IS COLD, PROVEN FROM THE HOST RATHER THAN THROUGH A CONTAINER. `stat` is the call the mount
+# path makes, and while the cache is warm it succeeds over a dead mount — which is the whole trap. A sibling
+# container cannot be used to ask: Docker cannot bind this path at all in this state.
+if stat -c '%i' "$WORK/mnt" >/dev/null 2>&1; then
   die "the corpse's root still answers stat after ${COLD_CORPSE_SECONDS}s, so its attribute cache has not" \
       "expired and this phase would prove nothing; raise COLD_CORPSE_SECONDS above the daemon's attrTimeout"
 fi
-echo "  a stat of the corpse's root is refused, so the attribute cache really has expired"
+COLD_ROWS="$(grep -c -E " ${WORK}/mnt .* - fuse\.projectiond " /proc/self/mountinfo || true)"
+test "${COLD_ROWS:-0}" -ge 1 \
+  || die "nothing of ours is left at the mount point, so the remount would not be facing a corpse at all"
+echo "  a stat of the corpse's root is refused and mountinfo still names fuse.projectiond: it is cold"
 
-start_daemon "$COLD_CONTAINER"
-echo "  waiting for a daemon to come up over a corpse nothing can be asked about"
-await_readyz "$COLD_CONTAINER" || { docker logs "$COLD_CONTAINER" 2>&1 | tail -30 >&2; die "the daemon never became ready over a COLD corpse: this is the defect that made --auto-remount unable to recover any daemon that had ever restarted over one"; }
-await_namespace || { docker logs "$COLD_CONTAINER" 2>&1 | tail -30 >&2; die "the mount over a COLD corpse never became visible"; }
-COLD_SHA="$(docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" \
-  sh -c "sha256sum '/mnt/$ENTRY_PATH'" | awk '{print $1}')"
-test "$COLD_SHA" = "$STALE_SHA" || die "the mount over the cold corpse serves different bytes than the corpse carried"
-echo "  the mount over a cold corpse is live and serves the digest the corpse carried"
+echo "  waiting for the daemon to REPORT the death, rather than for it to look ready"
+COLD_DIED=0
+n=0
+while [ "$n" -lt 240 ]; do
+  if [ "$(docker logs "$COLD_CONTAINER" 2>&1 | grep -c 'serve loop died' || true)" -gt "${DEATHS_BEFORE:-0}" ]
+  then COLD_DIED=1; break; fi
+  n=$((n + 1)); sleep 0.5
+done
+test "$COLD_DIED" = "1" \
+  || { docker logs "$COLD_CONTAINER" >&2 2>&1; die "the daemon never reported a serve-loop death, so the injection did not sever anything and nothing below would be a recovery"; }
+echo "  the daemon reported a serve-loop death"
 
-# AND IT STACKED RATHER THAN CLEARED. The anchor surviving is the other half of the fix: a daemon that got
-# itself mounted by removing what was under it would satisfy every assertion above and still be the defect
-# that recovers for the daemon and for nobody else.
-docker logs "$COLD_CONTAINER" 2>&1 | grep -q "stale projectiond mount detected at /mnt/projection" \
-  || die "the daemon did not name the cold corpse in its log"
-COLD_MOUNTS="$(docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" \
-  sh -c "grep -c ' /mnt ' /proc/self/mountinfo || true")"
-test "${COLD_MOUNTS:-0}" -ge 1 || die "nothing is mounted at the mount point after the cold-corpse recovery"
-echo "  the daemon named the corpse and stacked over it; the mount point still carries a mount"
+echo "  waiting for --auto-remount to recover over a corpse nothing can be asked about"
+COLD_REMOUNTED=0
+n=0
+while [ "$n" -lt 240 ]; do
+  if [ "$(docker logs "$COLD_CONTAINER" 2>&1 | grep -c 'remounted; serving generation' || true)" \
+       -gt "${REMOUNTS_BEFORE:-0}" ]; then COLD_REMOUNTED=1; break; fi
+  n=$((n + 1)); sleep 0.5
+done
+test "$COLD_REMOUNTED" = "1" \
+  || { docker logs "$COLD_CONTAINER" >&2 2>&1; die "the daemon never reported a remount after a serve death over a COLD corpse: this is the defect that cost --auto-remount every daemon that had ever restarted over one"; }
+echo "  the daemon reported a remount AFTER the death, counted from the baseline rather than from zero"
+await_readyz "$COLD_CONTAINER" || { docker logs "$COLD_CONTAINER" >&2 2>&1; die "the daemon reported a remount but never answered ready again"; }
+# THE CONSUMER THAT WAS ALREADY THERE IS THE ONE ASKED, which is the assertion Phase 2 never had. A daemon
+# can report a successful remount over a namespace no consumer can see — that is this tranche's own headline
+# defect — and the only thing that tells the two apart is a consumer that was attached before the fault.
+COLD_VISIBLE=0
+n=0
+while [ "$n" -lt 180 ]; do
+  if docker exec -u 1000:1000 "$VERIFIER_CONTAINER" \
+       test -f "/media/projection/$ENTRY_PATH" >/dev/null 2>&1; then COLD_VISIBLE=1; break; fi
+  n=$((n + 1)); sleep 0.5
+done
+test "$COLD_VISIBLE" = "1" \
+  || { docker logs "$COLD_CONTAINER" >&2 2>&1; die "the namespace never came back for the consumer that was attached before the fault, after a serve death over a COLD corpse"; }
+COLD_SHA="$(docker exec -u 1000:1000 "$VERIFIER_CONTAINER" \
+  sh -c "sha256sum '/media/projection/$ENTRY_PATH'" | awk '{print $1}')"
+test "$COLD_SHA" = "$STALE_SHA" || die "the remount over the cold corpse serves different bytes"
+echo "  the consumer attached before the fault reads the same digest again through its own bind"
 
 docker stop "$COLD_CONTAINER" >/dev/null
 COLD_EXIT="$(docker inspect -f '{{.State.ExitCode}}' "$COLD_CONTAINER")"

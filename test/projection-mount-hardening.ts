@@ -719,21 +719,59 @@ test('THE STALE-MOUNT GATE FACES A COLD CORPSE, which is the only state the defe
   assert(gate.includes('CORPSE_BORN_AT="$(date +%s)"'),
     'the corpse has no birth time, so its age at the cold phase is a guess');
 
-  // AND THE COLDNESS IS PROVEN BEFORE THE DAEMON IS STARTED, not assumed from the clock. A stat that still
-  // succeeds means the wait was too short, and this phase would then pass without testing anything.
-  const coldCheckAt = gate.indexOf("stat -c '%i' /mnt");
-  const coldStartAt = gate.indexOf('start_daemon "$COLD_CONTAINER"');
+  // AND THE COLDNESS IS PROVEN BEFORE THE RECOVERY IS WAITED FOR, not assumed from the clock. A stat that
+  // still succeeds means the wait was too short, and the phase would then pass without testing anything.
+  const coldCheckAt = gate.indexOf('stat -c \'%i\' "$WORK/mnt"');
+  const coldWaitAt = gate.indexOf('waiting for --auto-remount to recover over a corpse');
   assert(coldCheckAt >= 0, 'nothing proves the corpse root is actually refusing stat');
-  assert(coldStartAt >= 0, 'the cold-corpse phase does not start a daemon');
-  assert(coldCheckAt < coldStartAt,
-    'the daemon is started before the corpse is shown to be cold, so a warm run would pass unnoticed');
+  assert(coldWaitAt >= 0, 'the cold-corpse phase no longer waits for a recovery');
+  assert(coldCheckAt < coldWaitAt,
+    'the recovery is awaited before the corpse is shown to be cold, so a warm run would pass unnoticed');
 
-  // ...AND THE ANCHOR SURVIVING IS ASSERTED TOO. A daemon that mounted by removing what was under it would
-  // satisfy every other assertion in the phase and still be the defect --auto-remount was repaired for.
-  assert(gate.includes('nothing is mounted at the mount point after the cold-corpse recovery'),
-    'the cold-corpse phase does not check that the mount point still carries a mount');
-  assert(/docker rm -f "\$SOURCE_CONTAINER" "\$REFUSE_CONTAINER" "\$RECOVERY_CONTAINER" "\$COLD_CONTAINER"/
-    .test(gate), 'the cold-corpse container is not in the cleanup, so a failure strands it');
+  // THE COLDNESS CHECK RUNS ON THE HOST, and that is a finding rather than a style choice: once the mount
+  // point is a cold corpse, Docker cannot create a bind of it at all — it touches the source path while
+  // setting one up and fails with "error while creating mount source path ... file exists". Asking through a
+  // fresh container would report Docker's own traversal failure as a product verdict.
+  assert(!/docker run[^\n]*\$WORK\/mnt[^\n]*\n?[^\n]*stat -c/.test(gate),
+    'the coldness check goes through a fresh container bind, which cannot be created in that state');
+
+  // THE VERIFIER IS ATTACHED BEFORE ANYTHING IS EVER MOUNTED, which is the shipped consumer-attachment
+  // contract and the only way this phase measures the product rather than its own instrument. A late binder
+  // belongs to the peer group of the mount it attached over, and is stranded the moment that mount goes.
+  const verifierAt = gate.indexOf(`docker run -d --name "$VERIFIER_CONTAINER"`);
+  const firstDaemonAt = gate.indexOf('start_daemon "$SOURCE_CONTAINER"');
+  assert(verifierAt >= 0, 'there is no persistent pre-attached verifier');
+  assert(firstDaemonAt >= 0, 'the first daemon is no longer where this test thinks it is');
+  assert(verifierAt < firstDaemonAt,
+    'the verifier attaches after the first mount, so it is a late binder and proves nothing about recovery');
+  assert(/-v "\$WORK\/mnt:\/media\/projection:rslave"/.test(gate),
+    'the verifier does not bind the mountpoint itself with rslave, which is the contract it stands for');
+
+  // ...AND IT IS THE VERIFIER THAT IS ASKED AFTER THE FAULT. A daemon can report a successful remount over a
+  // namespace no consumer can see: that is this tranche's own headline defect, and a fresh container created
+  // afterwards cannot tell the two apart because it joins whatever group exists by then.
+  assert(gate.includes('docker exec -u 1000:1000 "$VERIFIER_CONTAINER"'),
+    'the post-recovery read does not go through the consumer that was attached before the fault');
+  assert(gate.includes('the consumer attached before the fault reads the same digest again'),
+    'the phase does not compare the post-recovery digest against what the corpse carried');
+
+  // THE RECOVERY IS COUNTED FROM A BASELINE, NOT OBSERVED AS A STATE. `await_readyz` asks whether the daemon
+  // is ready NOW, and it is — it has been serving for a minute. Polled a moment after the injection it can
+  // answer ready before it has even noticed the death, so the phase would report a recovery that had not
+  // happened. Both permanent log lines are counted from before the fault, and both must increment.
+  assert(/DEATHS_BEFORE="\$\(docker logs "\$COLD_CONTAINER" 2>&1 \| grep -c 'serve loop died'/.test(gate),
+    'the serve death is not counted from a baseline taken before the fault');
+  assert(/REMOUNTS_BEFORE="\$\(docker logs "\$COLD_CONTAINER" 2>&1 \| grep -c 'remounted; serving generation'/
+    .test(gate), 'the remount is not counted from a baseline taken before the fault');
+  const baselineAt = gate.indexOf('DEATHS_BEFORE="$(docker logs');
+  const injectionAt = gate.indexOf('umount -l "$WORK/mnt"');
+  assert(baselineAt >= 0 && injectionAt >= 0, 'the phase no longer has the shape this test reads');
+  assert(baselineAt < injectionAt,
+    'the baselines are taken after the injection, so the lines they count may be this fault’s own');
+  assert(gate.includes('-gt "${DEATHS_BEFORE:-0}"') && gate.includes('-gt "${REMOUNTS_BEFORE:-0}"'),
+    'the waits do not require the counts to INCREMENT, so an earlier phase’s line would satisfy them');
+  assert(/docker rm -f "\$SOURCE_CONTAINER" "\$REFUSE_CONTAINER" "\$RECOVERY_CONTAINER" "\$COLD_CONTAINER" \\\n\s*"\$VERIFIER_CONTAINER"/
+    .test(gate), 'the phase 3 containers are not all in the cleanup, so a failure strands one');
 });
 
 // ---------------------------------------------------------------------------------------------------------
