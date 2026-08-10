@@ -128,9 +128,13 @@ cleanup() {
   done
   docker rm -f "$MOUNT_CONTAINER" >/dev/null 2>&1 || true
   docker compose -f "$COMPOSE_FILE" down -v --remove-orphans >/dev/null 2>&1 || true
+  # THE RECORDER IS REMOVED LAST OF THIS SET AND ONLY HERE, in the EXIT trap, because every verdict this run
+  # will ever write has already been written by the time the trap runs. Removing it any earlier is the defect
+  # this line exists because of: the run that deleted its own recorder and then tried to record four more.
   rm -f "$GATE_ROOT/host-containers-before-$$.txt" "$GATE_ROOT/host-networks-before-$$.txt" \
         "$GATE_ROOT/host-volumes-before-$$.txt" "$GATE_ROOT/host-containers-after-$$.txt" \
-        "$GATE_ROOT/host-networks-after-$$.txt" "$GATE_ROOT/host-volumes-after-$$.txt" 2>/dev/null || true
+        "$GATE_ROOT/host-networks-after-$$.txt" "$GATE_ROOT/host-volumes-after-$$.txt" \
+        "$GATE_ROOT/record-$$.cjs" 2>/dev/null || true
   if [ "$CLEANED" -eq 0 ] && [ -n "${WORK:-}" ]; then
     # THE VERDICT LOG NEEDS NO PRESERVING BECAUSE IT WAS NEVER IN THE RUN DIRECTORY. What a failing run
     # leaves behind is exactly what it had recorded when it died — gate ids, gate-chosen names, offsets,
@@ -260,7 +264,19 @@ createReadStream(process.argv[2])
   });
 SHA
 
-cat > "$WORK/out/record.cjs" <<'RECORD'
+# THE RECORDER LIVES OUTSIDE THE RUN DIRECTORY, FOR THE SAME REASON THE VERDICT LOG DOES — and it took a run
+# that passed everything to notice the second half of that lesson.
+#
+# §9's fourth construction defect was a verdict LOG written into the directory the cleanup contract deletes.
+# It was moved to `$GATE_ROOT/evidence/`; the PROGRAM that writes it was left behind. The last four verdicts
+# of a run are `RL-host-*-set-unchanged`, `RL-own-mountpoints-removed` and `RL-own-run-directory-removed`,
+# and every one of them is ABOUT the cleanup, so every one of them runs after it. On the first run that ever
+# reached that point with everything else green, all of them died `MODULE_NOT_FOUND` on a recorder the run
+# had just deleted, and a complete run failed on its own tidying-up.
+#
+# It goes beside the other per-run scratch this gate already keeps in the gate root — the six `host-*-$$.txt`
+# set captures — and the EXIT trap removes it with them, so the gate root is still left empty.
+cat > "$GATE_ROOT/record-$$.cjs" <<'RECORD'
 // ONE VERDICT, APPENDED AS ONE JSON LINE.
 //
 // WHY A LOCAL PROGRAM RATHER THAN THE CLI. A run records roughly two hundred and fifty verdicts, and
@@ -1540,7 +1556,7 @@ restart_daemon() {
   start_resolver
 }
 
-record() { node "$REL/out/record.cjs" "$RESULTS_REL" "$@"; }
+record() { node "$REL_GATE_ROOT/record-$$.cjs" "$RESULTS_REL" "$@"; }
 
 # ONE READ OF THE REAL ENTRY'S APPROVED WINDOWS, TIMED, WITH A TWO-TOKEN VERDICT.
 #

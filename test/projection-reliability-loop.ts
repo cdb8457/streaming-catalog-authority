@@ -1534,6 +1534,34 @@ test('the overlap timeline outlives the failure that makes it worth reading, and
   assert(!run.stdout.includes('cdn.example.invalid'), 'the summary line printed a failure message');
 });
 
+test('the recorder outlives the cleanup, because four verdicts are ABOUT the cleanup', () => {
+  // §9's fourth construction defect was a verdict LOG written into the directory the cleanup contract
+  // deletes. It was moved to the evidence directory; the PROGRAM that writes it was left behind, and that
+  // half went unseen until a run passed everything else. `RL-host-*-set-unchanged`,
+  // `RL-own-mountpoints-removed` and `RL-own-run-directory-removed` are all ABOUT the cleanup, so they all
+  // run after it -- and every one of them died `MODULE_NOT_FOUND` on a recorder the run had just deleted.
+  const gate = read(GATE);
+  const executable = shellCodeOf(gate);
+  assert(!/cat > "\$WORK\/out\/record\.cjs"/.test(executable),
+    'the recorder is written into the directory the cleanup contract deletes');
+  assert(/cat > "\$GATE_ROOT\/record-\$\$\.cjs"/.test(executable),
+    'the recorder is not written to a path that survives the run directory');
+  assert(/^record\(\) \{ node "\$REL_GATE_ROOT\/record-\$\$\.cjs"/m.test(executable),
+    'the recorder is not invoked from the path that survives');
+  // AND THE ORDERING HAZARD IS REAL, which is what makes this pin about behaviour rather than about spelling:
+  // verdicts are still recorded after the run directory is removed.
+  const afterCleanup = executable.slice(executable.indexOf('projection_gate_cleanup_run "$GATE_ROOT" "$WORK"'
+    + ' "$VERIFY_IMAGE" || true'));
+  assert(afterCleanup.includes('record RL-own-run-directory-removed'),
+    'nothing is recorded after the cleanup, so this pin no longer guards anything');
+  // ...AND THE GATE ROOT IS STILL LEFT EMPTY. The recorder joins the six host-set captures the EXIT trap
+  // already removes, and it is removed there rather than earlier because the trap is the only point at which
+  // every verdict this run will ever write has been written.
+  const trap = executable.slice(executable.indexOf('cleanup() {'), executable.indexOf('trap cleanup EXIT'));
+  assert(/rm -f[\s\S]{0,400}\$GATE_ROOT\/record-\$\$\.cjs/.test(trap),
+    'the EXIT trap does not remove the recorder, so the gate root is not left empty');
+});
+
 test('the CLI publishes the thresholds as shell assignments the gate can evaluate', () => {
   const run = spawnSync(process.execPath,
     ['--import', 'tsx', join(repoRoot, 'src/ops/projection-reliability-loop-cli.ts'), 'budgets', '--sh'],
