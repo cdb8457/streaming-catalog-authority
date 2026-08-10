@@ -873,19 +873,36 @@ test('needles.cjs refuses a needle too short to be decisive, and never prints on
   const credential = join(dir, 'credential');
   const secret = join(dir, 'secret');
   const out = join(dir, 'needles.txt');
+  const manifestOut = join(dir, 'needles-manifest.txt');
   writeFileSync(credential, 'a-long-enough-provider-key\n');
   writeFileSync(secret, 'a-long-enough-gate-secret\n');
 
   writeFileSync(objects, JSON.stringify([{ ref: 'torbox:torrent:1:2', label: 'LONGLABEL' }]));
-  const good = runNode(source, [objects, credential, secret, out]);
+  const good = runNode(source, [objects, credential, secret, out, manifestOut]);
   assertEq(good.status, 0, `a usable needle list was refused: ${good.stderr}`);
   const body = readFileSync(out, 'utf8');
   assertEq(body.endsWith('\n'), true,
     'the needle list does not end in a newline, so every reader drops its last needle');
   assertEq(body.trim().split('\n').length, 4, 'the list does not hold both refs and both secrets');
 
+  // AND THE MANIFEST'S LIST IS THE SAME ONE MINUS EXACTLY THE REFERENCES, PROVED BY RUNNING IT. The manifest
+  // carries `locator.objectRef` by contract, so searching it for the reference asks a document not to hold
+  // its own required field; everything else it must still be searched for, and this is where that is checked
+  // rather than described.
+  const manifestBody = readFileSync(manifestOut, 'utf8');
+  assertEq(manifestBody.endsWith('\n'), true, 'the manifest needle list drops its last needle');
+  const manifestNeedles = manifestBody.trim().split('\n');
+  assertEq(manifestNeedles.length, 3, 'the manifest list is not the full list minus exactly the reference');
+  assert(!manifestNeedles.includes('torbox:torrent:1:2'),
+    'the manifest list still holds the reference, so the scan still cannot pass');
+  assert(manifestNeedles.includes('LONGLABEL'),
+    'the manifest is no longer searched for the operator label, which must never reach it');
+  assert(manifestNeedles.includes('a-long-enough-provider-key')
+    && manifestNeedles.includes('a-long-enough-gate-secret'),
+    'the manifest is no longer searched for both secrets, which is not what the subtraction was for');
+
   writeFileSync(objects, JSON.stringify([{ ref: 'torbox:torrent:1:2', label: 'ab' }]));
-  const short = runNode(source, [objects, credential, secret, out]);
+  const short = runNode(source, [objects, credential, secret, out, manifestOut]);
   assertEq(short.status, 1, 'a two-byte needle was searched for anyway');
   assert(!short.stderr.includes('ab"') && !/needle.*\bab\b/.test(short.stderr),
     `the refusal printed the needle it refused: ${short.stderr}`);
@@ -1381,6 +1398,90 @@ test('A6 tells the restarted Plex which library it had, and asserts it still has
     'A6 does not assert that the restarted Plex still names its section');
   assert(ARM_DETAIL_GATE_IDS.A6.includes('RL-F-A6-plex-section-survived'),
     'the section-survived check is not required, so deleting it would fail nothing');
+});
+
+test('the manifest keeps every needle but the one it carries by contract, and pays for that one', () => {
+  // THE FIRST RUN EVER TO REACH THE LEAK SCAN FAILED IT, WITH ALL SIX ARMS AND ALL 18 PHASES GREEN.
+  // `LEAK: needle 1 of 4` is the stable reference, and `HttpRangeLocator` is `{ endpointId, objectRef }` --
+  // the published manifest is the control-plane document naming which object the daemon must resolve, so it
+  // carries the reference by contract and a manifest without it would name nothing. Searching the manifest
+  // for it asks a document not to contain its own required field. Phase 1's own real-provider gate scans the
+  // manifest for the two SECRETS only, for the same reason.
+  const gate = read(GATE);
+  const executable = shellCodeOf(gate);
+  // THE SUBTRACTION IS EXACTLY THE REFERENCES AND IT HAPPENS IN EXACTLY ONE PLACE.
+  assert(/const manifestNeedles = needles\.filter\(\(needle\) => !refs\.includes\(needle\)\)/.test(gate),
+    'the manifest needle list is not the full list minus exactly the references');
+  assert(/leak_scan RL-leak-manifest[\s\S]{0,160}leak-needles-manifest\.txt/.test(executable),
+    'the manifest scan does not use the manifest needle list');
+  // ...AND NOTHING ELSE LOSES A NEEDLE. The probe cache, all three servers' library state and the preserved
+  // evidence must still be searched for the reference, or the subtraction has leaked out of the manifest.
+  for (const id of ['RL-leak-probe-cache', 'RL-leak-evidence']) {
+    const call = new RegExp(`leak_scan ${id}[^\\n]*\\n?[^\\n]*`).exec(executable)?.[0] ?? '';
+    assert(call.length > 0, `${id} no longer runs a leak scan`);
+    assert(!call.includes('leak-needles-manifest'),
+      `${id} was given the manifest's reduced needle list, so it no longer searches for the reference`);
+  }
+  assert(/sh \/out\/leakcheck\.sh "a media server's library state" \/out\/leak-needles\.txt/.test(executable),
+    'the media servers are no longer searched with the full needle list');
+  // AND THE EXCEPTION IS PAID FOR BY SOMETHING STRICTLY STRONGER, which is required rather than optional.
+  assert(executable.includes('refplacement.cjs'), 'nothing asserts where the reference is allowed to be');
+  assert(executable.includes('RL-leak-manifest-ref-placement'),
+    'the reference placement is not recorded as a verdict');
+  assert(REQUIRED_RUN_GATE_IDS.includes('RL-leak-manifest-ref-placement'),
+    'the check that pays for the subtraction is not required, so deleting it would fail nothing');
+});
+
+test('refplacement.cjs is EXECUTED, and it separates the contracted reference from a leaked one', () => {
+  // The whole value of the subtraction above rests on this program telling two things apart that a grep
+  // cannot: the reference at `locator.objectRef`, which is the manifest doing its job, and the reference
+  // anywhere else, which is the leak the old scan could not distinguish because it failed on both.
+  const source = embedded('REFPLACE');
+  const ref = 'torbox:torrent:abcdef123456';
+  const setup = (files: Record<string, string>): { objects: string; dir: string } => {
+    const root = mkdtempSync(join(tmpdir(), 'rl-pin-'));
+    const objects = join(root, 'objects.json');
+    writeFileSync(objects, JSON.stringify([{ ref, label: 'LONGLABEL' }]));
+    const dir = join(root, 'manifest');
+    mkdirSync(dir, { recursive: true });
+    for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, name), body);
+    return { objects, dir };
+  };
+
+  // THE LEGITIMATE SHAPE PASSES, or the fix has simply moved the unpassable check somewhere else.
+  const ok = setup({
+    'manifest.json': JSON.stringify({
+      entries: [{ path: 'Movies/Chosen Name (2026)/Chosen Name (2026).mkv',
+        sources: [{ sourceId: 's1', kind: 'http-range', locator: { endpointId: 'e1', objectRef: ref } }] }],
+    }),
+  });
+  const good = runNode(source, [ok.objects, ok.dir]);
+  assertEq(good.status, 0, `the contracted placement was refused: ${good.stderr}`);
+  assert(!good.stdout.includes(ref) && !good.stderr.includes(ref),
+    'the placement checker printed the reference it was comparing');
+
+  // THE REFERENCE IN AN ENTRY PATH IS A LEAK, and it is the one that reaches three media-server databases.
+  const leaked = setup({
+    'manifest.json': JSON.stringify({
+      entries: [{ path: `Movies/${ref}/file.mkv`,
+        sources: [{ sourceId: 's1', kind: 'http-range', locator: { endpointId: 'e1', objectRef: ref } }] }],
+    }),
+  });
+  const bad = runNode(source, [leaked.objects, leaked.dir]);
+  assertEq(bad.status, 1, 'the reference in an entry path was accounted for as a locator value');
+  assert(!bad.stdout.includes(ref) && !bad.stderr.includes(ref),
+    'the refusal printed the reference it refused');
+
+  // A FILE THAT DOES NOT PARSE IS NOT EXCUSED. Its occurrences cannot be accounted for, so it must fail
+  // rather than be shrugged past -- the "did not look" reading of a zero, which this repository keeps finding.
+  const unparseable = setup({ 'manifest.json': `{"entries":[ truncated ${ref}` });
+  assertEq(runNode(source, [unparseable.objects, unparseable.dir]).status, 1,
+    'an unparseable manifest file holding the reference was passed over');
+
+  // AND AN EMPTY DIRECTORY CANNOT AGREE WITH ITSELF AT ZERO.
+  const empty = setup({});
+  assertEq(runNode(source, [empty.objects, empty.dir]).status, 2,
+    'an empty manifest directory reported a clean result');
 });
 
 test('the CLI publishes the thresholds as shell assignments the gate can evaluate', () => {

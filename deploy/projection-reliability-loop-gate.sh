@@ -705,10 +705,12 @@ cat > "$WORK/out/needles.cjs" <<'NEEDLES'
 // record: a list whose last needle every reader silently drops would agree with itself at zero hits.
 const { writeFileSync } = require('node:fs');
 const { readFileSync } = require('node:fs');
-const [, , objectsPath, credentialPath, secretPath, out] = process.argv;
+const [, , objectsPath, credentialPath, secretPath, out, manifestOut] = process.argv;
 const objects = JSON.parse(readFileSync(objectsPath, 'utf8'));
+const refs = [];
 const needles = [];
 for (const object of objects) {
+  refs.push(String(object.ref));
   needles.push(String(object.ref));
   needles.push(String(object.label));
 }
@@ -721,8 +723,107 @@ if (short.length > 0) {
   process.exit(1);
 }
 writeFileSync(out, `${needles.join('\n')}\n`, { mode: 0o644 });
+// THE MANIFEST'S LIST IS THE SAME ONE MINUS THE STABLE REFERENCES, AND THE MANIFEST IS THE ONLY PLACE THAT
+// SUBTRACTION IS MADE. `HttpRangeLocator` is `{ endpointId, objectRef }` (`src/core/projection/manifest-v1.ts`),
+// so the published manifest carries the reference BY CONTRACT — it is the control-plane document whose job is
+// to name which object the daemon should resolve, and a manifest without it would name nothing. Searching the
+// manifest for it is asking a document not to contain its own required field: a check that fails every
+// correct run, which is what it did the first time the loop ever reached it.
+//
+// THE SUBTRACTION IS PAID FOR IMMEDIATELY, and by something stronger than what it removes. `refplacement.cjs`
+// requires every occurrence of the reference in the manifest to BE a `locator.objectRef` value, so the
+// reference in its contracted field passes and the reference smeared into a path, a label, a note, an id or
+// a byte-identity fails. "It is in the manifest" was fatal and unpassable; "it is anywhere in the manifest
+// except its own field" is fatal and passable, and it is the claim §6 actually wants.
+//
+// NOTHING ELSE LOSES A NEEDLE. The probe cache, all three media servers' library state and the preserved
+// evidence are still searched for the reference, and the manifest is still searched for the operator's label
+// and for both secrets.
+const manifestNeedles = needles.filter((needle) => !refs.includes(needle));
+if (manifestNeedles.length !== needles.length - refs.length) {
+  console.error('needles: the manifest list is not the full list minus exactly the references');
+  process.exit(1);
+}
+if (manifestNeedles.length < 1) {
+  console.error('needles: the manifest list is empty, so scanning it would prove nothing');
+  process.exit(1);
+}
+writeFileSync(manifestOut, `${manifestNeedles.join('\n')}\n`, { mode: 0o644 });
 console.log(`  ${needles.length} needle(s): every reference, every label and both secrets`);
+console.log(`  ${manifestNeedles.length} of them are searched for in the manifest; the references are `
+  + 'asserted into their contracted field instead');
 NEEDLES
+
+cat > "$WORK/out/refplacement.cjs" <<'REFPLACE'
+// WHERE THE STABLE REFERENCE IS ALLOWED TO BE, AND IT IS EXACTLY ONE FIELD.
+//
+// `HttpRangeLocator` is `{ endpointId, objectRef }`. The published manifest is the control-plane document
+// that names which object the daemon must resolve, so it carries the reference BY CONTRACT and a manifest
+// without it would name nothing. What must not happen is the reference reaching any other part of the
+// document -- an entry path, an item id, a title, a note, a byte identity -- because those travel onward into
+// three media servers' databases and into the preserved evidence, and section 2 keeps the operator's own
+// label out of a path component for precisely that reason.
+//
+// SO THIS COUNTS RATHER THAN GREPS. Every occurrence of the reference in every manifest file is counted, the
+// occurrences that ARE `locator.objectRef` values are counted separately, and the difference must be zero.
+// A grep cannot make that distinction: it failed on the legitimate occurrence and an illegitimate one alike,
+// which is what made the old check unpassable on every correct run.
+//
+// NOTHING IT LEARNS IS PRINTED. Counts only. The reference is read into memory, compared, and never emitted.
+const { readFileSync, readdirSync, statSync } = require('node:fs');
+const { join } = require('node:path');
+const [, , objectsPath, manifestDir] = process.argv;
+const refs = JSON.parse(readFileSync(objectsPath, 'utf8')).map((object) => String(object.ref));
+const walk = (dir) => readdirSync(dir).flatMap((name) => {
+  const path = join(dir, name);
+  return statSync(path).isDirectory() ? walk(path) : [path];
+});
+const files = walk(manifestDir);
+// A SEARCH OVER NO FILES AGREES WITH ITSELF AT ZERO, which is the failure shape this gate keeps finding.
+if (files.length < 1) {
+  console.error('  refplacement: the manifest directory holds no files, so a clean result proves nothing');
+  process.exit(2);
+}
+const occurrences = (haystack, needle) => {
+  let count = 0;
+  for (let at = haystack.indexOf(needle); at >= 0; at = haystack.indexOf(needle, at + 1)) count += 1;
+  return count;
+};
+const locatorRefs = (node, out) => {
+  if (Array.isArray(node)) { for (const item of node) locatorRefs(item, out); return; }
+  if (node === null || typeof node !== 'object') return;
+  for (const [key, value] of Object.entries(node)) {
+    if (key === 'locator' && value !== null && typeof value === 'object'
+      && typeof value.objectRef === 'string') out.push(value.objectRef);
+    locatorRefs(value, out);
+  }
+};
+let total = 0;
+let inLocator = 0;
+let parsed = 0;
+for (const file of files) {
+  const text = readFileSync(file, 'utf8');
+  for (const ref of refs) total += occurrences(text, ref);
+  try {
+    const document = JSON.parse(text);
+    parsed += 1;
+    const found = [];
+    locatorRefs(document, found);
+    for (const value of found) if (refs.includes(value)) inLocator += 1;
+  } catch {
+    // A FILE THAT DOES NOT PARSE IS NOT EXCUSED. Its occurrences are still counted into `total` above and
+    // none of them can be accounted for, so an unparseable manifest file holding the reference FAILS here.
+  }
+}
+const unaccounted = total - inLocator;
+console.log('  manifest files ' + files.length + ', parsed ' + parsed + '; reference occurrences ' + total
+  + ', of which ' + inLocator + ' are locator.objectRef values, leaving ' + unaccounted);
+if (unaccounted !== 0) {
+  console.error('  refplacement: the stable reference appears outside locator.objectRef, or inside a file '
+    + 'that does not parse; the value itself is deliberately not printed');
+  process.exit(1);
+}
+REFPLACE
 
 cat > "$WORK/out/fuse-abort.sh" <<'FUSEABORT'
 # TAKE THE MOUNT OUT FROM UNDER A LIVING DAEMON, WITH CONSUMERS HOLDING IT.
@@ -2437,21 +2538,37 @@ step "NO SECRET, REFERENCE OR LABEL REACHED ANYTHING THIS RUN WROTE"
 # "nowhere". Mode 0644 for the reason §6.0 of the acceptance plan records — a file the consuming container's
 # uid cannot read is a defect Docker Desktop cannot show you.
 node "$REL/out/needles.cjs" "$OBJECTS_FILE" "$REL/inputs/torbox-credential" "$REL/inputs/gate-secret" \
-  "$REL/out/leak-needles.txt" \
+  "$REL/out/leak-needles.txt" "$REL/out/leak-needles-manifest.txt" \
   || die "the needle list could not be built, so no leak search could be decisive"
-chmod 644 "$WORK/out/leak-needles.txt"
+chmod 644 "$WORK/out/leak-needles.txt" "$WORK/out/leak-needles-manifest.txt"
 
 leak_scan() {
-  local id="$1" label="$2" dir="$3"
+  local id="$1" label="$2" dir="$3" list="${4:-/out/leak-needles.txt}"
   if docker run --rm -v "$dir:/scan:ro" -v "$WORK/out:/out:ro" "$VERIFY_IMAGE" \
-       sh /out/leakcheck.sh "$label" /out/leak-needles.txt; then
+       sh /out/leakcheck.sh "$label" "$list"; then
     record "$id" bool 1 "" "$label"
   else
     record "$id" bool 0 "" "$label" || true
     die "$label holds a secret, a reference or the operator's label"
   fi
 }
-leak_scan RL-leak-manifest    "the published manifest directory" "$WORK/manifest"
+# THE MANIFEST IS SEARCHED FOR EVERYTHING EXCEPT THE ONE FIELD IT EXISTS TO CARRY, and the exception is paid
+# for by the assertion below rather than waived. See `needles.cjs` for why, and §6 for the same shape already
+# recorded about the CDN origin in the daemon's configuration file.
+leak_scan RL-leak-manifest    "the published manifest directory" "$WORK/manifest" \
+  /out/leak-needles-manifest.txt
+# ...AND THE REFERENCE IS ASSERTED INTO ITS CONTRACTED FIELD. This is the stronger half of the subtraction:
+# the reference at `locator.objectRef` is the manifest doing its job, and the reference anywhere else in the
+# document — a path, an entry id, a label, a note, a byte identity — is a leak that the old scan could not
+# have distinguished from the legitimate one, because it failed on both.
+if node "$REL/out/refplacement.cjs" "$OBJECTS_FILE" "$REL/manifest"; then
+  record RL-leak-manifest-ref-placement bool 1 "" \
+    "every occurrence of the stable reference in the manifest IS a locator.objectRef value"
+else
+  record RL-leak-manifest-ref-placement bool 0 "" \
+    "the stable reference appears in the manifest somewhere other than its own locator field" || true
+  die "the stable reference appears in the published manifest outside locator.objectRef"
+fi
 leak_scan RL-leak-probe-cache "the daemon probe cache"           "$WORK/cache"
 for scan_dir in jf-config plex-config emby-config; do
   docker run --rm -v "$WORK/$scan_dir:/scan:ro" -v "$WORK/out:/out:ro" "$VERIFY_IMAGE" \

@@ -317,6 +317,12 @@ export const REQUIRED_RUN_GATE_IDS: readonly string[] = Object.freeze([
   'RL-resolver-loopback-only',
   'RL-overlap-three-way-observed',
   'RL-leak-manifest',
+  // THE MANIFEST'S REFERENCE CHECK IS REQUIRED, because it is what pays for the one needle the manifest scan
+  // above does not carry. `HttpRangeLocator` is `{ endpointId, objectRef }`, so the published manifest holds
+  // the stable reference by contract and searching it for one asks a document not to contain its own
+  // required field — a check that failed the first correct run that ever reached it. The subtraction is only
+  // honest while this id is present and passing, so it is required rather than optional.
+  'RL-leak-manifest-ref-placement',
   'RL-leak-probe-cache',
   'RL-leak-library-state',
   'RL-leak-evidence',
