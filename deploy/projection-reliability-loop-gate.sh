@@ -825,6 +825,54 @@ if (unaccounted !== 0) {
 }
 REFPLACE
 
+cat > "$WORK/out/overlaptimeline.cjs" <<'OVERLAP'
+// THE OVERLAP TIMELINE, KEPT WHEN THE OVERLAP ASSERTION FAILS -- and it is the A3 lesson applied to the one
+// other place in this gate that dies holding its own diagnosis.
+//
+// The three-way scan observation runs with NO BARRIER, because a real provider has no control surface to
+// rendezvous three scanners at. So whether all three are ever caught in flight on one tick is a property of
+// how the three servers happen to be paced by the provider that day, and when it fails the ONLY thing that
+// can say why is the timeline: which server started late, which finished before the third began, which tick
+// saw what. `projection_gate_cleanup_run` deletes the run directory, so that timeline used to be destroyed
+// by the same failure that made it worth reading.
+//
+// IT IS REBUILT RATHER THAN COPIED, and that is what makes it safe to keep from a FAILING run, where the
+// leak scan has not run yet. Only ids, integers and booleans are emitted -- never a catalogue key, never a
+// path, never a note, never a failure message, because a driver's error text is the one field here that
+// could carry a URL. Like the cycles document in section 6, it structurally cannot hold a secret.
+const { readFileSync, writeFileSync } = require('node:fs');
+const scan = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+const int = (value) => (typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : null);
+const flags = (value) => {
+  const out = {};
+  for (const [id, on] of Object.entries(value ?? {})) out[String(id)] = on === true;
+  return out;
+};
+writeFileSync(process.argv[3], `${JSON.stringify({
+  keptBecause: 'the three-way overlap assertion failed and the run directory is about to be removed',
+  perServer: (scan.outcomes ?? []).map((outcome) => ({
+    id: String(outcome.id),
+    triggeredAtMs: int(outcome.triggeredAtMs),
+    finishedAtMs: int(outcome.finishedAtMs),
+    elapsedSeconds: int(outcome.elapsedSeconds),
+    observedInFlight: outcome.observedInFlight === true,
+    // THE MESSAGE IS DROPPED AND ONLY ITS EXISTENCE IS KEPT. A driver's error text is the one field in this
+    // document that could carry an address, and "there was a failure" is what the timeline needs from it.
+    failed: outcome.failure !== undefined && outcome.failure !== null,
+  })),
+  timeline: (scan.timeline ?? []).map((sample) => ({
+    atMs: int(sample.atMs),
+    spanMs: int(sample.spanMs),
+    inFlight: flags(sample.inFlight),
+    inFlightCount: Object.values(flags(sample.inFlight)).filter(Boolean).length,
+    unreadable: (sample.unreadable ?? []).map((id) => String(id)),
+  })),
+}, null, 2)}\n`);
+const counts = (scan.timeline ?? []).map((s) => Object.values(flags(s.inFlight)).filter(Boolean).length);
+console.log(`  the overlap timeline is kept: ${counts.length} sample(s), most servers in flight at once `
+  + `${counts.length > 0 ? Math.max(...counts) : 0}`);
+OVERLAP
+
 cat > "$WORK/out/fuse-abort.sh" <<'FUSEABORT'
 # TAKE THE MOUNT OUT FROM UNDER A LIVING DAEMON, WITH CONSUMERS HOLDING IT.
 #
@@ -2508,6 +2556,17 @@ for ARM in $RL_ARMS; do
         "all three observed scanning the same real-provider namespace, with a fully attributed sample"
     else
       record RL-overlap-three-way-observed bool 0 "" "the three scans were not observed to overlap" || true
+      # AND THE TIMELINE IS KEPT, because the cleanup contract is about to delete the only document that can
+      # say WHY. This is A3's remedy applied to the other place in this gate that dies holding its own
+      # diagnosis: with no barrier to rendezvous at, "the three never overlapped" is a statement about how
+      # the three servers were paced, and only the per-tick record says which one started late or finished
+      # before the third began.
+      mkdir -p "$EVIDENCE_DIR" && chmod 700 "$EVIDENCE_DIR"
+      if node "$REL/out/overlaptimeline.cjs" "$REL/out/scan-1.json" \
+           "$REL_GATE_ROOT/evidence/overlap-timeline-$$.json"; then
+        chmod 600 "$EVIDENCE_DIR/overlap-timeline-$$.json"
+        echo "  kept at $REL_GATE_ROOT/evidence/overlap-timeline-$$.json" >&2
+      fi
       die "the three scans were not observed to overlap on the cold cycle"
     fi
   fi

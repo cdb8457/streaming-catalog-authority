@@ -1484,6 +1484,56 @@ test('refplacement.cjs is EXECUTED, and it separates the contracted reference fr
     'an empty manifest directory reported a clean result');
 });
 
+test('the overlap timeline outlives the failure that makes it worth reading, and carries no message', () => {
+  // A3 KEEPS THE DAEMON'S LOG WHEN IT FAILS; THIS IS THE OTHER PLACE THAT DIED HOLDING ITS OWN DIAGNOSIS.
+  // The three-way observation runs with no barrier -- a real provider has no control surface to rendezvous
+  // three scanners at -- so "the three never overlapped" is a statement about pacing, and only the per-tick
+  // record says which server started late or finished before the third began. The run directory is deleted
+  // by the cleanup contract, so the timeline has to be rebuilt into the evidence directory first.
+  const gate = read(GATE);
+  const executable = shellCodeOf(gate);
+  assert(executable.includes('overlaptimeline.cjs'),
+    'a failing overlap observation still destroys the timeline that would explain it');
+  const failurePath = executable.slice(executable.indexOf('RL-overlap-three-way-observed bool 0'),
+    executable.indexOf('the three scans were not observed to overlap on the cold cycle'));
+  assert(failurePath.includes('overlaptimeline.cjs'),
+    'the timeline is not kept on the failure path');
+  assert(failurePath.includes('chmod 600'), 'the kept timeline is not 0600');
+
+  // IT IS REBUILT, NOT COPIED, AND THAT IS WHAT MAKES IT SAFE TO KEEP FROM A FAILING RUN — where the leak
+  // scan has not run yet. Executed rather than read: a driver's failure MESSAGE is the one field here that
+  // could carry an address, so it must not survive into the document.
+  const source = embedded('OVERLAP');
+  const dir = mkdtempSync(join(tmpdir(), 'rl-pin-'));
+  const scan = join(dir, 'scan.json');
+  const kept = join(dir, 'kept.json');
+  writeFileSync(scan, JSON.stringify({
+    outcomes: [
+      { id: 'emby', triggeredAtMs: 10, finishedAtMs: 900, elapsedSeconds: 0.89, observedInFlight: true },
+      { id: 'plex', triggeredAtMs: 12, finishedAtMs: 40_000, elapsedSeconds: 40, observedInFlight: true,
+        failure: 'GET https://cdn.example.invalid/secret-path answered 500' },
+    ],
+    timeline: [
+      { atMs: 0, spanMs: 5, inFlight: { emby: true, plex: true, jellyfin: false }, unreadable: [] },
+      { atMs: 500, spanMs: 4, inFlight: { emby: false, plex: true, jellyfin: true }, unreadable: [] },
+    ],
+  }));
+  const run = runNode(source, [scan, kept]);
+  assertEq(run.status, 0, `the timeline could not be rebuilt: ${run.stderr}`);
+  const body = readFileSync(kept, 'utf8');
+  assert(!body.includes('cdn.example.invalid') && !body.includes('secret-path'),
+    'the kept timeline carries a driver failure message, which is the one field that could hold an address');
+  const document = JSON.parse(body) as {
+    perServer: Array<{ id: string; failed: boolean }>;
+    timeline: Array<{ inFlightCount: number }>;
+  };
+  assertEq(document.perServer.length, 2, 'the kept timeline lost a server');
+  assertEq(document.perServer[1]?.failed, true, 'a failure was dropped entirely rather than de-messaged');
+  assertEq(document.timeline.map((sample) => sample.inFlightCount).join(','), '2,2',
+    'the kept timeline does not count how many were in flight per tick, which is the whole question');
+  assert(!run.stdout.includes('cdn.example.invalid'), 'the summary line printed a failure message');
+});
+
 test('the CLI publishes the thresholds as shell assignments the gate can evaluate', () => {
   const run = spawnSync(process.execPath,
     ['--import', 'tsx', join(repoRoot, 'src/ops/projection-reliability-loop-cli.ts'), 'budgets', '--sh'],
