@@ -1207,20 +1207,20 @@ test('A3 reads PERMANENT evidence, because /readyz clears the serve death the mo
     'A3 does not read the remount from the daemon log');
   // THE PROHIBITION IS ON EXECUTABLE TEXT, NOT ON EXPLAINING WHY — this check first failed against the
   // FIXED gate for naming the field in the comment that records the lesson.
-  const executable = body.split('
-').filter((line) => !/^s*#/.test(line)).join('
-');
-  assert(!/lastServeDeathAt/.test(executable),
+  // with `includes` rather than with regexes, because every one of them is shell punctuation and an
+  // earlier version of this test escaped them wrongly, matched nothing at all, and reported green for it.
+  const executable = shellCodeOf(body);
+  assert(!executable.includes('lastServeDeathAt'),
     'A3 still samples /readyz for a field the daemon clears on a successful remount');
   // BOTH ARE COUNTED FROM A BASELINE, so a line an earlier cycle left cannot be read as this cycle's.
-  assert(/deaths_before=/.test(body) && /-gt "$deaths_before"/.test(body),
+  assert(executable.includes('deaths_before=') && executable.includes('-gt "$deaths_before"'),
     'the serve-death count is not compared against a pre-fault baseline');
-  assert(/remounts_before=/.test(body) && /-gt "$remounts_before"/.test(body),
+  assert(executable.includes('remounts_before=') && executable.includes('-gt "$remounts_before"'),
     'the remount count is not compared against a pre-fault baseline');
   // AND "REMOUNTED IN PLACE" NEEDS BOTH THE DAEMON SAYING SO AND THE NAMESPACE BEING READABLE. A log line
   // without a readable namespace is Phase 2's own worst defect; a readable namespace without the line does
   // not say the daemon did it.
-  assert(/recovered && [ "$remount_logged" -eq 1 ]/.test(body),
+  assert(executable.includes('recovered && [ "$remount_logged" -eq 1 ]'),
     'remounted-in-place rests on only one of the two witnesses');
 });
 
@@ -1251,6 +1251,18 @@ test('the CLI publishes the thresholds as shell assignments the gate can evaluat
 
 function readdirNames(dir: string): string[] {
   return readdirSync(dir);
+}
+
+/**
+ * A shell fragment with its comment lines removed.
+ *
+ * WHY IT IS A HELPER RATHER THAN AN EXPRESSION AT EACH CALL SITE. Several checks here forbid something from
+ * appearing in *executable* text while deliberately allowing the comment that explains why — and the first
+ * version of one of them dropped a backslash, filtered nothing, and reported green over a file it had not
+ * really examined. One implementation, used by all of them, is one place for that to be wrong.
+ */
+function shellCodeOf(fragment: string): string {
+  return fragment.split(/\r?\n/).filter((line) => !line.trim().startsWith('#')).join('\n');
 }
 
 /**
