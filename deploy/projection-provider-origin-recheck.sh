@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # IS THE PROVIDER'S CURRENT CDN ORIGIN STILL IN THE OPERATOR'S ALLOWLIST? One question, one word out.
 #
-# WHY THIS EXISTS. Projection Phase 3 is blocked because TorBox rotated the CDN origin it hands back and the
-# operator's `allowedOrigins` no longer names it, so `projectiond` refuses every resolved URL and every read
-# fails EIO. `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6.16 records the same thing happening once before
-# and documents the allowlist as PERISHABLE. Rechecking it should not cost a forty-minute gate run, and
-# guessing from a stale note is how a tranche wastes a night.
+# WHY THIS EXISTS. A debrid provider rotates the CDN origin it hands back whenever it likes, and when the
+# operator's `allowedOrigins` does not name the current one, `projectiond` refuses every resolved URL and
+# every read fails EIO. That is the egress allowlist working, and it has now been observed TWICE:
+# `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6.16 records it during Phase 1, and Projection Phase 3 hit
+# it again — then found the origin allowed again on a later check, without anything having been edited.
+# So the answer is PERISHABLE IN BOTH DIRECTIONS, and it should cost one resolution to ask rather than a
+# forty-minute gate run. Guessing from a stale note is how a night gets wasted at either end.
 #
 # WHAT IT MAY AND MAY NOT EMIT. The resolved URL, its host, the stable reference, the object's identity and
 # both secrets NEVER leave the container that already holds them. The comparison happens in there and what
@@ -79,13 +81,24 @@ const observation = {
   allowedOriginCount: allowed.length,
   allowedOriginDigests: allowed.map(digest),
 };
+// THE VERDICT IS DECIDED BY THE MEASUREMENT, NEVER BY WHETHER THE RECORD OF IT COULD BE WRITTEN — and the
+// first run of this program got that wrong in the most embarrassing way available. It wrote the observation
+// into the READ-ONLY input mount, the write threw EROFS, the exception escaped, and a run that had just
+// correctly determined `verdict=allowed` exited 1 and printed "NOT MEASURED". The measurement had happened;
+// only its filing had failed. That is the same shape as a leak scan reporting clean over a file it could not
+// open, pointed at itself.
 const finish = (extra, status) => {
   Object.assign(observation, extra);
   for (const [key, value] of Object.entries(observation)) {
     if (Array.isArray(value)) for (const entry of value) console.log(`${key}=${entry}`);
     else console.log(`${key}=${String(value)}`);
   }
-  writeFileSync(out, `${JSON.stringify(observation, null, 2)}\n`);
+  try {
+    writeFileSync(out, `${JSON.stringify(observation, null, 2)}\n`);
+  } catch (error) {
+    // Said on stderr, and the status is unchanged: an unfiled observation is still an observation.
+    console.error(`observation-not-filed=${error && error.code ? error.code : 'WRITE_FAILED'}`);
+  }
   process.exit(status);
 };
 
@@ -146,14 +159,17 @@ done
 test "$ready" -eq 1 || { echo "the resolver never came up; nothing was measured" >&2; exit 1; }
 
 set +e
-docker exec "$CONTAINER" node /inputs/compare.cjs "$RESOLVER_PORT" /inputs/observation.json
+docker exec "$CONTAINER" node /inputs/compare.cjs "$RESOLVER_PORT" /tmp/observation.json
 status=$?
 set -e
 
+# ...AND IT IS WRITTEN TO A WRITABLE PATH. `/inputs` is mounted READ-ONLY on purpose, so the observation goes
+# to the container's own /tmp and is copied out. The first run of this script wrote it into the read-only
+# mount and turned a correct verdict into "NOT MEASURED".
 # THE OBSERVATION IS PRESERVED WHERE THE LOOP'S OTHER EVIDENCE ALREADY LIVES, at 0600 under a 0700 directory,
 # and it is the same redaction-safe document that was printed. It cannot hold a URL, a host, a reference or a
 # secret, because the program that wrote it never put one in.
-if docker cp "$CONTAINER:/inputs/observation.json" "$SCRATCH/observation.json" >/dev/null 2>&1; then
+if docker cp "$CONTAINER:/tmp/observation.json" "$SCRATCH/observation.json" >/dev/null 2>&1; then
   mkdir -p "$EVIDENCE_DIR" && chmod 700 "$EVIDENCE_DIR"
   kept="$EVIDENCE_DIR/origin-recheck-$(date -u +%Y%m%dT%H%M%SZ).json"
   cp "$SCRATCH/observation.json" "$kept" && chmod 600 "$kept"
