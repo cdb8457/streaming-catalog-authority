@@ -45,14 +45,14 @@ and fail this gate.
 
 | Run | Host | Confirmed checks | Failed | Skipped | Evidence |
 |---|---|---|---|---|---|
-| 1/3 | **Unraid `tower`** | **22** | 0 | 0 | PASS in 15,972 ms |
-| 2/3 | **Unraid `tower`** | **22** | 0 | 0 | PASS in 15,869 ms |
-| 3/3 | **Unraid `tower`** | **22** | 0 | 0 | PASS in 15,857 ms |
+| 1/3 | **Unraid `tower`** | **22** | 0 | 0 | PASS in 15,798 ms |
+| 2/3 | **Unraid `tower`** | **22** | 0 | 0 | PASS in 15,602 ms |
+| 3/3 | **Unraid `tower`** | **22** | 0 | 0 | PASS in 15,756 ms |
 
-> **RUN 3/3, exit 0**, 2026-08-09T18:17:57−05:00 → 18:18:45−05:00 (48 s wall), via
+> **RUN 3/3, exit 0**, 2026-08-09T18:43:01−05:00 → 18:43:49−05:00 (48 s wall), via
 > `npm run go:serve-death-gate:three` with `PROJECTIOND_IMAGE=projectiond:phase2-frozen`.
-> Commit **`d12b377be69f7e5a0014e7699b326e56209b59ef`**, tree sha256
-> `fc3ccaf042c12c1c7dc39e1000ea578a0b96b8ecd7ca1fc19b2d508cbfc1d135` (1603 tracked files, byte-identity
+> Commit **`235f2d3925e8c8f424516478b2f8312e0e4adcc6`**, tree sha256
+> `c5a07bdc8744050e22336e999264b68e3442a78dd4777bdae966a1fb5156423e` (1603 tracked files, byte-identity
 > verified against the local checkout in both directions); image
 > **`sha256:9b701935af43bf71c126c9e59855bce7da33752e18dc5d1929c54320ab2c2798`**.
 > Host: Unraid 7.2.3, kernel 6.12.54-Unraid, Docker 27.5.1, Compose 2.40.3, Node v22.18.0.
@@ -102,11 +102,11 @@ the table above is the flag the gate passes to the **daemon** in phase 2, not a 
 
 | Run | Host | Confirmed checks | Failed | Skipped | Evidence |
 |---|---|---|---|---|---|
-| 1/3 | **Unraid `tower`** | **16** | 0 | 0 | PASS in 16,961 ms |
-| 2/3 | **Unraid `tower`** | **16** | 0 | 0 | PASS in 17,290 ms |
-| 3/3 | **Unraid `tower`** | **16** | 0 | 0 | PASS in 16,896 ms |
+| 1/3 | **Unraid `tower`** | **16** | 0 | 0 | PASS in 17,061 ms |
+| 2/3 | **Unraid `tower`** | **16** | 0 | 0 | PASS in 16,872 ms |
+| 3/3 | **Unraid `tower`** | **16** | 0 | 0 | PASS in 16,892 ms |
 
-> **RUN 3/3, exit 0**, 2026-08-09T18:18:45−05:00 → 18:19:37−05:00 (52 s wall), via
+> **RUN 3/3, exit 0**, 2026-08-09T18:43:49−05:00 → 18:44:40−05:00 (51 s wall), via
 > `npm run go:stale-mount-gate:three` with `PROJECTIOND_IMAGE=projectiond:phase2-frozen`.
 > Same frozen commit, tree sha256 and image as §1.
 > **Real subjects, three times each:** phase 1 stacked over the corpse and served generation 1, and a
@@ -156,11 +156,11 @@ product behaviour exists; the evidence is what was missing.
 
 | Run | Host | Confirmed checks | Failed | Skipped | Evidence |
 |---|---|---|---|---|---|
-| 1/3 | **Unraid `tower`** | **32** | 0 | 0 | PASS in 89,350 ms |
-| 2/3 | **Unraid `tower`** | **32** | 0 | 0 | PASS in 88,628 ms |
-| 3/3 | **Unraid `tower`** | **32** | 0 | 0 | PASS in 88,766 ms |
+| 1/3 | **Unraid `tower`** | **32** | 0 | 0 | PASS in 88,707 ms |
+| 2/3 | **Unraid `tower`** | **32** | 0 | 0 | PASS in 89,550 ms |
+| 3/3 | **Unraid `tower`** | **32** | 0 | 0 | PASS in 88,521 ms |
 
-> **RUN 3/3, exit 0**, 2026-08-09T18:19:37−05:00 → 18:24:04−05:00 (267 s wall), via
+> **RUN 3/3, exit 0**, 2026-08-09T18:44:40−05:00 → 18:49:07−05:00 (267 s wall), via
 > `npm run go:sustained-outage-gate:three` with `PROJECTIOND_IMAGE=projectiond:phase2-frozen`.
 > Same frozen commit, tree sha256 and image as §1. Each run is ~90 s because the gate holds the object down
 > through the breaker's full **60 s cooldown** before releasing; that wait is the product's number, not the
@@ -169,7 +169,7 @@ product behaviour exists; the evidence is what was missing.
 >
 > | | run 1 | run 2 | run 3 |
 > |---|---|---|---|
-> | faulted reads to open the breaker | 40MiB **993 ms/3 req**, 44MiB **564 ms/1 req**, 48MiB **366 ms/0 req** | 40MiB 989 ms/3 req, 44MiB 582 ms/1 req, 48MiB 381 ms/0 req | 40MiB 976 ms/3 req, 44MiB 551 ms/1 req, 48MiB 349 ms/0 req |
+> | faulted reads to open the breaker | 40MiB **972 ms/3 req**, 44MiB **521 ms/1 req**, 48MiB **333 ms/0 req** | 40MiB 975 ms/3 req, 44MiB 592 ms/1 req, 48MiB 346 ms/0 req | 40MiB 989 ms/3 req, 44MiB 552 ms/1 req, 48MiB 360 ms/0 req |
 >
 > All three runs spent the budget identically here (3, then 1, then a local refusal); the superseded sequence on `b86af01` saw run 2 take **two** requests at 44MiB instead of one, which is why the gate asserts the open breaker and not the request arithmetic. The third read failing with **zero requests reaching the endpoint** is the open breaker refusing locally —
 > the only thing that produces that signature. Then, every run: **zero provider traffic during the hold**;
@@ -292,9 +292,9 @@ real Unraid host `tower`. Only the second half is gate evidence. The first half 
 attempting.
 
 **WHICH COMMIT THE RUNS BELONG TO, since the record cannot be written before the run it records.** The nine
-runs were taken on **`d12b377be69f7e5a0014e7699b326e56209b59ef`**, and the commit that writes these figures
+runs were taken on **`235f2d3925e8c8f424516478b2f8312e0e4adcc6`**, and the commit that writes these figures
 necessarily comes after them. Its diff against that tree is **documentation only** — `git diff --name-only
-d12b377..HEAD` lists exactly this file and the roadmap, and `deploy/`, `projectiond/`, `test/` and
+235f2d3..HEAD` lists exactly this file and the roadmap, and `deploy/`, `projectiond/`, `test/` and
 `package.json` are byte-identical. So the executable bytes these runs exercised are the bytes in the tree
 now. **Any later change to those directories voids the nine counts**, and the rule is not softened by the
 fact that a record is inconvenient to place: it is satisfied because nothing executable moved, not because
@@ -332,7 +332,7 @@ made `--auto-remount` recover for the daemon and for nobody else. The run record
 | the two shipped embedded programs | the pins **execute** `readyz-probe.sh` against a stub `wget`, and `rounds.cjs` and `namespace_gone` against stub inputs including a `docker` that exits 125 | each produced the output its gate depends on |
 | the harness's skip contract | the shipped skip block was extracted and run under `set -Eeuo pipefail` with the `/dev/fuse` probe forced to fail, with and without the `GATE_SKIP_STATUS` assignment | **without it**: `GATE_SKIP_STATUS: unbound variable`, **exit 1**, no message. **With it**: the `SKIPPED (status 77)` text and **exit 77**. This is the bake-off document's §7 defect 1, observed rather than reasoned about |
 | the harness's compose file | `docker compose -f docker-compose.projection-multi-frontend.yml config -q` | valid. It is a **committed** file now rather than one the harness wrote into the repository root on every run |
-| the whole offline group | `npm run test:offline` | **309 selected, 308 passed, 748 s** (309 rather than 306 because this tranche adds `projection-multi-frontend.ts`, `projection-evidence-consistency.ts` and `projection-overlap-measurement-mode.ts`). The one failure is `test/torbox-resolver.ts`, which fails on this host because win32 cannot make a PATH-injected `bash` that refuses to run a script. It is **pre-existing**, unrelated to this tranche, and touches none of these files |
+| the whole offline group | `npm run test:offline` | **309 selected, 308 passed, 812 s** (309 rather than 306 because this tranche adds `projection-multi-frontend.ts`, `projection-evidence-consistency.ts` and `projection-overlap-measurement-mode.ts`). The one failure is `test/torbox-resolver.ts`, which fails on this host because win32 cannot make a PATH-injected `bash` that refuses to run a script. It is **pre-existing**, unrelated to this tranche, and touches none of these files |
 
 ### 8.2 Not observed — the blockers, stated as blockers
 

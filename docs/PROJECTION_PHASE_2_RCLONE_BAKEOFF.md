@@ -120,10 +120,10 @@ behind it.
 
 ## 4. Run record
 
-**RUN, all three arms, exit 0.** 2026-08-09T18:24:04−05:00 → 18:33:51−05:00 (587 s wall) on the real Unraid
+**RUN, all three arms, exit 0.** 2026-08-09T18:49:07−05:00 → 18:58:53−05:00 (586 s wall) on the real Unraid
 host `tower`, via `npm run go:multi-frontend-comparison` with `PROJECTIOND_IMAGE=projectiond:phase2-frozen`.
-Commit **`d12b377be69f7e5a0014e7699b326e56209b59ef`**, tree sha256
-`fc3ccaf042c12c1c7dc39e1000ea578a0b96b8ecd7ca1fc19b2d508cbfc1d135` (1603 tracked files, byte-identity verified
+Commit **`235f2d3925e8c8f424516478b2f8312e0e4adcc6`**, tree sha256
+`c5a07bdc8744050e22336e999264b68e3442a78dd4777bdae966a1fb5156423e` (1603 tracked files, byte-identity verified
 in both directions); image **`sha256:9b701935af43bf71c126c9e59855bce7da33752e18dc5d1929c54320ab2c2798`**.
 Host: Unraid 7.2.3, kernel 6.12.54-Unraid, Docker 27.5.1, Compose 2.40.3, Node v22.18.0.
 Evidence: `phase2-evidence/multi-frontend-run1.log` on the host.
@@ -131,12 +131,12 @@ Evidence: `phase2-evidence/multi-frontend-run1.log` on the host.
 | | **A** projectiond-FUSE | **B** rclone cache off | **C** rclone cache full |
 |---|---|---|---|
 | R1 stall bound | false | false | false |
-| R1 stall (ms) | 108,693 | 5,426 | 19,085 |
+| R1 stall (ms) | 108,738 | 5,389 | 19,063 |
 | R2 converged on read | 1 | 1 | 1 |
-| R3 ready (ms) | **757** | 1,251 | 1,195 |
+| R3 ready (ms) | **837** | 1,238 | 2,103 |
 | access resolutions | 2 | 0 | 0 |
-| CPU avg / peak % | 9.65 / 229.79 | 5.82 / 25.84 | 5.99 / 27.96 |
-| memory avg / peak MB | 160.8 / 299.3 | 70.2 / 110.7 | 60.8 / 85.2 |
+| CPU avg / peak % | 7.18 / 228.66 | 4.30 / 14.98 | 5.06 / 27.84 |
+| memory avg / peak MB | 169.8 / 298.5 | 60.1 / 93.0 | 61.5 / 88.8 |
 | continuous 3-way overlap (measured) | 6 samples / 2.5 s | 8 samples / 3.5 s | 8 samples / 3.5 s |
 | arm gates pass/fail | 64/0 | 70/0 | 69/0 |
 
