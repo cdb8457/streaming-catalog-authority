@@ -1,27 +1,23 @@
 # Projection Phase 3 — the reliability loop
 
-**Status: NOT CLOSED, and BLOCKED on an operator input.** Every threshold in §4 was fixed before the first
-measured run and none has moved since. §8 records what the real runs observed and what stopped each; §9 the
-nineteen gate defects and what each cost; **§11 the blocker — the provider serves one CDN origin for a
-stretch and then rotates to another from a recurring set, and a stretch is now the same order of magnitude as
-the ninety minutes a sequence takes, so `allowedOrigins` runs out mid-sequence and the daemon refuses exactly
-as it must**; §12 the operational fact this tranche established; §13 the product defect it existed to find,
-and the fix.
+**Status: CLOSED.** `npm run go:reliability-loop-gate:three` completed **three consecutive fresh runs, exit 0,
+zero skips**, on the real Unraid host, from one frozen commit: **18 cycles, 669 verdicts, 669 pass, 0 fail,
+0 skip**, arm set exactly `A1 A2 A3 A4 A5 A6` in every run. §8 is the record. Every threshold in §4 was fixed
+before the first measured run and **none has moved**; §9 is the nineteen gate defects and what each cost;
+§11 the provider-origin blocker that stopped seven attempts and how it was finally cleared; §12 the
+consumer-attachment contract; §13 the product defect this tranche existed to find, its fix, and §13.11 where
+that fix is now proved three times over with three real media servers attached.
 
-**A COMPLETE RUN NOW CLOSES, AND IT HAS DONE SO TWICE.** Runs 13 and 15 each recorded **6 cycles, 223
-verdicts, 223 pass, 0 fail, 0 skip** and `every predeclared cycle, arm, phase and budget is present, terminal
-and passing` — in two independent sequences, from two separately frozen trees. **That is one third of the
-closure rule, done twice, and it is not the closure rule**, which asks for three consecutive fresh runs in
-one sequence. §8.2 carries every run and what stopped it; §9.4 the four gate defects the closing runs found;
-§11.6 what stops the sequence now.
+**WHAT CLOSED IS §4.1 AND NOTHING WIDER.** §5's nonclaims are unchanged and the gate prints them on its own
+passing path: this is not a load test, it re-closes none of G7–G13, G18 or G22, it declares no winner between
+frontends, one object is one object, provider bytes are not counted, and no 429 was provoked.
 
-**ALL SIX ARMS HAVE NOW PASSED, IN ONE RUN, AND THAT RUN DID NOT CLOSE.** Run 9 took A1 through A6 green —
-the first time in this tranche's history that anything past A1 completed — with three real, digest-pinned
-media servers attached to one production mount over the operator's real object. **§13.11 records A3 passing
-under the conditions the whole tranche was built to create.** The run then died in cycle 6's *phase R* on a
-gate defect (§9.3 #14), and run 10 died before its first cycle on §11.5's blocker. **Six green arms in one
-run is not the closure rule**, which asks for three consecutive fresh runs of six cycles each; §8.2's last
-two rows are what exists and §8's NOT RUN table is still empty.
+**EIGHTEEN ATTEMPTS, AND THE SEVENTEEN THAT FAILED ARE THE REASON THE EIGHTEENTH IS WORTH ANYTHING.** Run 9
+was the first to take A1 through A6 green and it still did not close, dying in cycle 6's *phase R* on a gate
+defect; runs 11 and 13 passed every cycle and died in the leak scan and the cleanup respectively — parts of
+the gate no run had ever reached before. **Nineteen gate defects were found this way, every one of them in
+the gate and none in the product, and no threshold moved to accommodate any of them.** §13.11 is A3, the
+assertion the tranche exists for, now passing three times over with three real media servers attached.
 
 **What Phase 3 is, in one sentence.** The product doing its ordinary job — three real media servers reading a
 real provider's object through the production `projectiond` mount — *while the lifecycle failures Phase 2
@@ -254,10 +250,10 @@ Phase 2 gate has a subject that moved, and none needed re-running for §9.3.
 
 ## 8. Run record
 
-**NOT RUN — and it is blocked on a finding rather than on a defect.** No run has satisfied the closure rule
-in §4.1. Seven runs have been taken on the real Unraid host, each on a frozen tree, and every one is recorded
-in §8.2 with what it established and what stopped it. §11 is the finding that stops the last, and it needs
-a decision this document cannot make for itself.
+**CLOSED, on the eighteenth attempt.** §4.1 is satisfied and the table below is the run record. Seventeen
+runs came first, each on a frozen tree, and every one is in §8.2 with what it established and what stopped
+it — most stopped by gate defects this tranche then found and fixed, and several by the provider-origin
+blocker in §11, which is not a defect in anything here.
 
 **WHAT HAS BEEN OBSERVED ANYWAY, AND IT IS MOST OF THE GATE.** These are observations from runs that did not
 close; none of them closes anything, and each names the run it came from.
@@ -281,10 +277,9 @@ close; none of them closes anything, and each names the run it came from.
 | **A6** — all three frontends restarted over the same mountpoint | all three answered their own APIs again; identities unchanged; namespace back in **373 ms** | 9 |
 | host left as found | container/network/volume/mountpoint sets identical after every run, including the one stopped by hand once its stale mount was cleared through the repository's own helper | 1–4, 8–10 |
 
-**ARMS A2–A6 HAVE NOW RUN, AND ALL SIX HAVE PASSED IN ONE RUN.** That sentence replaces "arms A2–A6 have
-never run", which was true of runs 1–7 and stopped being true at run 8. What it does **not** replace is the
-closure rule: one run of six green arms is one run, the rule asks for three consecutive fresh ones, and
-§8's NOT RUN table below is still empty for that reason.
+**ALL SIX ARMS HAVE NOW RUN THREE TIMES, IN ONE CONSECUTIVE SEQUENCE.** That retires "arms A2–A6 have never
+run", which was true of runs 1–7. The closure table above is what satisfies §4.1; the observations in this
+section remain what they always were — things seen along the way, each naming the run it came from.
 
 ### 8.1 Offline
 
@@ -324,23 +319,46 @@ what makes a run worth attempting.
 | 15 | `94d64bbb…` (`8bb46cc`) | **RUN 1 OF 3 CLOSED AGAIN: 223/223, 0 fail, 0 skip**, with the abort following the parent chain | **§11.6** — the provider rotated to a FIFTH origin during run 2. `RL-R-windows:c1 1/4` |
 | 16 | `8cdc923f…` (`15e96ea`) | the fifth origin allowlisted and verified `allowed`; the overlap timeline kept for the first time | §9.5 — the cold three-way overlap again, and the kept timeline named the cause: **no instant existed at which all three were scanning** |
 | 17 | `a9d3e977…` (`f7c4f46`) | cycle 1 phases O and B green on the fifth origin | **§11.7** — a SIXTH origin, eleven minutes into the run |
+| **18** | `a9d3e977…` (`f7c4f46`) | **CLOSURE. Three consecutive fresh runs, 18 cycles, 669 verdicts, 669 pass, 0 fail, 0 skip** | nothing — launched within a minute of the provider rotating INTO an allowlisted origin, and it held for the whole sequence |
 
 A fifth attempt sat between 3 and 4 and was **stopped by hand** rather than failing: busybox's `tail` does
 not seek (§9.1 #4). It left one stale mountpoint, which `projection_gate_cleanup_run` cleared; the host's
 counts returned to 42 containers / 26 running / 17 networks / 45 volumes / 0 `fuse.projectiond`.
 
-**NOT RUN.**
+**CLOSED. One sequence, three consecutive fresh runs, exit 0.** Frozen commit `f7c4f46`, tree
+`a9d3e9777135ec071efa72dd283531fbafcc3c70`, tracked-manifest digest `1aff46ec541f708b` over **1,617** files,
+verified byte-identical in both directions between this worktree and `/mnt/user/appdata/catalog-p3-closureA`
+on the host. Image `sha256:8776f28ae70a73eeb75aab71725fc78405b6f65fc193cfee214daf0544c3bd38` — the same
+digest every build in this tranche has produced, which is what says the daemon bytes never moved. Commits
+after `f7c4f46` are documentation and change nothing that was run.
 
 | Run | Host | Cycles | Arms | Failed | Skipped | Evidence |
 |---|---|---|---|---|---|---|
-| 1/3 | Unraid `tower` | 6 | A1 A2 A3 A4 A5 A6 | **0** | **0** | 223/223 pass — twice, on `b50364d` and on `8bb46cc` |
-| 2/3 | — | — | — | — | — | NOT RUN — §11.6 |
-| 3/3 | — | — | — | — | — | NOT RUN |
+| 1/3 | Unraid `tower` | 6 | `A1 A2 A3 A4 A5 A6` | **0** | **0** | `evidence/cycles-1983702.jsonl` — 223 verdicts, 223 pass |
+| 2/3 | Unraid `tower` | 6 | `A1 A2 A3 A4 A5 A6` | **0** | **0** | `evidence/cycles-2067432.jsonl` — 223 verdicts, 223 pass |
+| 3/3 | Unraid `tower` | 6 | `A1 A2 A3 A4 A5 A6` | **0** | **0** | `evidence/cycles-2149615.jsonl` — 223 verdicts, 223 pass |
 
-**THE FIRST ROW IS NOT A THIRD OF A CLOSURE.** A sequence is three consecutive fresh runs and a sequence that
-stops after one has produced one run, not one third of an answer; the row records what has been observed, and
-§4.1 is what decides closure. Two independent sequences reaching it says the run itself is no longer the
-uncertain part.
+**669 verdicts, 669 pass, 0 fail, 0 skip.** Each run printed `every predeclared cycle, arm, phase and budget
+is present, terminal and passing` and `RELIABILITY LOOP gate PASSED`; the wrapper printed `3 of 3 consecutive
+reliability-loop runs completed, none skipped`, which is guarded by the count rather than by having fallen
+out of a loop. The three verdict logs were re-counted independently of the gate's own arithmetic and each
+holds exactly 223 `pass` and zero of anything else.
+
+**Every clause of §4.1, checked against the record rather than asserted:**
+
+| §4.1 | Evidence |
+|---|---|
+| three consecutive fresh runs, exit 0, zero skips, one frozen commit | above; no `GATE FAILED`, `FAIL` or `SKIPPED` line occurs anywhere in the 3,404-line transcript |
+| 18 cycles, four phases each, arm set exactly `A1…A6` | 18 cycle headers, 18 `RL-F-A<arm>:c<n>` summary verdicts, arm order verified per run |
+| every phase B and R matches all four operator digests | 36 × `RL-B/R-windows 4/4` |
+| all three frontends proven subjects in every cycle | 108 × `RL-B/R-inread:{emby,jellyfin,plex}`, each an in-container read of the same four windows as that server's own uid; 108 × `RL-O/R-catalogue` |
+| every recovery inside its arm's budget | every `ready-ms`, `recovery-ms`, `refusal-ms` and `read-fail-ms` verdict passed |
+| host container/network/volume **sets** identical, gate root empty | 3 × each `RL-host-*-set-unchanged`, 3 × `RL-own-mountpoints-removed 0/0`, 3 × `RL-own-run-directory-removed` — asserted, not reported |
+| no secret, reference, CDN host or operator label in anything preserved | 3 × each of `RL-leak-manifest`, `RL-leak-manifest-ref-placement`, `RL-leak-probe-cache`, `RL-leak-library-state`, `RL-leak-evidence` |
+| the provider really was contacted | 3 × `RL-resolutions-happened 1/1`, 3 × `RL-entry-is-decodable-video` |
+
+**Host after the sequence: 42 containers / 26 running, 17 networks, 45 volumes, 0 `fuse.projectiond`, 0 run
+directories, 0 gate containers** — identical to the baseline taken before it.
 
 Offline checks, taken on the Windows development host, are recorded in §8.1 when they are taken. They are not
 gate evidence: they are what makes a run worth attempting.
@@ -504,7 +522,25 @@ reads like a defect and is not.
 
 ---
 
-## 11. THE BLOCKER: THE PROVIDER HAS ROTATED ITS CDN ORIGIN, AND ONLY THE OPERATOR CAN SAY SO
+## 11. THE BLOCKER THAT STOPPED SEVEN ATTEMPTS — CLEARED, AND HOW
+
+**IT IS RESOLVED, AND NOT BY ANY CHANGE IN THIS REPOSITORY.** The operator authorised the coordinator to
+maintain `allowedOrigins`, five origins were appended over the day as each was observed, and the closing
+sequence ran start to finish inside a single stretch of one of them (`3cfc7340a785`). **No file this tranche
+owns was edited to achieve that, no allowlist check was relaxed, and the daemon refused every non-allowlisted
+origin it was ever offered — which is the behaviour §11.1 says it must have.**
+
+**WHAT FINALLY WORKED, STATED SO IT IS REPRODUCIBLE.** Not a wider allowlist alone, and not luck alone. The
+sequence was launched **within a minute of the provider rotating INTO an already-allowlisted origin**, which
+is the moment a full stretch lies ahead rather than behind. §11.7 is the arithmetic; the operational rule it
+yields is: *poll the redaction-safe recheck, and start the ninety-minute sequence at the START of an
+allowlisted stretch, not partway through one.* The three failed sequences before it were each launched
+partway through a stretch or onto an origin appended near the end of one.
+
+The sections below are kept as the record of the blocker rather than deleted, because they are the evidence
+for §11.7's rule and because `allowedOrigins` is documented as perishable and this will recur.
+
+### 11.0 The original finding, and it stood for seven attempts
 
 **THE LOOP CANNOT REACH A BYTE OF THE OPERATOR'S OBJECT RIGHT NOW, AND THE PRODUCT IS THE REASON — WORKING
 CORRECTLY.**
@@ -1080,7 +1116,14 @@ assertion §13's whole argument was built toward**: the recovery path that "does
 anybody is actually using it" now recovers, with three real consumers actually using it, and the reads are
 the operator's approved windows digested inside each server's own container as its own uid.
 
-**AND IT IS ONE CYCLE OF ONE RUN.** It is not the closure rule, it is not three consecutive fresh runs, and
-§4.1 is unmoved. It is recorded here rather than in §8's NOT RUN table for exactly that reason: what it
-retires is the open question in §13.5 and §13.10 about whether the §13.7 fix holds against real consumers
-over a real provider. It does. Everything else Phase 3 asks for is still open, and §11.5 is why.
+**AND IT IS NOW THREE CYCLES OF THREE RUNS.** In the closing sequence `RL-F-A3-serve-death-observed`,
+`RL-F-A3-remounted-in-place`, `RL-F-A3-identity-unchanged` and `RL-F-A3-frontends-read-after-remount` each
+passed **three times**, the last of them **3/3** on every occasion — three real media servers reading the
+operator's approved windows through their own binds, inside their own containers as their own uid, after the
+mount was torn out from under a living daemon. **That is the assertion this entire tranche was built to
+make**, and §13.5's "three speculative edits to a recovery path is already one more than the evidence
+supported" is what it cost to get the fix right.
+
+**WHAT IT STILL DOES NOT SAY.** It is this recovery path, this provider, this object and this host. §13.8's
+provider-free regression remains the only thing that pins the cold-corpse mechanism itself, and §5's
+nonclaims are unchanged.
