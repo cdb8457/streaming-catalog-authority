@@ -1,10 +1,19 @@
 # Projection Phase 3 — the reliability loop
 
-**Status: NOT RUN, and BLOCKED on an operator input.** Every threshold in §4 was fixed before the first
+**Status: NOT CLOSED, and BLOCKED on an operator input.** Every threshold in §4 was fixed before the first
 measured run and none has moved since. §8 records what the real runs observed and what stopped each; §9 the
-nine gate defects and what each cost; **§11 the blocker — the provider has rotated its CDN origin out of the
-operator's allowlist, which the daemon refuses exactly as it must**; §12 the operational fact this tranche
-established. Arms A2-A6 have never completed.
+fourteen gate defects and what each cost; **§11 the blocker — the provider answers one reference from a POOL
+of CDN origins and only some of them are in the operator's allowlist, which the daemon refuses exactly as it
+must**; §12 the operational fact this tranche established; §13 the product defect it existed to find, and
+the fix.
+
+**ALL SIX ARMS HAVE NOW PASSED, IN ONE RUN, AND THAT RUN DID NOT CLOSE.** Run 9 took A1 through A6 green —
+the first time in this tranche's history that anything past A1 completed — with three real, digest-pinned
+media servers attached to one production mount over the operator's real object. **§13.11 records A3 passing
+under the conditions the whole tranche was built to create.** The run then died in cycle 6's *phase R* on a
+gate defect (§9.3 #14), and run 10 died before its first cycle on §11.5's blocker. **Six green arms in one
+run is not the closure rule**, which asks for three consecutive fresh runs of six cycles each; §8.2's last
+two rows are what exists and §8's NOT RUN table is still empty.
 
 **What Phase 3 is, in one sentence.** The product doing its ordinary job — three real media servers reading a
 real provider's object through the production `projectiond` mount — *while the lifecycle failures Phase 2
@@ -228,6 +237,13 @@ So the CLI takes **`--no-barrier`**, and it is the same containment shape `--ove
 **Nothing else in `src/` or `projectiond/` is changed by this tranche unless a real run proves a product
 defect** — and if one does, the fix, its regression test and the rerun are recorded in §9.
 
+**WHAT §9.3'S FIXES TOUCHED, STATED SO IT CAN BE CHECKED RATHER THAN TAKEN ON TRUST.** `deploy/`, this
+document, `test/projection-reliability-loop.ts`, and `src/core/projection/reliability-loop.ts` — which is
+this tranche's own contract module and is imported by nothing outside it. **`projectiond/` is byte-for-byte
+untouched, and the image digest is the proof**: builds from `5eaa420`, `a33215b`, `c5e26f6`, `b483d9d` and
+`d490d73` all produce `sha256:8776f28ae70a73eeb75aab71725fc78405b6f65fc193cfee214daf0544c3bd38`. So no
+Phase 2 gate has a subject that moved, and none needed re-running for §9.3.
+
 ## 8. Run record
 
 **NOT RUN — and it is blocked on a finding rather than on a defect.** No run has satisfied the closure rule
@@ -250,11 +266,17 @@ close; none of them closes anything, and each names the run it came from.
 | the same four windows read **inside each server's own container as its own uid** | all three matched, before the fault | 4 |
 | **A1** — graceful daemon restart: namespace went away and came back for a **fresh** sibling | **1,514 ms** against a 22,000 ms budget | 4 |
 | **A1** — the same namespace, for the **consumers that were already attached** | **all three failed** — see §11 | 4 |
-| host left as found | container/network/volume/mountpoint sets identical after every run, including the one stopped by hand once its stale mount was cleared through the repository's own helper | 1–4 |
+| **A2** — SIGKILL, restart over the corpse, with three real servers attached | corpse verified stale by `statfs`/mountinfo, the probe **named** it, **1,508 ms** against 22,000; zero churn on all three | 8, 9 |
+| **A3** — the mount taken out from under a living daemon, three consumers attached | **remounted in place, and all three read afterwards — 3/3.** §13.11 | 9 |
+| **A4** — sustained outage past the breaker's cooldown | slowest failing read **610 ms** / 20,000; breaker opened; refusal **2 ms** / 5,000; **zero** resolver requests during the hold against a live logging resolver; recovery **556 ms** / 80,000; exactly **1** half-open probe | 8, 9 |
+| **A5** — credential rotation | invisible under a live lease; the refusal observed in the resolver's own log; **2/2** refusal reads, **2/2** convergence reads; the breaker stayed closed, measured as requests still reaching the endpoint | 9 |
+| **A6** — all three frontends restarted over the same mountpoint | all three answered their own APIs again; identities unchanged; namespace back in **373 ms** | 9 |
+| host left as found | container/network/volume/mountpoint sets identical after every run, including the one stopped by hand once its stale mount was cleared through the repository's own helper | 1–4, 8–10 |
 
-**ARMS A2–A6 HAVE NEVER RUN.** The loop dies in cycle 1's recovery phase, so nothing in this document says
-anything about SIGKILL-over-a-corpse, auto-remount, the sustained outage, credential rotation or the frontend
-restart **with consumers attached**. That is five sixths of the subject and it is open.
+**ARMS A2–A6 HAVE NOW RUN, AND ALL SIX HAVE PASSED IN ONE RUN.** That sentence replaces "arms A2–A6 have
+never run", which was true of runs 1–7 and stopped being true at run 8. What it does **not** replace is the
+closure rule: one run of six green arms is one run, the rule asks for three consecutive fresh ones, and
+§8's NOT RUN table below is still empty for that reason.
 
 ### 8.1 Offline
 
@@ -265,7 +287,7 @@ what makes a run worth attempting.
 |---|---|
 | `npx tsc --noEmit` | clean |
 | `npm run go:vet` / `go:build` / `go:test` | every package `ok`, through the pinned `golang:1.26.5-bookworm` image |
-| `npx tsx test/projection-reliability-loop.ts` | **52 passed, 0 failed**, 1 block skipped and named (`win32` carries no POSIX mode) |
+| `npx tsx test/projection-reliability-loop.ts` | **64 passed, 0 failed**, 1 block skipped and named (`win32` carries no POSIX mode). Six of the sixty-four are §9.3's pins, and each fails against the commit before its fix |
 | `npx tsx test/custody-runtime-closure.ts` | 39/0 — every shipped `.sh` parses under LF and CRLF |
 | `npx tsx test/projection-three-server-concurrency.ts` | 133/0, with the `--no-barrier` containment |
 | `npx tsx test/projection-mount-hardening.ts` | 28/0 |
@@ -284,6 +306,9 @@ what makes a run worth attempting.
 | 5 | `f53b8d91…` | the bind-ordering fix in place: setup, publish, three servers bound before the mount, generation 2 admitted | **§11** — every read of the operator's object now fails EIO. The provider rotated its CDN origin out of the allowlist; the independent Phase 1 TorBox gate fails identically on the same host |
 | 6 | `de5b57fa…` | the instrumented A3 diagnostic: the drain holds the floor, the abort picks the served connection, the death is observed — and the remount is refused `ENOTCONN` | run by hand as a diagnostic, not for closure; it produced §13.6 |
 | 7 | `6a0e9546…` | the §13.7 fix frozen and restarted | **§11.4** — the same blocker, re-observed, with the CDN origin rotated a *second* time |
+| 8 | `9f33b261…` (`c5e26f6`) | **the first run ever to reach A2–A6.** A1 and A2 green; A3's product behaviour correct and *scored as a failure*; A4's own six measurements all green | four gate defects at once — §9.3 #10–#13. The gate failed at cycle 5 phase R |
+| 9 | `3ca53a4e…` (`b483d9d`) | **ALL SIX ARMS GREEN.** A1–A6, 6 cycles, three real servers throughout. §13.11 is A3's row | §9.3 #14 — A6 erased Plex's section id while scoring the restart a success, and cycle 6's *phase R* died on the 404 that followed |
+| 10 | `fddafbe4…` (`d490d73`) | the §9.3 #14 fix frozen; host clean; origin verified **allowed** 30 s before launch | **§11.5** — the provider drew a pool member outside `allowedOrigins` during setup. `RL-entry-is-decodable-video`, which is §11's own signature |
 
 A fifth attempt sat between 3 and 4 and was **stopped by hand** rather than failing: busybox's `tail` does
 not seek (§9.1 #4). It left one stale mountpoint, which `projection_gate_cleanup_run` cleared; the host's
@@ -306,7 +331,7 @@ gate evidence: they are what makes a run worth attempting.
 
 ## 9. Defects found, and what each cost
 
-**SEVEN SO FAR. ALL SEVEN ARE IN THE GATE AND NONE IS IN THE PRODUCT** — and one of them is a finding
+**FOURTEEN SO FAR. ALL FOURTEEN ARE IN THE GATE AND NONE IS IN THE PRODUCT** — and one of them is a finding
 *about* the product rather than against it. Three were found by reading the arms against the closure rule;
 four needed the gate to actually execute on the real host, and each was invisible until the one before it was
 fixed. Every one is pinned by a test in `test/projection-reliability-loop.ts` that **fails against the commit
@@ -328,6 +353,28 @@ before its fix and passes after**, which is the only form of "fixed" this tranch
 | 5 | **Three arms never took the measurement the closure rule requires of them.** `RL-R-ready-ms` is required once per cycle, and A4, A5 and A6 never set `RECOVERY_MS` | cycles 4, 5 and 6 would have recorded the **previous cycle's** recovery time, against the right budget, and passed. It starts **empty** at every cycle now — empty rather than `-1`, because `record.cjs` fails a measurement that is not a number while `-1 <= 22000` is perfectly true — and each of the three takes its own |
 | 6 | **The recovery clock measured the gate's own orchestration.** It started before `restart_daemon`, so it timed `docker rm -f`, a `docker run` and a node container booting `tsx` to serve the resolver — against a budget derived from the **daemon's** pointer poll and read deadline | the clock is read inside `start_daemon` now. And A6, where the daemon never moves, no longer times three media servers booting against a daemon-readiness budget: how long they took is recorded against **no budget at all**, which is the honest shape for somebody else's software starting up |
 | 7 | **The arm that measures an open breaker could outlive it.** A4's hold was twelve reads five seconds apart — sixty seconds against a sixty-second cooldown | the breaker closes on its own after the cooldown and admits exactly one half-open probe, so the window measuring *zero requests while the breaker is open* could have counted that probe: **one legitimate request against a ceiling of zero, failing a correct product for doing precisely what the contract says it must.** The window is `HOLD_WINDOW_MS`, half the cooldown, and the fraction rather than the number is the point — it stays inside if the cooldown ever changes |
+
+### 9.3 Found by the first runs that reached arms A2–A6
+
+**FIVE MORE, AND FOUR OF THEM ARE ONE CLASS: A CHECK THAT DOES NOT MEASURE WHAT ITS NAME SAYS.** Two of the
+four could not fail; two could not pass. They were invisible for seven runs because the loop had never
+reached the arms that carry them, and every one of them was found by the product doing its job correctly and
+being scored wrong for it. Commits `b483d9d` and `d490d73`; each is pinned by a test that fails against the
+commit before its fix.
+
+| # | What was wrong | What it cost |
+|---|---|---|
+| 10 | **The readiness probe was `test -f`, and a corpse answers `stat`.** A dead FUSE mount is served from the kernel's attribute cache for a full `attrTimeout` after the connection is gone — §13.6's warm-cache asymmetry met from the other side. So `await_recovery` started and stopped over the corpse | **A3's product behaviour was correct and the gate recorded it as a failure.** The clock read **695 ms** measured from *before* the abort; `RL-F-A3-remounted-in-place` was then judged against a daemon that had not remounted yet, and the three consumers were read before the new mount had propagated to them — 2 of 3. The gate's own diagnostic block then printed *"after the remount, emby CAN read"* for all three, three lines under the FAIL it had already recorded. Readiness is one byte read by a fresh sibling now, taken from the **local seed entry**: an `open` is what a corpse refuses, and the seed puts no provider on the path, so `READY_BUDGET_MS`'s derivation stays what it says it is, a poll loop cannot spend a metered account, and A4 can measure a daemon coming back *during its own deliberate outage* |
+| 11 | **A3 sampled the remount counter instead of waiting for the event.** Read the instant the metadata clock returned, it asked whether the daemon had remounted before it could have | the other half of #10, and it would have survived #10's fix on a slow host. The line is waited for now, under the same bounded poll every other wait in the gate uses |
+| 12 | **A4's `RL-R-ready-ms` could not pass.** Clocked from the daemon start at the top of the arm and taken at the bottom, it spanned the trip, the whole `HOLD_WINDOW_MS` hold and the recovery — against `READY_BUDGET_MS` | `HOLD_WINDOW_MS` is 30,000 and `READY_BUDGET_MS` is 22,000, so **the check was arithmetically unpassable in every run that could ever be taken.** It recorded **34,081 / 22,000** while all six of A4's own measurements passed. It is taken at the restart now; the provider half remains `RL-F-A4-recovery-ms` against `OUTAGE_RECOVERY_BUDGET_MS`, which is the budget §4 names for A4. **No budget moved** |
+| 13 | **A5 issued four reads where the product permits one resolution, and its two remaining checks could not tell.** `MAX_REFRESHES_PER_SOURCE_PER_COOLDOWN` is 1, so a read inside `REFRESH_COOLDOWN_MS` of the last refresh is refused by the daemon *locally* and never reaches the resolver | the rotated credential was never presented, the arm converged on nothing, and **cycle 5's phase R came up three windows short one check later** — the failure surfaced two ids away from its cause. Neither guard caught it: `convergence-reads` was `le "$reads" 2` against a loop that stops at two, so it recorded **2/2 and passed**; `breaker-stayed-closed` was `converged` under a second name and consulted nothing about the breaker. The arm **spaces** its reads by the product's own cooldown now (`ROTATION_READ_SPACING_MS`, §4), a non-convergence records an *absent* measurement, and the breaker check counts requests reaching the endpoint's own log — A4's instrument for an open breaker, read the other way. **Raising either read count was the other way to make this arm pass, and it would have been a threshold fitted to a run** |
+| 14 | **A6 scored a frontend that came back over a library it had just erased.** Plex's `bootstrap` builds a fresh state from the base URL and writes it over the old one; it recovers `sectionId` only when `--name` says which library to look for, and A6 supplied none | **the first six-arm run ever taken died on this, with all six arms passed.** Every later Plex request addressed `/library/sections/undefined/all`, and the 404 surfaced one phase later as *"the three scans did not complete"* in cycle 6's phase R. The arm's own comment already claimed a bootstrap "carries the library the previous state file named" — true of Jellyfin and Emby, which re-derive theirs, and never true of Plex: §9.1 #2's finding one level on. The name is written once now, and `RL-F-A6-plex-section-survived` names the loss where it happens rather than letting a 404 stand in for it two phases later |
+
+**WHY #10 IS THE IMPORTANT ROW.** It is the same defect as §13.5's, on the same object, one level out: a
+metadata check standing where a byte read belongs. That one reported *2 of 3 readable* over a namespace that
+was gone; this one reported *not recovered* over a namespace that had come back. **The repository has now
+found this shape three times — `test -r` in A3, `test -f` in `await_path`, and `stat` inside the mount
+syscall itself (§13.6) — and each time the fix was to make something actually open the file.**
 
 **AND THE GATE'S OWN CONSTRUCTION COST FOUR MORE, ALL CAUGHT OFFLINE BY THE PINS BEFORE ANY HOST SAW THEM:**
 two NUL bytes an em-dash pass left in a shell script; three multi-line `node -e` arguments that made the whole
@@ -452,6 +499,45 @@ publishes. This tranche will not write that file either way, for the reason in �
 **Everything that does not need a provider byte was completed while blocked**, and it is in §13.7–§13.9: the
 mechanism proven by reading the dependency, the fix, the host regression for it, and the Phase 2 tranche
 re-run three consecutive times against the frozen image.
+
+### 11.5 It is not a rotation. The provider answers from a POOL, and that changes what is being asked for
+
+The operator added a third origin, and **it works** — three verifications through the official redaction-safe
+recheck, on three separately frozen trees, all `allowed`:
+
+```
+10:06:46Z  allowedOriginCount=3  resolvedOriginDigest=09e2a517af25  resolvedOriginInAllowlist=yes  allowed
+10:37:47Z  allowedOriginCount=3  resolvedOriginDigest=09e2a517af25  resolvedOriginInAllowlist=yes  allowed
+11:01:06Z  allowedOriginCount=3  resolvedOriginDigest=09e2a517af25  resolvedOriginInAllowlist=yes  allowed
+```
+
+Run 10 was launched **thirty seconds** after the third of those and died during setup on
+`RL-entry-is-decodable-video`, which is §11's own signature. The recheck immediately afterwards:
+
+```
+11:06:19Z  allowedOriginCount=3  resolvedOriginDigest=d4064d307d25  resolvedOriginInAllowlist=NO   disallowed
+```
+
+**`d4064d307d25` IS THE DIGEST FROM §11's FIRST OBSERVATION.** The allowlist did not change between those two
+lines — same count, same three digests. The provider returned an origin it had returned before, *after*
+returning a different one three times in the preceding hour. That is not a one-way rotation that a fresh
+allowlist entry outruns; **it is a pool, sampled per resolution.** Four distinct resolved-origin digests are
+now on record — `d4064d307d25` (§11), `4b416e9283c3` (§11.4), `09e2a517af25` (today, allowlisted) — against
+an allowlist of three of which exactly one has ever matched.
+
+**WHY THIS BLOCKS CLOSURE RATHER THAN DELAYING IT.** Closure is three consecutive fresh runs of roughly half
+an hour each, and every run resolves many times. If a pool member outside `allowedOrigins` can be drawn on
+any resolution, the daemon correctly refuses it and the run dies — so the loop cannot be completed by
+waiting, and re-running until three of them happen to draw only allowlisted members would be spending the
+operator's metered account on lottery tickets and calling the result evidence. **Nothing here is a product
+defect**, and §11.1 and §11.2 are unchanged: this is the egress allowlist doing the one job it exists for,
+and this tranche will not write that file.
+
+**WHAT AN OPERATOR IS BEING ASKED FOR NOW, AND IT IS NOT WHAT §11.2 SAID.** §11.2 said "take the origin the
+resolver now returns and add it". That is now known to be insufficient, and saying so is the point of this
+section. What is needed is either **every member of the pool**, or **whatever stable form the provider
+publishes** for it. The recheck is how coverage is confirmed without either party naming an origin: run it
+repeatedly and require `allowed` across several consecutive resolutions before a run is attempted.
 
 ## 12. CONSUMER ATTACHMENT — a contract now, demonstrated on all three real servers
 
@@ -785,7 +871,41 @@ also passed all three gates three consecutive times. That is what says the mount
 nothing that Phase 2 had already closed.
 
 **WHAT IS STILL NOT PROVED, AND IT IS THE THING PHASE 3 EXISTS FOR.** None of this is a Phase 3 closure run.
-The six-arm loop with three real media servers and the operator's real object has not run to completion since
-the fix, because it cannot reach a provider byte (§11.4). A3 is proved against a **local fixture** in a
-provider-free gate, with one pre-attached consumer rather than three real media servers. That is strictly
-weaker than the predeclared closure rule, and no part of it is being offered in place of one.
+A3 is proved here against a **local fixture** in a provider-free gate, with one pre-attached consumer rather
+than three real media servers. That is strictly weaker than the predeclared closure rule, and no part of it
+is being offered in place of one.
+
+### 13.11 A3, under the conditions this tranche was built to create
+
+**THE SENTENCE ABOVE IS NOW SUPERSEDED IN ONE RESPECT, AND ONLY ONE.** Run 9, on the real Unraid host, frozen
+tree `3ca53a4e…`, image `sha256:8776f28a…`, with **three real digest-pinned media servers attached to one
+production mount over the operator's real object**:
+
+```
+projectiond: serve loop died: the FUSE serve loop exited without a requested unmount
+projectiond: remount attempt 1/3
+projectiond: detached 1 stale mount(s) of ours ... (now on top: the startup floor (1 at the floor, 1 now))
+projectiond: remount attempt 1/3: calling mount
+projectiond: remount attempt 1/3: mounted
+projectiond: remounted; serving generation 2
+```
+
+| Gate id | Cycle 3 of run 9 |
+|---|---|
+| `RL-F-A3-serve-death-observed` | **PASS** |
+| `RL-F-A3-remounted-in-place` | **PASS** |
+| `RL-F-A3-identity-unchanged` | **PASS** — inode, size and mtime across the remount |
+| `RL-F-A3-frontends-read-after-remount` | **PASS, 3/3** |
+| `RL-R-ready-ms:c3` | **1,734 ms** against 22,000 |
+
+The mount survey taken either side of the abort shows the new device propagated into all three consumers'
+namespaces — the live mount moves from `0:361` to `0:373` in the host's table, in the daemon's, and in Emby's,
+Jellyfin's and Plex's, each above the `0:351` floor the drain correctly refused to remove. **That is the
+assertion §13's whole argument was built toward**: the recovery path that "does not recover at all, once
+anybody is actually using it" now recovers, with three real consumers actually using it, and the reads are
+the operator's approved windows digested inside each server's own container as its own uid.
+
+**AND IT IS ONE CYCLE OF ONE RUN.** It is not the closure rule, it is not three consecutive fresh runs, and
+§4.1 is unmoved. It is recorded here rather than in §8's NOT RUN table for exactly that reason: what it
+retires is the open question in §13.5 and §13.10 about whether the §13.7 fix holds against real consumers
+over a real provider. It does. Everything else Phase 3 asks for is still open, and §11.5 is why.
