@@ -1358,6 +1358,31 @@ test('A5\'s two remaining checks can each fail, and one of them consults the bre
     'the breaker check has no pre-fault baseline to count from');
 });
 
+test('A6 tells the restarted Plex which library it had, and asserts it still has one', () => {
+  // THE FIRST SIX-ARM RUN EVER TAKEN DIED HERE, WITH ALL SIX ARMS PASSED. Plex's `bootstrap` builds a fresh
+  // `GateState` from the base URL and writes it over the state file; it recovers `sectionId` only when
+  // `--name` is supplied, and A6 supplied none. So the re-bootstrap the arm scores as "the frontend came
+  // back" erased the section, every later Plex request addressed
+  // `/library/sections/undefined/all`, and the run failed one phase later on "the three scans did not
+  // complete" — a 404 standing in for a state file the gate had emptied itself.
+  const gate = read(GATE);
+  const body = shellCodeOf(functionBodyOf(gate, 'arm_A6'));
+  assert(/plex bootstrap[\s\S]{0,120}--name "\$LIBRARY_NAME"/.test(body),
+    'A6 re-bootstraps Plex without naming the library, so the section id is written away');
+  // THE NAME IS SPELLED ONCE. Two spellings drift, and this drift surfaces as a 404 six cycles later.
+  const executable = shellCodeOf(gate);
+  assertEq(executable.split('LIBRARY_NAME="Projection Movies"').length - 1, 1,
+    'the library name is not defined exactly once');
+  assert(!/--name "Projection Movies"/.test(executable),
+    'the library name is still spelled literally at a call site, so the two can drift apart');
+  // AND THE RECOVERY IS ASSERTED. `resolveSectionId` answers undefined for a library it cannot find and
+  // `bootstrap` writes that out without complaint, so the loss must be named where it happens.
+  assert(body.includes('RL-F-A6-plex-section-survived'),
+    'A6 does not assert that the restarted Plex still names its section');
+  assert(ARM_DETAIL_GATE_IDS.A6.includes('RL-F-A6-plex-section-survived'),
+    'the section-survived check is not required, so deleting it would fail nothing');
+});
+
 test('the CLI publishes the thresholds as shell assignments the gate can evaluate', () => {
   const run = spawnSync(process.execPath,
     ['--import', 'tsx', join(repoRoot, 'src/ops/projection-reliability-loop-cli.ts'), 'budgets', '--sh'],

@@ -1183,6 +1183,11 @@ step "generating the local seed entry — the control, and the thing three libra
 # generated tone; both are produced here and thrown away with the run directory.
 SEED_FILE="Projection Seed (2026).mp4"
 SEED_PATH="Movies/Projection Seed (2026)/$SEED_FILE"
+# THE LIBRARY'S NAME IS WRITTEN ONCE, AND A6 IS WHY IT HAD TO BE. Plex's `bootstrap` builds a FRESH state
+# and only recovers the section id when it is told which library to look for, so A6 has to name the same
+# library the setup created. Spelled twice, the two would drift and the drift would surface as a 404 six
+# cycles later.
+LIBRARY_NAME="Projection Movies"
 docker run --rm --entrypoint "$GENERATOR_FFMPEG" -v "$WORK:/work" "$GENERATOR_IMAGE" \
   -hide_banner -loglevel error -y \
   -f lavfi -i "testsrc=size=128x96:rate=15:duration=3" \
@@ -1537,6 +1542,9 @@ PLEX_BASE="http://127.0.0.1:${PLEX_PORT}"
 JF_STATE="$REL/out/state-jellyfin.json"
 EMBY_STATE="$REL/out/state-emby.json"
 PLEX_STATE="$REL/out/state-plex.json"
+# ...AND THE SAME FILE AS THE HOST SEES IT. The drivers run in containers and take the run-relative spelling;
+# A6 reads the file itself, from the host, to assert the section id survived a restart.
+PLEX_STATE_HOST="$WORK/out/state-plex.json"
 
 jellyfin() { npx tsx src/ops/projection-jellyfin-dataplane-cli.ts "$@"; }
 plex()     { npx tsx src/ops/projection-plex-dataplane-cli.ts "$@"; }
@@ -1604,11 +1612,11 @@ plex prefs --state "$PLEX_STATE"
 # ----------------------------------------------------------------------------------------------------------
 step "adding the SAME mount as a Movies library on all three"
 # ----------------------------------------------------------------------------------------------------------
-jellyfin library --state "$JF_STATE"   --mount-path /media/projection/Movies --name "Projection Movies"
-emby     library --state "$EMBY_STATE" --mount-path /media/projection/Movies --name "Projection Movies"
+jellyfin library --state "$JF_STATE"   --mount-path /media/projection/Movies --name "$LIBRARY_NAME"
+emby     library --state "$EMBY_STATE" --mount-path /media/projection/Movies --name "$LIBRARY_NAME"
 # PLEX LAST, AND THE ORDER IS LOAD-BEARING: creating a Plex section starts a scan of it immediately, so
 # putting it last means the other two libraries already exist when that scan runs.
-plex     library --state "$PLEX_STATE" --mount-path /media/projection/Movies --name "Projection Movies"
+plex     library --state "$PLEX_STATE" --mount-path /media/projection/Movies --name "$LIBRARY_NAME"
 
 node "$REL/out/seed-expect.cjs" "$REL/out/seed-expected.json" "$SEED_FILE" "$SEED_SIZE" "$SEED_SHA"
 plex scan --state "$PLEX_STATE" --expect-file "$REL/out/seed-expected.json" \
@@ -2335,9 +2343,31 @@ arm_A6() {
   done
   # A RE-BOOTSTRAP AFTER A RESTART IS THE SAME INSTALLATION: the wizard is already complete, so each
   # driver's bootstrap is an ordinary login and it carries the library the previous state file named.
+  #
+  # ...AND PLEX HAS TO BE TOLD WHICH LIBRARY THAT IS, WHICH THE SENTENCE ABOVE ASSUMED AND THE GATE DID NOT
+  # DO. `bootstrap` builds a FRESH `GateState` from the base URL and writes it over the state file; it
+  # recovers `sectionId` only when `--name` is supplied, and A6 supplied none. So the re-bootstrap that this
+  # arm scores as "the frontend came back" silently erased the section id, every later Plex request went to
+  # `/library/sections/undefined/all`, and the run died in the NEXT phase — cycle 6 phase R, with all six
+  # arms passed — on "the three scans did not complete". The first six-arm run ever taken died there.
+  #
+  # Jellyfin and Emby re-derive their library from the state they keep, which is why only Plex broke and why
+  # the fix is per-driver rather than a fourth flattening of "three ways of being addressed" (§9.1 #2).
   jellyfin bootstrap --base "$JF_BASE" --state "$JF_STATE" && back=$(( back + 1 )) || true
   emby bootstrap --base "$EMBY_BASE" --state "$EMBY_STATE" && back=$(( back + 1 )) || true
-  plex bootstrap --base "$PLEX_BASE" --state "$PLEX_STATE" && back=$(( back + 1 )) || true
+  plex bootstrap --base "$PLEX_BASE" --state "$PLEX_STATE" --name "$LIBRARY_NAME" \
+    && back=$(( back + 1 )) || true
+  # AND THE RECOVERY IS ASSERTED RATHER THAN ASSUMED, because `resolveSectionId` answers `undefined` for a
+  # library it cannot find and `bootstrap` writes that answer out without complaint. An id that went missing
+  # here used to be invisible until a 404 two phases later; it is a named failure at the point of loss now.
+  # ONE LINE, because a `node -e` split over two is what made a Phase 2 harness unparseable to
+  # `test/custody-runtime-closure.ts` — §9's own fourth construction defect, pinned here since.
+  local section_ok=0
+  # `|| true` BECAUSE THE ABSENCE IS THE MEASUREMENT. Under `set -e` an AND-list whose left side fails is a
+  # failed statement, so the check that exists to RECORD a missing section would have killed the run instead.
+  node -e 'process.exit(require(process.argv[1]).sectionId?0:1)' "$PLEX_STATE_HOST" 2>/dev/null && section_ok=1 || true
+  record "RL-F-A6-plex-section-survived:c$cycle" bool "$section_ok" "" \
+    "the restarted Plex still names the section its library lives in" || true
   record "RL-F-A6-frontends-came-back:c$cycle" eq "$back" 3 \
     "all three servers answered their own API again after the restart, in \
 $(( ( $(date +%s%3N) - started ) / 1000 ))s, which is recorded and bounded by nothing" || true

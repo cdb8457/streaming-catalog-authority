@@ -275,7 +275,13 @@ export const ARM_DETAIL_GATE_IDS: Readonly<Record<ReliabilityArm, readonly strin
     'RL-F-A4-hold-resolver-requests', 'RL-F-A4-recovery-ms', 'RL-F-A4-half-open-probes']),
   A5: Object.freeze(['RL-F-A5-invisible-under-live-lease', 'RL-F-A5-refusal-observed',
     'RL-F-A5-refusal-reads', 'RL-F-A5-convergence-reads', 'RL-F-A5-breaker-stayed-closed']),
-  A6: Object.freeze(['RL-F-A6-frontends-came-back', 'RL-F-A6-identities-unchanged']),
+  // A6 CARRIES A THIRD, AND IT IS THERE BECAUSE "THE FRONTEND CAME BACK" WAS TRUE WHILE THE LIBRARY WAS
+  // GONE. Plex's `bootstrap` writes a fresh state over the old one and recovers the section id only when it
+  // is told which library to look for; the arm scored a clean restart, the section id was silently absent,
+  // and the run died in the NEXT phase on a 404 for `/library/sections/undefined/all`. Requiring the id by
+  // name is what stops the check that catches it from being deleted without anything failing.
+  A6: Object.freeze(['RL-F-A6-frontends-came-back', 'RL-F-A6-identities-unchanged',
+    'RL-F-A6-plex-section-survived']),
 });
 
 /**
