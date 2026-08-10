@@ -424,36 +424,70 @@ direct-playing this object through the production mount, four operator windows d
 mount and inside each server's own container, and a three-way concurrent scan observed with all three in
 flight.
 
-## 12. THE OPERATIONAL FACT THIS TRANCHE ESTABLISHED, WHICH IS NOT A DEFECT IN ANYTHING
+## 12. CONSUMER ATTACHMENT — a contract now, demonstrated on all three real servers
 
-**A consumer that attaches to the projection path AFTER `projectiond` has mounted there cannot follow a
-remount, and no daemon behaviour can make it.**
+**THE FACT.** A consumer that attaches to the projected path **after** `projectiond` has mounted there
+cannot follow a remount, and no daemon behaviour can make it. A bind taken while the path is a **plain
+directory** is a slave of the **parent's** peer group, so every later mount at that path propagates in; a
+bind taken **over an existing mount** is a slave of that mount's peer group only, and once it is gone the
+next mount belongs to a group the container never joined.
 
-Measured on this host with two busybox consumers, one daemon, a local 40 KB file, **no provider and no media
-server** — differing in exactly one thing, *when they attached*:
+**A SIGKILL RESTART IS THE EXCEPTION, AND IT IS WHY THIS WENT UNSEEN FOR THREE TRANCHES.** A SIGKILL
+unmounts nothing, so the restart **stacks** inside the peer group the consumer did join. That is the only
+recovery path Phase 1's G12 exercises, which is why every data-plane gate has always passed while binding
+the mountpoint directly — and why the two paths that *remove* the mount went unexamined until Phase 3 ran
+them with consumers attached.
 
-| | bound the path while it was a **plain directory** | bound it while a **mount was already there** |
-|---|---|---|
-| after the first mount | reads | reads |
-| graceful stop → restart | **reads** | cannot read |
-| external `umount` + `--auto-remount` | **reads** | cannot read |
+### 12.1 It is a shipped contract, not a fact about one gate
 
-The daemon is correct in both columns: it logged the serve death and the remount, and a fresh reader saw the
-namespace every time. A bind taken while the path is a plain directory is a slave of the **parent's** peer
-group, so every later mount at that path propagates in; a bind taken over an existing mount is a slave of
-**that mount's** peer group only, and once it is gone the next mount belongs to a group the container never
-joined. A **SIGKILL** unmounts nothing, so the restart **stacks** inside the group the container did join —
-which is why arm A2 passes with all three servers attached, and why G12 has always passed.
+`PROJECTIOND_CONSUMER_ATTACHMENT` in `src/core/projection/runtime-contract.ts` and **§11 of
+`docs/PROJECTION_PHASE_0_PRODUCT_CONTRACT.md`** carry it: bind **before** the first mount, bind the
+**mountpoint itself** with `rslave`, a late binder survives a SIGKILL restart and survives **neither** a
+graceful restart nor an external unmount, and `REPAIRABLE_BY_THE_DAEMON` is **false**.
+`test/projection-reliability-loop.ts` pins every one of those, pins that the two survival lists stay
+disjoint, and pins the gate's own call **order** — because the remedy is an order, and only an order can
+express it.
 
-**It cost two arms before it was understood**, and it was briefly written up here as a product defect. It is
-not. The gate now starts the three media servers before the daemon's first mount — same source, same target,
-same `rslave`, only the moment changes — and `test/projection-reliability-loop.ts` pins it as an **order**
-for that reason. Two alternatives were considered and rejected: changing the daemon's shutdown so a clean
-stop leaves the mount would put an `ENOTCONN` mountpoint on the operator's host after every stop and is in
-tension with Phase 2 §4, where a corpse is the state `--refuse-stale` exists to refuse; and binding the
-parent directory would change the topology behind every Phase 1 data-plane result.
+### 12.2 THE PARENT-BIND REMEDY IS SUPERSEDED, AND BY WHAT
 
-**It belongs in whatever eventually tells an operator how to arrange the appliance:** start the consumers
-first, or restart them after any maintenance that unmounts. Phase 3 is the only thing in this repository
-that has ever been in a position to observe it, because seeing it needs a consumer attached *and* a fault
-injected, and no gate before this one had both.
+The first reading of the evidence was that consumers must bind the **parent** of the mountpoint. That would
+also work, and it is strictly more disruptive: it changes the topology behind **every Phase 1 data-plane
+result**, none of which were taken on it.
+
+A controlled experiment then isolated the actual variable. **Two consumers, identical in every respect —
+same source, same target, same `rslave` — differing only in when they attached.** Only the late one failed.
+The bind spelling never needed to change; only its order did. The contract therefore requires the **order**
+and leaves the topology alone, and this paragraph exists so the narrower remedy is recorded as *superseding*
+the first one rather than quietly replacing it.
+
+### 12.3 Demonstrated with all three real consumers, and with a control that must fail
+
+`deploy/projection-consumer-attachment-check.sh` (`npm run go:consumer-attachment-check`) runs both sides of
+§11 on **real, digest-pinned Plex, Jellyfin and Emby**, with **no provider, no operator corpus and no
+credential** — the daemon's configuration names no endpoint at all, so there is nothing it could contact.
+
+**Why the control is not optional.** Without it, "all three still read" is satisfied by a run in which the
+mount never went away — the shape this repository keeps finding, where a step reports a result the product
+was never consulted for. So a **fourth** consumer takes a byte-for-byte identical bind *after* the mount
+exists, and the check **requires it to fail both faults**.
+
+| Gate id | What it holds |
+|---|---|
+| `AC1` / `AC2` | all three, and the control, read **before** any fault — or nothing below means anything |
+| `AC3` | all three read after a **graceful daemon stop and restart** |
+| `AC4` | the control **cannot** — so AC3 had a subject |
+| `AC5` | all three read after an **external `umount`** under a living daemon with `--auto-remount` |
+| `AC6` | the control **cannot** — so AC5 had a subject |
+| `AC7` / `AC8` | this run's own mountpoints and directory **asserted** gone, not reported |
+
+**Run record — Unraid `tower`, THREE consecutive fresh runs, 8 checks and 0 failed in each, on the
+frozen tree in §8.2’s last row.** Three because one green run is a coincidence, which is this repository’s
+rule for everything else and has no reason to be relaxed for a demonstration. The reads are
+taken **inside each server's own container as uid 1000** and are **bytes**, not metadata: a dead FUSE mount
+can still answer `stat` from a warm attribute cache while `open` returns `ENOTCONN`, so a `test -f` here
+would pass over the exact state the check exists to detect.
+
+**What it does not show.** It contacts no provider, closes no G-number, and is not a Phase 3 acceptance run.
+It says nothing about playback, amplification or any budget. It exists so §11 is executable rather than
+written down — and so the ordering remedy is a demonstrated property of the product's deployment contract
+rather than a habit of one gate.
