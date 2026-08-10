@@ -519,25 +519,37 @@ Run 10 was launched **thirty seconds** after the third of those and died during 
 ```
 
 **`d4064d307d25` IS THE DIGEST FROM §11's FIRST OBSERVATION.** The allowlist did not change between those two
-lines — same count, same three digests. The provider returned an origin it had returned before, *after*
-returning a different one three times in the preceding hour. That is not a one-way rotation that a fresh
-allowlist entry outruns; **it is a pool, sampled per resolution.** Four distinct resolved-origin digests are
-now on record — `d4064d307d25` (§11), `4b416e9283c3` (§11.4), `09e2a517af25` (today, allowlisted) — against
-an allowlist of three of which exactly one has ever matched.
+lines — same count, same three digests. **The provider returned an origin it had returned before**, after
+returning a different one three times across the preceding hour. Three distinct resolved-origin digests are
+now on record — `d4064d307d25` (§11, and again today), `4b416e9283c3` (§11.4), `09e2a517af25` (today,
+allowlisted) — against an allowlist of three, of which exactly one has ever matched.
 
-**WHY THIS BLOCKS CLOSURE RATHER THAN DELAYING IT.** Closure is three consecutive fresh runs of roughly half
-an hour each, and every run resolves many times. If a pool member outside `allowedOrigins` can be drawn on
-any resolution, the daemon correctly refuses it and the run dies — so the loop cannot be completed by
-waiting, and re-running until three of them happen to draw only allowlisted members would be spending the
-operator's metered account on lottery tickets and calling the result evidence. **Nothing here is a product
-defect**, and §11.1 and §11.2 are unchanged: this is the egress allowlist doing the one job it exists for,
-and this tranche will not write that file.
+**AND IT IS STICKY, NOT SAMPLED PER RESOLUTION — WHICH WAS THIS SECTION'S FIRST READING AND IS WRONG.** Ten
+consecutive rechecks over the following three minutes returned **`d4064d307d25` every time**, and the three
+`allowed` observations above span fifty-four minutes on the other digest. So the provider serves one origin
+for a stretch and then moves to another, cycling back to ones it has used before. The first reading — a pool
+drawn from per resolution — would have made the loop impossible to complete at all, and it is recorded here
+as corrected rather than deleted, because the two readings imply different asks and only one of them is
+supported.
+
+**WHAT THAT MEANS FOR CLOSURE, PRECISELY.** A run *can* complete while an allowlisted origin is the current
+one, and **run 9 is the proof — all six arms, six cycles, entirely inside the `09e2a517af25` stretch.** What
+cannot be relied on is three consecutive fresh runs, about ninety minutes end to end, all landing inside one
+stretch: the switch observed today happened inside a five-minute window, between a verification that said
+`allowed` and a run launched thirty seconds later. **So the blocker is not that closure is impossible; it is
+that closure is hostage to which origin the provider happens to be serving, and a green three-run sequence
+obtained that way would be a coincidence dressed as evidence.** Nothing here is a product defect, and §11.1
+and §11.2 are unchanged: this is the egress allowlist doing the one job it exists for, and this tranche will
+not write that file.
 
 **WHAT AN OPERATOR IS BEING ASKED FOR NOW, AND IT IS NOT WHAT §11.2 SAID.** §11.2 said "take the origin the
-resolver now returns and add it". That is now known to be insufficient, and saying so is the point of this
-section. What is needed is either **every member of the pool**, or **whatever stable form the provider
-publishes** for it. The recheck is how coverage is confirmed without either party naming an origin: run it
-repeatedly and require `allowed` across several consecutive resolutions before a run is attempted.
+resolver now returns and add it, and the loop resumes". One-at-a-time is what has now been done twice, and
+each time the loop was overtaken by the next switch. What is needed is either **every origin in the set the
+provider cycles through** — at least the two observed and not allowlisted, `d4064d307d25` and
+`4b416e9283c3` — or **whatever stable form the provider publishes** for them. The recheck is how coverage is
+confirmed without either party naming an origin: run it across several switches and require `allowed` each
+time. **`allowedOriginCount` rising to 5 with no `disallowed` observed across a switch is the signal that
+this blocker is actually gone**, rather than merely dormant until the next one.
 
 ## 12. CONSUMER ATTACHMENT — a contract now, demonstrated on all three real servers
 
