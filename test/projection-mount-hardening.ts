@@ -696,6 +696,47 @@ test('THE REMOUNT ASKS THE MOUNT POINT NOTHING: a corpse cannot answer, and it i
 });
 
 // ---------------------------------------------------------------------------------------------------------
+// AND THE HOST GATE THAT PROVES IT, because a source pin cannot mount anything.
+//
+// The stale-mount gate already stacks over a corpse that is SECONDS old, and that half has always passed —
+// it is precisely the case a warm attribute cache hides. The defect lives on the other side of the daemon's
+// own attrTimeout, so the gate now faces the SAME corpse again once it has gone cold.
+test('THE STALE-MOUNT GATE FACES A COLD CORPSE, which is the only state the defect appears in', () => {
+  const gate = read('deploy/projection-stale-mount-gate.sh');
+  const fusefs = read('projectiond/internal/fusefs/fusefs.go');
+
+  // THE WAIT IS TIED TO THE DAEMON'S OWN CONSTANT. A gate that waited a hard-coded 75s while the daemon's
+  // attribute timeout grew to 120 would test a warm corpse and pass for the wrong reason, silently, for ever.
+  const attrTimeout = /attrTimeout\s*=\s*(\d+)\s*\*\s*time\.Second/.exec(fusefs);
+  const coldSeconds = /COLD_CORPSE_SECONDS="\$\{COLD_CORPSE_SECONDS:-(\d+)\}"/.exec(gate);
+  assert(attrTimeout !== null, 'attrTimeout is no longer a whole number of seconds in fusefs.go');
+  assert(coldSeconds !== null, 'the stale-mount gate no longer declares how long it waits for a cold corpse');
+  assert(Number(coldSeconds![1]) > Number(attrTimeout![1]),
+    `the gate waits ${coldSeconds![1]}s but the daemon caches attributes for ${attrTimeout![1]}s, so the ` +
+    'corpse it calls cold is still warm and the phase proves nothing');
+
+  // THE AGE IS MEASURED FROM THE KILL, not from whenever the phase happens to start.
+  assert(gate.includes('CORPSE_BORN_AT="$(date +%s)"'),
+    'the corpse has no birth time, so its age at the cold phase is a guess');
+
+  // AND THE COLDNESS IS PROVEN BEFORE THE DAEMON IS STARTED, not assumed from the clock. A stat that still
+  // succeeds means the wait was too short, and this phase would then pass without testing anything.
+  const coldCheckAt = gate.indexOf("stat -c '%i' /mnt");
+  const coldStartAt = gate.indexOf('start_daemon "$COLD_CONTAINER"');
+  assert(coldCheckAt >= 0, 'nothing proves the corpse root is actually refusing stat');
+  assert(coldStartAt >= 0, 'the cold-corpse phase does not start a daemon');
+  assert(coldCheckAt < coldStartAt,
+    'the daemon is started before the corpse is shown to be cold, so a warm run would pass unnoticed');
+
+  // ...AND THE ANCHOR SURVIVING IS ASSERTED TOO. A daemon that mounted by removing what was under it would
+  // satisfy every other assertion in the phase and still be the defect --auto-remount was repaired for.
+  assert(gate.includes('nothing is mounted at the mount point after the cold-corpse recovery'),
+    'the cold-corpse phase does not check that the mount point still carries a mount');
+  assert(/docker rm -f "\$SOURCE_CONTAINER" "\$REFUSE_CONTAINER" "\$RECOVERY_CONTAINER" "\$COLD_CONTAINER"/
+    .test(gate), 'the cold-corpse container is not in the cleanup, so a failure strands it');
+});
+
+// ---------------------------------------------------------------------------------------------------------
 // THE INSTRUMENT MUST NOT PREVENT THE PHENOMENON. Found on the real host, on the first run that ever happened.
 //
 // Phase B was unpassable, and nothing in its output said why. The readyz poller was started with

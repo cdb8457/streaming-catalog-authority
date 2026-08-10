@@ -59,6 +59,13 @@ NETWORK="$COMPOSE_PROJECT"
 SOURCE_CONTAINER="projection-stale-mount-source-$$"
 REFUSE_CONTAINER="projection-stale-mount-refuse-$$"
 RECOVERY_CONTAINER="projection-stale-mount-recovery-$$"
+COLD_CONTAINER="projection-stale-mount-cold-$$"
+# HOW LONG A CORPSE HAS TO SIT BEFORE IT IS COLD, and the number is not arbitrary. `attrTimeout` in
+# projectiond/internal/fusefs/fusefs.go is 60 seconds, and it is what the daemon puts in `attr_valid` on every
+# attribute reply — including the mount root's. Past it the kernel can no longer answer a `stat` of the root
+# from cache and has to ask a connection that is gone. Fifteen seconds of margin, and an offline pin ties this
+# number to that constant so the two cannot drift apart silently.
+COLD_CORPSE_SECONDS="${COLD_CORPSE_SECONDS:-75}"
 STATUS_ADDR="127.0.0.1:9000"
 
 export ADMIN_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:${PG_PORT}/catalog"
@@ -130,7 +137,8 @@ publish()  { npx tsx src/ops/projection-publish-cli.ts --manifest-dir "$REL/mani
 register() { npx tsx src/ops/projection-register-cli.ts "$@"; }
 
 cleanup() {
-  docker rm -f "$SOURCE_CONTAINER" "$REFUSE_CONTAINER" "$RECOVERY_CONTAINER" >/dev/null 2>&1 || true
+  docker rm -f "$SOURCE_CONTAINER" "$REFUSE_CONTAINER" "$RECOVERY_CONTAINER" "$COLD_CONTAINER" \
+    >/dev/null 2>&1 || true
   docker compose -f "$COMPOSE_FILE" down -v --remove-orphans >/dev/null 2>&1 || true
   docker network rm "$NETWORK" >/dev/null 2>&1 || true
   if [ -n "${WORK:-}" ]; then
@@ -278,6 +286,10 @@ echo "  the source mount is live, /readyz answers ready=true, and the live read 
 
 docker kill -s 9 "$SOURCE_CONTAINER" >/dev/null
 docker wait "$SOURCE_CONTAINER" >/dev/null 2>&1 || true
+# WHEN THE CORPSE WAS BORN, because phase 3 below is about its AGE and nothing else. The last attribute reply
+# the kernel can still be holding for this mount's root was sent before this kill; after it, nothing refreshes
+# one, because a cache hit does not extend its own validity and a miss reaches a connection that is gone.
+CORPSE_BORN_AT="$(date +%s)"
 echo "  the source daemon was SIGKILLed without a chance to unmount; its host-side mount is now a corpse"
 corpse_is_stale
 
@@ -356,7 +368,76 @@ corpse_is_stale
 echo
 echo "PHASE 2 COMPLETE: with --refuse-stale, the daemon refuses to serve over the corpse and exits 1."
 
+# ----------------------------------------------------------------------------------------------------------
+step "phase 3 (a COLD corpse) — the same corpse again, past the attribute timeout"
+# ----------------------------------------------------------------------------------------------------------
+# WHY AGE IS A PHASE OF ITS OWN, AND WHAT IT COST TO FIND OUT.
+#
+# Phase 1 above stacks over a corpse that is SECONDS old, and it has always passed. Projection Phase 3 then
+# aborted a connection several minutes into a cycle and the daemon could not remount at all — same daemon,
+# same code path, same mount point, refused with ENOTCONN every time. The difference was not the consumers
+# and not the fault; it was the clock.
+#
+# go-fuse's `mountDirect` stats the mount point before mounting, for one field — `rootmode` — and with a
+# strict direct mount that stat's error IS the mount error. A `stat` of a FUSE mount root is answered from the
+# kernel's attribute cache while it is warm and reaches the connection once it is not, and this daemon puts a
+# 60-second validity on every attribute reply. So mounting over a corpse worked for the first minute of its
+# death and failed for ever after — which means a daemon that had ever restarted over one lost --auto-remount
+# permanently, and every gate in this tranche restarted fast enough never to see it.
+#
+# The corpse may not simply be removed instead: in a container the mount point IS the operator's bind, so the
+# corpse is also the propagation anchor, and a mount that replaces it lands in a peer group with no host peer.
+# The daemon therefore supplies `rootmode` from S_IFDIR — the mount point is a directory by contract — and
+# performs the mount itself. This phase is the regression for that, and it is the same corpse phases 1 and 2
+# used, so what changed between them is only how long it has been dead.
+COLD_AGE=$(( $(date +%s) - CORPSE_BORN_AT ))
+if [ "$COLD_AGE" -lt "$COLD_CORPSE_SECONDS" ]; then
+  echo "  the corpse is ${COLD_AGE}s old; waiting until it is ${COLD_CORPSE_SECONDS}s old so its root's"
+  echo "  attribute cache has certainly expired"
+  sleep $(( COLD_CORPSE_SECONDS - COLD_AGE ))
+fi
+echo "  the corpse is now $(( $(date +%s) - CORPSE_BORN_AT ))s old"
+corpse_is_stale
+
+# AND IT IS COLD, PROVEN RATHER THAN ASSUMED. `stat` is the call the mount path makes; while the cache is warm
+# it succeeds over a dead mount, which is exactly the trap. If it still succeeds here the wait was too short
+# and this phase would pass without ever testing the thing it exists for, so a warm root is a gate failure and
+# not a shrug.
+if docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" stat -c '%i' /mnt >/dev/null 2>&1; then
+  die "the corpse's root still answers stat after ${COLD_CORPSE_SECONDS}s, so its attribute cache has not" \
+      "expired and this phase would prove nothing; raise COLD_CORPSE_SECONDS above the daemon's attrTimeout"
+fi
+echo "  a stat of the corpse's root is refused, so the attribute cache really has expired"
+
+start_daemon "$COLD_CONTAINER"
+echo "  waiting for a daemon to come up over a corpse nothing can be asked about"
+await_readyz "$COLD_CONTAINER" || { docker logs "$COLD_CONTAINER" 2>&1 | tail -30 >&2; die "the daemon never became ready over a COLD corpse: this is the defect that made --auto-remount unable to recover any daemon that had ever restarted over one"; }
+await_namespace || { docker logs "$COLD_CONTAINER" 2>&1 | tail -30 >&2; die "the mount over a COLD corpse never became visible"; }
+COLD_SHA="$(docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" \
+  sh -c "sha256sum '/mnt/$ENTRY_PATH'" | awk '{print $1}')"
+test "$COLD_SHA" = "$STALE_SHA" || die "the mount over the cold corpse serves different bytes than the corpse carried"
+echo "  the mount over a cold corpse is live and serves the digest the corpse carried"
+
+# AND IT STACKED RATHER THAN CLEARED. The anchor surviving is the other half of the fix: a daemon that got
+# itself mounted by removing what was under it would satisfy every assertion above and still be the defect
+# that recovers for the daemon and for nobody else.
+docker logs "$COLD_CONTAINER" 2>&1 | grep -q "stale projectiond mount detected at /mnt/projection" \
+  || die "the daemon did not name the cold corpse in its log"
+COLD_MOUNTS="$(docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" \
+  sh -c "grep -c ' /mnt ' /proc/self/mountinfo || true")"
+test "${COLD_MOUNTS:-0}" -ge 1 || die "nothing is mounted at the mount point after the cold-corpse recovery"
+echo "  the daemon named the corpse and stacked over it; the mount point still carries a mount"
+
+docker stop "$COLD_CONTAINER" >/dev/null
+COLD_EXIT="$(docker inspect -f '{{.State.ExitCode}}' "$COLD_CONTAINER")"
+test "$COLD_EXIT" = "0" || die "the cold-corpse daemon exited $COLD_EXIT after a requested SIGTERM, not 0"
+echo "  a requested SIGTERM unmounted it cleanly (exit 0), so the self-mounted connection unmounts by path"
+
 echo
-echo "STALE-MOUNT GATE COMPLETE. Both halves ran against the same corpse. The cleanup trap unmounts and"
+echo "PHASE 3 COMPLETE: the daemon mounted over a corpse whose attribute cache had expired, served the same"
+echo "digest, and unmounted cleanly on request."
+
+echo
+echo "STALE-MOUNT GATE COMPLETE. All three halves ran against the same corpse. The cleanup trap unmounts and"
 echo "removes the run directory, and the report above (or in the transcript's tail) says whether any"
 echo "mountpoint was left behind."
