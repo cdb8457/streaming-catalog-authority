@@ -323,19 +323,39 @@ func remountLoop(d *daemon.Daemon, cfg daemon.Config, debug, strictMount bool, m
 			// the rule the whole table exists to keep. The bound is small and finite because a mount point
 			// that still answers "stale" after this many detaches is not a stack, it is a fault, and a
 			// supervisor that spins on it is worse than one that reports it.
+			// THE DRAIN DECIDES ON IDENTITY, NOT ON LIVENESS, AND THE DIFFERENCE TOOK THE OPERATOR'S BIND.
+			//
+			// A first version looped on the PROBE, which answers a question about the transport — and while a
+			// stack is coming apart that answer is exactly what cannot be trusted. It also reads the BOTTOM
+			// entry of a stacked mount point. Between them the loop removed one layer too many: the daemon
+			// logged "detached 2 stale mount(s) ... (now empty)" and remounted into its own namespace with no
+			// host peer, /readyz said ready, and all three media servers read nothing. That is the failure
+			// --auto-remount was fixed for once already, reached from the other direction, and Phase 2's
+			// gates cannot catch it because none of them has a consumer attached.
+			//
+			// So the loop asks only: is the mount ON TOP one of OURS? Nothing else is ever removed — the
+			// operator's bind is not a `fuse.projectiond` mount and the loop stops the moment it surfaces.
 			const maxDetach = 8
 			detached := 0
+			stoppedAt := "nothing"
 			for ; detached < maxDetach; detached++ {
-				if planRemountCleanup(fusefs.ProbeMountpoint(cfg.MountPoint)) != remountCleanupLazyDetach {
+				fsType, present := fusefs.TopMountFsTypeAt(cfg.MountPoint)
+				if !present {
+					stoppedAt = "nothing"
+					break
+				}
+				if !fusefs.IsOurMountType(fsType) {
+					stoppedAt = fsType
 					break
 				}
 				if err := unix.Unmount(cfg.MountPoint, unix.MNT_DETACH); err != nil {
 					logLine("cleanup lazy detach refused: " + err.Error())
+					stoppedAt = fsType
 					break
 				}
 			}
-			logLine(fmt.Sprintf("detached %d stale mount(s) of ours at %s before remounting (now %s)",
-				detached, cfg.MountPoint, fusefs.ProbeMountpoint(cfg.MountPoint)))
+			logLine(fmt.Sprintf("detached %d stale mount(s) of ours at %s before remounting (now on top: %s)",
+				detached, cfg.MountPoint, stoppedAt))
 		default:
 			logLine(fmt.Sprintf("nothing of ours at %s to clean up (%s); leaving it mounted",
 				cfg.MountPoint, probe))

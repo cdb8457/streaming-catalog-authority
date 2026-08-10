@@ -175,6 +175,46 @@ func classify(statfsErr error, entry *mountInfoEntry) ProbeResult {
 // connection, so a dead connection answers ENOTCONN immediately and a live one answers from the daemon's map
 // read. Only a hung-but-connected mount could block statfs, and it could block stat the same way — proving
 // that state dead requires a timeout, and this probe never waits.
+// TopMountFsTypeAt reports the file-system type of the mount that is actually ON TOP at path, and whether
+// there is one at all.
+//
+// WHY IT IS NOT `mountInfoEntryAt`, AND WHY THAT DISTINCTION COST A REAL RUN. `mountInfoEntryAt` returns the
+// FIRST line matching the mount point, which is the BOTTOM of a stack — and a projection mount point is
+// routinely a stack, because every recovery in this daemon stacks over the corpse it found. A supervisor
+// draining corpses has to know what it is about to remove, and the thing it removes is the one on top. Using
+// the bottom entry there took the operator's own bind: the daemon logged a successful remount, /readyz
+// answered ready, and no consumer could see a file — the same failure `--auto-remount` was fixed for once
+// already, arrived at from the other direction.
+//
+// IT READS THE MOUNT TABLE AND NOTHING ELSE. No statfs, no liveness question: a drain must decide on
+// IDENTITY, because the transport check is exactly the thing that is unreliable while a stack is coming
+// apart. `mountinfo` lists mounts in the order they were applied, so the last matching line is the top.
+func TopMountFsTypeAt(path string) (string, bool) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", false
+	}
+	abs = filepath.Clean(abs)
+	raw, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return "", false
+	}
+	fsType := ""
+	found := false
+	for _, entry := range parseMountInfo(raw) {
+		if entry.mountPoint == abs {
+			fsType = entry.fsType
+			found = true
+		}
+	}
+	return fsType, found
+}
+
+// IsOurMountType reports whether a file-system type is this daemon's own FUSE mount. It exists so a caller
+// deciding what to REMOVE compares against the same constant the probe classifies with, rather than a
+// second spelling of it that can drift.
+func IsOurMountType(fsType string) bool { return fsType == fuseProjectiondType }
+
 func ProbeMountpoint(path string) ProbeResult {
 	var stat syscall.Statfs_t
 	return classify(syscall.Statfs(path, &stat), mountInfoEntryAt(path))
