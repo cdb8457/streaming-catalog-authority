@@ -592,6 +592,42 @@ test('THE REMOUNT LOOP UNMOUNTS ONLY WHAT IS OURS, so --auto-remount recovers fo
     'the lazy detach is not the MNT_DETACH the plan names');
 });
 
+test('THE CORPSE DRAIN FAILS CLOSED: an unmeasured floor authorises no detach at all', () => {
+  // A COUNT OF ZERO MEANT TWO THINGS AND ONE OF THEM WAS A LICENCE. `CountMountsAt` returned a bare int, so
+  // a `/proc/self/mountinfo` that could not be read set the drain's floor to zero and authorised it to
+  // detach EVERYTHING at the mount point — the operator's bind included, which is the defect the floor
+  // exists to prevent, one layer underneath it. It returns validity now, and this pins where that is spent.
+  const main = read('projectiond/cmd/projectiond/main.go');
+  const probe = read('projectiond/internal/fusefs/probe_linux.go');
+
+  assert(/func CountMountsAt\(path string\) \(int, bool\)/.test(probe),
+    'CountMountsAt no longer reports whether it could measure, so a zero is ambiguous again');
+  assert(/func countMountsAtFrom\(path, mountInfoPath string\) \(int, bool\)/.test(probe),
+    'the mount table is not a seam, so the fail-closed branch cannot be executed by a test');
+  assert(read('projectiond/internal/fusefs/probe_count_linux_test.go').includes('countMountsAtFrom('),
+    'no test drives the shipped fail-closed branch');
+
+  // THE BASELINE IS TAKEN BEFORE THE FIRST MOUNT. Taken after, it would already include our own mount and
+  // the floor would be one too high — or, worse, be a measurement of the thing it is meant to bound.
+  const baselineAt = main.indexOf('mountsAtStartup, startupCountKnown := fusefs.CountMountsAt(');
+  const firstMountAt = main.indexOf('mount, err := fusefs.Mount(d, cfg.MountPoint');
+  assert(baselineAt >= 0, 'the startup floor is no longer captured');
+  assert(firstMountAt >= 0, 'the first mount is no longer where this test thinks it is');
+  assert(baselineAt < firstMountAt,
+    'the startup floor is captured AFTER the first mount, so it counts our own mount as pre-existing');
+
+  // AND AN UNKNOWN FLOOR, OR AN UNREADABLE TABLE MID-DRAIN, STOPS IT DEAD.
+  const loop = main.slice(main.indexOf('func remountLoop('));
+  assert(/for ; startupCountKnown && detached < maxDetach; detached\+\+ \{/.test(loop),
+    'the drain runs even when the startup floor was never measured');
+  assert(/current, currentKnown := fusefs\.CountMountsAt\(cfg\.MountPoint\)/.test(loop),
+    'the drain does not re-count between detaches, so it cannot notice the table becoming unreadable');
+  assert(/if !currentKnown \{/.test(loop),
+    'an unreadable mount table mid-drain does not stop it');
+  assert(/if current <= mountsAtStartup \{/.test(loop),
+    'the drain no longer stops at the startup floor');
+});
+
 // ---------------------------------------------------------------------------------------------------------
 // THE INSTRUMENT MUST NOT PREVENT THE PHENOMENON. Found on the real host, on the first run that ever happened.
 //

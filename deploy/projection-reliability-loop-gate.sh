@@ -796,11 +796,52 @@ for majmin in $matched; do
     ''|*[!0-9]*) echo "abort:bad-minor"; exit 1 ;;
   esac
   test -w "$connections/$minor/abort" || { echo "abort:not-writable"; exit 1; }
+  echo "abort:choice majmin=$majmin minor=$minor"
   echo 1 > "$connections/$minor/abort"
   count=$(( count + 1 ))
 done
 echo "abort:done $count"
 FUSEABORT
+
+cat > "$WORK/out/mountrows.sh" <<'MOUNTROWS'
+# THE MOUNT TABLE AT ONE PATH, IN ONE NAMESPACE, REDACTION-SAFE.
+#
+# WHY THIS EXISTS. Arm A3 has failed four times for reasons that could only be guessed at from outside, and
+# every guess cost a fifteen-minute run. What decides the arm is which mounts exist at the projected path in
+# the DAEMON's namespace, in the HOST's, and in each CONSUMER's — so the diagnostic prints exactly that.
+#
+# WHAT IT MAY EMIT. Mount id, parent id, major:minor and file-system type, and the mount point ONLY as the
+# fixed token `<mountpoint>` or a suffix beneath it. The gate root is an operator path and the operator's own
+# corpus label must never appear in evidence, so the path is matched and then replaced rather than printed.
+set -eu
+root="$1"
+label="$2"
+# THE TABLE IS A SEAM so the same program can read another namespace's, by path, from the host.
+table="${MOUNTINFO:-/proc/self/mountinfo}"
+if [ ! -r "$table" ]; then echo "  $label rows: NOT READ (no readable mount table)"; exit 0; fi
+n=0
+while IFS= read -r line; do
+  case "$line" in
+    *" $root "*|*" $root/"*) ;;
+    *) continue ;;
+  esac
+  sep_seen=0
+  fstype=""
+  set -- $line
+  id="$1"; parent="$2"; majmin="$3"; mountpoint="$5"
+  for word in "$@"; do
+    if [ "$sep_seen" = "1" ]; then fstype="$word"; break; fi
+    if [ "$word" = "-" ]; then sep_seen=1; fi
+  done
+  case "$mountpoint" in
+    "$root") shown="<mountpoint>" ;;
+    *) shown="<mountpoint>${mountpoint#"$root"}" ;;
+  esac
+  n=$(( n + 1 ))
+  echo "  $label row: id=$id parent=$parent dev=$majmin fstype=$fstype at=$shown"
+done < "$table"
+echo "  $label rows at the mount point or beneath it: $n"
+MOUNTROWS
 
 cat > "$WORK/out/churn.cjs" <<'CHURN'
 // Items added and removed between two catalogues of the same library, as one number.
@@ -1909,7 +1950,38 @@ arm_A3() {
   # doing nothing except adding a namespace between the program and the two files it needs.
   local abort_verdict
   set +e
-  abort_verdict="$(bash "$WORK/out/fuse-abort.sh" "$WORK/mnt" 2>&1 | tail -1)"
+  # THE MOUNT TABLE AS EVERY PARTICIPANT SEES IT, IMMEDIATELY BEFORE THE FAULT. Four failures of this arm
+  # were diagnosed by guessing from outside, and each guess cost a run. What decides A3 is which mounts are
+  # at the projected path in the daemon's namespace, on the host, and in each consumer's — so all of it is
+  # taken here, redaction-safe, and again after the recovery.
+  a3_mount_survey() {
+    local when="$1" server
+    echo "  --- mount survey ($when) ---" >&2
+    bash "$WORK/out/mountrows.sh" "$WORK/mnt" "host" >&2 || true
+    # THE DAEMON'S OWN NAMESPACE, READ FROM THE HOST BY PID. The production image is distroless — no shell,
+    # nothing to `docker exec` — and sharing its PID namespace would still read the READER's mount table
+    # rather than the daemon's. `/proc/<pid>/mountinfo` is the daemon's, and the gate is already root here.
+    local daemon_pid
+    daemon_pid="$(docker inspect -f '{{.State.Pid}}' "$MOUNT_CONTAINER" 2>/dev/null || echo 0)"
+    if [ "${daemon_pid:-0}" -gt 0 ] && [ -r "/proc/$daemon_pid/mountinfo" ]; then
+      MOUNTINFO="/proc/$daemon_pid/mountinfo" bash "$WORK/out/mountrows.sh" /mnt/projection "daemon" >&2 || true
+    else
+      echo "  daemon rows: NOT READ (pid ${daemon_pid:-0}); this is an absent measurement, not an empty one" >&2
+    fi
+    for server in $RL_SERVERS; do
+      docker exec "$(container_for "$server")" \
+        sh /gate/mountrows.sh /media/projection "$server" >&2 2>/dev/null || true
+    done
+  }
+  cp "$WORK/out/mountrows.sh" "$WORK/inprog/mountrows.sh" 2>/dev/null || true
+  chmod 755 "$WORK/inprog/mountrows.sh" 2>/dev/null || true
+  a3_mount_survey "before the abort"
+  local abort_output
+  abort_output="$(bash "$WORK/out/fuse-abort.sh" "$WORK/mnt" 2>&1)"
+  # THE WHOLE OUTPUT IS EVIDENCE, and only the last line is the verdict. The lines before it name
+  # which connection was chosen, which is the fact four earlier runs could only be guessed at.
+  echo "$abort_output" | sed 's/^/  /' >&2
+  abort_verdict="$(echo "$abort_output" | tail -1)"
   set -e
   case "$abort_verdict" in
     abort:done*) echo "  $abort_verdict — the connection was torn down under a living daemon" ;;
@@ -1994,6 +2066,7 @@ nothing could be measured" ;;
       fi
     done
   fi
+  a3_mount_survey "after the recovery attempt"
   record "RL-F-A3-frontends-read-after-remount:c$cycle" eq "$reading" 3 \
     "the recovery is only a recovery if the CONSUMERS can see it; Phase 2's worst defect is that they could not" \
     || true

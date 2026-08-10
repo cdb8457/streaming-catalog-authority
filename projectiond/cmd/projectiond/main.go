@@ -117,7 +117,14 @@ func main() {
 	// corpse drain may never remove below this: in a container the mount point is commonly a BIND OF A
 	// PROJECTIOND MOUNT, which is indistinguishable from our own by file-system type and is not ours to
 	// remove. Counted before the first mount, so it is a fact rather than an inference.
-	mountsAtStartup := fusefs.CountMountsAt(cfg.MountPoint)
+	mountsAtStartup, startupCountKnown := fusefs.CountMountsAt(cfg.MountPoint)
+	if !startupCountKnown {
+		// NOT FATAL, AND NOT FORGOTTEN. The daemon serves perfectly well without ever needing this number;
+		// what it loses is the right to remove anything later. Said once, here, so a recovery that declines
+		// to clean up is explained by a line at startup rather than looking like a new fault.
+		logLine("the mount count at " + cfg.MountPoint + " could not be read; a serve-loop death will " +
+			"remount WITHOUT clearing anything, because a floor that is not measured authorises nothing")
+	}
 
 	// Mount returns a mount whose request loop is already running and whose INIT handshake has completed.
 	mount, err := fusefs.Mount(d, cfg.MountPoint, fusefs.MountSettings{
@@ -202,7 +209,7 @@ func main() {
 			if !*autoRemount {
 				os.Exit(*serveExitCode)
 			}
-			if !remountLoop(d, cfg, *debug, *strictMount, &mount, mountsAtStartup) {
+			if !remountLoop(d, cfg, *debug, *strictMount, &mount, mountsAtStartup, startupCountKnown) {
 				logLine("serve loop died and no remount succeeded; exiting")
 				os.Exit(*serveExitCode)
 			}
@@ -285,7 +292,7 @@ func planRemountCleanup(probe fusefs.ProbeResult) remountCleanup {
 }
 
 func remountLoop(d *daemon.Daemon, cfg daemon.Config, debug, strictMount bool, mount **fusefs.Mounted,
-	mountsAtStartup int) bool {
+	mountsAtStartup int, startupCountKnown bool) bool {
 	const attempts = 3
 	for attempt := 1; attempt <= attempts; attempt++ {
 		time.Sleep(time.Duration(attempt) * time.Second)
@@ -354,12 +361,25 @@ func remountLoop(d *daemon.Daemon, cfg daemon.Config, debug, strictMount bool, m
 			// `mountsAtStartup` is taken BEFORE this process mounted anything, so it is the count of mounts
 			// that are not ours by construction rather than by inspection. The drain may only ever remove
 			// what is stacked ABOVE it.
+			// AN UNMEASURED FLOOR AUTHORISES NOTHING. A count of zero used to mean both "nothing is mounted
+			// here" and "the question could not be asked", so a `/proc/self/mountinfo` that could not be read
+			// would have set the floor to zero and licensed the drain to remove EVERYTHING — the operator's
+			// bind included. The count now carries its own validity and this is where that is spent.
 			const maxDetach = 8
 			detached := 0
 			stoppedAt := "nothing"
-			for ; detached < maxDetach; detached++ {
-				if fusefs.CountMountsAt(cfg.MountPoint) <= mountsAtStartup {
-					stoppedAt = "what was here before this daemon started"
+			if !startupCountKnown {
+				stoppedAt = "an unmeasured startup floor, which authorises no detach at all"
+			}
+			for ; startupCountKnown && detached < maxDetach; detached++ {
+				current, currentKnown := fusefs.CountMountsAt(cfg.MountPoint)
+				if !currentKnown {
+					stoppedAt = "an unreadable mount table, which authorises no further detach"
+					break
+				}
+				if current <= mountsAtStartup {
+					stoppedAt = fmt.Sprintf("the startup floor (%d at the floor, %d now)",
+						mountsAtStartup, current)
 					break
 				}
 				fsType, present := fusefs.TopMountFsTypeAt(cfg.MountPoint)
@@ -371,6 +391,10 @@ func remountLoop(d *daemon.Daemon, cfg daemon.Config, debug, strictMount bool, m
 					stoppedAt = fsType
 					break
 				}
+				// THE EVIDENCE A DIAGNOSTIC NEEDS, AT THE MOMENT THE DECISION IS MADE. Counts and a
+				// file-system type: no path beyond the operator's own mount point, no identity, no bytes.
+				logLine(fmt.Sprintf("detaching one of ours at %s: floor %d, now %d, on top %s",
+					cfg.MountPoint, mountsAtStartup, current, fsType))
 				if err := unix.Unmount(cfg.MountPoint, unix.MNT_DETACH); err != nil {
 					logLine("cleanup lazy detach refused: " + err.Error())
 					stoppedAt = fsType

@@ -228,15 +228,41 @@ func IsOurMountType(fsType string) bool { return fsType == fuseProjectiondType }
 // mount from a BIND of somebody else's projectiond mount, which is exactly what a containerised deployment
 // hands it. What is left is arithmetic: whatever was at the mount point before this process mounted anything
 // is not this process's to remove, however much it looks like ours.
-func CountMountsAt(path string) int {
+// IT RETURNS VALIDITY BESIDE THE COUNT, AND THAT SECOND VALUE IS THE WHOLE SAFETY PROPERTY.
+//
+// A count of zero has two completely different meanings: nothing is mounted here, or the question could not
+// be asked. The first version returned a bare int and answered 0 for both — so a `/proc/self/mountinfo` that
+// could not be read would have set the drain's startup floor to zero and authorised it to detach EVERYTHING
+// at the mount point, including the operator's bind. That is the same defect this floor exists to prevent,
+// hiding one layer beneath it, and it is the shape this repository keeps finding: a zero that means "did not
+// look" being spent as a zero that means "nothing there".
+//
+// So the caller is told whether the number is a measurement, and a caller that cannot get one is required to
+// do nothing at all.
+func CountMountsAt(path string) (int, bool) {
+	return countMountsAtFrom(path, procSelfMountInfo)
+}
+
+// procSelfMountInfo is where the real mount table lives. It is a constant with a name so the seam below
+// reads as a seam rather than as a magic string.
+const procSelfMountInfo = "/proc/self/mountinfo"
+
+// countMountsAtFrom is CountMountsAt with the mount table as a parameter, and it exists so the FAIL-CLOSED
+// branch can be EXECUTED by a test instead of merely written down.
+//
+// The interesting case is a mount table that cannot be read, and there is no way to induce that against the
+// real `/proc/self/mountinfo` from a test. Without this seam the branch that decides whether the drain may
+// remove anything would be the one branch nothing had ever run — which is exactly how this repository's
+// worst defects have all arrived.
+func countMountsAtFrom(path, mountInfoPath string) (int, bool) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return 0
+		return 0, false
 	}
 	abs = filepath.Clean(abs)
-	raw, err := os.ReadFile("/proc/self/mountinfo")
+	raw, err := os.ReadFile(mountInfoPath)
 	if err != nil {
-		return 0
+		return 0, false
 	}
 	count := 0
 	for _, entry := range parseMountInfo(raw) {
@@ -244,7 +270,7 @@ func CountMountsAt(path string) int {
 			count++
 		}
 	}
-	return count
+	return count, true
 }
 
 func ProbeMountpoint(path string) ProbeResult {
