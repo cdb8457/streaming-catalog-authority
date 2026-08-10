@@ -861,6 +861,45 @@ test('each server is addressed the way its own gate says it must be', () => {
   }
 });
 
+test('playfigures.cjs reads BOTH results formats the three drivers actually ship', () => {
+  // THE THIRD REAL RUN DIED HERE, on a play that had just succeeded. Jellyfin's and Emby's `appendResult`
+  // rewrite a JSON ARRAY; Plex's appends one JSON object per line. A reader that knew one threw on the
+  // other, printed nothing, and failed two verdicts for a play whose own driver reported 1.42 s to first
+  // frame and 30 decoded seconds. The fixture below is each driver's REAL id spelling, so a rename that
+  // broke the match would fail here rather than on the host.
+  const source = embedded('PLAYFIGURES');
+  const dir = mkdtempSync(join(tmpdir(), 'rl-pin-'));
+  const rows = [
+    { gate: 'PX18-startup-seconds:abc', verdict: 'pass', measured: 1.42, budget: 10 },
+    { gate: 'PX18-decoded-media-seconds:abc', verdict: 'pass', measured: 30, budget: 30 },
+  ];
+  const asArray = join(dir, 'array.json');
+  const asLines = join(dir, 'lines.json');
+  writeFileSync(asArray, JSON.stringify(rows, null, 2));
+  writeFileSync(asLines, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`);
+  for (const [what, path] of [['a JSON array', asArray], ['JSON lines', asLines]] as const) {
+    assertEq(runNode(source, [path, 'startupSeconds']).stdout.trim(), '1420',
+      `${what}: startup was not read, or was not converted from seconds to milliseconds`);
+    assertEq(runNode(source, [path, 'decodedSeconds']).stdout.trim(), '30',
+      `${what}: decoded media seconds were not read`);
+  }
+  // AND EACH DRIVER'S OWN SPELLING IS MATCHED, not just the one that happened to be written first.
+  for (const prefix of ['JD18-paced-play-', 'EM18-paced-play-', 'PX18-']) {
+    const file = join(dir, `${prefix}.json`);
+    writeFileSync(file, JSON.stringify([
+      { gate: `${prefix}startup-seconds:x`, verdict: 'pass', measured: 2, budget: 10 },
+      { gate: `${prefix}decoded-media-seconds:x`, verdict: 'pass', measured: 31, budget: 30 },
+    ]));
+    assertEq(runNode(source, [file, 'startupSeconds']).stdout.trim(), '2000', `${prefix} startup`);
+    assertEq(runNode(source, [file, 'decodedSeconds']).stdout.trim(), '31', `${prefix} decoded`);
+  }
+  // A FILE WITH NEITHER FIGURE PRINTS NOTHING, so the caller records a failed measurement and not a zero.
+  const empty = join(dir, 'empty.json');
+  writeFileSync(empty, '[]');
+  assertEq(runNode(source, [empty, 'startupSeconds']).stdout.trim(), '',
+    'an absent figure printed something, which a shell would read as a measurement');
+});
+
 test('the CLI publishes the thresholds as shell assignments the gate can evaluate', () => {
   const run = spawnSync(process.execPath,
     ['--import', 'tsx', join(repoRoot, 'src/ops/projection-reliability-loop-cli.ts'), 'budgets', '--sh'],

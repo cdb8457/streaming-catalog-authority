@@ -574,12 +574,27 @@ cat > "$WORK/out/playfigures.cjs" <<'PLAYFIGURES'
 // the budgets Phase 3 predeclared, and a driver that failed its own threshold has already exited non-zero.
 //
 // A FIGURE THAT IS NOT THERE PRINTS NOTHING. Same rule as `summary.cjs`: absence is a failed measurement.
+// AND THE THREE DRIVERS SHIP TWO FILE FORMATS, WHICH COST A RUN. Jellyfin's and Emby's `appendResult`
+// read the whole file, push and rewrite a JSON ARRAY; Plex's appends one JSON object per line. A reader
+// that assumed the array threw on Plex's file, printed nothing, and — correctly, because absence is a
+// failed measurement and not a zero — failed the two verdicts for a play whose own driver had just
+// reported 1.42 s to first frame and 30 decoded seconds. Both shapes are read here rather than one being
+// declared canonical, because neither driver is going to be rewritten for this.
 const { readFileSync } = require('node:fs');
 const [, , path, want] = process.argv;
+let raw;
+try {
+  raw = readFileSync(path, 'utf8');
+} catch { process.exit(0); }
 let results;
 try {
-  results = JSON.parse(readFileSync(path, 'utf8'));
-} catch { process.exit(0); }
+  const parsed = JSON.parse(raw);
+  results = Array.isArray(parsed) ? parsed : [parsed];
+} catch {
+  try {
+    results = raw.split('\n').filter((line) => line.trim() !== '').map((line) => JSON.parse(line));
+  } catch { process.exit(0); }
+}
 if (!Array.isArray(results)) process.exit(0);
 // The three drivers spell their gate ids differently on purpose — JD18, PX18, EM18 — and none of them is
 // going to be renamed for this. The SUFFIX is what they share, so that is what is matched.
@@ -1049,7 +1064,17 @@ test "$(node "$REL/out/jq.cjs" outcome < "$WORK/out/publish-1.json")" = "publish
 # `--auto-remount` IS ON FOR THE WHOLE RUN AND A3 IS WHY. A requested stop and a SIGKILL are not serve
 # deaths, so A1 and A2 are unaffected by it; running two daemon configurations inside one run would mean the
 # six arms were not done to the same subject.
+# WHEN THE DAEMON WAS STARTED, AND WHY THE RECOVERY CLOCK IS READ HERE RATHER THAN AT THE CALLER.
+#
+# `READY_BUDGET_MS` is derived as the pointer poll plus one read deadline — the two bounded waits between a
+# DAEMON start and a namespace a sibling can read. Timing from before `restart_daemon` would have included
+# `docker rm -f`, a `docker run`, and a `node:22-alpine` container booting `tsx` to serve the resolver: the
+# gate's own orchestration, measured against the product's budget. The resolver is not on the path being
+# measured either, because `await_path` is a metadata operation the daemon answers from memory with no
+# provider contact at all.
+DAEMON_STARTED_MS=""
 start_daemon() {
+  DAEMON_STARTED_MS="$(date +%s%3N)"
   docker run -d --name "$MOUNT_CONTAINER" \
     --network "$NETWORK" --user 0:0 \
     --cap-drop ALL --cap-add SYS_ADMIN --security-opt apparmor:unconfined \
@@ -1145,16 +1170,31 @@ await_path() {
 # HOW LONG IT TOOK FOR THE NAMESPACE TO BE READABLE BY A SIBLING AGAIN, in milliseconds, measured from a
 # caller-supplied start. It is a SIBLING and not the daemon on purpose: `/readyz` answering ready is the
 # claim Phase 2 found to be insufficient.
-RECOVERY_MS=0
+# IT STARTS EMPTY, NOT AT ZERO, AND EVERY CYCLE RESETS IT.
+#
+# THE DEFECT THIS CLOSES, FOUND BY READING THE ARMS AGAINST THE CLOSURE RULE RATHER THAN BY RUNNING THEM.
+# `RL-R-ready-ms` is required once per cycle, and two of the six arms never set this variable — so cycles 4
+# and 5 would have recorded the PREVIOUS cycle's recovery time as their own, against the right budget, and
+# passed. A measurement carried over from another cycle is the same class as a step whose success does not
+# depend on the thing it measures, and it is the one this repository keeps finding.
+#
+# Empty rather than -1 because `record.cjs` fails a measurement that is not a number, while `-1 <= 22000` is
+# perfectly true. An arm that takes no measurement must fail, not pass by arithmetic.
+RECOVERY_MS=""
 await_recovery() {
   local started="$1" target="$2"
+  if [ -z "$started" ]; then
+    RECOVERY_MS=""
+    return 1
+  fi
   if await_path "$target" 240; then
     RECOVERY_MS=$(( $(date +%s%3N) - started ))
     return 0
   fi
-  RECOVERY_MS=-1
+  RECOVERY_MS=""
   return 1
 }
+recovered() { [ -n "$RECOVERY_MS" ]; }
 
 # A daemon restart is three steps, always in this order, because the resolver lives in the daemon's network
 # namespace and a restarted daemon has a new one.
@@ -1633,7 +1673,7 @@ corpse_is_stale() {
 }
 
 arm_A1() {
-  local cycle="$1" started
+  local cycle="$1"
   docker stop -t 30 "$MOUNT_CONTAINER" >/dev/null
   local gone=0 n=0
   while [ "$n" -lt 60 ]; do
@@ -1643,17 +1683,16 @@ arm_A1() {
   done
   record "RL-F-A1-namespace-went-away:c$cycle" bool "$gone" "" \
     "a requested stop takes the namespace with it" || true
-  started="$(date +%s%3N)"
   restart_daemon
-  await_recovery "$started" "$REAL_PATH" || true
+  await_recovery "$DAEMON_STARTED_MS" "$REAL_PATH" || true
   record "RL-F-A1-ready-ms:c$cycle" le "$RECOVERY_MS" "$RL_READY_BUDGET_MS" \
-    "from the restart to a sibling container reading the real entry again" || true
-  record "RL-F-A1:c$cycle" bool "$( [ "$gone" -eq 1 ] && [ "$RECOVERY_MS" -ge 0 ] && echo 1 || echo 0 )" "" \
+    "from the daemon start to a sibling container reading the real entry again" || true
+  record "RL-F-A1:c$cycle" bool "$( [ "$gone" -eq 1 ] && recovered && echo 1 || echo 0 )" "" \
     "graceful daemon restart" || true
 }
 
 arm_A2() {
-  local cycle="$1" started corpse
+  local cycle="$1" corpse
   stop_resolver
   docker kill -s KILL "$MOUNT_CONTAINER" >/dev/null 2>&1 || true
   # THE CORPSE IS VERIFIED BEFORE THE RECOVERY IS ASSERTED. Without this the restart below could be stacking
@@ -1667,19 +1706,18 @@ arm_A2() {
   done
   record "RL-F-A2-corpse-was-stale:c$cycle" bool "$( [ "$corpse" = "stale" ] && echo 1 || echo 0 )" "" \
     "statfs answers ENOTCONN while mountinfo still names fuse.projectiond" || true
-  started="$(date +%s%3N)"
   docker rm -f "$MOUNT_CONTAINER" >/dev/null 2>&1 || true
   start_daemon
   start_resolver
-  await_recovery "$started" "$REAL_PATH" || true
+  await_recovery "$DAEMON_STARTED_MS" "$REAL_PATH" || true
   local named=0
   if docker logs "$MOUNT_CONTAINER" 2>&1 | grep -q "stale projectiond mount detected"; then named=1; fi
   record "RL-F-A2-probe-named-the-corpse:c$cycle" bool "$named" "" \
     "the startup probe NAMED the corpse rather than guessing about it" || true
   record "RL-F-A2-ready-ms:c$cycle" le "$RECOVERY_MS" "$RL_READY_BUDGET_MS" \
-    "from the SIGKILL to a sibling container reading the real entry again" || true
+    "from the daemon start to a sibling container reading the real entry again, over the corpse" || true
   record "RL-F-A2:c$cycle" bool \
-    "$( [ "$corpse" = "stale" ] && [ "$named" -eq 1 ] && [ "$RECOVERY_MS" -ge 0 ] && echo 1 || echo 0 )" "" \
+    "$( [ "$corpse" = "stale" ] && [ "$named" -eq 1 ] && recovered && echo 1 || echo 0 )" "" \
     "daemon SIGKILL and restart over the corpse it left" || true
 }
 
@@ -1704,7 +1742,7 @@ arm_A3() {
     "the daemon's own status surface names a serve-loop death, so the connection really was severed" || true
   await_recovery "$started" "$REAL_PATH" || true
   local remounted=0
-  if [ "$RECOVERY_MS" -ge 0 ]; then remounted=1; fi
+  if recovered; then remounted=1; fi
   record "RL-F-A3-remounted-in-place:c$cycle" bool "$remounted" "" \
     "the namespace came back at the same mountpoint without the process exiting" || true
   after="$(docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" \
@@ -1794,12 +1832,12 @@ arm_A4() {
   # THE RELEASE. After the cooldown has elapsed the first read is admitted as the half-open probe, and it
   # must succeed on real bytes.
   started="$(date +%s%3N)"
-  local recovered=0 probes_before probes_after
+  local readable_again=0 probes_before probes_after
   probes_before="$(resolver_resolutions)"
   local n=0
   while [ "$n" -lt 40 ]; do
     timed_read
-    if [ "$TIMED_READ_VERDICT" = "ok" ]; then recovered=1; break; fi
+    if [ "$TIMED_READ_VERDICT" = "ok" ]; then readable_again=1; break; fi
     n=$((n + 1)); sleep 3
   done
   probes_after="$(resolver_resolutions)"
@@ -1808,8 +1846,13 @@ arm_A4() {
     "from the release to a read that succeeded and digest-matched" || true
   record "RL-F-A4-half-open-probes:c$cycle" ge "$(( probes_after - probes_before ))" "$RL_HALF_OPEN_PROBES" \
     "the half-open probe closing the breaker on real evidence" || true
-  record "RL-F-A4:c$cycle" bool "$recovered" "" \
+  record "RL-F-A4:c$cycle" bool "$readable_again" "" \
     "a sustained provider outage past the breaker cooldown, then recovery" || true
+  # THE CYCLE'S OWN RECOVERY MEASUREMENT, TAKEN HERE RATHER THAN INHERITED. This arm restarted the daemon at
+  # its very top and never set `RECOVERY_MS`, so `RL-R-ready-ms` for this cycle would have recorded the
+  # PREVIOUS cycle's figure against the right budget and passed. The namespace question is when a sibling
+  # could read the entry after the daemon came back, and that is what is measured.
+  await_recovery "$DAEMON_STARTED_MS" "$REAL_PATH" || true
 }
 
 arm_A5() {
@@ -1868,10 +1911,19 @@ arm_A5() {
     "the arm converged, so the counted failures never reached the breaker's threshold" || true
   record "RL-F-A5:c$cycle" bool "$converged" "" \
     "credential rotation: invisible under a live lease, refused then converged without one" || true
+  # THIS ARM'S OWN RECOVERY MEASUREMENT. It restarted the daemon in its second half and never set
+  # `RECOVERY_MS`, so this cycle's `RL-R-ready-ms` would have been the previous cycle's figure.
+  await_recovery "$DAEMON_STARTED_MS" "$REAL_PATH" || true
 }
 
 arm_A6() {
   local cycle="$1" started server back=0
+  # THE NAMESPACE CLOCK STARTS HERE AND IT IS NOT THE FRONTENDS' CLOCK. `RL-R-ready-ms` is bounded by
+  # `READY_BUDGET_MS`, which is derived from the DAEMON's pointer poll and read deadline — and in this arm
+  # the daemon never moves. Timing three media servers booting against a daemon-readiness budget would have
+  # failed a correct product for a reason the budget says nothing about: an Emby or Plex start is tens of
+  # seconds of somebody else's software. How long the three took to answer their own APIs again is recorded
+  # under `RL-F-A6-frontends-came-back`, against no time budget at all, which is the honest shape for it.
   started="$(date +%s%3N)"
   for server in $RL_SERVERS; do
     docker restart -t 30 "$(container_for "$server")" >/dev/null
@@ -1882,8 +1934,11 @@ arm_A6() {
   emby bootstrap --base "$EMBY_BASE" --state "$EMBY_STATE" && back=$(( back + 1 )) || true
   plex bootstrap --base "$PLEX_BASE" --state "$PLEX_STATE" && back=$(( back + 1 )) || true
   record "RL-F-A6-frontends-came-back:c$cycle" eq "$back" 3 \
-    "all three servers answered their own API again after the restart" || true
-  RECOVERY_MS=$(( $(date +%s%3N) - started ))
+    "all three servers answered their own API again after the restart, in \
+$(( ( $(date +%s%3N) - started ) / 1000 ))s, which is recorded and bounded by nothing" || true
+  # AND THE NAMESPACE, WHICH IS WHAT `RL-R-ready-ms` IS ABOUT. The daemon never moved in this arm, so this
+  # should be close to nothing — and if it is not, something the frontends did reached the mount.
+  await_recovery "$(date +%s%3N)" "$REAL_PATH" || true
   # IDENTITIES ACROSS THE RESTART ARE MEASURED IN PHASE R's CHURN, which compares this cycle's catalogues
   # against the ones taken before the fault. This id records that the comparison HAS a subject.
   record "RL-F-A6-identities-unchanged:c$cycle" bool "$( [ "$back" -eq 3 ] && echo 1 || echo 0 )" "" \
@@ -1900,6 +1955,9 @@ for ARM in $RL_ARMS; do
   CYCLE=$(( CYCLE + 1 ))
   step "CYCLE $CYCLE of $RL_CYCLES_PER_RUN — arm $ARM"
   node "$REL/out/cycle.cjs" "$CYCLES_REL" "$CYCLE" "$ARM"
+  # EVERY CYCLE STARTS WITH NO RECOVERY MEASUREMENT, so an arm that fails to take one records an absence
+  # rather than the previous cycle's number.
+  RECOVERY_MS=""
 
   echo "--- phase O: three real servers scan and play the real entry ---"
   phase_ordinary "$CYCLE" O
