@@ -821,6 +821,46 @@ test('nothing warms the window before the cold concurrent scan measures it', () 
   assertEq(calls.length, 1, `ensure_items is called ${calls.length} times; one call site, inside the loop`);
 });
 
+test('the play call supplies every flag each driver actually requires', () => {
+  // THE SECOND REAL RUN DIED ON A MISSING FLAG, and the class rather than the instance is what is pinned:
+  // the three drivers' `paced-play` do NOT take the same arguments — Emby needs `--local-work-dir` beside
+  // `--work-dir`, because one is the spelling Docker bind-mounts and the other is the spelling the process
+  // opens — and a call site written from one driver's signature is a call site that fails on the others.
+  // So the required set is read out of each CLI's own source rather than listed here.
+  const body = functionBodyOf(read(GATE), 'phase_play');
+  for (const server of RELIABILITY_SERVER_IDS) {
+    const cli = read(`src/ops/projection-${server}-dataplane-cli.ts`);
+    const block = /case 'paced-play': \{([\s\S]*?)\n    case '/.exec(cli);
+    assert(block !== null, `${server}'s CLI has no paced-play block to read a signature from`);
+    const required = new Set<string>();
+    for (const hit of (block[1] as string).matchAll(/need\(args, '([a-z-]+)'\)/g)) {
+      required.add(hit[1] as string);
+    }
+    assert(required.size >= 8, `${server}'s paced-play signature read as only ${required.size} flag(s)`);
+    for (const flag of required) {
+      assert(body.includes(`--${flag} `), `the gate never passes --${flag}, which ${server} requires`);
+    }
+  }
+});
+
+test('each server is addressed the way its own gate says it must be', () => {
+  const gate = read(GATE);
+  const body = functionBodyOf(gate, 'stream_base_for');
+  // PLEX BY ADDRESS, NEVER BY NAME: it answers 401 to a request whose Host header it does not recognise, and
+  // the address is read per call because a restarted container can come back on a different one.
+  assert(/NetworkSettings\.Networks/.test(body), 'Plex is not addressed by its address on the gate network');
+  assert(body.includes('{{index .NetworkSettings.Networks'),
+    'the Plex address is ranged over rather than indexed by the network name, so a second network glues two '
+    + 'addresses together');
+  // ...AND NOBODY IS HANDED LOOPBACK. From inside a consumer container, 127.0.0.1 is the consumer.
+  assert(!/--stream-base "http:\/\/127\.0\.0\.1/.test(gate),
+    'a consumer is handed a loopback stream base, which from inside its own container is itself');
+  for (const [server, variable] of [['jellyfin', 'JF_CONTAINER'], ['emby', 'EMBY_CONTAINER']] as const) {
+    assert(body.includes(`http://\${${variable}}:8096`),
+      `${server} is not addressed by its container name on the gate network`);
+  }
+});
+
 test('the CLI publishes the thresholds as shell assignments the gate can evaluate', () => {
   const run = spawnSync(process.execPath,
     ['--import', 'tsx', join(repoRoot, 'src/ops/projection-reliability-loop-cli.ts'), 'budgets', '--sh'],
@@ -848,6 +888,27 @@ test('the CLI publishes the thresholds as shell assignments the gate can evaluat
 
 function readdirNames(dir: string): string[] {
   return readdirSync(dir);
+}
+
+/**
+ * One shell function's body, by brace depth rather than by a closing-line pattern.
+ *
+ * A `grep` from `name() {` to the next `^}` finds the first nested block's close, not the function's, and
+ * every assertion made over the short body it returns is an assertion about a fragment.
+ */
+function functionBodyOf(source: string, name: string): string {
+  const start = source.indexOf(`${name}() {`);
+  assert(start >= 0, `the gate ships no function called ${name}`);
+  let depth = 0;
+  for (let index = source.indexOf('{', start); index < source.length; index += 1) {
+    const character = source[index];
+    if (character === '{') depth += 1;
+    else if (character === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, index + 1);
+    }
+  }
+  throw new Error(`${name} is never closed`);
 }
 
 /**

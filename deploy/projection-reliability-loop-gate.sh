@@ -1297,14 +1297,10 @@ container_for() {
     *) die "unknown server $1" ;;
   esac
 }
-base_for() {
-  case "$1" in
-    jellyfin) echo "$JF_BASE" ;;
-    plex)     echo "$PLEX_BASE" ;;
-    emby)     echo "$EMBY_BASE" ;;
-    *) die "unknown server $1" ;;
-  esac
-}
+# THE LOOPBACK BASE IS THE GATE'S OWN CONTROL PLANE ADDRESS AND IT IS NOT THE STREAM ADDRESS. The gate's
+# drivers reach each server from the HOST over its published port; a CONSUMER container reaches it from
+# inside the gate network, where 127.0.0.1 is the consumer. `stream_base_for` is the other one, and a helper
+# that returned this for both is the defect the second real run died on.
 state_for() {
   case "$1" in
     jellyfin) echo "$JF_STATE" ;;
@@ -1474,20 +1470,64 @@ phase_ordinary() {
   done
 }
 
+# THE ADDRESS EACH SERVER'S STREAM IS REACHED AT, AND THE THREE ARE DELIBERATELY NOT ONE EXPRESSION.
+#
+# THE SECOND REAL RUN DIED ON A HELPER THAT FLATTENED THEM. It handed all three consumers
+# `http://127.0.0.1:<published port>` — which, from inside the consumer's OWN container, is the consumer.
+# The three servers' own gates each address their server differently and each says why:
+#
+#   JELLYFIN and EMBY by CONTAINER NAME on the gate network.
+#   PLEX by ADDRESS, never by name: it answers 401 to a request whose Host header it does not recognise, and
+#     `allowedNetworks` does not override it. That cost the Plex gate a whole run once, and the address is
+#     read per call because a restarted container — which arm A6 does to all three — can come back on a
+#     different one. It is indexed by the network's NAME rather than ranged over, because a `range` over
+#     `.NetworkSettings.Networks` glues every address together the moment a second network is attached.
+#
+# ...and EMBY takes one flag the other two do not: `--local-work-dir`, the spelling THIS process opens, next
+# to `--work-dir`, the spelling Docker bind-mounts. Using one for both is what killed the Emby gate's first
+# complete run twenty minutes in.
+stream_base_for() {
+  local server="$1" address
+  case "$server" in
+    jellyfin) echo "http://${JF_CONTAINER}:8096" ;;
+    emby)     echo "http://${EMBY_CONTAINER}:8096" ;;
+    plex)
+      address="$(docker inspect "$PLEX_CONTAINER" \
+        --format "{{index .NetworkSettings.Networks \"$NETWORK\" \"IPAddress\"}}" | tr -d " \r\n")"
+      case "$address" in
+        ""|*[!0-9.]*) die "Plex has no bare IPv4 address on $NETWORK: '$address'" ;;
+      esac
+      echo "http://${address}:32400"
+      ;;
+    *) die "unknown server $server" ;;
+  esac
+}
+
 phase_play() {
-  local cycle="$1" server results trace startup decoded
+  local cycle="$1" server startup decoded play_status
   for server in $RL_SERVERS; do
-    results="$WORK/out/play-$server-c$cycle.json"
-    trace="$REL/out/play-trace-$server-c$cycle.json"
     set +e
-    npx tsx "$(cli_for "$server")" paced-play \
-      --state "$(state_for "$server")" --items "$REL/out/items-$server.json" \
-      --key "$REAL_FILE" --seconds "$RL_PLAY_DECODED_SECONDS_MIN" \
-      --image "$GENERATOR_IMAGE" --ffmpeg "$GENERATOR_FFMPEG" --network "$NETWORK" \
-      --container-name "$CONSUMER_PREFIX-$server-c$cycle" --work-dir "$WORK/consumer" \
-      --output-rel "play-$server-c$cycle.mp4" --stream-base "$(base_for "$server")" \
-      --trace "$trace" --results "$REL/out/play-$server-c$cycle.json"
-    local play_status=$?
+    if [ "$server" = "emby" ]; then
+      npx tsx "$(cli_for "$server")" paced-play \
+        --state "$(state_for "$server")" --items "$REL/out/items-$server.json" \
+        --key "$REAL_FILE" --seconds "$RL_PLAY_DECODED_SECONDS_MIN" \
+        --image "$GENERATOR_IMAGE" --ffmpeg "$GENERATOR_FFMPEG" --network "$NETWORK" \
+        --container-name "$CONSUMER_PREFIX-$server-c$cycle" \
+        --work-dir "$WORK/consumer" --local-work-dir "$REL/consumer" \
+        --output-rel "play-$server-c$cycle.mp4" --stream-base "$(stream_base_for "$server")" \
+        --trace "$REL/out/play-trace-$server-c$cycle.json" \
+        --results "$REL/out/play-$server-c$cycle.json"
+    else
+      npx tsx "$(cli_for "$server")" paced-play \
+        --state "$(state_for "$server")" --items "$REL/out/items-$server.json" \
+        --key "$REAL_FILE" --seconds "$RL_PLAY_DECODED_SECONDS_MIN" \
+        --image "$GENERATOR_IMAGE" --ffmpeg "$GENERATOR_FFMPEG" --network "$NETWORK" \
+        --container-name "$CONSUMER_PREFIX-$server-c$cycle" --work-dir "$WORK/consumer" \
+        --output-rel "play-$server-c$cycle.mp4" --stream-base "$(stream_base_for "$server")" \
+        --trace "$REL/out/play-trace-$server-c$cycle.json" \
+        --results "$REL/out/play-$server-c$cycle.json"
+    fi
+    play_status=$?
     set -e
     startup="$(node "$REL/out/playfigures.cjs" "$REL/out/play-$server-c$cycle.json" startupSeconds)"
     decoded="$(node "$REL/out/playfigures.cjs" "$REL/out/play-$server-c$cycle.json" decodedSeconds)"
