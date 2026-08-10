@@ -1166,10 +1166,18 @@ test('fuse-abort.sh aborts ONLY this run\'s own projectiond connections, and is 
     { encoding: 'utf8', timeout: 60_000 });
   const out = `${run.stdout ?? ''}${run.stderr ?? ''}`;
   assertEq(run.status, 0, `the abort refused a table it should have acted on: ${out}`);
-  assert(out.includes('abort:done 2'), `it did not abort exactly the two projectiond mounts: ${out}`);
-  // THE TWO IT WAS ALLOWED TO TOUCH, AND ONLY THOSE.
-  assertEq(readFileSync(join(conns, '31', 'abort'), 'utf8').trim(), '1', 'the run\'s own mount was not aborted');
-  assertEq(readFileSync(join(conns, '32', 'abort'), 'utf8').trim(), '1', 'the stacked mount was not aborted');
+  // ONE PER MOUNTPOINT, AND IT IS THE TOPMOST — the connection the daemon is actually serving.
+  //
+  // THE EARLIER CONTRACT WAS "EVERY MATCHING MOUNT" AND A REAL RUN RETIRED IT. By the time A3 runs, earlier
+  // cycles have deliberately left corpses stacked at this mountpoint (A2 SIGKILLs without unmounting and the
+  // restart stacks over what it left), so aborting everything tore down the live connection AND a corpse
+  // that was already dead — a fault nobody named, and the arm stopped recovering from it.
+  assert(out.includes('abort:done 1'),
+    `it did not abort exactly the ONE live connection at the mountpoint: ${out}`);
+  assertEq(readFileSync(join(conns, '32', 'abort'), 'utf8').trim(), '1',
+    'the TOPMOST mount at the mountpoint — the one being served — was not the one aborted');
+  assertEq(readFileSync(join(conns, '31', 'abort'), 'utf8'), '',
+    'a corpse stacked UNDER the live mount was aborted; the arm is about a living daemon');
   // THE SHFS UNDER THE ROOT IS NOT THIS GATE'S TO TOUCH — the fstype guard, not the path guard, stops it.
   assertEq(readFileSync(join(conns, '33', 'abort'), 'utf8'), '',
     'an shfs connection UNDER the run root was aborted; the fstype guard does not hold');

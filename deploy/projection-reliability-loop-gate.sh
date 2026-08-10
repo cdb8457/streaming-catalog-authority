@@ -757,6 +757,19 @@ test -d "$connections" || { echo "abort:no-connections-dir"; exit 1; }
 
 # mountinfo: id parent major:minor sourceroot mountpoint options... - fstype source superopts
 # The optional fields between the options and the `-` are why the separator is found rather than counted.
+# ONLY THE CONNECTION THE DAEMON IS ACTUALLY SERVING, WHICH IS THE TOPMOST MOUNT AT THE MOUNTPOINT.
+#
+# WHY NOT ALL OF THEM, AND A REAL RUN IS WHY. By the time this arm runs, earlier cycles have deliberately
+# left CORPSES stacked at the same mountpoint — A2 SIGKILLs the daemon without unmounting and the restart
+# stacks over what it left. Aborting every `fuse.projectiond` mount under the root therefore tore down two
+# connections: the live one AND a corpse that was already dead. The arm's subject is "the mount taken out
+# from under a LIVING daemon", so the corpse is not its business, and tearing down a stack of them is a
+# fault nobody named.
+#
+# THE TOPMOST IS THE ONE WITH THE HIGHEST MOUNT ID. Mount ids increase monotonically, so the most recently
+# stacked mount at a given mountpoint is the last one — which is exactly the one whose namespace a reader
+# resolves to, and the one the daemon is serving. The count that was skipped is reported rather than
+# silently dropped.
 matched="$(awk -v root="$root" '
   {
     sep = 0
@@ -766,8 +779,10 @@ matched="$(awk -v root="$root" '
     mountpoint = $5
     if (fstype != "fuse.projectiond") next
     if (mountpoint != root && index(mountpoint, root "/") != 1) next
-    print $3
-  }' "$mountinfo" | sort -u)"
+    print $1, mountpoint, $3
+  }' "$mountinfo" | sort -k2,2 -k1,1n | awk '
+    { top[$2] = $3 }
+    END { for (mountpoint in top) print top[mountpoint] }' | sort -u)"
 
 if [ -z "$matched" ]; then
   echo "abort:none"
