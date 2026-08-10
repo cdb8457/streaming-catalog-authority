@@ -230,8 +230,8 @@ defect** — and if one does, the fix, its regression test and the rerun are rec
 ## 8. Run record
 
 **NOT RUN — and it is blocked on a finding rather than on a defect.** No run has satisfied the closure rule
-in §4.1. Four runs have been taken on the real Unraid host, each on a frozen tree, and every one is recorded
-in §8.2 with what it established and what stopped it. §11 is the finding that stops the fourth, and it needs
+in §4.1. Seven runs have been taken on the real Unraid host, each on a frozen tree, and every one is recorded
+in §8.2 with what it established and what stopped it. §11 is the finding that stops the last, and it needs
 a decision this document cannot make for itself.
 
 **WHAT HAS BEEN OBSERVED ANYWAY, AND IT IS MOST OF THE GATE.** These are observations from runs that did not
@@ -272,7 +272,7 @@ what makes a run worth attempting.
 | `npx tsx test/projection-overlap-measurement-mode.ts` | 13/0 |
 | `npx tsx test/projection-evidence-consistency.ts` | 4/0 |
 
-### 8.2 The four runs, and what stopped each
+### 8.2 The runs, and what stopped each
 
 | Run | Frozen tree | What it established | What stopped it |
 |---|---|---|---|
@@ -281,6 +281,8 @@ what makes a run worth attempting.
 | 3 | `af6dc324…` | **all three servers direct-played the real object**; four windows digest-matched | two results formats across three drivers (§9.1 #3) |
 | 4 | `8978c64d…` | in-container reads by all three before the fault; A1 recovered a fresh sibling in 1,514 ms | **§11** — the consumers that were already attached could not read afterwards |
 | 5 | `f53b8d91…` | the bind-ordering fix in place: setup, publish, three servers bound before the mount, generation 2 admitted | **§11** — every read of the operator's object now fails EIO. The provider rotated its CDN origin out of the allowlist; the independent Phase 1 TorBox gate fails identically on the same host |
+| 6 | `de5b57fa…` | the instrumented A3 diagnostic: the drain holds the floor, the abort picks the served connection, the death is observed — and the remount is refused `ENOTCONN` | run by hand as a diagnostic, not for closure; it produced §13.6 |
+| 7 | `6a0e9546…` | the §13.7 fix frozen and restarted | **§11.4** — the same blocker, re-observed, with the CDN origin rotated a *second* time |
 
 A fifth attempt sat between 3 and 4 and was **stopped by hand** rather than failing: busybox's `tail` does
 not seek (§9.1 #4). It left one stale mountpoint, which `projection_gate_cleanup_run` cleared; the host's
@@ -694,3 +696,95 @@ distinguished from a clean drain`) and *THE REMOUNT ASKS THE MOUNT POINT NOTHING
 suite adds a table over the mount data — root mode, `allow_other`, `default_permissions`, the three options
 the kernel takes as flags and rejects as data, and the omission of `max_read` — because a mount with the
 wrong option string does not refuse, it succeeds and behaves differently.
+
+### 13.8 The regression that reproduces A3 without a provider
+
+A source pin cannot mount anything, so the defect needed a host gate — and it needed one that does not
+depend on the provider, because the provider is blocked (§11.4). It lives in the Phase 2 **stale-mount
+gate**, whose subject is already exactly this object: `deploy/projection-stale-mount-gate.sh`, phase 3.
+
+Phases 1 and 2 of that gate face a corpse that is **seconds** old, which is precisely the case a warm
+attribute cache hides, and both have always passed. Phase 3 faces **the same corpse** once it has gone cold:
+
+1. a persistent unprivileged verifier binds the mount point `rslave` **before anything is ever mounted
+   there**, per §11 of the product contract;
+2. a daemon mounts, is SIGKILLed, and a second daemon starts over the still-warm corpse with
+   `--auto-remount` — the A2 topology, and the one every real deployment lands in;
+3. the gate waits until the corpse underneath is **75 s** old, which an offline pin ties to the daemon's own
+   `attrTimeout`, and proves it is cold by showing a `stat` of its root is now refused;
+4. the host lazily detaches the daemon's own mount, leaving the cold corpse exposed;
+5. both permanent log lines are counted **from baselines taken before the fault**, and both must increment;
+6. the consumer that was attached in step 1 must read the same digest again through its own bind.
+
+**Measured, against `894b36f` — the immediately preceding product state, with only the gate replaced:**
+
+```
+the corpse underneath is now 75s old
+a stat of the corpse's root is refused and mountinfo still names fuse.projectiond: it is cold
+the daemon reported a serve-loop death
+projectiond: remount attempt 1/3
+projectiond: detached 0 stale mount(s) of ours at /mnt/projection ... (the startup floor (1 at the floor, 1 now))
+projectiond: remount refused: transport endpoint is not connected
+projectiond: remount attempt 2/3   ... refused
+projectiond: remount attempt 3/3   ... refused
+projectiond: serve loop died and no remount succeeded; exiting
+GATE FAILED: the daemon never reported a remount after a serve death over a COLD corpse
+```
+
+That is A3's failure exactly, with no provider, no media server and no abort machinery — and the drain
+behaving correctly throughout, detaching nothing and holding the floor.
+
+**IT ALSO RETIRES AN OPEN QUESTION.** §13.5 recorded that the instrumented A3 run's daemon log showed
+`remount attempt 1/3` and nothing after it, which looked like a supervisor stuck between attempts. It is not:
+here the same build logs all three attempts and the exit. The single-attempt capture was an incomplete read
+of the log, not a stuck loop, and no change was made on account of it.
+
+### 13.9 Two defects in the instrument, found while proving the fix
+
+Neither is in the product, and both are the same shape: **a check that can report the wrong answer about a
+system that is behaving correctly.**
+
+- **Docker cannot bind a cold corpse.** The first draft of phase 3 started a *fresh* daemon container over
+  the cold corpse. That cannot be built at all — `error while creating mount source path ... file exists` —
+  because Docker's own bind setup traverses the disconnected source. It is the same root cause one level up,
+  it is not product behaviour, and scoring it as a verdict would have been wrong. Hence the pre-attached
+  verifier, which is also the topology A3 actually has.
+- **`docker logs | grep -q` can fail on a match.** Under `set -o pipefail`, `grep -q` exits at the first
+  match and the producer still writing into the closed pipe dies of SIGPIPE, which pipefail reports as the
+  pipeline's status. Observed twice on the real host: the gate died with *the refusing daemon did not name
+  the corpse in its log* one line after dumping a log that plainly contained it, and measured apart both
+  `docker logs` and `grep` returned 0. All five such assertions in that gate now capture the log whole and
+  match it as a string.
+
+### 13.10 What the fix was proved against
+
+**THE EVIDENCE BINDS TO `a33215b`**, tree `707b30c6`, tracked-manifest digest `8714fac3b289c7d2` over 1,617
+files, **verified byte-identical in both directions** between this worktree and
+`/mnt/user/appdata/catalog-p3-final` on the real host. The image built from it is
+`sha256:8776f28ae70a73eeb75aab71725fc78405b6f65fc193cfee214daf0544c3bd38` — **the same digest** the build
+from `5eaa420` produced, which is itself the check that the daemon bytes did not move between them and that
+only gate, test and documentation files did. Commits after `a33215b` in this document's own history are
+documentation and change nothing that was run.
+
+**The Phase 2 mount-hardening tranche, against that image, three consecutive runs each where the gate has a
+`:three` wrapper:**
+
+| Gate | Runs | Result |
+|---|---|---|
+| `go:stale-mount-gate:three` — now including the cold-corpse phase | 3 | **exit 0**, three `PHASE 3 COMPLETE`, three post-recovery digest reads by the pre-attached consumer |
+| `go:serve-death-gate:three` | 3 | **exit 0** |
+| `go:publisher-mount-gate` | 1 | **exit 0** |
+
+Zero `GATE FAILED`, zero skips — a skip is not a pass in this repository and none occurred. The host was
+checked clean before and after: no gate containers, no `projectiond` mount anywhere in
+`/proc/self/mountinfo`, and every run's own cleanup reported `0 mountpoints and no run directory`.
+
+An earlier tranche run against `5eaa420` — the same daemon bytes, before the cold-corpse phase existed —
+also passed all three gates three consecutive times. That is what says the mount-path change regressed
+nothing that Phase 2 had already closed.
+
+**WHAT IS STILL NOT PROVED, AND IT IS THE THING PHASE 3 EXISTS FOR.** None of this is a Phase 3 closure run.
+The six-arm loop with three real media servers and the operator's real object has not run to completion since
+the fix, because it cannot reach a provider byte (§11.4). A3 is proved against a **local fixture** in a
+provider-free gate, with one pre-attached consumer rather than three real media servers. That is strictly
+weaker than the predeclared closure rule, and no part of it is being offered in place of one.
