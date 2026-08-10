@@ -795,6 +795,32 @@ test('the gate ships no multi-line `node -e`, which is what made a Phase 2 harne
   }
 });
 
+test('nothing warms the window before the cold concurrent scan measures it', () => {
+  // THE FIRST REAL RUN DIED HERE. The three per-server `scan` calls that produce the item ids playback needs
+  // are also the first thing that reads a 1.7 GB remote object through three ffprobes — Plex's took 15 s.
+  // They ran BEFORE the loop, so by the time cycle 1's concurrent scan was observed every window was warm,
+  // all three servers finished a two-entry re-scan between two ticks, and the run failed its own
+  // simultaneity assertion having warmed the very window it was about to measure. G18's header warns about
+  // exactly this; the warning was rediscovered by running the gate rather than by reading it.
+  const gate = read(GATE);
+  const scanAt = gate.indexOf('--out "$REL/out/items-jellyfin.json"');
+  assert(scanAt > 0, 'the gate no longer produces item ids through each server\'s own scan');
+  const fnAt = gate.indexOf('ensure_items() {');
+  assert(fnAt > 0 && fnAt < scanAt,
+    'the item-id scans are not inside ensure_items, so nothing bounds when they run');
+
+  const overlapAt = gate.indexOf('drive verify-overlap');
+  const callAt = gate.indexOf('\n  ensure_items\n');
+  assert(overlapAt > 0, 'the gate no longer takes the overlap observation');
+  assert(callAt > overlapAt,
+    'ensure_items is called before the overlap observation, which warms the window it measures');
+
+  // AND THERE IS EXACTLY ONE CALL SITE. A second one anywhere earlier would reintroduce the defect while
+  // leaving the ordering check above satisfied.
+  const calls = gate.split('\n').filter((line) => /^\s*ensure_items\s*$/.test(line));
+  assertEq(calls.length, 1, `ensure_items is called ${calls.length} times; one call site, inside the loop`);
+});
+
 test('the CLI publishes the thresholds as shell assignments the gate can evaluate', () => {
   const run = spawnSync(process.execPath,
     ['--import', 'tsx', join(repoRoot, 'src/ops/projection-reliability-loop-cli.ts'), 'budgets', '--sh'],

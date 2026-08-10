@@ -1383,28 +1383,43 @@ EXPECT_TOTAL="$(node "$REL/out/expect.cjs" "$REL/out/expected.json" "$REL/out/co
 echo "  the shared expectation all three servers are held against is $EXPECT_TOTAL entries"
 
 # ----------------------------------------------------------------------------------------------------------
-step "one scan per server through its OWN driver, for the item ids playback needs"
+# THE ITEM IDS PLAYBACK NEEDS — PRODUCED AFTER THE FIRST CONCURRENT SCAN, NOT BEFORE IT
 # ----------------------------------------------------------------------------------------------------------
-# WHY THIS IS SEPARATE FROM THE LOOP'S OWN SCANS, AND WHY IT HAPPENS ONCE. The loop scans all three servers
-# on ONE clock through `concurrent-scan`, which writes each server's CATALOGUE — key, size, ordinary-file —
-# because that is what "did all three see the same namespace" needs. Direct play needs something different:
-# the server's own ITEM ID and media-source id, which each driver's `scan` writes and `paced-play` reads.
+# THE FIRST REAL RUN FAILED HERE AND THE FAILURE WAS THIS ORDER. The loop scans all three servers on ONE
+# clock through `concurrent-scan`, which writes each server's CATALOGUE — key, size, ordinary-file. Direct
+# play needs something different: the server's own ITEM ID and media-source id, which each driver's `scan`
+# writes and `paced-play` reads. Those three scans used to run HERE, before the loop — and they are what
+# actually reads a 1.7 GB remote object through three ffprobes for the first time. Plex's took 15 s. By the
+# time cycle 1's concurrent scan ran, every window was warm and all three servers finished a two-entry
+# re-scan between two of the observer's ticks: 4 samples, ZERO with a server in flight, and the run died on
+# its own simultaneity assertion having warmed the very window it was about to measure.
+#
+# It is exactly what G18's own header warns about — "the corpus generation is published AFTER all three
+# libraries exist, and the three concurrent scans are the FIRST thing that ever reads it" — arrived at
+# independently, one tranche later, by running the gate rather than by reading it.
 #
 # ONCE, BECAUSE ZERO ITEM-ID CHURN IS A THING THIS GATE ASSERTS RATHER THAN ASSUMES. If a restart or a
 # remount changed an item id, playback in the next cycle would fail against the stale items file — which is
 # the right outcome, and a re-scan per cycle would have hidden it by silently picking up the new one.
-jellyfin scan --state "$JF_STATE" --expect-file "$REL/out/expected.json" \
-  --out "$REL/out/items-jellyfin.json" --label corpus \
-  || { logs_tail "$JF_CONTAINER"; die "Jellyfin did not settle on the shared namespace"; }
-emby scan --state "$EMBY_STATE" --expect-file "$REL/out/expected.json" \
-  --out "$REL/out/items-emby.json" --label corpus \
-  || { logs_tail "$EMBY_CONTAINER"; die "Emby did not settle on the shared namespace"; }
-plex scan --state "$PLEX_STATE" --expect-file "$REL/out/expected.json" \
-  --out "$REL/out/items-plex.json" --label corpus \
-  || { logs_tail "$PLEX_CONTAINER"; die "Plex did not settle on the shared namespace"; }
-for server in $RL_SERVERS; do
-  test -s "$WORK/out/items-$server.json" || die "$server's scan exited 0 but wrote no items"
-done
+ITEMS_READY=0
+ensure_items() {
+  [ "$ITEMS_READY" -eq 0 ] || return 0
+  step "one scan per server through its OWN driver, for the item ids playback needs"
+  jellyfin scan --state "$JF_STATE" --expect-file "$REL/out/expected.json" \
+    --out "$REL/out/items-jellyfin.json" --label corpus \
+    || { logs_tail "$JF_CONTAINER"; die "Jellyfin did not settle on the shared namespace"; }
+  emby scan --state "$EMBY_STATE" --expect-file "$REL/out/expected.json" \
+    --out "$REL/out/items-emby.json" --label corpus \
+    || { logs_tail "$EMBY_CONTAINER"; die "Emby did not settle on the shared namespace"; }
+  plex scan --state "$PLEX_STATE" --expect-file "$REL/out/expected.json" \
+    --out "$REL/out/items-plex.json" --label corpus \
+    || { logs_tail "$PLEX_CONTAINER"; die "Plex did not settle on the shared namespace"; }
+  local server
+  for server in $RL_SERVERS; do
+    test -s "$WORK/out/items-$server.json" || die "$server's scan exited 0 but wrote no items"
+  done
+  ITEMS_READY=1
+}
 
 # ----------------------------------------------------------------------------------------------------------
 step "IS THE REAL ENTRY A DECODABLE VIDEO? Asked once, before any server is asked to play it"
@@ -1862,6 +1877,9 @@ for ARM in $RL_ARMS; do
       die "the three scans were not observed to overlap on the cold cycle"
     fi
   fi
+  # ...AND ONLY NOW ARE THE ITEM IDS TAKEN. Doing it before the loop is what warmed the window the line above
+  # exists to measure; see the comment on `ensure_items`.
+  ensure_items
   phase_play "$CYCLE"
 
   echo "--- phase B: the operator's windows, through the mount and inside each server ---"
