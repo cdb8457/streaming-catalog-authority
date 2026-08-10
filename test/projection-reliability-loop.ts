@@ -506,6 +506,90 @@ test('the three-run wrapper cannot announce a sequence it did not complete', () 
     'the closing message is not guarded by the completed count');
 });
 
+test('the three-run wrapper\'s accounting is EXECUTED against a scripted gate, not read', () => {
+  // THE SEAM EXISTS FOR THIS. `PROJECTION_RELIABILITY_GATE_COMMAND` points the wrapper at a stub, so the
+  // three things that matter — a skip propagates as 77, a failure stops the sequence, and the closing
+  // message is guarded by the count — are exercised as BEHAVIOUR. Phase 1 spent four dispatches on programs
+  // that were only ever matched by regex, and this is the wrapper that decides whether Phase 3 closes.
+  const shell = findShell();
+  if (shell === undefined) {
+    skipBlock('executing the three-run wrapper against a stub gate (no POSIX shell for a temp path)');
+    return;
+  }
+  const dir = mkdtempSync(join(tmpdir(), 'rl-three-'));
+  const stub = join(dir, 'stub.sh');
+  const counter = join(dir, 'runs');
+  const runWrapper = (statuses: string, runs: string): { status: number | null; out: string; calls: number } => {
+    writeFileSync(counter, '');
+    // A stub whose exit status is the Nth field of a script, so one wrapper run can be told to pass twice
+    // and then skip.
+    writeFileSync(stub, [
+      'set -eu',
+      `printf 'x' >> "${shPath(counter)}"`,
+      `n="$(wc -c < "${shPath(counter)}" | tr -d " ")"`,
+      `exit "$(echo "${statuses}" | cut -d, -f"$n")"`,
+      '',
+    ].join('\n'));
+    const run = spawnSync(shell, [shPath(join(repoRoot, THREE))], {
+      encoding: 'utf8',
+      timeout: 120_000,
+      env: {
+        ...process.env,
+        PROJECTION_RELIABILITY_GATE_COMMAND: shPath(stub),
+        PROJECTION_RELIABILITY_GATE_RUNS: runs,
+      },
+    });
+    return {
+      status: run.status,
+      out: `${run.stdout ?? ''}${run.stderr ?? ''}`,
+      calls: readFileSync(counter, 'utf8').length,
+    };
+  };
+
+  const green = runWrapper('0,0,0', '3');
+  assertEq(green.status, 0, `three passing runs did not close: ${green.out}`);
+  assertEq(green.calls, 3, 'the wrapper did not run the gate three times');
+  assert(green.out.includes('3 of 3 consecutive reliability-loop runs completed'),
+    `the closing message is missing: ${green.out}`);
+
+  // A SKIP IS 77 AND IT STOPS THE SEQUENCE. Not folded, not tallied, not "two of three passed".
+  const skipped = runWrapper('0,77,0', '3');
+  assertEq(skipped.status, 77, 'a skipped run did not propagate 77');
+  assertEq(skipped.calls, 2, 'the wrapper kept going after a skip');
+  assert(!skipped.out.includes('consecutive reliability-loop runs completed'),
+    'the wrapper announced a completed sequence over a skip');
+
+  // A FAILURE STOPS IT TOO, and carries its own status out.
+  const failed = runWrapper('0,1,0', '3');
+  assertEq(failed.status, 1, 'a failing run did not propagate its status');
+  assertEq(failed.calls, 2, 'the wrapper kept going after a failure');
+
+  // AND A SEQUENCE OF NO RUNS CANNOT ANNOUNCE ONE.
+  const none = runWrapper('0', '0');
+  assert(none.status !== 0, 'a sequence of zero runs reported success');
+  assert(none.out.includes('refusing to report a completed sequence'),
+    `a zero-run sequence did not refuse: ${none.out}`);
+
+  // THE OPTIONAL ENTRY POINT FOLDS A SKIP AND NOTHING ELSE.
+  writeFileSync(counter, '');
+  writeFileSync(stub, `set -eu\nexit 77\n`);
+  const optional = spawnSync(shell, [shPath(join(repoRoot, OPTIONAL))], {
+    encoding: 'utf8',
+    timeout: 120_000,
+    env: { ...process.env, PROJECTION_RELIABILITY_GATE_COMMAND: shPath(stub) },
+  });
+  assertEq(optional.status, 0, 'the optional entry point did not fold a skip');
+  assert(`${optional.stdout ?? ''}${optional.stderr ?? ''}`.includes('NOTHING WAS PROVED'),
+    'the optional entry point folded a skip without saying what that means');
+  writeFileSync(stub, `set -eu\nexit 1\n`);
+  const optionalFail = spawnSync(shell, [shPath(join(repoRoot, OPTIONAL))], {
+    encoding: 'utf8',
+    timeout: 120_000,
+    env: { ...process.env, PROJECTION_RELIABILITY_GATE_COMMAND: shPath(stub) },
+  });
+  assertEq(optionalFail.status, 1, 'the optional entry point folded a FAILURE, not just a skip');
+});
+
 test('the operator inputs are copied at 0600 and the two consumers get different copies', () => {
   const gate = read(GATE);
   assert(gate.includes('install -m 600 "$TORBOX_CREDENTIAL" "$WORK/inputs/torbox-credential"'),
