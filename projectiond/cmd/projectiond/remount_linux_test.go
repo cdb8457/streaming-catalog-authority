@@ -11,6 +11,22 @@
 //
 // The gate is what caught it and the gate needs a host. This decision does not: it is a pure function of what
 // the probe found, so it is pinned here, in microseconds, everywhere.
+//
+// WHAT PROJECTION PHASE 3 CHANGED, AND IT IS EXACTLY ONE ROW. The decision used to be a boolean — "should I
+// unmount this?" — and for OUR OWN STALE mount the answer was yes, an ORDINARY unmount, on the stated
+// reasoning that "leaving it would make the remount a stack over a dead mount". A real run disproved that
+// reasoning. With three real media servers holding the mount and the connection aborted under them, the
+// ordinary unmount returned WITHOUT REMOVING ANYTHING — an ordinary unmount cannot remove a mount somebody
+// is holding — and the mount syscall that followed could not resolve a path through the corpse:
+//
+//	serve loop died: the FUSE serve loop exited without a requested unmount
+//	remount attempt 1/3
+//	remount refused: transport endpoint is not connected
+//
+// So the recovery path never recovered, in precisely the situation it exists for. That one row is now a LAZY
+// detach, which is what this daemon's own startup message already tells an operator to do about a stale
+// mount ("clear it with: umount -l"). Every other row is unchanged, and the reasons they give are the
+// reasons they have always given.
 package main
 
 import (
@@ -19,39 +35,82 @@ import (
 	"github.com/cdb8457/streaming-catalog-authority/projectiond/internal/fusefs"
 )
 
-// THE TABLE IS EXHAUSTIVE ON ProbeResult ON PURPOSE. The defect was not a wrong branch, it was the ABSENCE of
-// a branch — so the test that prevents its return has to say something about every value the probe can
-// return, including one it cannot yet.
-func TestShouldUnmountBeforeRemountOnlyEverTouchesOurOwnMount(t *testing.T) {
+// THE TABLE IS EXHAUSTIVE ON ProbeResult ON PURPOSE. The original defect was not a wrong branch, it was the
+// ABSENCE of a branch — so the test that prevents its return has to say something about every value the probe
+// can return, including one it cannot yet.
+func TestPlanRemountCleanupOnlyEverTouchesOurOwnMount(t *testing.T) {
 	for _, tc := range []struct {
 		probe fusefs.ProbeResult
-		want  bool
+		want  remountCleanup
 		why   string
 	}{
-		{fusefs.ProbeLiveProjectiond, true,
-			"our own live mount is ours to remove before remounting over it"},
-		{fusefs.ProbeStaleProjectiond, true,
-			"our own corpse is ours to remove; leaving it would make the remount a stack over a dead mount"},
-		{fusefs.ProbeForeign, false,
+		{fusefs.ProbeLiveProjectiond, remountCleanupUnmount,
+			"our own live mount is ours to remove before remounting over it, and it goes the ORDINARY way: " +
+				"lazily detaching a live mount takes it away from every consumer holding it"},
+		{fusefs.ProbeStaleProjectiond, remountCleanupLazyDetach,
+			"our own corpse is ours to remove, and an ORDINARY unmount cannot remove one a consumer is " +
+				"holding — measured on the real host, where it returned having removed nothing and the " +
+				"remount then failed with ENOTCONN. A corpse costs a consumer nothing to detach: every read " +
+				"through a dead connection already fails"},
+		{fusefs.ProbeForeign, remountCleanupNone,
 			"a foreign mount is the operator's bind in every containerised topology, and unmounting it is " +
 				"what made --auto-remount recover for the daemon and for nobody else"},
-		{fusefs.ProbeEmpty, false,
-			"there is nothing of ours here; unmounting would act on whatever is underneath"},
+		{fusefs.ProbeEmpty, remountCleanupNone,
+			"there is nothing of ours here; touching it would act on whatever is underneath"},
 	} {
-		if got := shouldUnmountBeforeRemount(tc.probe); got != tc.want {
-			t.Errorf("shouldUnmountBeforeRemount(%s) = %v, want %v — %s", tc.probe, got, tc.want, tc.why)
+		if got := planRemountCleanup(tc.probe); got != tc.want {
+			t.Errorf("planRemountCleanup(%s) = %v, want %v — %s", tc.probe, got, tc.want, tc.why)
 		}
 	}
 }
 
-// AND AN UNRECOGNISED RESULT IS NOT A LICENCE TO UNMOUNT. If ProbeResult gains a value, the safe default is
-// to leave the mount point alone: the cost of not cleaning up is a failed remount attempt that logs and
-// retries, and the cost of cleaning up the wrong thing is a recovery nobody can see.
-func TestShouldUnmountBeforeRemountRefusesAnUnknownProbeResult(t *testing.T) {
+// AND AN UNRECOGNISED RESULT IS NOT A LICENCE TO TOUCH ANYTHING. If ProbeResult gains a value, the safe
+// default is to leave the mount point alone: the cost of not cleaning up is a failed remount attempt that
+// logs and retries, and the cost of cleaning up the wrong thing is a recovery nobody can see.
+func TestPlanRemountCleanupRefusesAnUnknownProbeResult(t *testing.T) {
 	unknown := fusefs.ProbeResult(len([...]fusefs.ProbeResult{
 		fusefs.ProbeEmpty, fusefs.ProbeStaleProjectiond, fusefs.ProbeLiveProjectiond, fusefs.ProbeForeign,
 	}) + 41)
-	if shouldUnmountBeforeRemount(unknown) {
-		t.Fatalf("an unrecognised probe result (%s) must not authorise an unmount", unknown)
+	if got := planRemountCleanup(unknown); got != remountCleanupNone {
+		t.Fatalf("an unrecognised probe result (%s) was planned as %v; it must authorise nothing",
+			unknown, got)
+	}
+}
+
+// THE TWO CASES THAT ARE BOTH "OURS" MUST NOT COLLAPSE BACK INTO ONE ACTION.
+//
+// This is the regression in one assertion. Before Phase 3 both our-own cases took the same ordinary unmount,
+// and that is the whole defect: the action that is right for a mount we are still serving is the action that
+// cannot remove one that is dead and held. A future edit that unifies them fails here with the reason.
+func TestOurLiveMountAndOurCorpseAreNotCleanedUpTheSameWay(t *testing.T) {
+	stale := planRemountCleanup(fusefs.ProbeStaleProjectiond)
+	live := planRemountCleanup(fusefs.ProbeLiveProjectiond)
+	if stale == live {
+		t.Fatalf("a corpse and a live mount are both planned as %v; an ordinary unmount cannot remove a "+
+			"corpse a consumer is holding, which is why --auto-remount could not recover from a connection "+
+			"abort with three media servers attached", stale)
+	}
+	if stale != remountCleanupLazyDetach {
+		t.Fatalf("our own corpse is planned as %v, not a lazy detach; the ordinary unmount is the one that "+
+			"was measured returning without removing anything", stale)
+	}
+	if live != remountCleanupUnmount {
+		t.Fatalf("our own live mount is planned as %v; lazily detaching a live mount takes it away from "+
+			"every consumer holding it", live)
+	}
+}
+
+// AND EVERY PLAN HAS A NAME FOR THE LOG, because a supervisor that says what it did is the only reason this
+// defect was locatable at all: "remount refused: transport endpoint is not connected" is the sentence that
+// found it.
+func TestRemountCleanupNames(t *testing.T) {
+	for plan, want := range map[remountCleanup]string{
+		remountCleanupNone:       "nothing",
+		remountCleanupUnmount:    "unmount",
+		remountCleanupLazyDetach: "lazy detach",
+	} {
+		if got := plan.String(); got != want {
+			t.Fatalf("remountCleanup(%d).String() = %q, want %q", int(plan), got, want)
+		}
 	}
 }

@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/cdb8457/streaming-catalog-authority/projectiond/internal/daemon"
 	"github.com/cdb8457/streaming-catalog-authority/projectiond/internal/fusefs"
 )
@@ -220,15 +222,59 @@ func main() {
 //   - ProbeForeign — somebody else's, and in every containerised topology it is the OPERATOR'S BIND, the one
 //     thing that must survive for the remount to be visible to anyone. Unmounting it is the defect.
 //   - ProbeEmpty — nothing to unmount; calling unmount would act on whatever is underneath.
-func shouldUnmountBeforeRemount(probe fusefs.ProbeResult) bool {
-	switch probe {
-	case fusefs.ProbeLiveProjectiond, fusefs.ProbeStaleProjectiond:
-		return true
-	case fusefs.ProbeForeign, fusefs.ProbeEmpty:
-		return false
+// remountCleanup is what the supervisor does with whatever is at the mount point before it mounts again.
+type remountCleanup int
+
+const (
+	// Leave it alone. Anything that is not ours, and anything that is not there.
+	remountCleanupNone remountCleanup = iota
+	// An ordinary unmount. Our own LIVE mount, which a lazy detach would take away from every consumer
+	// holding it — the hazard a media-server data-plane gate recorded in its own words, after a real run.
+	remountCleanupUnmount
+	// A lazy detach. Our own DEAD mount, which is a corpse and costs a consumer nothing to remove.
+	remountCleanupLazyDetach
+)
+
+func (c remountCleanup) String() string {
+	switch c {
+	case remountCleanupUnmount:
+		return "unmount"
+	case remountCleanupLazyDetach:
+		return "lazy detach"
 	default:
-		// An unrecognised result is not a licence to unmount something unidentified.
-		return false
+		return "nothing"
+	}
+}
+
+// planRemountCleanup decides what the supervisor may do to the mount point before remounting over it.
+//
+// WHY A STALE MOUNT OF OURS NEEDS THE LAZY FORM, AND A REAL RUN IS WHY. An ordinary unmount cannot remove a
+// mount that somebody is holding, and after a connection abort the consumers ARE holding it — three media
+// servers with open handles. Measured on the real Unraid host: the ordinary unmount returned without
+// removing anything, the mount syscall that followed could not resolve a path through the corpse and failed
+// with ENOTCONN, and the supervisor never recovered. `umount -l` is exactly what this daemon's own startup
+// message tells an operator to do about a stale mount ("clear it with: umount -l"); the recovery path now
+// does what it advises instead of trying something it has just been shown cannot work.
+//
+// A CORPSE COSTS A CONSUMER NOTHING TO REMOVE, WHICH IS WHY THE LAZY FORM IS SAFE HERE AND ONLY HERE. Every
+// read through a dead connection already fails; detaching it takes away nothing that worked. Doing the same
+// to a LIVE mount is the opposite — that is the hazard the data-plane gates record, where removing the mount
+// is what breaks recovery — so a live mount keeps the ordinary unmount it has always had.
+//
+// FOREIGN SAFETY IS UNCHANGED AND IS THE WHOLE REASON THIS FUNCTION EXISTS. Anything that is not ours, and
+// anything unrecognised, is still left strictly alone: `--auto-remount` once unmounted the operator's own
+// bind and recovered for the daemon and for nobody else, and no case below may ever reopen that.
+func planRemountCleanup(probe fusefs.ProbeResult) remountCleanup {
+	switch probe {
+	case fusefs.ProbeStaleProjectiond:
+		return remountCleanupLazyDetach
+	case fusefs.ProbeLiveProjectiond:
+		return remountCleanupUnmount
+	case fusefs.ProbeForeign, fusefs.ProbeEmpty:
+		return remountCleanupNone
+	default:
+		// An unrecognised result is not a licence to touch something unidentified.
+		return remountCleanupNone
 	}
 }
 
@@ -256,11 +302,21 @@ func remountLoop(d *daemon.Daemon, cfg daemon.Config, debug, strictMount bool, m
 		// So the probe decides. It is one statfs and one read of mountinfo, it never waits, and it answers
 		// the only question that matters here: is the thing at this path OURS to unmount?
 		probe := fusefs.ProbeMountpoint(cfg.MountPoint)
-		if shouldUnmountBeforeRemount(probe) {
+		switch plan := planRemountCleanup(probe); plan {
+		case remountCleanupUnmount:
 			if err := (*mount).Unmount(); err != nil {
 				logLine("cleanup unmount refused: " + err.Error())
 			}
-		} else {
+		case remountCleanupLazyDetach:
+			// THE CORPSE GOES, AND IT GOES THE ONE WAY THAT WORKS WHILE SOMEBODY IS HOLDING IT. An ordinary
+			// unmount returns without removing a busy mount, and the mount syscall that follows then cannot
+			// resolve a path through the corpse: ENOTCONN, three attempts, no recovery.
+			if err := unix.Unmount(cfg.MountPoint, unix.MNT_DETACH); err != nil {
+				logLine("cleanup lazy detach refused: " + err.Error())
+			} else {
+				logLine("detached the stale mount at " + cfg.MountPoint + " before remounting")
+			}
+		default:
 			logLine(fmt.Sprintf("nothing of ours at %s to clean up (%s); leaving it mounted",
 				cfg.MountPoint, probe))
 		}

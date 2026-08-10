@@ -1955,12 +1955,21 @@ nothing could be measured" ;;
   # THE ASSERTION THIS WHOLE TRANCHE EXISTS FOR. Phase 2's `--auto-remount` recovered for the daemon and for
   # nobody else: /readyz said ready and no consumer could see a file. Three consumers reading through their
   # OWN binds is the only thing that tells those two apart.
-  local reading=0 server
+  # EACH SERVER READS THE OPERATOR'S APPROVED WINDOWS AND DIGESTS THEM. `test -r` was here, and it is
+  # metadata: a dead FUSE mount answers `stat` from a warm attribute cache while every `open` returns
+  # ENOTCONN, so the check that carries this arm's whole claim could have passed over exactly the state it
+  # exists to detect. It is the same in-container read phases B and R use — same program, same windows, same
+  # digests recorded outside the mount — so "the consumers can read again" means the bytes were right.
+  local reading=0 server verdict
   for server in $RL_SERVERS; do
-    if docker exec -u 1000:1000 "$(container_for "$server")" \
-         test -r "/media/projection/$REAL_PATH" >/dev/null 2>&1; then
-      reading=$(( reading + 1 ))
-    fi
+    set +e
+    verdict="$(timeout "$(( ( RL_READ_FAIL_BUDGET_MS * 2 ) / 1000 ))" \
+      docker exec -u 1000:1000 "$(container_for "$server")" \
+      sh /gate/inread.sh "/media/projection/$REAL_PATH" /gate/windows.txt 2>&1 | tail -1)"
+    set -e
+    case "$verdict" in
+      inread:ok*) reading=$(( reading + 1 )) ;;
+    esac
   done
   # WHEN THIS ARM FAILS, THE DAEMON'S OWN ACCOUNT OF THE REMOUNT IS THE DIAGNOSIS AND THE CLEANUP CONTRACT IS
   # ABOUT TO DELETE IT. Two runs were spent inferring from the outside what these lines say directly. The
@@ -1978,7 +1987,7 @@ nothing could be measured" ;;
     # AND WHICH SERVER COULD NOT READ, by name. "2 of 3" is a count; the arm needs to know which one.
     for server in $RL_SERVERS; do
       if docker exec -u 1000:1000 "$(container_for "$server")" \
-           test -r "/media/projection/$REAL_PATH" >/dev/null 2>&1; then
+           sh /gate/inread.sh "/media/projection/$REAL_PATH" /gate/windows.txt >/dev/null 2>&1; then
         echo "  after the remount, $server CAN read" >&2
       else
         echo "  after the remount, $server CANNOT read" >&2

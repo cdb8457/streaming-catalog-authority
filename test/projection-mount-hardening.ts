@@ -562,22 +562,34 @@ test('THE REMOUNT LOOP UNMOUNTS ONLY WHAT IS OURS, so --auto-remount recovers fo
   const main = read('projectiond/cmd/projectiond/main.go');
   const loop = main.slice(main.indexOf('func remountLoop('));
   assert(loop.length > 0, 'main.go no longer has a remountLoop');
-  const guard = loop.indexOf('shouldUnmountBeforeRemount(');
+  // PROJECTION PHASE 3 RENAMED THE GUARD AND WIDENED WHAT IT RETURNS, AND THIS PIN'S CLAIM IS UNCHANGED.
+  // The decision used to be a boolean — "should I unmount this?" — and is now a plan, because our own DEAD
+  // mount needs a lazy detach that an ordinary unmount cannot achieve while a consumer holds it. What this
+  // test has always been about is the other half: that nothing which is not ours is ever touched.
+  const guard = loop.indexOf('planRemountCleanup(');
   const unmount = loop.indexOf('.Unmount()');
-  assert(guard >= 0, 'the remount loop no longer consults a guard before its cleanup unmount');
+  assert(guard >= 0, 'the remount loop no longer consults a guard before its cleanup');
   assert(unmount >= 0 && guard < unmount,
     'the remount loop unmounts before deciding whether the mount is ours, so it can remove the bind that '
     + 'carries the namespace to every consumer');
   assert(/fusefs\.ProbeMountpoint\(cfg\.MountPoint\)/.test(loop),
     'the guard is not driven by the mountpoint probe, so it is guessing what is at the path');
   // The decision is a named function so a test can drive the shipped one, and it must refuse a foreign mount.
-  assert(/func shouldUnmountBeforeRemount\(probe fusefs\.ProbeResult\) bool/.test(main),
-    'the unmount decision is inlined, so no off-host test can drive the shipped decision');
-  assert(read('projectiond/cmd/projectiond/remount_linux_test.go').includes('shouldUnmountBeforeRemount('),
-    'no test drives the shipped unmount decision');
-  const decision = main.slice(main.indexOf('func shouldUnmountBeforeRemount('));
-  assert(/case fusefs\.ProbeForeign, fusefs\.ProbeEmpty:\s*\n\s*return false/.test(decision),
+  assert(/func planRemountCleanup\(probe fusefs\.ProbeResult\) remountCleanup/.test(main),
+    'the cleanup decision is inlined, so no off-host test can drive the shipped decision');
+  assert(read('projectiond/cmd/projectiond/remount_linux_test.go').includes('planRemountCleanup('),
+    'no test drives the shipped cleanup decision');
+  const decision = main.slice(main.indexOf('func planRemountCleanup('));
+  assert(/case fusefs\.ProbeForeign, fusefs\.ProbeEmpty:\s*\n\s*return remountCleanupNone/.test(decision),
     'the decision no longer explicitly refuses a foreign or empty mount point');
+  // AND THE LAZY FORM IS FOR OUR OWN CORPSE AND NOTHING ELSE. A lazy detach of a LIVE mount is the hazard
+  // this whole file is about, one step worse: it removes the namespace from every consumer holding it.
+  assert(/case fusefs\.ProbeStaleProjectiond:\s*\n\s*return remountCleanupLazyDetach/.test(decision),
+    'our own stale mount is not the case that gets the lazy detach');
+  assert(/case fusefs\.ProbeLiveProjectiond:\s*\n\s*return remountCleanupUnmount/.test(decision),
+    'our own LIVE mount no longer takes the ordinary unmount, which would detach it from every consumer');
+  assert(/unix\.Unmount\(cfg\.MountPoint, unix\.MNT_DETACH\)/.test(loop),
+    'the lazy detach is not the MNT_DETACH the plan names');
 });
 
 // ---------------------------------------------------------------------------------------------------------

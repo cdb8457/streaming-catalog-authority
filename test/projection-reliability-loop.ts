@@ -340,6 +340,23 @@ test('every cycle requires all three servers, in both phases, in every way', () 
   }
 });
 
+test('A3\'s three frontend checks read BYTES, never metadata', () => {
+  // `test -r` WAS HERE AND IT IS METADATA. A dead FUSE mount answers `stat` from a warm attribute cache
+  // while every `open` returns ENOTCONN, so the check carrying this arm's whole claim could have passed over
+  // exactly the state it exists to detect — and on this arm two of three servers did report readable while
+  // the namespace was gone. All three now run the same in-container program phases B and R use, against the
+  // operator's approved windows, digest-compared to values recorded outside the mount.
+  const body = shellCodeOf(functionBodyOf(read(GATE), 'arm_A3'));
+  assert(!body.includes('test -r '),
+    'A3 still decides a frontend can read from metadata; a dead mount answers stat from cache');
+  assert(body.includes('sh /gate/inread.sh'),
+    'A3 does not use the in-container approved-window read for its frontend checks');
+  assert(body.includes('inread:ok'), 'A3 does not require the read program\'s own success token');
+  // AND THE 3/3 REQUIREMENT IS EXACT AND UNCHANGED.
+  assert(body.includes('RL-F-A3-frontends-read-after-remount') && body.includes('eq "$reading" 3'),
+    'the three-of-three requirement is no longer an exact equality against 3');
+});
+
 test('A3 requires the assertion this whole tranche exists for', () => {
   // Phase 2's `--auto-remount` recovered the namespace for the daemon and for nobody else. The only check
   // that can tell those apart is three consumers reading through their own binds afterwards.
