@@ -1881,11 +1881,15 @@ arm_A3() {
   # three real media servers holding the mount, a lazy unmount detaches namespaces and leaves the connection
   # alive, so the first real run of this arm reported a fault that had never happened. The abort is the
   # kernel's own teardown and it is guarded to `fuse.projectiond` mounts under this run's directory only.
+  #
+  # IT RUNS ON THE HOST, NOT IN A CONTAINER, AND A REAL RUN IS WHY. The first attempt did it from a
+  # privileged container and got `abort:not-writable`: a container's `/sys` view will not take the write even
+  # when it can see the connection. The gate is already a root shell on the host that owns this mount — the
+  # mount table it must read and the abort file it must write are both right there — so the container was
+  # doing nothing except adding a namespace between the program and the two files it needs.
   local abort_verdict
   set +e
-  abort_verdict="$(docker run --rm --privileged \
-    -v "$GATE_ROOT:/gate:rshared" -v "$WORK/out:/out:ro" "$VERIFY_IMAGE" \
-    sh /out/fuse-abort.sh "/gate/$(basename "$WORK")/mnt" 2>&1 | tail -1)"
+  abort_verdict="$(bash "$WORK/out/fuse-abort.sh" "$WORK/mnt" 2>&1 | tail -1)"
   set -e
   case "$abort_verdict" in
     abort:done*) echo "  $abort_verdict — the connection was torn down under a living daemon" ;;
