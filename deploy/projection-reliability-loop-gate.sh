@@ -1264,42 +1264,6 @@ timed_read() {
 $(printf '%s' "$out" | tr '\n' ' ')"
 }
 
-step "mounting — the daemon gets the GATE SECRET only, never the provider key"
-start_daemon
-step "starting the resolver INSIDE the daemon's network namespace — no host port, loopback only"
-start_resolver
-echo "  the resolver answers on the shared loopback and refuses an unauthenticated request"
-
-# THE RESOLVER IS NOT REACHABLE FROM ANYWHERE ELSE, MEASURED AT THE TRANSPORT. A resolver anything on the
-# network could reach is a credential oracle: it mints CDN links for the operator's account to whoever asks.
-set +e
-docker run --rm --network "$NETWORK" -v "$PWD:/workspace:ro" -w /workspace \
-  -e npm_config_update_notifier=false "$NODE_IMAGE" \
-  node "/workspace/$REL/out/probe-reachable.cjs" "$MOUNT_CONTAINER" "${RESOLVER_PORT}" >/dev/null 2>&1
-resolver_reach=$?
-set -e
-case "$resolver_reach" in
-  0) record RL-resolver-loopback-only bool 0 "" "the resolver accepted a TCP connection from the gate network"
-     die "the resolver is reachable from the gate network; it must be loopback-only" ;;
-  1) record RL-resolver-loopback-only bool 1 "" "refused at the transport from the gate network" ;;
-  *) record RL-resolver-loopback-only bool 0 "" "the reachability probe could not take the measurement"
-     die "the resolver's reachability could not be determined (probe exit $resolver_reach); a gate that \
-could not take the measurement must not report the property as proven" ;;
-esac
-
-echo "  waiting for the seed namespace to become visible to a sibling container"
-await_path "$SEED_PATH" || { logs_tail "$MOUNT_CONTAINER"; die "the mount never became visible"; }
-
-# ----------------------------------------------------------------------------------------------------------
-step "what an ordinary non-root container sees before any media server is involved"
-# ----------------------------------------------------------------------------------------------------------
-docker run --rm --user 65534:65534 --cap-drop ALL --security-opt no-new-privileges \
-  -v "$WORK/mnt:/mnt:rslave" -v "$WORK/out:/out:ro" "$VERIFY_IMAGE" \
-  sh /out/baseline.sh "$SEED_PATH"
-
-# ----------------------------------------------------------------------------------------------------------
-step "starting THREE REAL MEDIA SERVERS over the SAME mount"
-# ----------------------------------------------------------------------------------------------------------
 # EACH IS STARTED THE WAY ITS OWN GATE STARTS IT, AND THE THREE COMMANDS ARE DELIBERATELY NOT UNIFIED.
 # Jellyfin runs under `--user 1000:1000` with all capabilities dropped; Emby CANNOT, because its entrypoint
 # is an s6 supervision tree that does the setuid itself; Plex takes PLEX_UID/PLEX_GID and must be addressed
@@ -1341,10 +1305,73 @@ start_plex() {
     -v "$WORK/mnt:/media/projection:rslave" \
     "$PLEX_IMAGE" >/dev/null
 }
+
+# ----------------------------------------------------------------------------------------------------------
+step "THE THREE MEDIA SERVERS START FIRST, AND THE ORDER IS THE WHOLE OF WHETHER THEY SURVIVE A REMOUNT"
+# ----------------------------------------------------------------------------------------------------------
+# THIS ORDER IS A CORRECTION, AND IT COST TWO ARMS BEFORE IT WAS UNDERSTOOD.
+#
+# A consumer that binds `$WORK/mnt` while it is a PLAIN DIRECTORY binds a subtree of the parent filesystem
+# and becomes a slave of the PARENT's peer group — so every later mount AT that path propagates into it. A
+# consumer that binds the same path while a FUSE mount is already there binds THAT MOUNT, and is a slave of
+# that mount's peer group only: once the mount is gone, nothing that happens at the path afterwards reaches
+# it, because the new mount belongs to a peer group the container never joined.
+#
+# MEASURED ON THIS HOST, one daemon and two busybox consumers differing ONLY in when they attached:
+#
+#                                    bound the directory first   bound the mount itself
+#   after the first mount                      reads                     reads
+#   graceful stop, then restart                READS                     cannot read
+#   external umount + --auto-remount           READS                     cannot read
+#
+# The daemon is correct in both columns — it logged the serve death and the remount, and a fresh reader saw
+# the namespace every time. What differs is only which peer group the consumer's bind belongs to.
+#
+# WHY THE GATE USED TO START THEM LAST. Every Phase 1 data-plane gate starts its media server after the
+# mount, and G12's SIGKILL recovery works there because a SIGKILL leaves a corpse and the restart STACKS
+# over it — a new mount on the same mountpoint, inside the peer group the container did join. That path is
+# unaffected by this ordering and still passes; it is the two paths that REMOVE the mount, which no Phase 1
+# gate exercises with a consumer attached, that need the bind to follow the directory.
+#
+# THE BIND ITSELF IS UNCHANGED. Same source, same target, same `rslave`. Only the moment changes.
 start_jellyfin
 start_emby
 start_plex
-echo "  three media servers started, all three with the same projected mount as a library root"
+echo "  three media servers started, each bound to the projected path BEFORE anything is mounted there"
+
+step "mounting — the daemon gets the GATE SECRET only, never the provider key"
+start_daemon
+step "starting the resolver INSIDE the daemon's network namespace — no host port, loopback only"
+start_resolver
+echo "  the resolver answers on the shared loopback and refuses an unauthenticated request"
+
+# THE RESOLVER IS NOT REACHABLE FROM ANYWHERE ELSE, MEASURED AT THE TRANSPORT. A resolver anything on the
+# network could reach is a credential oracle: it mints CDN links for the operator's account to whoever asks.
+set +e
+docker run --rm --network "$NETWORK" -v "$PWD:/workspace:ro" -w /workspace \
+  -e npm_config_update_notifier=false "$NODE_IMAGE" \
+  node "/workspace/$REL/out/probe-reachable.cjs" "$MOUNT_CONTAINER" "${RESOLVER_PORT}" >/dev/null 2>&1
+resolver_reach=$?
+set -e
+case "$resolver_reach" in
+  0) record RL-resolver-loopback-only bool 0 "" "the resolver accepted a TCP connection from the gate network"
+     die "the resolver is reachable from the gate network; it must be loopback-only" ;;
+  1) record RL-resolver-loopback-only bool 1 "" "refused at the transport from the gate network" ;;
+  *) record RL-resolver-loopback-only bool 0 "" "the reachability probe could not take the measurement"
+     die "the resolver's reachability could not be determined (probe exit $resolver_reach); a gate that \
+could not take the measurement must not report the property as proven" ;;
+esac
+
+echo "  waiting for the seed namespace to become visible to a sibling container"
+await_path "$SEED_PATH" || { logs_tail "$MOUNT_CONTAINER"; die "the mount never became visible"; }
+
+# ----------------------------------------------------------------------------------------------------------
+step "what an ordinary non-root container sees before any media server is involved"
+# ----------------------------------------------------------------------------------------------------------
+docker run --rm --user 65534:65534 --cap-drop ALL --security-opt no-new-privileges \
+  -v "$WORK/mnt:/mnt:rslave" -v "$WORK/out:/out:ro" "$VERIFY_IMAGE" \
+  sh /out/baseline.sh "$SEED_PATH"
+
 
 JF_BASE="http://127.0.0.1:${JF_PORT}"
 EMBY_BASE="http://127.0.0.1:${EMBY_PORT}"

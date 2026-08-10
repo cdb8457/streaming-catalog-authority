@@ -974,6 +974,44 @@ test('the play call supplies every flag each driver actually requires', () => {
   }
 });
 
+test('the consumers bind the projected path BEFORE anything is mounted there', () => {
+  // THIS ORDER IS THE WHOLE OF WHETHER A CONSUMER SURVIVES A REMOUNT, and it cost two arms before it was
+  // understood. A bind taken while the path is a plain directory is a slave of the PARENT's peer group, so
+  // every later mount at that path propagates in; a bind taken while a FUSE mount is already there is a
+  // slave of THAT MOUNT's peer group only, and once the mount is gone nothing reaches it again. Measured on
+  // the host with two otherwise identical consumers: the early one kept reading across a graceful restart
+  // AND across an external umount with --auto-remount; the late one could do neither.
+  //
+  // It is checked as an ORDER rather than as a bind spelling, because the bind is unchanged — same source,
+  // same target, same rslave. Only the moment differs, and only an order can express that.
+  const gate = read(GATE);
+  const lines = gate.split('\n');
+  // THE TOP-LEVEL CALL, NOT THE FIRST OCCURRENCE — and this pin failed against the FIXED gate until it said
+  // so. `start_daemon` is also called from inside `restart_daemon`, which is defined earlier, so "the first
+  // line that is exactly start_daemon" is a call the arms make and not the one that first mounts anything.
+  // It is anchored on the step header the top-level call sits under.
+  const topLevel = (stepText: string, name: string): number => {
+    const header = lines.findIndex((line) => line.startsWith(`step "${stepText}`));
+    assert(header >= 0, `the gate has no step beginning "${stepText}"`);
+    const at = lines.findIndex((line, index) => index > header && line.trim() === name);
+    assert(at >= 0, `the gate never calls ${name} under that step`);
+    return at;
+  };
+  const daemonAt = topLevel('mounting — the daemon gets the GATE SECRET', 'start_daemon');
+  for (const server of ['start_jellyfin', 'start_emby', 'start_plex']) {
+    const at = topLevel('THE THREE MEDIA SERVERS START FIRST', server);
+    assert(at < daemonAt,
+      `${server} runs after the daemon first mounts, so its bind follows a mount instead of the directory `
+      + 'and it cannot survive a remount');
+  }
+  // ...and the functions are DEFINED before they are called, which bash resolves at call time and a
+  // reordering can silently get wrong.
+  for (const server of ['start_jellyfin', 'start_emby', 'start_plex']) {
+    assert(gate.indexOf(`${server}() {`) < gate.indexOf(`\n${server}\n`),
+      `${server} is called before it is defined`);
+  }
+});
+
 test('each server is addressed the way its own gate says it must be', () => {
   const gate = read(GATE);
   const body = functionBodyOf(gate, 'stream_base_for');

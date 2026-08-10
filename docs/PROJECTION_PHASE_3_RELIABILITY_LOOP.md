@@ -1,9 +1,9 @@
 # Projection Phase 3 — the reliability loop
 
-**Status: NOT RUN, and blocked on a decision rather than on a defect.** Every threshold in §4 was fixed
-before the first measured run and none has moved since. §8 records what four real runs on the Unraid host
-observed and what stopped each; §9 records seven gate defects, all fixed; **§11 is the finding that stops
-the fourth, and it needs a decision this document will not make for itself.** Arms A2-A6 have never run.
+**Status: NOT RUN.** Every threshold in §4 was fixed before the first measured run and none has moved since.
+§8 records what the real runs on the Unraid host observed and what stopped each; §9 records the gate defects
+and what each cost; §11 records the one that looked like a product defect, the measurement that settled it,
+and the operational fact it leaves behind.
 
 **What Phase 3 is, in one sentence.** The product doing its ordinary job — three real media servers reading a
 real provider's object through the production `projectiond` mount — *while the lifecycle failures Phase 2
@@ -359,72 +359,69 @@ reads like a defect and is not.
 
 ---
 
-## 11. THE FINDING, AND IT IS NOT A GATE DEFECT
+## 11. THE FINDING ARM A1 EXISTS TO MAKE, AND WHY IT IS NOT A PRODUCT DEFECT
 
-**A GRACEFUL DAEMON RESTART RECOVERS THE NAMESPACE FOR A NEW READER AND NOT FOR THE ONES ALREADY ATTACHED.**
+**IT BRIEFLY LOOKED LIKE ONE, AND THE MEASUREMENT THAT SETTLED IT IS WHY THIS SECTION IS KEPT.**
 
-Arm A1 does the most ordinary maintenance action there is — `docker stop`, then start again. On run 4:
+On run 4, arm A1 did the most ordinary maintenance action there is — `docker stop`, then start again:
 
 - `/readyz` came back ready and a **fresh** sibling container read the real entry **1,514 ms** later, well
-  inside the 22,000 ms budget. `RL-F-A1-namespace-went-away`, `RL-F-A1-ready-ms` and `RL-F-A1` all **passed**.
-- **All three media servers, which had read the operator's four windows correctly inside their own
-  containers moments before, could not read a byte afterwards.** `RL-R-inread` failed on all three.
-- Two of the three **catalogues still passed**. Plex's did not, and said why: *"the server cannot open the
-  file through the mount; the server says the file does not exist."* Jellyfin's and Emby's passed because
-  declining to delete a library whose root has gone unreadable is correct scanner behaviour — which is
-  exactly why the byte read exists beside the catalogue, and it is the check that caught this.
+  inside the 22,000 ms budget;
+- **all three media servers, which had read the operator's four windows correctly inside their own
+  containers moments before, could not read a byte afterwards**;
+- two of the three **catalogues still passed**, because declining to delete a library whose root has gone
+  unreadable is correct scanner behaviour. Plex's did not, and said why: *"the server cannot open the file
+  through the mount; the server says the file does not exist."* **The in-container byte read is the check
+  that caught this**, which is the reason it sits beside the catalogue rather than behind it.
 
-### 11.1 The mechanism, measured in isolation
+A later diagnostic reordering, run to learn what the untried arms did, found **A3 failing the same way** and
+**A2 passing** — SIGKILL recovery worked with all three servers attached.
 
-A bounded diagnostic on the same host, with **no provider and no media server** — one daemon over a local
-40 KB file, one busybox consumer holding `$WORK/mnt` as an `rslave` bind, attached after the mount existed,
-exactly as every gate in this repository attaches a media server:
+### 11.1 The measurement that settled it
 
-| | a fresh sibling container | the consumer that was already attached |
+Two busybox consumers, one daemon, a local 40 KB file, **no provider and no media server**. The consumers
+differ in exactly one thing: **when they attached**.
+
+| | bound the path while it was a **plain directory** | bound it while a **mount was already there** |
 |---|---|---|
-| **graceful stop → restart** | sees it | **cannot read** |
-| **SIGKILL → restart** | sees it | **reads fine** |
+| after the first mount | reads | reads |
+| graceful stop → restart | **reads** | cannot read |
+| external `umount` + `--auto-remount` | **reads** | cannot read |
 
-A clean shutdown **unmounts**, and an unmount of the master detaches the slave copy in every consumer's
-namespace; nothing the daemon does afterwards reaches them, because the new mount is a different mount at a
-path their bind no longer follows. A SIGKILL unmounts nothing, so the restart **stacks over the corpse** and
-the consumers' slave view resolves to the live namespace.
+The daemon is correct in both columns: it logged the serve death and the remount, and a fresh reader saw the
+namespace every time. **What differs is only which peer group the consumer's bind belongs to.** A bind taken
+while the path is a plain directory is a slave of the **parent's** peer group, so every later mount at that
+path propagates in. A bind taken over an existing mount is a slave of **that mount's** peer group only —
+once it is gone, the next mount belongs to a group the container never joined.
 
-### 11.2 Why nothing in this repository had seen it
+### 11.2 Why A2 passes and A1 and A3 did not
 
-`deploy/projection-jellyfin-dataplane-gate.sh` already documents the second half of that table, in its own
-words, at the SIGKILL step: *"A lazy unmount of the master detaches the slave copy too, and the media server
-can never get it back… The dead mount is not what breaks recovery; removing it is."* What follows from it
-had not been drawn, because nothing had ever run the other path with a consumer attached:
+A SIGKILL unmounts nothing. The restart **stacks** a new mount on the same mountpoint, *inside the peer group
+the container did join*, so it propagates. A graceful stop and an external `umount` both **remove** the
+mount, and removal is what breaks the chain. `deploy/projection-jellyfin-dataplane-gate.sh` already says the
+second half of this in its own words — *"The dead mount is not what breaks recovery; removing it is"* — and
+what follows from it had never been drawn, because **G12 only ever exercises SIGKILL** and **Phase 2 ran the
+other paths with no consumer attached**. Phase 3 is the intersection; this is what was in it.
 
-- **G12 only ever exercises SIGKILL.** The graceful path is explicitly *"not proved here and the reason is
-  recorded"* in that gate's own comment.
-- **Phase 2 exercised the graceful path with no media server in any of its nine runs**, by design.
+### 11.3 What was changed, and what deliberately was not
 
-Phase 3 is the intersection, and this is the intersection's first result. It is the same shape as Phase 2's
-worst defect — *recovered for the daemon and for nobody else* — one layer further out: **recovered for a new
-reader and not for the ones already there.**
+**The gate starts the three media servers before the daemon's first mount.** The bind is otherwise
+untouched: same source, same target, same `rslave`. Only the moment changes, and
+`test/projection-reliability-loop.ts` pins it as an **order** for that reason.
 
-### 11.3 What it is NOT
+**No product code changed, and no threshold moved.** Two alternatives were considered and rejected:
 
-- **Not a gate defect.** A1's assertion is the one §3 predeclared, and it is the assertion this tranche was
-  built to make. Weakening it to make a run pass would be the failure this repository exists to prevent.
-- **Not a data-correctness defect.** Every byte this product served was correct: four operator windows
-  matched through the mount and inside all three containers before the fault, and the fresh reader's bytes
-  after it matched too.
-- **Not something the daemon reported wrongly.** It reported success because it *had* succeeded — its
-  namespace was up in 1.5 seconds. The gap is between the daemon's view and the consumers'.
+- **changing the daemon's shutdown so a clean stop leaves the mount** would make every graceful stop leave a
+  mountpoint answering `ENOTCONN` on the operator's host, and it is in tension with Phase 2 §4, where a
+  corpse at the mountpoint is precisely the state `--refuse-stale` exists to refuse;
+- **changing the bind to the parent directory** would alter the topology behind every Phase 1 data-plane
+  result, none of which were taken on it.
 
-### 11.4 The decision it needs, which this document will not make for itself
+### 11.4 The operational fact this leaves behind, which is worth more than the fix
 
-Three ways out, and they are not equivalent:
-
-| | What changes | What it costs |
-|---|---|---|
-| **A. Daemon** — do not unmount on graceful shutdown, so a restart stacks the way a SIGKILL restart already does | `projectiond`'s shutdown path | every clean stop leaves a mountpoint answering `ENOTCONN` until the daemon returns — and an operator who stops the appliance for good is left holding one. It is in tension with Phase 2 §4, where a corpse at the mountpoint is the state `--refuse-stale` exists to refuse |
-| **B. Topology** — consumers bind the **parent** of the mountpoint, so an unmount and remount of the child propagates into them | the documented deployment shape, and **every Phase 1 gate**, all of which bind the mountpoint directly | no product code moves, but the topology behind every existing data-plane result changes, and those results were taken on the old one |
-| **C. Operational** — record that a graceful daemon restart requires restarting the consumers | one paragraph | the weakest of the three, and it makes the most ordinary maintenance action on the appliance a three-container dance |
-
-**A, B and C each change something another tranche has already closed on**, which is why the choice is not
-made here. Until it is made, arm A1 fails, the loop stops in cycle 1's recovery phase, and **arms A2–A6 have
-never run** — five sixths of Phase 3's subject is unmeasured, not passed.
+**A consumer that attaches to the projection path *after* `projectiond` has mounted there cannot follow a
+remount, and no daemon behaviour can make it.** It survives a SIGKILL restart, because that stacks; it does
+not survive a graceful restart or an external unmount. That is a property of Linux mount propagation, not of
+this product, and it belongs in whatever eventually tells an operator how to arrange the appliance: **start
+the consumers first, or restart them after any maintenance that unmounts.** It is recorded here because
+Phase 3 is the only thing in this repository that has ever been in a position to observe it.
