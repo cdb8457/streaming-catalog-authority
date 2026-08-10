@@ -15,6 +15,7 @@ package fusefs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -452,6 +453,13 @@ type Mounted struct {
 	// graceful records that Unmount was asked for on this handle. Atomic because the asking and the loop's
 	// exit are on different goroutines by construction.
 	graceful atomic.Bool
+	// mountpoint is the real path, kept because a self-mounted connection is handed to go-fuse as /dev/fd/N
+	// and go-fuse then has no idea where it is attached.
+	mountpoint string
+	// selfMounted records that this process performed the mount syscall itself, over one of its own corpses.
+	// It changes exactly one behaviour — how Unmount is done — and it is a field rather than an inference
+	// because inferring it from the server would mean parsing go-fuse's mount point back out again.
+	selfMounted bool
 }
 
 // MountSettings are the few knobs a caller has over how the mount is made.
@@ -501,11 +509,48 @@ func Mount(d *daemon.Daemon, mountpoint string, settings MountSettings) (*Mounte
 		DirectMountStrict: settings.StrictDirectMount,
 		DirectMountFlags:  unix.MS_RDONLY | unix.MS_NOATIME | unix.MS_NOSUID | unix.MS_NODEV | unix.MS_NOEXEC,
 	}
-	server, err := fuse.NewServer(fs, mountpoint, opts)
-	if err != nil {
+	// THE MOUNT POINT IS PROBED BEFORE go-fuse IS ASKED TO MOUNT, AND THE ORDER IS THE WHOLE POINT.
+	//
+	// A CORPSE CANNOT ANSWER THE ONE QUESTION go-fuse ASKS IT. See selfmount_linux.go: `mountDirect` stats
+	// the mount point for `rootmode` alone, a dead FUSE root answers that from an attribute cache that this
+	// daemon expires after a minute, and with a strict direct mount that stat's error IS the mount error.
+	// Over our own corpse the answer is knowable without asking, and the corpse may not be removed to make
+	// room because in a container it IS the operator's bind — the propagation anchor. Under `--auto-remount`
+	// this is the difference between a daemon that recovers in place and one that never recovers again.
+	//
+	// AND ASKING go-fuse FIRST WOULD LEAK A DESCRIPTOR EVERY TIME. `mountDirect` opens /dev/fuse BEFORE the
+	// stat it is about to fail, then returns that open descriptor alongside the error; `mount` drops it
+	// without closing. (Its later `syscall.Mount` failure path does close it — only this one does not.) A
+	// supervisor retrying three times per death, in a daemon meant to run for months, is exactly the shape
+	// that turns that into an outage. So the doomed call is never made rather than made and recovered from.
+	//
+	// THE SELF-MOUNT IS TAKEN ONLY OVER OUR OWN STALE MOUNT, AND FOREIGN SAFETY IS THE REASON. Mounting by
+	// hand skips every check go-fuse makes on the target; the probe is what keeps that from ever pointing at
+	// somebody else's file system. Foreign, live, empty and unrecognised all mount the way they always have.
+	var server *fuse.Server
+	var err error
+	selfMounted := ProbeMountpoint(mountpoint) == ProbeStaleProjectiond
+	if selfMounted {
+		fd, selfErr := selfMount(mountpoint, opts.FsName, fuseProjectiondType, uintptr(opts.DirectMountFlags),
+			opts.AllowOther, true)
+		if selfErr != nil {
+			return nil, selfErr
+		}
+		// The connection is already attached, so go-fuse must not try to attach it again: DirectMount would
+		// stat "/dev/fd/N" and mount over the descriptor's own path.
+		fdOpts := *opts
+		fdOpts.DirectMount = false
+		fdOpts.DirectMountStrict = false
+		server, err = fuse.NewServer(fs, fuseFdMountpoint(fd), &fdOpts)
+		if err != nil {
+			_ = syscall.Unmount(mountpoint, 0)
+			_ = syscall.Close(fd)
+			return nil, err
+		}
+	} else if server, err = fuse.NewServer(fs, mountpoint, opts); err != nil {
 		return nil, err
 	}
-	m := &Mounted{server: server, served: make(chan struct{})}
+	m := &Mounted{server: server, served: make(chan struct{}), mountpoint: mountpoint, selfMounted: selfMounted}
 	go func() {
 		// THE CLOSE IS DEFERRED SO IT HAPPENS LAST, and that is load-bearing rather than tidy: serveErr is
 		// written below, and the deferred close is the edge that publishes it to whoever reads ServeErr.
@@ -523,6 +568,20 @@ func Mount(d *daemon.Daemon, mountpoint string, settings MountSettings) (*Mounte
 		_ = m.Unmount()
 		<-m.served
 		return nil, err
+	}
+	// THE HANDSHAKE IS FORCED WHEN go-fuse CANNOT FORCE IT, AND THIS TYPE'S WHOLE PROMISE DEPENDS ON IT.
+	// `WaitMount` normally ends with a poll of a magic name inside the mount, which cannot return until the
+	// kernel has completed INIT; over a `/dev/fd/N` mount point go-fuse does not know the real path, so it
+	// skips that and returns immediately. Handing back a mount whose INIT has not landed is the exact
+	// production hang this type was created to make unrepresentable, so the promise is kept by hand. statfs
+	// is the cheapest request that cannot be answered from any cache, and the kernel sends INIT ahead of it.
+	if selfMounted {
+		var stat syscall.Statfs_t
+		if err := syscall.Statfs(mountpoint, &stat); err != nil {
+			_ = m.Unmount()
+			<-m.served
+			return nil, fmt.Errorf("the mount over our own stale mount never completed its handshake: %w", err)
+		}
 	}
 	return m, nil
 }
@@ -567,5 +626,12 @@ func (m *Mounted) Unmount() error {
 	// the flag were stored after the syscall, the loop could observe it unset and report a real shutdown as a
 	// death — which, with --serve-exit-code, is a clean SIGTERM turned into a failing exit status.
 	m.graceful.Store(true)
+	// A SELF-MOUNTED CONNECTION MUST BE UNMOUNTED BY PATH, BECAUSE go-fuse REFUSES TO GUESS ONE. Handed a
+	// /dev/fd/N mount point, `Server.Unmount` returns "Cannot unmount magic mountpoint" and detaches nothing
+	// — so a graceful stop would set the flag, report success, and leave the mount standing. This is the same
+	// call go-fuse makes for a strict direct mount, against the path this handle kept for the purpose.
+	if m.selfMounted {
+		return syscall.Unmount(m.mountpoint, 0)
+	}
 	return m.server.Unmount()
 }

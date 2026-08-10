@@ -401,22 +401,47 @@ func remountLoop(d *daemon.Daemon, cfg daemon.Config, debug, strictMount bool, m
 					break
 				}
 			}
+			// THE CAP IS A STOPPING REASON LIKE ANY OTHER, AND IT USED TO BE INDISTINGUISHABLE FROM A CLEAN
+			// DRAIN. Reaching `maxDetach` leaves `stoppedAt` at its initial "nothing", so a supervisor that
+			// had removed eight layers and was STILL above the floor logged the same sentence as one that had
+			// tidied the mount point completely. That is the reporting failure this repository keeps finding:
+			// a default value being read as a measurement.
+			//
+			// IT IS REPORTED RATHER THAN TREATED AS FATAL, and the reason is that stacking over residual
+			// layers WORKS — it is what the daemon does at startup over every corpse it inherits. Refusing to
+			// remount here would turn a state the product recovers from into an outage, so the remount goes
+			// ahead and the anomaly is named: a mount point that still has our own dead layers on it after
+			// eight detaches is a fault to investigate, not a reason to stop serving.
+			if startupCountKnown && detached == maxDetach {
+				stoppedAt = fmt.Sprintf("the detach cap of %d, WITH LAYERS OF OURS STILL ABOVE THE FLOOR; "+
+					"the remount will stack over them", maxDetach)
+			}
 			logLine(fmt.Sprintf("detached %d stale mount(s) of ours at %s before remounting (now on top: %s)",
 				detached, cfg.MountPoint, stoppedAt))
 		default:
 			logLine(fmt.Sprintf("nothing of ours at %s to clean up (%s); leaving it mounted",
 				cfg.MountPoint, probe))
 		}
+		// THE MOUNT CALL IS BRACKETED, BECAUSE A REAL RUN SHOWED THIS LOOP PROMISING THREE ATTEMPTS AND
+		// DELIVERING ONE. The daemon logged "remount attempt 1/3" and "remount refused: transport endpoint is
+		// not connected" and then nothing at all — no attempt 2, no "no remount succeeded; exiting" — while
+		// the process stayed alive for the next two minutes, its `/proc/<pid>/mountinfo` still readable. So
+		// `remountLoop` never returned, and the only calls it can be inside are these. `logLine` writes to
+		// unbuffered stderr, so a missing line is a call that has not come back rather than output lost.
+		logLine(fmt.Sprintf("remount attempt %d/%d: calling mount", attempt, attempts))
 		next, err := fusefs.Mount(d, cfg.MountPoint, fusefs.MountSettings{
 			Debug: debug, StrictDirectMount: strictMount,
 		})
 		if err != nil {
 			logLine("remount refused: " + err.Error())
+			logLine(fmt.Sprintf("remount attempt %d/%d: returned, will retry after backoff", attempt, attempts))
 			continue
 		}
 		*mount = next
+		logLine(fmt.Sprintf("remount attempt %d/%d: mounted", attempt, attempts))
 		return true
 	}
+	logLine("remount attempts exhausted")
 	return false
 }
 

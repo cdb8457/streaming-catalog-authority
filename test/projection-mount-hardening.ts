@@ -626,6 +626,73 @@ test('THE CORPSE DRAIN FAILS CLOSED: an unmeasured floor authorises no detach at
     'an unreadable mount table mid-drain does not stop it');
   assert(/if current <= mountsAtStartup \{/.test(loop),
     'the drain no longer stops at the startup floor');
+
+  // ...AND SO DOES RUNNING OUT OF DETACHES, WHICH USED TO LOOK LIKE A CLEAN MOUNT POINT. Reaching the cap
+  // left `stoppedAt` at its initial "nothing", so a supervisor that had removed eight layers and was STILL
+  // above the floor logged the same sentence as one that had tidied up completely: a default value being
+  // read as a measurement, which is the shape of half the defects in this file.
+  assert(/if startupCountKnown && detached == maxDetach \{/.test(loop),
+    'running out of detaches is not distinguished from a clean drain, so the log misreports it');
+  assert(loop.includes('the detach cap of'),
+    'the detach cap is not named in the line an operator reads');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// A DAEMON THAT HAS EVER RESTARTED OVER A CORPSE COULD NEVER AUTO-REMOUNT AGAIN, and it took the real
+// reliability loop with three media servers attached to find it.
+//
+// go-fuse's `mountDirect` stats the mount point before mounting, for one field — `rootmode` — and with
+// `DirectMountStrict` that stat's error IS the mount error. `stat` on the root of a FUSE mount is answered
+// from the kernel's attribute cache while it is warm and reaches the connection once it is not, and this
+// daemon sets `attrTimeout` to a minute. So stacking over a corpse works for the first minute of its death
+// and never afterwards: A2 kills the daemon and restarts within seconds and succeeds, A3 aborts the
+// connection minutes later and every remount is refused with ENOTCONN.
+//
+// The corpse cannot be removed instead, because in a container it IS the operator's bind: the propagation
+// anchor that carries mounts out to the host and to the media servers. So the mount has to go over it
+// without asking it anything.
+test('THE REMOUNT ASKS THE MOUNT POINT NOTHING: a corpse cannot answer, and it is the anchor', () => {
+  const mount = read('projectiond/internal/fusefs/fusefs.go');
+  const self = read('projectiond/internal/fusefs/selfmount_linux.go');
+
+  // THE ROOT MODE IS SUPPLIED, NOT STAT'ED. This is the entire mechanism.
+  assert(/rootmode=%o.*\n?.*syscall\.S_IFDIR|syscall\.S_IFDIR/.test(self),
+    'the root mode is not supplied from S_IFDIR, so something still has to stat the corpse');
+  assert(self.includes('func selfMountOptions(fd int, allowOther, defaultPermissions bool) string'),
+    'the mount data is not built by a pure function, so no table test can read it');
+
+  // FOREIGN SAFETY IS WHAT KEEPS A HAND-ROLLED MOUNT HONEST. Mounting by hand skips every check go-fuse
+  // makes on the target, so the probe is the only thing standing between this path and somebody else's
+  // file system. Only our own corpse is ever mounted over by hand.
+  assert(/selfMounted := ProbeMountpoint\(mountpoint\) == ProbeStaleProjectiond/.test(mount),
+    'the self-mount is taken over something other than our own stale mount');
+
+  // AND THE PROBE COMES FIRST, WHICH IS A LEAK FIX RATHER THAN A TIDINESS ONE. go-fuse's mountDirect opens
+  // /dev/fuse BEFORE the stat it is about to fail on, returns that open descriptor alongside the error, and
+  // its caller drops it without closing. Asking go-fuse first and falling back afterwards would therefore
+  // leak one descriptor per recovery attempt, for the life of the process; the doomed call is never made.
+  const mountBody = mount.slice(mount.indexOf('func Mount(d *daemon.Daemon'));
+  const probeAt = mountBody.indexOf('ProbeMountpoint(mountpoint)');
+  const firstNewServerAt = mountBody.indexOf('fuse.NewServer(');
+  assert(probeAt >= 0 && firstNewServerAt >= 0, 'Mount no longer has the shape this test reads');
+  assert(probeAt < firstNewServerAt,
+    'go-fuse is asked to mount before the probe, so every recovery over a corpse leaks a /dev/fuse descriptor');
+
+  // THE TWO THINGS THE MAGIC MOUNT POINT COSTS, BOTH SILENT IF UNHANDLED. `Server.Unmount` refuses on a
+  // /dev/fd/N mount point and detaches nothing — a graceful stop would report success and leave the mount
+  // standing — and `WaitMount` skips the poll that forces INIT, which is the production hang the Mounted
+  // type exists to make unrepresentable.
+  assert(/if m\.selfMounted \{\s*\n\s*return syscall\.Unmount\(m\.mountpoint, 0\)/.test(mount),
+    'a self-mounted connection is unmounted through go-fuse, which refuses and detaches nothing');
+  assert(/if selfMounted \{\s*\n\s*var stat syscall\.Statfs_t/.test(mount),
+    'nothing forces the INIT handshake for a self-mounted connection before Mount returns');
+
+  // AND THE DESCRIPTOR IS CLOSED ON EVERY FAILING PATH. The upstream function this replaces returns its open
+  // /dev/fuse descriptor alongside the stat error and its caller drops it, so every refused remount there
+  // leaks one for the life of the process.
+  const selfMountBody = self.slice(self.indexOf('func selfMount('));
+  assert((selfMountBody.match(/syscall\.Close\(fd\)/g) ?? []).length >= 1,
+    'the /dev/fuse descriptor is not closed when the mount syscall fails');
 });
 
 // ---------------------------------------------------------------------------------------------------------

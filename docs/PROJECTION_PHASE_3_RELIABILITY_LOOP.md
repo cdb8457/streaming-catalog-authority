@@ -520,6 +520,13 @@ dead mount stays, and the plain `fusefs.Mount` that follows is refused with `ENO
 what to do with it. `remountLoop` instead insists on clearing it first, which is possible only when nobody
 is holding it.
 
+> **CORRECTION, from §13.6.** The second paragraph above is wrong about *why*, and the error is worth keeping
+> rather than deleting because it cost two fix attempts. Startup and remount call the same `fusefs.Mount`;
+> there is no asymmetry in the code. The asymmetry is in **the age of the corpse**: a startup lands seconds
+> after the death and a remount lands minutes after it, and the mount syscall's dependence on the corpse
+> expires in between. The first paragraph — the cleanup unmount failing against a held mount — was a real
+> defect and was fixed; it was simply not the one that kept A3 failing.
+
 ### 13.2 Why no tranche before this one could see it
 
 - **Phase 2's serve-death gate passes** because its only other participant is a poller that holds no
@@ -571,3 +578,93 @@ consumer attached first, then an abort of the topmost connection — **did not r
 consumer kept reading and the daemon logged no serve death at all. So the conditions under which A3 fails
 are not yet reproducible outside the full loop, and **no further daemon change should be made until they
 are.** Three speculative edits to a recovery path is already one more than the evidence supported.
+
+### 13.6 The mechanism, read rather than guessed
+
+The rule at the end of §13.5 was kept: the next step was not a fourth edit but **one instrumented run of the
+real gate**, using A3's own injection and topology. It produced the two facts that closed the question.
+
+**FACT ONE — the drain is correct and the floor it stops at is a corpse.** Before the abort the mount point
+carried two mounts in every namespace: a floor (`dev 0:351`) and the live mount on top of it (`dev 0:361`),
+with each consumer additionally holding its own bind. The abort chose the served connection
+(`abort:choice majmin=0:361 minor=361`, `abort:done 1`), the serve death was observed, and the drain removed
+**exactly one** layer and stopped: `floor 1, now 2, on top fuse.projectiond` → `detached 1 … (now on top: the
+startup floor (1 at the floor, 1 now))`. The operator's bind was preserved, which is what #3 was for. And
+then: `remount refused: transport endpoint is not connected`.
+
+So the floor is simultaneously **the propagation anchor** and **one of our own dead mounts** — in a container
+the mount point IS the operator's bind, and a bind of a path a previous daemon mounted carries that daemon's
+dead superblock. It cannot be removed: a mount's propagation comes from its **parent**, and with the anchor
+gone the next mount's parent is the container's own root, in a peer group with no host peer. That is #2's
+failure, measured.
+
+**FACT TWO — the mount syscall asks the corpse a question, and the answer expires after 60 seconds.** From
+go-fuse v2.10.1, `fuse/mount_linux.go`, inside `mountDirect`:
+
+```go
+fd, err = syscall.Open("/dev/fuse", os.O_RDWR, 0)   // line 32
+...
+var st syscall.Stat_t
+err = syscall.Stat(mountPoint, &st)                 // line 49
+if err != nil { return }
+```
+
+The whole use of that stat is `rootmode=%o` from `st.Mode & S_IFMT`, and under `DirectMountStrict` its error
+is returned unchanged as the mount error. **`stat` on the root of a FUSE mount is answered from the kernel's
+attribute cache while the cache is warm and reaches the connection once it is not** — and this daemon sets
+`attrTimeout = 60 * time.Second`. So:
+
+| when the mount over a corpse happens | attribute cache | result |
+|---|---|---|
+| A2's restart, seconds after the SIGKILL | warm | `stat` answers, the daemon stacks over the corpse, **passes** |
+| A3's remount, minutes into a cycle | expired | `stat` gets `ENOTCONN`, every attempt refused, **never recovers** |
+
+That is the entire asymmetry of §13.1, and it is not in this repository's code. It also makes the defect
+much larger than A3: **any daemon that has ever restarted over a corpse loses `--auto-remount` permanently
+after about a minute** — the arm merely happens to be the thing that waits long enough to notice.
+
+### 13.7 The fix: mount over the anchor without asking it anything
+
+Nothing in the mount syscall needs the corpse to answer. Attaching a mount resolves the path through the
+dentry cache and never issues a `getattr`; go-fuse asks only to fill in `rootmode`, and **the mount point of
+this daemon is a directory by contract** — a mount point that were not one could not have been mounted over
+in the first place. So `fusefs` supplies `rootmode=S_IFDIR` from what is already known, performs the mount
+itself, and hands go-fuse the resulting connection through its documented `/dev/fd/N` mount point
+(`projectiond/internal/fusefs/selfmount_linux.go`).
+
+Four things about it are load-bearing, and each is pinned:
+
+- **The probe comes first.** `Mount` decides with `ProbeMountpoint` *before* calling `fuse.NewServer`. Only
+  our own stale mount is ever mounted over by hand; foreign, live, empty and unrecognised mount exactly as
+  they always have, which is what keeps a hand-rolled mount from ever pointing at somebody else's file
+  system.
+- **...and that order is also a leak fix.** `mountDirect` opens `/dev/fuse` at line 32, *then* fails the stat
+  at line 49, and returns the open descriptor alongside the error; `mount` drops it without closing. (Its
+  `syscall.Mount` failure path does close it — only this one does not.) Asking go-fuse first and falling back
+  afterwards would leak one descriptor per recovery attempt for the life of the process. The doomed call is
+  never made instead.
+- **`Server.Unmount` cannot be used on a `/dev/fd/N` mount point** — it returns *Cannot unmount magic
+  mountpoint* and detaches nothing, so a graceful stop would report success and leave the mount standing.
+  `Mounted` keeps the real path and unmounts by syscall.
+- **`Server.WaitMount` skips its poll hack** for the same reason, so `Mount` forces the INIT handshake itself
+  with one `statfs` before returning. Handing back a mount whose INIT has not landed is the production hang
+  the `Mounted` type exists to make unrepresentable.
+
+`max_read` is deliberately **not** sent. go-fuse sends `max_read=MaxWrite` from a value `NewServer` fills in
+from the kernel's own limit, which this process would have to guess before `NewServer` runs; a wrong guess
+caps every read at whatever the guess was, and no assertion anywhere would fail. Omitted, the kernel's
+default applies and the read size is negotiated in INIT, where go-fuse negotiates it anyway.
+
+**The detach cap was made a stopping reason too.** Reaching `maxDetach` left the drain's `stoppedAt` at its
+initial `"nothing"`, so a supervisor that had removed eight layers and was **still** above the floor logged
+the same sentence as one that had tidied up completely. It now names the cap. It is reported rather than
+treated as fatal, because stacking over residual layers *works* — it is what the daemon does at startup over
+every corpse it inherits — and refusing to remount would turn a state the product recovers from into an
+outage.
+
+**Prior-state coverage.** Both new offline pins fail against `894b36f`, the immediately preceding product
+state, and pass after: *THE CORPSE DRAIN FAILS CLOSED* on the cap (`running out of detaches is not
+distinguished from a clean drain`) and *THE REMOUNT ASKS THE MOUNT POINT NOTHING* on the absent file. The Go
+suite adds a table over the mount data — root mode, `allow_other`, `default_permissions`, the three options
+the kernel takes as flags and rejects as data, and the omission of `max_read` — because a mount with the
+wrong option string does not refuse, it succeeds and behaves differently.

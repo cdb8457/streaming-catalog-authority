@@ -510,6 +510,50 @@ export const PROJECTIOND_CONSUMER_ATTACHMENT = Object.freeze({
 } as const);
 
 /**
+ * WHAT THE DAEMON MAY ASSUME ABOUT THE MOUNT POINT IT IS GIVEN, AND WHAT IT MUST NOT.
+ *
+ * THE DEFECT THIS RECORDS. A daemon that had ever restarted over one of its own corpses could not
+ * auto-remount again — permanently, after about a minute. Measured on the real Unraid host with three media
+ * servers attached: the connection was aborted, the serve loop died, the supervisor drained its own dead
+ * layer down to the startup floor exactly as designed, and then every remount was refused with ENOTCONN,
+ * while the same daemon had mounted over that same corpse minutes earlier at startup.
+ *
+ * THE MECHANISM, and the arithmetic that makes it a time bomb rather than a coin flip. Mounting through
+ * go-fuse stats the mount point for one field, `rootmode`, and with a strict direct mount that stat's error
+ * IS the mount error. `stat` on the root of a FUSE mount is answered from the kernel's attribute cache while
+ * it is warm and reaches the connection once it is not, and the daemon sets its attribute timeout to 60
+ * seconds. So stacking over a corpse succeeds for the first minute of its death and fails for ever after.
+ * A SIGKILL-and-restart lands inside that minute, which is why every gate that exercises one has always
+ * passed; an abort minutes into a cycle lands outside it, which is why nothing caught this until a phase
+ * ran both in the same cycle.
+ *
+ * WHY THE CORPSE IS NOT SIMPLY REMOVED. In a container the mount point IS the operator's bind, and a bind of
+ * a path a previous daemon mounted carries that daemon's dead superblock: it is simultaneously a corpse and
+ * the propagation anchor. Removing it does not free the mount point, it disconnects it — the next mount gets
+ * the CONTAINER's root as its parent, in a peer group with no host peer, and recovers for the daemon and for
+ * nobody else. That was measured too.
+ */
+export const PROJECTIOND_MOUNT_TARGET = Object.freeze({
+  /**
+   * The mount point may be one of this daemon's own dead mounts, and the daemon must cope. This is the
+   * ordinary state of any deployment that has ever been killed, not an edge case.
+   */
+  MAY_BE_OUR_OWN_CORPSE: true,
+  /**
+   * ...and mounting over it may not depend on it answering anything. The root mode is supplied from
+   * S_IFDIR, which is knowable: a mount point that was not a directory could not have been mounted over.
+   */
+  MOUNT_MAY_NOT_STAT_THE_MOUNT_POINT: true,
+  /**
+   * The corpse is the propagation anchor in every containerised topology, so it is never removed to make
+   * room. Recovery stacks over it.
+   */
+  ANCHOR_IS_NEVER_DETACHED_TO_MAKE_ROOM: true,
+  /** Only ever over our own stale mount. Anything else keeps go-fuse's refusal, unaltered and unretried. */
+  SELF_MOUNT_ONLY_OVER: 'stale-projectiond',
+} as const);
+
+/**
  * The Phase 1 amplification budget. These are the numbers the acceptance harness asserts, and they are here
  * rather than only in the plan document so a suite can import them instead of copying them.
  */

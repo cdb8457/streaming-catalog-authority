@@ -489,3 +489,38 @@ consumers, identical in every respect including the bind spelling, differing onl
 and only the late one failed. The bind never needed to change; only its order did. The contract therefore
 requires the **order** and leaves the topology alone, and this paragraph records the supersession rather
 than quietly replacing one remedy with another.
+
+## 12. The mount point the daemon is given
+
+**AMENDED BY PROJECTION PHASE 3, ON MEASURED EVIDENCE**, and for the same reason §11 exists: Phase 3 is the
+first thing here to have injected a fault with real consumers holding the mount.
+`PROJECTIOND_MOUNT_TARGET` in `src/core/projection/runtime-contract.ts` is the machine-readable half.
+
+12.1 The mount point handed to the daemon **MAY be one of the daemon's own dead mounts**, and the daemon
+**SHALL** cope with that. This is the ordinary state of any deployment that has ever been killed — a SIGKILL
+unmounts nothing — and not an edge case.
+
+12.2 Mounting over it **SHALL NOT depend on it answering anything**. A dead FUSE mount answers `stat` from
+the kernel's attribute cache while the cache is warm and with `ENOTCONN` once it is not, and this daemon sets
+its attribute timeout to **60 seconds**. A mount path that stats the mount point therefore works for the
+first minute of a corpse's death and fails for ever after — which is why a restart-over-a-corpse has always
+passed and an in-place recovery minutes later could never succeed. The root mode is supplied from `S_IFDIR`,
+which is knowable: a mount point that were not a directory could not have been mounted over in the first
+place.
+
+12.3 A corpse at the mount point **SHALL NOT be detached to make room for the replacement.** In a container
+the mount point *is* the operator's bind, and a bind of a path a previous daemon mounted carries that
+daemon's dead superblock — it is simultaneously a corpse and the **propagation anchor**. A mount's
+propagation comes from its parent, so removing the anchor does not free the mount point, it disconnects it:
+the replacement lands with the container's own root as its parent, in a peer group with no host peer, and
+recovers for the daemon and for nobody else. Measured twice, from both directions.
+
+12.4 The daemon performs the mount syscall itself **only over its own stale mount** (`SELF_MOUNT_ONLY_OVER`).
+Mounting by hand skips every check the FUSE library makes on the target, so the mountpoint probe is the only
+thing standing between that path and somebody else's file system. Foreign, live, empty and unrecognised mount
+points are mounted exactly as they always have been, and a refusal over one of those is returned unaltered.
+
+12.5 This section is a **daemon obligation, not a deployment one.** No operator action is required by it and
+none is implied: an operator who clears a stale mount before starting the daemon is doing something useful
+and something optional. The daemon's own startup advice — `clear it with: umount -l <mountpoint>` — remains
+advice.
