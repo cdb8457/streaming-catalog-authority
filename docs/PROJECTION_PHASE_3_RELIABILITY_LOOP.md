@@ -244,10 +244,40 @@ gate evidence: they are what makes a run worth attempting.
 
 ## 9. Defects found, and what each cost
 
-**NONE YET, AND THAT IS THE HONEST STATE OF A TRANCHE WHOSE GATE HAS NEVER RUN.** Phase 1 found six gate
-defects on its first real-provider run and fourteen more in the review after it; Phase 2 found nineteen in a
-harness that had never completed an arm. The expectation here is not zero, and a table with nothing in it
-means the loop has not been run, not that it is clean.
+**SEVEN SO FAR. ALL SEVEN ARE IN THE GATE AND NONE IS IN THE PRODUCT** — and one of them is a finding
+*about* the product rather than against it. Three were found by reading the arms against the closure rule;
+four needed the gate to actually execute on the real host, and each was invisible until the one before it was
+fixed. Every one is pinned by a test in `test/projection-reliability-loop.ts` that **fails against the commit
+before its fix and passes after**, which is the only form of "fixed" this tranche accepts.
+
+### 9.1 Found by running it on the real host
+
+| # | What was wrong | What it cost |
+|---|---|---|
+| 1 | **The gate warmed the window it was about to measure.** The three per-server `scan` calls that produce the item ids playback needs are also the first thing that reads a 1.7 GB remote object through three `ffprobe`s — Plex's took 15 s. They ran *before* the loop, so cycle 1's concurrent scan observed a warm two-entry re-scan finishing between two of the observer's ticks | **4 samples, ZERO servers in flight**, and the run died on its own simultaneity assertion having destroyed the overlap it existed to create. It is the warning G18's own header gives — "the three concurrent scans are the FIRST thing that ever reads it" — rediscovered a tranche later. The scans moved into `ensure_items`, called once, after the observation; the pin checks the function, the ordering **and** that there is exactly one call site, because a second one earlier would reintroduce the defect while leaving an ordering check satisfied |
+| 2 | **One helper flattened three different ways of being addressed.** It handed all three consumers `http://127.0.0.1:<published port>` — which, from inside the consumer's own container, is the consumer. And Emby's `paced-play` takes `--local-work-dir` beside `--work-dir`, which the other two do not | the run died at the first of the three with `--local-work-dir is required`, having never reached the other two. Jellyfin and Emby are reached by container name; **Plex by address, never by name**, because it answers 401 to a request whose `Host` header it does not recognise — and the address is read per call, because arm A6 restarts all three containers. The pin is the class rather than the instance: it reads each driver's **required flag set out of that driver's own source** and asserts the call supplies every one |
+| 3 | **Two results formats across three drivers.** Jellyfin's and Emby's `appendResult` rewrite a JSON array; Plex's appends one JSON object per line. `playfigures.cjs` knew one shape and threw on the other | it printed nothing, and `record.cjs` then did exactly the right thing with an absent measurement and **failed the verdict for a play that had succeeded** — 1.42 s to first frame, 30 decoded media seconds, pacing 0.995, zero stalls. Both shapes are read now, and the pin uses all three drivers' real id spellings so a rename fails offline |
+| 4 | **`tail -c +N` does not seek in busybox, and Emby's image ships busybox.** The operator records windows in **descending** order — so that every fetch after the first is a genuinely backward-going ranged GET — so the first in-container read was at offset 1,576,983,267 of a 1,732,948,646-byte object, and busybox read and discarded every byte before it | the run wedged for seven minutes and was stopped by hand. The daemon's own counters at that moment: **4.4 TB of cache-served reads across 1,048,208 playback-cache hits, against 261 provider misses and ~147 MB actually fetched.** **THE PRODUCT WAS FINE** — the playback cache absorbed exactly what it exists to absorb and the provider cost stayed bounded; the gate was what was wrong. It is `dd` with a byte-granular skip now, the capability is **probed before it is trusted**, a short read is named as a short read rather than reported as a wrong digest, and the call site is bounded at two read deadlines |
+
+### 9.2 Found by reading the arms against the closure rule
+
+| # | What was wrong | What it cost |
+|---|---|---|
+| 5 | **Three arms never took the measurement the closure rule requires of them.** `RL-R-ready-ms` is required once per cycle, and A4, A5 and A6 never set `RECOVERY_MS` | cycles 4, 5 and 6 would have recorded the **previous cycle's** recovery time, against the right budget, and passed. It starts **empty** at every cycle now — empty rather than `-1`, because `record.cjs` fails a measurement that is not a number while `-1 <= 22000` is perfectly true — and each of the three takes its own |
+| 6 | **The recovery clock measured the gate's own orchestration.** It started before `restart_daemon`, so it timed `docker rm -f`, a `docker run` and a node container booting `tsx` to serve the resolver — against a budget derived from the **daemon's** pointer poll and read deadline | the clock is read inside `start_daemon` now. And A6, where the daemon never moves, no longer times three media servers booting against a daemon-readiness budget: how long they took is recorded against **no budget at all**, which is the honest shape for somebody else's software starting up |
+| 7 | **The arm that measures an open breaker could outlive it.** A4's hold was twelve reads five seconds apart — sixty seconds against a sixty-second cooldown | the breaker closes on its own after the cooldown and admits exactly one half-open probe, so the window measuring *zero requests while the breaker is open* could have counted that probe: **one legitimate request against a ceiling of zero, failing a correct product for doing precisely what the contract says it must.** The window is `HOLD_WINDOW_MS`, half the cooldown, and the fraction rather than the number is the point — it stays inside if the cooldown ever changes |
+
+**AND THE GATE'S OWN CONSTRUCTION COST FOUR MORE, ALL CAUGHT OFFLINE BY THE PINS BEFORE ANY HOST SAW THEM:**
+two NUL bytes an em-dash pass left in a shell script; three multi-line `node -e` arguments that made the whole
+file unparseable to `test/custody-runtime-closure.ts` — which is the Phase 2 bake-off's own closing finding,
+reproduced by this tranche a dispatch later; a `mkdir`-parent pin that could not see past a backslash
+continuation, which is that same document's defect #7 *inside the pin written to catch defect #7*; and a
+verdict log written into the directory the cleanup contract deletes, so the closure check would have judged a
+document four ids short of what it requires.
+
+**NO THRESHOLD MOVED AND NO PRODUCT CODE CHANGED.** `test/projection-reliability-loop.ts` asserts the second
+half directly: every Phase 1 and Phase 2 constant this tranche touches is checked against its own value, so a
+budget cannot be loosened to make a run pass without a test failing.
 
 ## 10. Reproduction
 
