@@ -974,6 +974,26 @@ test('the play call supplies every flag each driver actually requires', () => {
   }
 });
 
+test('a failing verdict never swallows the diagnosis that follows it', () => {
+  // THE DEFECT THIS CLOSES COST A DIAGNOSIS ON A REAL RUN. `record` returns non-zero for a failed verdict,
+  // and under `set -e` an unguarded one ends the script THERE — before the `die` that says what the failure
+  // means, before the decoder's own words, before anything is preserved. The gate exited with a bare status
+  // and a one-line verdict, and the one case the diagnostic existed for produced no diagnostic. It is Phase
+  // 1 §6.15 #5's shape: the evidence path is the path that fails.
+  //
+  // Pinned as a CLASS over the whole file, because there were six of them and the next one will not be in
+  // any of the six places.
+  const offending = read(GATE).split('\n')
+    .map((line, index) => [index + 1, line] as const)
+    .filter(([, line]) => /record .*\bbool 0\b/.test(line))
+    .filter(([, line]) => !/^\s*#/.test(line))
+    // A line continued with a backslash carries its guard on the next line, which is still one statement.
+    .filter(([, line]) => !/\|\| true/.test(line) && !/\\\s*$/.test(line));
+  assertEq(offending.length, 0,
+    `a definitely-failing verdict is unguarded at line(s) ${offending.map(([n]) => n).join(', ')}; under `
+    + 'set -e it ends the run before the message that explains it');
+});
+
 test('the consumers bind the projected path BEFORE anything is mounted there', () => {
   // THIS ORDER IS THE WHOLE OF WHETHER A CONSUMER SURVIVES A REMOUNT, and it cost two arms before it was
   // understood. A bind taken while the path is a plain directory is a slave of the PARENT's peer group, so

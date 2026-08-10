@@ -1354,10 +1354,10 @@ docker run --rm --network "$NETWORK" -v "$PWD:/workspace:ro" -w /workspace \
 resolver_reach=$?
 set -e
 case "$resolver_reach" in
-  0) record RL-resolver-loopback-only bool 0 "" "the resolver accepted a TCP connection from the gate network"
+  0) record RL-resolver-loopback-only bool 0 "" "the resolver accepted a TCP connection from the gate network" || true
      die "the resolver is reachable from the gate network; it must be loopback-only" ;;
   1) record RL-resolver-loopback-only bool 1 "" "refused at the transport from the gate network" ;;
-  *) record RL-resolver-loopback-only bool 0 "" "the reachability probe could not take the measurement"
+  *) record RL-resolver-loopback-only bool 0 "" "the reachability probe could not take the measurement" || true
      die "the resolver's reachability could not be determined (probe exit $resolver_reach); a gate that \
 could not take the measurement must not report the property as proven" ;;
 esac
@@ -1528,9 +1528,28 @@ set -e
 if [ "$ffprobe_status" -eq 0 ] && grep -q "codec_type=video" "$WORK/out/ffprobe.txt"; then
   record RL-entry-is-decodable-video bool 1 "" "a decoder found a video stream in the projected entry"
 else
-  record RL-entry-is-decodable-video bool 0 "" "no video stream was found in the projected entry"
-  echo "--- the decoder's own words ---" >&2
+  # `|| true` IS LOAD-BEARING HERE AND ITS ABSENCE COST A DIAGNOSIS. `record` returns non-zero for a failed
+  # verdict, and under `set -e` that ended the run on this line — before the decoder's own words printed and
+  # before `die` said what the failure meant. The one case this diagnostic exists for produced no
+  # diagnostic, which is the same defect Phase 1 §6.15 #5 records one layer up.
+  record RL-entry-is-decodable-video bool 0 "" "no video stream was found in the projected entry" || true
+  echo "--- the decoder's own words, which are the diagnosis ---" >&2
   tail -5 "$WORK/out/ffprobe.err" >&2 || true
+  # AND THEY ARE PRESERVED, because the cleanup contract removes the run directory on the way out and this
+  # file is the only thing that says WHY. ffprobe's stderr names a path and an errno and nothing else: no
+  # reference, no URL, no credential.
+  if mkdir -p "$EVIDENCE_DIR" && chmod 700 "$EVIDENCE_DIR" \
+    && cp "$WORK/out/ffprobe.err" "$EVIDENCE_DIR/ffprobe-$$.err" 2>/dev/null; then
+    chmod 600 "$EVIDENCE_DIR/ffprobe-$$.err" 2>/dev/null || true
+    echo "  the decoder's words are kept at $REL_GATE_ROOT/evidence/ffprobe-$$.err" >&2
+  fi
+  # AN EIO HERE IS ALMOST ALWAYS ONE THING, AND NAMING IT SAVES THE NEXT READER AN HOUR. The daemon refuses a
+  # resolved URL whose origin is not in the operator's allowlist, and a debrid provider rotates its CDN
+  # origins without notice — Phase 1 §6.16 recorded exactly this happening once already. The signature is a
+  # `stat` that succeeds, a resolver that resolves, and every read failing EIO in well under a second.
+  echo "  IF THOSE WORDS SAY I/O ERROR: the namespace is fine and the bytes are refused. Check whether the" >&2
+  echo "  provider has rotated the CDN origin out of the operator's allowedOrigins — that is the egress" >&2
+  echo "  allowlist working, not a product fault, and only the operator can refresh it." >&2
   die "the operator's object does not present as playable video through the mount; the acceptance plan's \
 real-provider corpus is 1-3 files the operator is entitled to AND has chosen as playable video"
 fi
@@ -1560,7 +1579,7 @@ phase_ordinary() {
       record "RL-$tag-catalogue:$server:c$cycle" bool 1 "" \
         "every published identity at the published size as an ordinary file, through this server's own predicate"
     else
-      record "RL-$tag-catalogue:$server:c$cycle" bool 0 "" "this server's catalogue does not match"
+      record "RL-$tag-catalogue:$server:c$cycle" bool 0 "" "this server's catalogue does not match" || true
       die "cycle $cycle phase $tag: $server did not catalogue the shared namespace"
     fi
   done
@@ -1683,9 +1702,9 @@ phase_bytes() {
     case "$verdict" in
       inread:ok*) record "RL-$tag-inread:$server:c$cycle" bool 1 "" \
         "this server's own container read the operator's windows and every digest matched" ;;
-      inread:*)   record "RL-$tag-inread:$server:c$cycle" bool 0 "" \
+      inread:*)   record "RL-$tag-inread:$server:c$cycle" bool 0 "" \ || true
         "this server's own container could not read the operator's windows correctly" || true ;;
-      *)          record "RL-$tag-inread:$server:c$cycle" bool 0 "" \
+      *)          record "RL-$tag-inread:$server:c$cycle" bool 0 "" \ || true
         "the in-container read produced neither verdict, so nothing was measured" || true ;;
     esac
   done

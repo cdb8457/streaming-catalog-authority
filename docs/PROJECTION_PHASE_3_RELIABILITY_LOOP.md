@@ -1,9 +1,10 @@
 # Projection Phase 3 — the reliability loop
 
-**Status: NOT RUN.** Every threshold in §4 was fixed before the first measured run and none has moved since.
-§8 records what the real runs on the Unraid host observed and what stopped each; §9 records the gate defects
-and what each cost; §11 records the one that looked like a product defect, the measurement that settled it,
-and the operational fact it leaves behind.
+**Status: NOT RUN, and BLOCKED on an operator input.** Every threshold in §4 was fixed before the first
+measured run and none has moved since. §8 records what the real runs observed and what stopped each; §9 the
+nine gate defects and what each cost; **§11 the blocker — the provider has rotated its CDN origin out of the
+operator's allowlist, which the daemon refuses exactly as it must**; §12 the operational fact this tranche
+established. Arms A2-A6 have never completed.
 
 **What Phase 3 is, in one sentence.** The product doing its ordinary job — three real media servers reading a
 real provider's object through the production `projectiond` mount — *while the lifecycle failures Phase 2
@@ -279,6 +280,7 @@ what makes a run worth attempting.
 | 2 | `af0bf074…` | the cold three-way overlap observation, with all three in flight | Emby's `paced-play` takes a flag the other two do not (§9.1 #2) |
 | 3 | `af6dc324…` | **all three servers direct-played the real object**; four windows digest-matched | two results formats across three drivers (§9.1 #3) |
 | 4 | `8978c64d…` | in-container reads by all three before the fault; A1 recovered a fresh sibling in 1,514 ms | **§11** — the consumers that were already attached could not read afterwards |
+| 5 | `f53b8d91…` | the bind-ordering fix in place: setup, publish, three servers bound before the mount, generation 2 admitted | **§11** — every read of the operator's object now fails EIO. The provider rotated its CDN origin out of the allowlist; the independent Phase 1 TorBox gate fails identically on the same host |
 
 A fifth attempt sat between 3 and 4 and was **stopped by hand** rather than failing: busybox's `tail` does
 not seek (§9.1 #4). It left one stale mountpoint, which `projection_gate_cleanup_run` cleared; the host's
@@ -359,28 +361,76 @@ reads like a defect and is not.
 
 ---
 
-## 11. THE FINDING ARM A1 EXISTS TO MAKE, AND WHY IT IS NOT A PRODUCT DEFECT
+## 11. THE BLOCKER: THE PROVIDER HAS ROTATED ITS CDN ORIGIN, AND ONLY THE OPERATOR CAN SAY SO
 
-**IT BRIEFLY LOOKED LIKE ONE, AND THE MEASUREMENT THAT SETTLED IT IS WHY THIS SECTION IS KEPT.**
+**THE LOOP CANNOT REACH A BYTE OF THE OPERATOR'S OBJECT RIGHT NOW, AND THE PRODUCT IS THE REASON — WORKING
+CORRECTLY.**
 
-On run 4, arm A1 did the most ordinary maintenance action there is — `docker stop`, then start again:
+Run 5 stopped at the decodable-video check. The diagnosis is not this gate's alone: the **independent**
+`deploy/projection-torbox-real-gate.sh`, which closed Phase 1 and which this tranche did not touch, fails
+the same way on the same host today.
 
-- `/readyz` came back ready and a **fresh** sibling container read the real entry **1,514 ms** later, well
-  inside the 22,000 ms budget;
-- **all three media servers, which had read the operator's four windows correctly inside their own
-  containers moments before, could not read a byte afterwards**;
-- two of the three **catalogues still passed**, because declining to delete a library whose root has gone
-  unreadable is correct scanner behaviour. Plex's did not, and said why: *"the server cannot open the file
-  through the mount; the server says the file does not exist."* **The in-container byte read is the check
-  that caught this**, which is the reason it sits beside the catalogue rather than behind it.
+| What | Observed |
+|---|---|
+| `stat` through the mount | **an ordinary regular file at exactly 1,732,948,646 bytes** — the namespace is fine |
+| the resolver | **resolved a torrent reference in 1 attempt**, five times, HTTP **200**, over **https** |
+| every read | **EIO**, in **0, 168, 299, 350, 432 and 1,271 ms** |
 
-A later diagnostic reordering, run to learn what the untried arms did, found **A3 failing the same way** and
-**A2 passing** — SIGKILL recovery worked with all three servers attached.
+Reads that fail in **under a third of a second, after a successful resolution**, have not contacted
+anything. That is the daemon refusing a resolved URL locally, which it does for exactly one reason.
 
-### 11.1 The measurement that settled it
+**CONFIRMED DIRECTLY, WITHOUT PRINTING ANYTHING THAT MUST NOT BE PRINTED.** One resolution was taken through
+the operator's own resolver and compared, *inside the container that already holds the credential*, against
+the operator's `allowedOrigins`. Only these words came out:
 
-Two busybox consumers, one daemon, a local 40 KB file, **no provider and no media server**. The consumers
-differ in exactly one thing: **when they attached**.
+```
+resolver-status=200          resolved=yes                 resolved-origin-scheme=https
+allowed-origin-count=2       resolved-origin-in-allowlist=NO
+resolved-origin-digest=d4064d307d25
+allowlisted-origin-digest=256c61b89300   allowlisted-origin-digest=b16331429dc1
+```
+
+The resolved origin matches neither allowlisted origin. **TorBox has rotated the CDN origin it hands back,
+and `endpoint.json` no longer names it.** No URL, host, reference or secret was printed, written or placed
+in argv; the comparison happened where those values already live and a boolean came out.
+
+### 11.1 This is the allowlist doing its job, and it has happened before
+
+`PROJECTIOND_ACCESS_RESOLUTION.RESOLVED_URL_HOST_MUST_BE_IN_ENDPOINT_ALLOWLIST` is the rule, and
+`access-url-outside-endpoint-allowlist` is **terminal** and **counts toward the breaker** — a resolved URL is
+provider-supplied data, and following one to a host nobody configured is the redirect-to-an-attacker case.
+`docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6.16 records the identical event during Phase 1 and documents
+`allowedOrigins` as **perishable** for this reason. **This is the second observation of it against a real
+provider, and the first with three media servers attached.** Nothing here is a product defect.
+
+### 11.2 Why this gate will not fix it
+
+Refreshing the allowlist means **writing to `endpoint.json` under the operator's 0600 secrets directory** —
+an operator-supplied input this tranche reads and has never written. It is the authority boundary this work
+was told to stop at, and it is a boundary worth keeping: the allowlist is the one control standing between a
+provider-supplied URL and the daemon's egress, and a harness that edited it to make its own run pass would
+be removing the check it exists to exercise.
+
+**What an operator does:** take the origin the resolver now returns and add it to `allowedOrigins` in
+`endpoint.json`, keeping the file at `0600`. Nothing else changes; every threshold and every arm stays as
+predeclared, and the loop resumes at run 6.
+
+### 11.3 What is NOT blocked by it
+
+Everything that does not need a provider byte. The gate's own construction, the eight defects in §9, the
+closure logic, the bind ordering that §12 records, and every offline suite are unaffected and green. The
+figures in §8 were taken **before** the rotation and remain what they were: three real media servers
+direct-playing this object through the production mount, four operator windows digest-matched through the
+mount and inside each server's own container, and a three-way concurrent scan observed with all three in
+flight.
+
+## 12. THE OPERATIONAL FACT THIS TRANCHE ESTABLISHED, WHICH IS NOT A DEFECT IN ANYTHING
+
+**A consumer that attaches to the projection path AFTER `projectiond` has mounted there cannot follow a
+remount, and no daemon behaviour can make it.**
+
+Measured on this host with two busybox consumers, one daemon, a local 40 KB file, **no provider and no media
+server** — differing in exactly one thing, *when they attached*:
 
 | | bound the path while it was a **plain directory** | bound it while a **mount was already there** |
 |---|---|---|
@@ -389,39 +439,21 @@ differ in exactly one thing: **when they attached**.
 | external `umount` + `--auto-remount` | **reads** | cannot read |
 
 The daemon is correct in both columns: it logged the serve death and the remount, and a fresh reader saw the
-namespace every time. **What differs is only which peer group the consumer's bind belongs to.** A bind taken
-while the path is a plain directory is a slave of the **parent's** peer group, so every later mount at that
-path propagates in. A bind taken over an existing mount is a slave of **that mount's** peer group only —
-once it is gone, the next mount belongs to a group the container never joined.
+namespace every time. A bind taken while the path is a plain directory is a slave of the **parent's** peer
+group, so every later mount at that path propagates in; a bind taken over an existing mount is a slave of
+**that mount's** peer group only, and once it is gone the next mount belongs to a group the container never
+joined. A **SIGKILL** unmounts nothing, so the restart **stacks** inside the group the container did join —
+which is why arm A2 passes with all three servers attached, and why G12 has always passed.
 
-### 11.2 Why A2 passes and A1 and A3 did not
+**It cost two arms before it was understood**, and it was briefly written up here as a product defect. It is
+not. The gate now starts the three media servers before the daemon's first mount — same source, same target,
+same `rslave`, only the moment changes — and `test/projection-reliability-loop.ts` pins it as an **order**
+for that reason. Two alternatives were considered and rejected: changing the daemon's shutdown so a clean
+stop leaves the mount would put an `ENOTCONN` mountpoint on the operator's host after every stop and is in
+tension with Phase 2 §4, where a corpse is the state `--refuse-stale` exists to refuse; and binding the
+parent directory would change the topology behind every Phase 1 data-plane result.
 
-A SIGKILL unmounts nothing. The restart **stacks** a new mount on the same mountpoint, *inside the peer group
-the container did join*, so it propagates. A graceful stop and an external `umount` both **remove** the
-mount, and removal is what breaks the chain. `deploy/projection-jellyfin-dataplane-gate.sh` already says the
-second half of this in its own words — *"The dead mount is not what breaks recovery; removing it is"* — and
-what follows from it had never been drawn, because **G12 only ever exercises SIGKILL** and **Phase 2 ran the
-other paths with no consumer attached**. Phase 3 is the intersection; this is what was in it.
-
-### 11.3 What was changed, and what deliberately was not
-
-**The gate starts the three media servers before the daemon's first mount.** The bind is otherwise
-untouched: same source, same target, same `rslave`. Only the moment changes, and
-`test/projection-reliability-loop.ts` pins it as an **order** for that reason.
-
-**No product code changed, and no threshold moved.** Two alternatives were considered and rejected:
-
-- **changing the daemon's shutdown so a clean stop leaves the mount** would make every graceful stop leave a
-  mountpoint answering `ENOTCONN` on the operator's host, and it is in tension with Phase 2 §4, where a
-  corpse at the mountpoint is precisely the state `--refuse-stale` exists to refuse;
-- **changing the bind to the parent directory** would alter the topology behind every Phase 1 data-plane
-  result, none of which were taken on it.
-
-### 11.4 The operational fact this leaves behind, which is worth more than the fix
-
-**A consumer that attaches to the projection path *after* `projectiond` has mounted there cannot follow a
-remount, and no daemon behaviour can make it.** It survives a SIGKILL restart, because that stacks; it does
-not survive a graceful restart or an external unmount. That is a property of Linux mount propagation, not of
-this product, and it belongs in whatever eventually tells an operator how to arrange the appliance: **start
-the consumers first, or restart them after any maintenance that unmounts.** It is recorded here because
-Phase 3 is the only thing in this repository that has ever been in a position to observe it.
+**It belongs in whatever eventually tells an operator how to arrange the appliance:** start the consumers
+first, or restart them after any maintenance that unmounts. Phase 3 is the only thing in this repository
+that has ever been in a position to observe it, because seeing it needs a consumer attached *and* a fault
+injected, and no gate before this one had both.
