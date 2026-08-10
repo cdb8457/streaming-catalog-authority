@@ -1194,6 +1194,36 @@ test('fuse-abort.sh aborts ONLY this run\'s own projectiond connections, and is 
     'a mountpoint that merely SHARES A PREFIX with the run root was treated as being under it');
 });
 
+test('A3 reads PERMANENT evidence, because /readyz clears the serve death the moment it remounts', () => {
+  // THE DEFECT THIS CLOSES WAS IN THE MEASUREMENT AND COST TWO REAL RUNS. `ClearServeDeath()` runs as soon
+  // as `remountLoop` succeeds, so `lastServeDeathAt` exists only BETWEEN the death and the remount — with
+  // `--auto-remount` that window is routinely shorter than one poll. An assertion that samples for the
+  // field is structurally unable to see it, and on the run where the fault demonstrably DID occur
+  // (`abort:done 2`) it did not see it. The log lines are permanent and are the two halves the arm names.
+  const body = functionBodyOf(read(GATE), 'arm_A3');
+  assert(/grep -c 'serve loop died'/.test(body),
+    'A3 does not read the serve death from the daemon log');
+  assert(/grep -c 'remounted; serving generation'/.test(body),
+    'A3 does not read the remount from the daemon log');
+  // THE PROHIBITION IS ON EXECUTABLE TEXT, NOT ON EXPLAINING WHY — this check first failed against the
+  // FIXED gate for naming the field in the comment that records the lesson.
+  const executable = body.split('
+').filter((line) => !/^s*#/.test(line)).join('
+');
+  assert(!/lastServeDeathAt/.test(executable),
+    'A3 still samples /readyz for a field the daemon clears on a successful remount');
+  // BOTH ARE COUNTED FROM A BASELINE, so a line an earlier cycle left cannot be read as this cycle's.
+  assert(/deaths_before=/.test(body) && /-gt "$deaths_before"/.test(body),
+    'the serve-death count is not compared against a pre-fault baseline');
+  assert(/remounts_before=/.test(body) && /-gt "$remounts_before"/.test(body),
+    'the remount count is not compared against a pre-fault baseline');
+  // AND "REMOUNTED IN PLACE" NEEDS BOTH THE DAEMON SAYING SO AND THE NAMESPACE BEING READABLE. A log line
+  // without a readable namespace is Phase 2's own worst defect; a readable namespace without the line does
+  // not say the daemon did it.
+  assert(/recovered && [ "$remount_logged" -eq 1 ]/.test(body),
+    'remounted-in-place rests on only one of the two witnesses');
+});
+
 test('the CLI publishes the thresholds as shell assignments the gate can evaluate', () => {
   const run = spawnSync(process.execPath,
     ['--import', 'tsx', join(repoRoot, 'src/ops/projection-reliability-loop-cli.ts'), 'budgets', '--sh'],

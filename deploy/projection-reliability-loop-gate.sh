@@ -1874,8 +1874,13 @@ arm_A3() {
   # THE IDENTITY BEFORE THE DEATH, so "the namespace came back IN PLACE" is a comparison rather than a hope.
   before="$(docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" \
     stat -c '%i:%s:%Y' "/mnt/$REAL_PATH" 2>/dev/null || echo "")"
+  # THE BASELINES, TAKEN BEFORE THE FAULT. A log line an earlier cycle left behind is not this cycle's
+  # evidence, and counting from zero would let one be read as it.
+  local deaths_before remounts_before
+  deaths_before="$(docker logs "$MOUNT_CONTAINER" 2>&1 | grep -c 'serve loop died' || true)"
+  remounts_before="$(docker logs "$MOUNT_CONTAINER" 2>&1 | grep -c 'remounted; serving generation' || true)"
   started="$(date +%s%3N)"
-  # THE DEATH: an external unmount through the shared mount — the same propagation path the daemon's own
+  # THE DEATH: an aborted connection through the host's own teardown — the same propagation path the daemon's own
   # mount travelled out of its container. The daemon process is untouched.
   # THE DEATH, AND IT IS AN ABORTED CONNECTION RATHER THAN AN UNMOUNT. See `fuse-abort.sh` for why: with
   # three real media servers holding the mount, a lazy unmount detaches namespaces and leaves the connection
@@ -1898,10 +1903,20 @@ would be about a serve death" ;;
     *)           die "cycle $cycle A3: the injection produced no verdict at all, so nothing was done and \
 nothing could be measured" ;;
   esac
+  # THE DEATH IS READ FROM THE DAEMON'S LOG, NOT FROM /readyz, AND THAT IS A CORRECTION A REAL RUN FORCED.
+  #
+  # `/readyz` carries `lastServeDeathAt` only BETWEEN the death and a successful remount: `ClearServeDeath()`
+  # runs the moment `remountLoop` succeeds (`projectiond/cmd/projectiond/main.go`). With `--auto-remount` the
+  # window is often shorter than one poll, so an assertion that samples for the field is structurally unable
+  # to see it — and on the first run where the fault ACTUALLY occurred (`abort:done 2`) it did not. The field
+  # was never the evidence; it is a liveness signal with a half-life.
+  #
+  # The log lines are permanent, and they are the two halves this arm names — the same two Phase 2's
+  # serve-death gate asserts. Both are counted from a BASELINE taken before the fault, so a line left by an
+  # earlier cycle cannot be read as this one's.
   local saw_death=0 n=0
-  while [ "$n" -lt 60 ]; do
-    if daemon_status "$WORK/out/readyz-a3-c$cycle.json" 2>/dev/null \
-      && [ -n "$(node "$REL/out/jq.cjs" lastServeDeathAt < "$WORK/out/readyz-a3-c$cycle.json")" ]; then
+  while [ "$n" -lt 240 ]; do
+    if [ "$(docker logs "$MOUNT_CONTAINER" 2>&1 | grep -c 'serve loop died' || true)" -gt "$deaths_before" ]; then
       saw_death=1; break
     fi
     n=$((n + 1)); sleep 0.5
@@ -1909,8 +1924,12 @@ nothing could be measured" ;;
   record "RL-F-A3-serve-death-observed:c$cycle" bool "$saw_death" "" \
     "the daemon's own status surface names a serve-loop death, so the connection really was severed" || true
   await_recovery "$started" "$REAL_PATH" || true
-  local remounted=0
-  if recovered; then remounted=1; fi
+  # REMOUNTED IN PLACE IS THE DAEMON SAYING SO, AND THE NAMESPACE BEING READABLE AGAIN. Either alone is
+  # weaker: a log line without a readable namespace is Phase 2's own worst defect, and a readable namespace
+  # without the line does not say the DAEMON did it.
+  local remounted=0 remount_logged=0
+  if [ "$(docker logs "$MOUNT_CONTAINER" 2>&1 | grep -c 'remounted; serving generation' || true)"        -gt "$remounts_before" ]; then remount_logged=1; fi
+  if recovered && [ "$remount_logged" -eq 1 ]; then remounted=1; fi
   record "RL-F-A3-remounted-in-place:c$cycle" bool "$remounted" "" \
     "the namespace came back at the same mountpoint without the process exiting" || true
   after="$(docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" \
