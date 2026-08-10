@@ -724,6 +724,69 @@ writeFileSync(out, `${needles.join('\n')}\n`, { mode: 0o644 });
 console.log(`  ${needles.length} needle(s): every reference, every label and both secrets`);
 NEEDLES
 
+cat > "$WORK/out/fuse-abort.sh" <<'FUSEABORT'
+# TAKE THE MOUNT OUT FROM UNDER A LIVING DAEMON, WITH CONSUMERS HOLDING IT.
+#
+# WHY `umount -l` IS NOT ENOUGH HERE, AND A REAL RUN IS WHY. Phase 2's serve-death gate causes this fault
+# with an external lazy unmount, and that works there because the only other thing in the run is a poller
+# that holds no reference to the mount. THREE REAL MEDIA SERVERS DO. A lazy unmount detaches the mount from
+# the namespaces it can reach, but the FUSE connection stays alive while anything still references the
+# superblock — so on the first real run of this arm the daemon logged no serve death, `--auto-remount` had
+# nothing to do, and the arm failed reporting a fault THAT HAD NEVER HAPPENED.
+#
+# THE FIX IS A STRONGER INJECTION, NOT A WEAKER ASSERTION. `/sys/fs/fuse/connections/<minor>/abort` is the
+# kernel's own way to tear a FUSE connection down irrespective of who holds it, and it is exactly the death
+# this arm names: the serve loop reads an error and the namespace is gone while the process lives.
+#
+# IT IS GUARDED TWICE AND REFUSES RATHER THAN GUESSES, because this host runs OTHER FUSE filesystems —
+# `/mnt/user` is shfs — and aborting one of those would take the operator's array offline. A connection is
+# only ever aborted when BOTH hold: its filesystem type is exactly `fuse.projectiond`, AND its mountpoint is
+# underneath the run directory this gate was given. Anything else is left alone and reported.
+#
+# THE TWO PATHS ARE ARGUMENTS WITH THE REAL ONES AS DEFAULTS, so the offline suite can execute THESE BYTES
+# against a crafted mount table and a fake connections tree. A program only a privileged container can run
+# is a program only a privileged container has ever run — and this one writes to a kernel abort file, which
+# is the last program in this repository that should be trusted on a reading.
+set -eu
+root="${1:-}"
+mountinfo="${2:-/proc/self/mountinfo}"
+connections="${3:-/sys/fs/fuse/connections}"
+test -n "$root" || { echo "abort:no-root"; exit 1; }
+test -r "$mountinfo" || { echo "abort:no-mountinfo"; exit 1; }
+test -d "$connections" || { echo "abort:no-connections-dir"; exit 1; }
+
+# mountinfo: id parent major:minor sourceroot mountpoint options... - fstype source superopts
+# The optional fields between the options and the `-` are why the separator is found rather than counted.
+matched="$(awk -v root="$root" '
+  {
+    sep = 0
+    for (i = 7; i <= NF; i++) if ($i == "-") { sep = i; break }
+    if (sep == 0) next
+    fstype = $(sep + 1)
+    mountpoint = $5
+    if (fstype != "fuse.projectiond") next
+    if (mountpoint != root && index(mountpoint, root "/") != 1) next
+    print $3
+  }' "$mountinfo" | sort -u)"
+
+if [ -z "$matched" ]; then
+  echo "abort:none"
+  exit 1
+fi
+
+count=0
+for majmin in $matched; do
+  minor="${majmin#*:}"
+  case "$minor" in
+    ''|*[!0-9]*) echo "abort:bad-minor"; exit 1 ;;
+  esac
+  test -w "$connections/$minor/abort" || { echo "abort:not-writable"; exit 1; }
+  echo 1 > "$connections/$minor/abort"
+  count=$(( count + 1 ))
+done
+echo "abort:done $count"
+FUSEABORT
+
 cat > "$WORK/out/churn.cjs" <<'CHURN'
 // Items added and removed between two catalogues of the same library, as one number.
 //
@@ -1814,7 +1877,23 @@ arm_A3() {
   started="$(date +%s%3N)"
   # THE DEATH: an external unmount through the shared mount — the same propagation path the daemon's own
   # mount travelled out of its container. The daemon process is untouched.
-  projection_gate_unmount_run "$GATE_ROOT" "$WORK" "$VERIFY_IMAGE"
+  # THE DEATH, AND IT IS AN ABORTED CONNECTION RATHER THAN AN UNMOUNT. See `fuse-abort.sh` for why: with
+  # three real media servers holding the mount, a lazy unmount detaches namespaces and leaves the connection
+  # alive, so the first real run of this arm reported a fault that had never happened. The abort is the
+  # kernel's own teardown and it is guarded to `fuse.projectiond` mounts under this run's directory only.
+  local abort_verdict
+  set +e
+  abort_verdict="$(docker run --rm --privileged \
+    -v "$GATE_ROOT:/gate:rshared" -v "$WORK/out:/out:ro" "$VERIFY_IMAGE" \
+    sh /out/fuse-abort.sh "/gate/$(basename "$WORK")/mnt" 2>&1 | tail -1)"
+  set -e
+  case "$abort_verdict" in
+    abort:done*) echo "  $abort_verdict — the connection was torn down under a living daemon" ;;
+    abort:*)     die "cycle $cycle A3: the fault could not be injected ($abort_verdict), so nothing below \
+would be about a serve death" ;;
+    *)           die "cycle $cycle A3: the injection produced no verdict at all, so nothing was done and \
+nothing could be measured" ;;
+  esac
   local saw_death=0 n=0
   while [ "$n" -lt 60 ]; do
     if daemon_status "$WORK/out/readyz-a3-c$cycle.json" 2>/dev/null \

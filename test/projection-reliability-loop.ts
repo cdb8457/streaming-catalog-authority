@@ -1129,6 +1129,71 @@ test('playfigures.cjs reads BOTH results formats the three drivers actually ship
     'an absent figure printed something, which a shell would read as a measurement');
 });
 
+test('fuse-abort.sh aborts ONLY this run\'s own projectiond connections, and is executed to prove it', () => {
+  // THIS IS THE MOST DANGEROUS PROGRAM IN THE TRANCHE AND IT IS THE ONE LEAST SAFE TO TRUST ON A READING.
+  // It writes to `/sys/fs/fuse/connections/<n>/abort`, and the host it runs on serves its array over shfs,
+  // which is also FUSE. Aborting the wrong connection would take the operator's array offline. So the two
+  // paths are arguments, and this test runs the SHIPPED bytes against a crafted mount table and a fake
+  // connections tree, and checks what it wrote.
+  const shell = findShell();
+  if (shell === undefined) {
+    skipBlock('executing the FUSE abort program (no POSIX shell that can run a temp path)');
+    return;
+  }
+  const source = embedded('FUSEABORT');
+  const dir = mkdtempSync(join(tmpdir(), 'rl-abort-'));
+  const script = join(dir, 'fuse-abort.sh');
+  writeFileSync(script, source);
+  const conns = join(dir, 'connections');
+  for (const minor of ['31', '32', '33', '77']) {
+    mkdirSync(join(conns, minor), { recursive: true });
+    writeFileSync(join(conns, minor, 'abort'), '');
+  }
+  const ROOT = '/gate/run-1/mnt';
+  // A mount table with the run's own mount, a SECOND projectiond mount stacked on it, an shfs mount that is
+  // ALSO under the root, and a projectiond mount belonging to somebody else outside it.
+  const table = [
+    `20 1 0:31 / ${ROOT} rw,relatime shared:2 - fuse.projectiond projectiond rw`,
+    `21 20 0:32 / ${ROOT} rw,relatime shared:3 - fuse.projectiond projectiond rw`,
+    `22 1 0:33 / ${ROOT}/nested rw,relatime - fuse.shfs shfs rw`,
+    `23 1 0:77 / /mnt/user rw,relatime - fuse.shfs shfs rw`,
+    `24 1 0:44 / /somewhere/else/mnt rw,relatime - fuse.projectiond projectiond rw`,
+  ].join('\n');
+  const mountinfo = join(dir, 'mountinfo');
+  writeFileSync(mountinfo, `${table}\n`);
+
+  const run = spawnSync(shell, [shPath(script), ROOT, shPath(mountinfo), shPath(conns)],
+    { encoding: 'utf8', timeout: 60_000 });
+  const out = `${run.stdout ?? ''}${run.stderr ?? ''}`;
+  assertEq(run.status, 0, `the abort refused a table it should have acted on: ${out}`);
+  assert(out.includes('abort:done 2'), `it did not abort exactly the two projectiond mounts: ${out}`);
+  // THE TWO IT WAS ALLOWED TO TOUCH, AND ONLY THOSE.
+  assertEq(readFileSync(join(conns, '31', 'abort'), 'utf8').trim(), '1', 'the run\'s own mount was not aborted');
+  assertEq(readFileSync(join(conns, '32', 'abort'), 'utf8').trim(), '1', 'the stacked mount was not aborted');
+  // THE SHFS UNDER THE ROOT IS NOT THIS GATE'S TO TOUCH — the fstype guard, not the path guard, stops it.
+  assertEq(readFileSync(join(conns, '33', 'abort'), 'utf8'), '',
+    'an shfs connection UNDER the run root was aborted; the fstype guard does not hold');
+  // ...AND NEITHER IS THE HOST'S ARRAY.
+  assertEq(readFileSync(join(conns, '77', 'abort'), 'utf8'), '',
+    'the host array\'s shfs connection was aborted, which would take the array offline');
+
+  // A PROJECTIOND MOUNT OUTSIDE THE ROOT IS SOMEBODY ELSE'S RUN. The path guard is what stops it, and a
+  // table containing ONLY that must abort nothing and say so rather than exiting 0 over an empty set.
+  writeFileSync(mountinfo, '24 1 0:44 / /somewhere/else/mnt rw - fuse.projectiond projectiond rw\n');
+  const outside = spawnSync(shell, [shPath(script), ROOT, shPath(mountinfo), shPath(conns)],
+    { encoding: 'utf8', timeout: 60_000 });
+  assertEq(outside.status, 1, 'a projectiond mount outside the run root was treated as this run\'s');
+  assert(`${outside.stdout}${outside.stderr}`.includes('abort:none'),
+    'nothing matched and the program did not say so');
+
+  // AND A ROOT-PREFIX COLLISION IS NOT A MATCH: `/gate/run-1/mnt-other` merely starts with the same text.
+  writeFileSync(mountinfo, `25 1 0:44 / ${ROOT}-other rw - fuse.projectiond projectiond rw\n`);
+  const collide = spawnSync(shell, [shPath(script), ROOT, shPath(mountinfo), shPath(conns)],
+    { encoding: 'utf8', timeout: 60_000 });
+  assertEq(collide.status, 1,
+    'a mountpoint that merely SHARES A PREFIX with the run root was treated as being under it');
+});
+
 test('the CLI publishes the thresholds as shell assignments the gate can evaluate', () => {
   const run = spawnSync(process.execPath,
     ['--import', 'tsx', join(repoRoot, 'src/ops/projection-reliability-loop-cli.ts'), 'budgets', '--sh'],
