@@ -491,3 +491,59 @@ would pass over the exact state the check exists to detect.
 It says nothing about playback, amplification or any budget. It exists so §11 is executable rather than
 written down — and so the ordering remedy is a demonstrated property of the product's deployment contract
 rather than a habit of one gate.
+
+---
+
+## 13. THE PRODUCT DEFECT PHASE 3 EXISTS TO FIND
+
+**`--auto-remount` CANNOT RECOVER AN ABORTED CONNECTION WHILE A CONSUMER HOLDS THE MOUNT.** Arm A3, run on
+the real host with the three real media servers attached, in the daemon's own words:
+
+```
+projectiond: serve loop died: the FUSE serve loop exited without a requested unmount
+projectiond: remount attempt 1/3
+projectiond: remount refused: transport endpoint is not connected
+```
+
+All three attempts are refused, the namespace never returns, and **all three media servers lose the library**
+— `RL-F-A3-remounted-in-place`, `RL-F-A3-frontends-read-after-remount` and the phase-R byte reads all fail.
+
+### 13.1 The mechanism, and it is an asymmetry inside the daemon
+
+`remountLoop` probes the mountpoint, and when what it finds is **ours** it calls `(*mount).Unmount()` before
+mounting again. **With a consumer holding the mount, that unmount fails** — the mountpoint is busy — so the
+dead mount stays, and the plain `fusefs.Mount` that follows is refused with `ENOTCONN`.
+
+**THE STARTUP PATH ALREADY SOLVES EXACTLY THIS AND THE REMOUNT PATH DOES NOT USE IT.** At startup, a stale
+`projectiond` mount is handled by *stacking over it* — `main.go` logs `stale projectiond mount detected` and
+`stacking over the stale mount (default)`. That is the same object in the same state, and the daemon knows
+what to do with it. `remountLoop` instead insists on clearing it first, which is possible only when nobody
+is holding it.
+
+### 13.2 Why no tranche before this one could see it
+
+- **Phase 2's serve-death gate passes** because its only other participant is a poller that holds no
+  reference: `Unmount()` succeeds there, so the remount succeeds.
+- **A one-consumer isolation run passes too** — measured here: `serve loop died` → `remount attempt 1/3` →
+  `remounted; serving generation 1`, readyz ready, the consumer still reading.
+- **It needs a consumer with an OPEN reference**, which is what a media server has and what only Phase 3
+  attaches while injecting a fault.
+
+It is the same shape as Phase 2's headline defect one level deeper. That one was *recovered for the daemon
+and for nobody else*; this one is **does not recover at all, once anybody is actually using it**.
+
+### 13.3 What is NOT in doubt
+
+The fault is real and injected: `abort:done 1` against the connection the daemon was serving, guarded to
+`fuse.projectiond` mounts under this run's own directory. The death is real and the daemon saw it. Arms
+**A1 and A2 pass completely** in the same runs — graceful restart and SIGKILL-over-a-corpse both recover with
+all three servers reading afterwards, zero churn, and recovery in ~1.5 s against a 22,000 ms budget. The
+difference is not the consumers being attached; it is *this recovery path* with them attached.
+
+### 13.4 The decision it needs
+
+The apparent minimal fix is in `projectiond`: when the cleanup unmount is refused and what is at the
+mountpoint is our own dead mount, **stack over it, exactly as the startup probe already does**, rather than
+failing the attempt. That is a product change on a path **Phase 2 closed on**, so it implies re-running the
+three Phase 2 mount-hardening gates to show nothing regressed. Making that change and re-validating another
+tranche's closed evidence is not a call this document takes on its own.
