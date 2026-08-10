@@ -113,6 +113,12 @@ func main() {
 		logLine("no existing mount at " + cfg.MountPoint)
 	}
 
+	// WHAT WAS AT THE MOUNT POINT BEFORE WE MOUNTED ANYTHING, taken here and nowhere else. The supervisor's
+	// corpse drain may never remove below this: in a container the mount point is commonly a BIND OF A
+	// PROJECTIOND MOUNT, which is indistinguishable from our own by file-system type and is not ours to
+	// remove. Counted before the first mount, so it is a fact rather than an inference.
+	mountsAtStartup := fusefs.CountMountsAt(cfg.MountPoint)
+
 	// Mount returns a mount whose request loop is already running and whose INIT handshake has completed.
 	mount, err := fusefs.Mount(d, cfg.MountPoint, fusefs.MountSettings{
 		Debug: *debug, StrictDirectMount: *strictMount,
@@ -196,7 +202,7 @@ func main() {
 			if !*autoRemount {
 				os.Exit(*serveExitCode)
 			}
-			if !remountLoop(d, cfg, *debug, *strictMount, &mount) {
+			if !remountLoop(d, cfg, *debug, *strictMount, &mount, mountsAtStartup) {
 				logLine("serve loop died and no remount succeeded; exiting")
 				os.Exit(*serveExitCode)
 			}
@@ -278,7 +284,8 @@ func planRemountCleanup(probe fusefs.ProbeResult) remountCleanup {
 	}
 }
 
-func remountLoop(d *daemon.Daemon, cfg daemon.Config, debug, strictMount bool, mount **fusefs.Mounted) bool {
+func remountLoop(d *daemon.Daemon, cfg daemon.Config, debug, strictMount bool, mount **fusefs.Mounted,
+	mountsAtStartup int) bool {
 	const attempts = 3
 	for attempt := 1; attempt <= attempts; attempt++ {
 		time.Sleep(time.Duration(attempt) * time.Second)
@@ -335,10 +342,26 @@ func remountLoop(d *daemon.Daemon, cfg daemon.Config, debug, strictMount bool, m
 			//
 			// So the loop asks only: is the mount ON TOP one of OURS? Nothing else is ever removed — the
 			// operator's bind is not a `fuse.projectiond` mount and the loop stops the moment it surfaces.
+			// ...AND IT NEVER GOES BELOW WHAT WAS ALREADY THERE WHEN THIS PROCESS STARTED.
+			//
+			// THE FILE-SYSTEM TYPE IS NOT ENOUGH, AND FINDING THAT OUT COST A RUN. In a container the mount
+			// point is commonly a BIND OF A PROJECTIOND MOUNT — the operator binds a host path a previous
+			// daemon already mounted — so the bind answers `fuse.projectiond` exactly as our own mount does.
+			// A drain keyed only on the type removed it: "detached 2 stale mount(s) ... (now on top:
+			// nothing)", a remount into a namespace with no host peer, /readyz ready, and all three media
+			// servers reading nothing.
+			//
+			// `mountsAtStartup` is taken BEFORE this process mounted anything, so it is the count of mounts
+			// that are not ours by construction rather than by inspection. The drain may only ever remove
+			// what is stacked ABOVE it.
 			const maxDetach = 8
 			detached := 0
 			stoppedAt := "nothing"
 			for ; detached < maxDetach; detached++ {
+				if fusefs.CountMountsAt(cfg.MountPoint) <= mountsAtStartup {
+					stoppedAt = "what was here before this daemon started"
+					break
+				}
 				fsType, present := fusefs.TopMountFsTypeAt(cfg.MountPoint)
 				if !present {
 					stoppedAt = "nothing"

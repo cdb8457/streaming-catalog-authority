@@ -213,7 +213,39 @@ func TopMountFsTypeAt(path string) (string, bool) {
 // IsOurMountType reports whether a file-system type is this daemon's own FUSE mount. It exists so a caller
 // deciding what to REMOVE compares against the same constant the probe classifies with, rather than a
 // second spelling of it that can drift.
+//
+// IT IS NECESSARY AND IT IS NOT SUFFICIENT, which cost a real run. In a container the mount point is
+// commonly a BIND OF A PROJECTIOND MOUNT — the operator binds a host path that a previous daemon already
+// mounted — so the bind's own file-system type is `fuse.projectiond` too. Anything deciding what to detach
+// must ALSO know what predates it; see CountMountsAt.
 func IsOurMountType(fsType string) bool { return fsType == fuseProjectiondType }
+
+// CountMountsAt reports how many mounts are stacked at exactly this path.
+//
+// WHY A COUNT, AND WHY IT IS TAKEN BEFORE THE FIRST MOUNT. A supervisor clearing its own corpses has to stop
+// somewhere, and every property of the mount itself has now been tried and found insufficient: the transport
+// answer is unreliable while a stack is coming apart, and the file-system type cannot tell this daemon's own
+// mount from a BIND of somebody else's projectiond mount, which is exactly what a containerised deployment
+// hands it. What is left is arithmetic: whatever was at the mount point before this process mounted anything
+// is not this process's to remove, however much it looks like ours.
+func CountMountsAt(path string) int {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return 0
+	}
+	abs = filepath.Clean(abs)
+	raw, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, entry := range parseMountInfo(raw) {
+		if entry.mountPoint == abs {
+			count++
+		}
+	}
+	return count
+}
 
 func ProbeMountpoint(path string) ProbeResult {
 	var stat syscall.Statfs_t
