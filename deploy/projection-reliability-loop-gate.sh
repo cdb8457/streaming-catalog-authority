@@ -1962,6 +1962,29 @@ nothing could be measured" ;;
       reading=$(( reading + 1 ))
     fi
   done
+  # WHEN THIS ARM FAILS, THE DAEMON'S OWN ACCOUNT OF THE REMOUNT IS THE DIAGNOSIS AND THE CLEANUP CONTRACT IS
+  # ABOUT TO DELETE IT. Two runs were spent inferring from the outside what these lines say directly. The
+  # daemon's log carries no secret by construction — Phase 1 asserts zero references in it — and it is kept
+  # at 0600 in the 0700 evidence directory, exactly as the TorBox gate keeps its own record of a failed run.
+  if [ "$saw_death" -ne 1 ] || [ "$remounted" -ne 1 ] || [ "$reading" -ne 3 ]; then
+    mkdir -p "$EVIDENCE_DIR" && chmod 700 "$EVIDENCE_DIR"
+    if docker logs "$MOUNT_CONTAINER" > "$EVIDENCE_DIR/a3-daemon-$$-c$cycle.log" 2>&1; then
+      chmod 600 "$EVIDENCE_DIR/a3-daemon-$$-c$cycle.log"
+      echo "  the daemon's own account is kept at $REL_GATE_ROOT/evidence/a3-daemon-$$-c$cycle.log" >&2
+      echo "--- what it says about the death and the remount ---" >&2
+      grep -E "serve loop died|remount|stale|foreign|clean up" \
+        "$EVIDENCE_DIR/a3-daemon-$$-c$cycle.log" | tail -12 >&2 || true
+    fi
+    # AND WHICH SERVER COULD NOT READ, by name. "2 of 3" is a count; the arm needs to know which one.
+    for server in $RL_SERVERS; do
+      if docker exec -u 1000:1000 "$(container_for "$server")" \
+           test -r "/media/projection/$REAL_PATH" >/dev/null 2>&1; then
+        echo "  after the remount, $server CAN read" >&2
+      else
+        echo "  after the remount, $server CANNOT read" >&2
+      fi
+    done
+  fi
   record "RL-F-A3-frontends-read-after-remount:c$cycle" eq "$reading" 3 \
     "the recovery is only a recovery if the CONSUMERS can see it; Phase 2's worst defect is that they could not" \
     || true
