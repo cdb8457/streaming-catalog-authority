@@ -547,3 +547,27 @@ mountpoint is our own dead mount, **stack over it, exactly as the startup probe 
 failing the attempt. That is a product change on a path **Phase 2 closed on**, so it implies re-running the
 three Phase 2 mount-hardening gates to show nothing regressed. Making that change and re-validating another
 tranche's closed evidence is not a call this document takes on its own.
+
+### 13.5 The fix attempts, and the state this leaves
+
+**THREE DAEMON REVISIONS, EACH RE-VALIDATED AGAINST ALL THREE PHASE 2 MOUNT-HARDENING GATES, AND A3 STILL
+DOES NOT PASS.** Recorded in order, because two of the three were wrong and one was actively harmful.
+
+| # | Change | Result |
+|---|---|---|
+| 1 | our own **stale** mount is cleared with a **lazy detach** rather than an ordinary unmount, which cannot remove a mount a consumer holds | the detach fired; the remount was still refused `ENOTCONN` — there was another corpse underneath |
+| 2 | the cleanup **drains**, detaching while the probe still calls the mount ours | **actively harmful.** It removed the operator's **bind**: `detached 2 stale mount(s) … (now empty)`, a remount into a namespace with no host peer, `/readyz` ready, and all three servers reading nothing — the defect `--auto-remount` was repaired for once already, reached from the other direction |
+| 3 | the drain decides on **identity** (top-of-stack fstype) and never goes below the **mount count taken before this process mounted anything** | safe again, and A3 still fails: the bind at a projection mount point is commonly a bind **of a projectiond mount**, so it matches by type, and the count is what stops the drain rather than anything about the mount itself |
+
+**WHY #2 IS THE IMPORTANT ROW.** All nine Phase 2 runs passed while it was shipped, and could not have caught
+it: **not one Phase 2 gate has a consumer attached.** The check that caught it is `RL-F-A3`'s
+frontends-read-after-remount, and only because it had just been changed from `test -r` to a real
+approved-window digest read — the metadata form had been reporting *2 of 3 readable* over a namespace that
+was gone. That is Phase 3 doing exactly what it was built for, on its own author.
+
+**WHAT IS NOT YET UNDERSTOOD, STATED AS A GAP RATHER THAN A THEORY.** An isolation run that reproduces the
+precondition — a host-side corpse, a second daemon whose bind is therefore a bind *of* that corpse, a
+consumer attached first, then an abort of the topmost connection — **did not reproduce the failure**: the
+consumer kept reading and the daemon logged no serve death at all. So the conditions under which A3 fails
+are not yet reproducible outside the full loop, and **no further daemon change should be made until they
+are.** Three speculative edits to a recovery path is already one more than the evidence supported.
