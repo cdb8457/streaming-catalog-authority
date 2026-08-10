@@ -944,10 +944,30 @@ matched="$(awk -v root="$root" '
     mountpoint = $5
     if (fstype != "fuse.projectiond") next
     if (mountpoint != root && index(mountpoint, root "/") != 1) next
-    print $1, mountpoint, $3
-  }' "$mountinfo" | sort -k2,2 -k1,1n | awk '
-    { top[$2] = $3 }
-    END { for (mountpoint in top) print top[mountpoint] }' | sort -u)"
+    # THE TOP OF THE STACK IS THE ROW NOTHING ELSE CALLS ITS PARENT, AND IT IS NOT THE HIGHEST MOUNT ID.
+    #
+    # This used to sort by mount id and take the last, on the assumption that a mount created later carries
+    # a higher id. THE KERNEL RECYCLES MOUNT IDS, so that assumption survives only until a host has churned
+    # enough mounts -- and this one churns six daemon restarts per run. Run 2 of the first sequence to get
+    # this far met a live mount at id 3234 stacked on a floor at id 3400: the abort chose the FLOOR, tore
+    # down a corpse nobody was serving, and the arm then spent both of its bounded waits proving that a
+    # daemon which had never been touched had not died. All three consumers read perfectly throughout,
+    # which is exactly what a fault injected into the wrong connection looks like.
+    #
+    # mountinfo names the parent in field 2, so the stack is a chain and its top is the only row at this
+    # mount point that no other row names as ITS parent. That is a fact about the topology rather than about
+    # allocation order, and it cannot be recycled out from under this arm.
+    #
+    # (No apostrophes below this line or above it: this whole program is a single-quoted argument, and one
+    # in a comment ends it. That cost the first attempt at this fix a shell syntax error at run time, which
+    # the executed pin caught offline.)
+    key = mountpoint SUBSEP $1
+    dev[key] = $3
+    at[key] = mountpoint
+    isparent[mountpoint SUBSEP $2] = 1
+  }
+  END { for (k in dev) if (!(k in isparent)) print at[k], dev[k] }' "$mountinfo" \
+  | awk '{ print $2 }' | sort -u)"
 
 if [ -z "$matched" ]; then
   echo "abort:none"

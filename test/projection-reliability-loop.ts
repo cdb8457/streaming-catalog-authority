@@ -1562,6 +1562,48 @@ test('the recorder outlives the cleanup, because four verdicts are ABOUT the cle
     'the EXIT trap does not remove the recorder, so the gate root is not left empty');
 });
 
+test('the abort follows the parent chain, because the kernel RECYCLES mount ids', () => {
+  // THE SHAPE IN THIS FIXTURE IS A REAL ONE, COPIED OFF THE RUN THAT FAILED ON IT. Run 2 of the first
+  // sequence ever to reach it met a live mount at id 3234 stacked on a floor at id 3400 -- a lower id on
+  // top, because mount ids are recycled and this gate churns six daemon restarts per run. Sorting by id and
+  // taking the last chose the FLOOR: the abort tore down a corpse nobody was serving,
+  // `RL-F-A3-serve-death-observed` failed because no daemon had been touched, all three consumers read
+  // perfectly throughout, and the arm spent both of its bounded waits -- 250,987 ms of them -- proving that
+  // a daemon which had never died had not recovered.
+  //
+  // The stack is a chain and mountinfo names the parent in field 2, so its top is the only row at this mount
+  // point that is not some other row's parent. That is topology, and it cannot be recycled.
+  const shell = findShell();
+  if (shell === undefined) {
+    skipBlock('executing the FUSE abort program against a recycled-id stack');
+    return;
+  }
+  const dir = mkdtempSync(join(tmpdir(), 'rl-abort-'));
+  const script = join(dir, 'fuse-abort.sh');
+  writeFileSync(script, embedded('FUSEABORT'));
+  const conns = join(dir, 'connections');
+  for (const minor of ['339', '351']) {
+    mkdirSync(join(conns, minor), { recursive: true });
+    writeFileSync(join(conns, minor, 'abort'), '');
+  }
+  const ROOT = '/gate/run-1/mnt';
+  const mountinfo = join(dir, 'mountinfo');
+  writeFileSync(mountinfo, `${[
+    `3400 54 0:351 / ${ROOT} rw,relatime shared:2 - fuse.projectiond projectiond rw`,
+    `3234 3400 0:339 / ${ROOT} rw,relatime shared:3 - fuse.projectiond projectiond rw`,
+  ].join('\n')}\n`);
+
+  const run = spawnSync(shell, [shPath(script), ROOT, shPath(mountinfo), shPath(conns)],
+    { encoding: 'utf8', timeout: 60_000 });
+  const out = `${run.stdout ?? ''}${run.stderr ?? ''}`;
+  assertEq(run.status, 0, `the abort refused a table it should have acted on: ${out}`);
+  assert(out.includes('abort:done 1'), `it did not abort exactly one connection: ${out}`);
+  assertEq(readFileSync(join(conns, '339', 'abort'), 'utf8').trim(), '1',
+    'the mount the daemon is serving was not aborted; the top of the stack was chosen by id, not by parent');
+  assertEq(readFileSync(join(conns, '351', 'abort'), 'utf8'), '',
+    'the FLOOR was aborted -- a corpse nobody serves, which injects the fault into nothing');
+});
+
 test('the CLI publishes the thresholds as shell assignments the gate can evaluate', () => {
   const run = spawnSync(process.execPath,
     ['--import', 'tsx', join(repoRoot, 'src/ops/projection-reliability-loop-cli.ts'), 'budgets', '--sh'],
