@@ -1,8 +1,9 @@
 # Projection Phase 3 — the reliability loop
 
-**Status: NOT RUN.** Every threshold in §4 was fixed before the first measured run, and §8 is empty until a
-run fills it. This document is a contract, not a record; the moment it carries figures it also carries the
-commit, tree digest and image digest they were taken on.
+**Status: NOT RUN, and blocked on a decision rather than on a defect.** Every threshold in §4 was fixed
+before the first measured run and none has moved since. §8 records what four real runs on the Unraid host
+observed and what stopped each; §9 records seven gate defects, all fixed; **§11 is the finding that stops
+the fourth, and it needs a decision this document will not make for itself.** Arms A2-A6 have never run.
 
 **What Phase 3 is, in one sentence.** The product doing its ordinary job — three real media servers reading a
 real provider's object through the production `projectiond` mount — *while the lifecycle failures Phase 2
@@ -227,6 +228,62 @@ defect** — and if one does, the fix, its regression test and the rerun are rec
 
 ## 8. Run record
 
+**NOT RUN — and it is blocked on a finding rather than on a defect.** No run has satisfied the closure rule
+in §4.1. Four runs have been taken on the real Unraid host, each on a frozen tree, and every one is recorded
+in §8.2 with what it established and what stopped it. §11 is the finding that stops the fourth, and it needs
+a decision this document cannot make for itself.
+
+**WHAT HAS BEEN OBSERVED ANYWAY, AND IT IS MOST OF THE GATE.** These are observations from runs that did not
+close; none of them closes anything, and each names the run it came from.
+
+| What | Observed | Run |
+|---|---|---|
+| the operator's real object published under a gate-chosen path, admitted, mounted | yes | 1–4 |
+| it is a decodable video through the mount (`ffprobe`, one interval) | yes | 1–4 |
+| the resolver refused at the transport from the gate network | yes | 1–4 |
+| all three real media servers catalogue both entries at the published size as ordinary files | yes, through each server's own predicate | 2–4 |
+| the cold three-way concurrent scan **observed with all three servers in flight**, over a real provider with **no barrier to rendezvous at** | 25 samples, 3 servers observed scanning, 1 fully attributed three-way sample; continuous run **1 sample / 0 s, recorded against no floor** exactly as §4 predeclared | 3 |
+| all three direct-play the real object | Emby **36** decoded media seconds, Jellyfin **30**, Plex **30**; startup **1.5 / 1.7 / 1.42 s** against 10,000 ms; pacing 1.00 / 0.99 / 0.995; longest stall **0 s** on all three | 3 |
+| the four operator windows digest-compared through the mount | **4 matched, 0 problems**, slowest window **4,227 ms** | 3, 4 |
+| the same four windows read **inside each server's own container as its own uid** | all three matched, before the fault | 4 |
+| **A1** — graceful daemon restart: namespace went away and came back for a **fresh** sibling | **1,514 ms** against a 22,000 ms budget | 4 |
+| **A1** — the same namespace, for the **consumers that were already attached** | **all three failed** — see §11 | 4 |
+| host left as found | container/network/volume/mountpoint sets identical after every run, including the one stopped by hand once its stale mount was cleared through the repository's own helper | 1–4 |
+
+**ARMS A2–A6 HAVE NEVER RUN.** The loop dies in cycle 1's recovery phase, so nothing in this document says
+anything about SIGKILL-over-a-corpse, auto-remount, the sustained outage, credential rotation or the frontend
+restart **with consumers attached**. That is five sixths of the subject and it is open.
+
+### 8.1 Offline
+
+Taken on the Windows development host, at the commit under test. **They are not gate evidence**; they are
+what makes a run worth attempting.
+
+| What | Result |
+|---|---|
+| `npx tsc --noEmit` | clean |
+| `npm run go:vet` / `go:build` / `go:test` | every package `ok`, through the pinned `golang:1.26.5-bookworm` image |
+| `npx tsx test/projection-reliability-loop.ts` | **52 passed, 0 failed**, 1 block skipped and named (`win32` carries no POSIX mode) |
+| `npx tsx test/custody-runtime-closure.ts` | 39/0 — every shipped `.sh` parses under LF and CRLF |
+| `npx tsx test/projection-three-server-concurrency.ts` | 133/0, with the `--no-barrier` containment |
+| `npx tsx test/projection-mount-hardening.ts` | 28/0 |
+| `npx tsx test/projection-multi-frontend.ts` | 17/0 |
+| `npx tsx test/projection-overlap-measurement-mode.ts` | 13/0 |
+| `npx tsx test/projection-evidence-consistency.ts` | 4/0 |
+
+### 8.2 The four runs, and what stopped each
+
+| Run | Frozen tree | What it established | What stopped it |
+|---|---|---|---|
+| 1 | `73a5f957…` | setup, publish, mount, three servers cataloguing, decodable video | the gate warmed the window it was about to measure (§9.1 #1) |
+| 2 | `af0bf074…` | the cold three-way overlap observation, with all three in flight | Emby's `paced-play` takes a flag the other two do not (§9.1 #2) |
+| 3 | `af6dc324…` | **all three servers direct-played the real object**; four windows digest-matched | two results formats across three drivers (§9.1 #3) |
+| 4 | `8978c64d…` | in-container reads by all three before the fault; A1 recovered a fresh sibling in 1,514 ms | **§11** — the consumers that were already attached could not read afterwards |
+
+A fifth attempt sat between 3 and 4 and was **stopped by hand** rather than failing: busybox's `tail` does
+not seek (§9.1 #4). It left one stale mountpoint, which `projection_gate_cleanup_run` cleared; the host's
+counts returned to 42 containers / 26 running / 17 networks / 45 volumes / 0 `fuse.projectiond`.
+
 **NOT RUN.**
 
 | Run | Host | Cycles | Arms | Failed | Skipped | Evidence |
@@ -299,3 +356,75 @@ It binds host ports **8180–8183**, **32560** and **5590** — a block no other
 by test — so it can run beside the Phase 1 and Phase 2 gates rather than colliding with them. **Do not run two
 gates at once on one host**: they bind fixed loopback ports, and the second dies with a port collision that
 reads like a defect and is not.
+
+---
+
+## 11. THE FINDING, AND IT IS NOT A GATE DEFECT
+
+**A GRACEFUL DAEMON RESTART RECOVERS THE NAMESPACE FOR A NEW READER AND NOT FOR THE ONES ALREADY ATTACHED.**
+
+Arm A1 does the most ordinary maintenance action there is — `docker stop`, then start again. On run 4:
+
+- `/readyz` came back ready and a **fresh** sibling container read the real entry **1,514 ms** later, well
+  inside the 22,000 ms budget. `RL-F-A1-namespace-went-away`, `RL-F-A1-ready-ms` and `RL-F-A1` all **passed**.
+- **All three media servers, which had read the operator's four windows correctly inside their own
+  containers moments before, could not read a byte afterwards.** `RL-R-inread` failed on all three.
+- Two of the three **catalogues still passed**. Plex's did not, and said why: *"the server cannot open the
+  file through the mount; the server says the file does not exist."* Jellyfin's and Emby's passed because
+  declining to delete a library whose root has gone unreadable is correct scanner behaviour — which is
+  exactly why the byte read exists beside the catalogue, and it is the check that caught this.
+
+### 11.1 The mechanism, measured in isolation
+
+A bounded diagnostic on the same host, with **no provider and no media server** — one daemon over a local
+40 KB file, one busybox consumer holding `$WORK/mnt` as an `rslave` bind, attached after the mount existed,
+exactly as every gate in this repository attaches a media server:
+
+| | a fresh sibling container | the consumer that was already attached |
+|---|---|---|
+| **graceful stop → restart** | sees it | **cannot read** |
+| **SIGKILL → restart** | sees it | **reads fine** |
+
+A clean shutdown **unmounts**, and an unmount of the master detaches the slave copy in every consumer's
+namespace; nothing the daemon does afterwards reaches them, because the new mount is a different mount at a
+path their bind no longer follows. A SIGKILL unmounts nothing, so the restart **stacks over the corpse** and
+the consumers' slave view resolves to the live namespace.
+
+### 11.2 Why nothing in this repository had seen it
+
+`deploy/projection-jellyfin-dataplane-gate.sh` already documents the second half of that table, in its own
+words, at the SIGKILL step: *"A lazy unmount of the master detaches the slave copy too, and the media server
+can never get it back… The dead mount is not what breaks recovery; removing it is."* What follows from it
+had not been drawn, because nothing had ever run the other path with a consumer attached:
+
+- **G12 only ever exercises SIGKILL.** The graceful path is explicitly *"not proved here and the reason is
+  recorded"* in that gate's own comment.
+- **Phase 2 exercised the graceful path with no media server in any of its nine runs**, by design.
+
+Phase 3 is the intersection, and this is the intersection's first result. It is the same shape as Phase 2's
+worst defect — *recovered for the daemon and for nobody else* — one layer further out: **recovered for a new
+reader and not for the ones already there.**
+
+### 11.3 What it is NOT
+
+- **Not a gate defect.** A1's assertion is the one §3 predeclared, and it is the assertion this tranche was
+  built to make. Weakening it to make a run pass would be the failure this repository exists to prevent.
+- **Not a data-correctness defect.** Every byte this product served was correct: four operator windows
+  matched through the mount and inside all three containers before the fault, and the fresh reader's bytes
+  after it matched too.
+- **Not something the daemon reported wrongly.** It reported success because it *had* succeeded — its
+  namespace was up in 1.5 seconds. The gap is between the daemon's view and the consumers'.
+
+### 11.4 The decision it needs, which this document will not make for itself
+
+Three ways out, and they are not equivalent:
+
+| | What changes | What it costs |
+|---|---|---|
+| **A. Daemon** — do not unmount on graceful shutdown, so a restart stacks the way a SIGKILL restart already does | `projectiond`'s shutdown path | every clean stop leaves a mountpoint answering `ENOTCONN` until the daemon returns — and an operator who stops the appliance for good is left holding one. It is in tension with Phase 2 §4, where a corpse at the mountpoint is the state `--refuse-stale` exists to refuse |
+| **B. Topology** — consumers bind the **parent** of the mountpoint, so an unmount and remount of the child propagates into them | the documented deployment shape, and **every Phase 1 gate**, all of which bind the mountpoint directly | no product code moves, but the topology behind every existing data-plane result changes, and those results were taken on the old one |
+| **C. Operational** — record that a graceful daemon restart requires restarting the consumers | one paragraph | the weakest of the three, and it makes the most ordinary maintenance action on the appliance a three-container dance |
+
+**A, B and C each change something another tranche has already closed on**, which is why the choice is not
+made here. Until it is made, arm A1 fails, the loop stops in cycle 1's recovery phase, and **arms A2–A6 have
+never run** — five sixths of Phase 3's subject is unmeasured, not passed.
