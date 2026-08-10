@@ -915,15 +915,33 @@ BASE
 # against digests recorded outside the mount. A remount that recovered "for the daemon and for nobody else"
 # fails here and passes everything else.
 #
-# `tail -c +N | head -c L` RATHER THAN `dd iflag=skip_bytes`, because the three server images are three
-# different distributions and byte-granular `skip` is a GNU extension. The offsets are not multiples of any
-# block size, so a block-granular skip would read the wrong window and digest it perfectly.
+# `dd` WITH A BYTE-GRANULAR SKIP, AND `tail -c +N | head -c L` IS WHAT IT REPLACES.
+#
+# THE DEFECT THAT COST A RUN, AND IT IS A FACT ABOUT ONE OF THE THREE IMAGES. `tail -c +N` on a seekable
+# regular file seeks, in GNU coreutils. Emby's image ships BUSYBOX, whose `tail` READS AND DISCARDS the
+# first N bytes — and the first window this corpus lists is at offset 1,576,983,267, because the operator
+# records windows in descending order so that every fetch after the first is a genuinely backward-going
+# ranged GET. So the very first in-container read streamed a gigabyte and a half of a 1.7 GB object through
+# a FUSE mount, in busybox-sized chunks, and the run sat there: the daemon's own counters showed 4.4 TB of
+# cache-served reads across 1,048,208 playback-cache hits by the time it was stopped. The PROVIDER cost
+# stayed bounded — 261 misses, ~147 MB — because the playback cache absorbed it, which is the product
+# working; the gate was the thing that was wrong.
+#
+# `dd ... iflag=skip_bytes,count_bytes` seeks and reads exactly one window on all three images. The
+# capability is PROBED FIRST rather than assumed: a `dd` that ignored the flags would read from byte zero,
+# digest something else, and fail as a mismatch — correct, but slowly and for the wrong stated reason. The
+# probe makes it a named refusal in milliseconds instead.
 cat > "$WORK/inprog/inread.sh" <<'INREAD'
 set -eu
 file="$1"
 windows="$2"
 test -f "$file" || { echo "inread:absent" ; exit 1; }
 test -s "$windows" || { echo "inread:no-windows"; exit 1; }
+# THE READ PRIMITIVE IS PROBED BEFORE IT IS TRUSTED, on input that costs nothing.
+if ! dd if=/dev/zero of=/dev/null bs=8 skip=4 count=8 iflag=skip_bytes,count_bytes 2>/dev/null; then
+  echo "inread:no-byte-granular-skip"
+  exit 1
+fi
 # A WINDOW LIST WITH NO TRAILING NEWLINE DROPS ITS LAST RECORD IN EVERY READER, which would silently reduce
 # a four-window check to three and still print inread:ok.
 test -z "$(tail -c 1 "$windows")" || { echo "inread:unterminated-window-list"; exit 1; }
@@ -932,7 +950,18 @@ matched=0
 while IFS=' ' read -r offset length want; do
   test -n "$offset" || { echo "inread:blank-window"; exit 1; }
   total=$(( total + 1 ))
-  got="$(tail -c "+$(( offset + 1 ))" "$file" | head -c "$length" | sha256sum | cut -d' ' -f1)"
+  # THE BYTE COUNT IS CHECKED, NOT ONLY THE DIGEST. A short read digests something that is not the window,
+  # which a comparison would report as a mismatch — true, and the wrong diagnosis. This names it.
+  dd if="$file" bs=1048576 skip="$offset" count="$length" \
+    iflag=skip_bytes,count_bytes of=/tmp/inread.window 2>/dev/null || true
+  read_bytes="$(wc -c < /tmp/inread.window | tr -d ' ')"
+  if [ "$read_bytes" != "$length" ]; then
+    echo "inread:short-read $read_bytes/$length at $offset"
+    rm -f /tmp/inread.window
+    exit 1
+  fi
+  got="$(sha256sum < /tmp/inread.window | cut -d' ' -f1)"
+  rm -f /tmp/inread.window
   if [ "$got" = "$want" ]; then matched=$(( matched + 1 )); fi
 done < "$windows"
 # A RUN THAT READ NO WINDOW AT ALL IS NOT A CLEAN RUN. Without this an empty-but-terminated list would
@@ -1615,9 +1644,13 @@ phase_bytes() {
 
   # AND EACH SERVER READS THE SAME WINDOWS ITSELF, in its own container, as its own uid.
   for server in $RL_SERVERS; do
+    # BOUNDED, BECAUSE A GATE THAT HANGS NEVER REPORTS. Four 64 KiB windows read with a seek cost seconds;
+    # the shape this replaced streamed a gigabyte and a half and sat there until it was killed by hand. Two
+    # read deadlines is generous for four windows and still turns a wedged read into a named failure.
     set +e
     local verdict
-    verdict="$(docker exec -u 1000:1000 "$(container_for "$server")" \
+    verdict="$(timeout "$(( ( RL_READ_FAIL_BUDGET_MS * 2 ) / 1000 ))" \
+      docker exec -u 1000:1000 "$(container_for "$server")" \
       sh /gate/inread.sh "/media/projection/$REAL_PATH" /gate/windows.txt 2>&1 | tail -1)"
     set -e
     case "$verdict" in
@@ -1812,25 +1845,39 @@ arm_A4() {
   record "RL-F-A4-refusal-ms:c$cycle" le "$TIMED_READ_MS" "$RL_BREAKER_REFUSAL_BUDGET_MS" \
     "an open breaker refuses before any admitted read could have got a slot" || true
 
-  # THE HOLD, AND THE ENDPOINT IS HEALTHY THROUGHOUT IT. The credential is restored mid-hold, so what is
-  # measured is a LIVE resolver receiving nothing — strictly stronger than holding a dead one down.
-  chmod 0600 "$WORK/inputs/torbox-credential"
-  local baseline
+  # THE HOLD, AND IT ENDS STRICTLY INSIDE THE COOLDOWN — WHICH AN EARLIER SHAPE OF THIS ARM DID NOT.
+  #
+  # The claim is "zero requests reach the endpoint WHILE THE BREAKER IS OPEN". The breaker closes on its own
+  # after its cooldown and lets exactly one half-open probe through, so a hold window that could outlast the
+  # cooldown would count that probe — one legitimate request, against a ceiling of zero — and fail a correct
+  # product for doing precisely what the contract says it must. The window is half the cooldown, which is
+  # inside it by construction rather than by arithmetic somebody has to redo.
+  #
+  # THE RESOLVER IS UP AND LOGGING THROUGHOUT, which is what makes the zero measurable at all: it answers
+  # 503 to anything that reaches it and writes a line for every one. A count that stayed at zero because
+  # nothing was listening would be the "did not look" reading of a zero, and this is the other one.
+  local baseline hold_until
   baseline="$(resolver_requests)"
-  local held=0
-  while [ "$held" -lt 12 ]; do
+  hold_until=$(( $(date +%s%3N) + RL_HOLD_WINDOW_MS ))
+  while [ "$(date +%s%3N)" -lt "$hold_until" ]; do
     timed_read
-    held=$(( held + 1 ))
-    sleep 5
+    if [ "$TIMED_READ_VERDICT" = "ok" ]; then
+      die "cycle $cycle A4: a read SUCCEEDED while the breaker was supposed to be open and the endpoint \
+was supposed to be refusing every request"
+    fi
+    sleep 3
   done
   local during
   during="$(resolver_requests)"
   record "RL-F-A4-hold-resolver-requests:c$cycle" le "$(( during - baseline ))" \
     "$RL_HOLD_RESOLVER_REQUESTS_MAX" \
-    "requests reaching a HEALTHY resolver while the breaker is open, counted in its own log" || true
+    "requests reaching a live, logging resolver while the breaker is open, counted in its own log" || true
 
-  # THE RELEASE. After the cooldown has elapsed the first read is admitted as the half-open probe, and it
-  # must succeed on real bytes.
+  # THE RELEASE. The endpoint is made healthy again HERE, with the rest of the cooldown still to run, so the
+  # first request the breaker admits — its one half-open probe — meets a working endpoint and closes it on
+  # real evidence. Restoring it any later would send that probe at a broken endpoint, and the breaker would
+  # correctly re-open for another whole cooldown.
+  chmod 0600 "$WORK/inputs/torbox-credential"
   started="$(date +%s%3N)"
   local readable_again=0 probes_before probes_after
   probes_before="$(resolver_resolutions)"

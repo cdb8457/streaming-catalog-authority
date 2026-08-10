@@ -125,6 +125,24 @@ test('every predeclared threshold equals the derivation the contract states for 
     'zero provider traffic while the breaker is open');
 });
 
+test('the outage arm\'s hold window ends strictly inside the breaker cooldown', () => {
+  // A HOLD THAT COULD OUTLAST THE COOLDOWN WOULD COUNT THE HALF-OPEN PROBE — one legitimate request against
+  // a ceiling of zero — and fail a correct product for doing exactly what the contract says it must.
+  assert(RELIABILITY_LOOP_RULES.HOLD_WINDOW_MS < PROJECTIOND_CIRCUIT_BREAKER.OPEN_COOLDOWN_MS,
+    'the hold window is not strictly shorter than the cooldown it is supposed to sit inside');
+  assert(RELIABILITY_LOOP_RULES.HOLD_WINDOW_MS > 0, 'a hold of no time measures nothing');
+  const body = functionBodyOf(read(GATE), 'arm_A4');
+  assert(body.includes('RL_HOLD_WINDOW_MS'),
+    'the outage arm does not bound its hold by the derived window');
+  // ...AND THE ENDPOINT IS MADE HEALTHY BEFORE THE PROBE, NOT AFTER. Restoring it later would send the one
+  // half-open probe at a broken endpoint, and the breaker would correctly re-open for another cooldown.
+  const restoreAt = body.indexOf('chmod 0600');
+  const holdAt = body.indexOf('hold_until');
+  const releaseAt = body.indexOf('RL-F-A4-recovery-ms');
+  assert(holdAt > 0 && restoreAt > holdAt && releaseAt > restoreAt,
+    'the credential is not restored between the hold and the recovery measurement');
+});
+
 test('the rotation arm cannot open the breaker the outage arm is about', () => {
   assert(ROTATION_REFUSAL_BELOW_BREAKER,
     'the rotation refusal bound is not strictly under the breaker threshold, so A5 would be measuring A4');
@@ -688,6 +706,35 @@ test('inread.sh compares every window and refuses a list it cannot read in full'
   const ok = runIt();
   assertEq(ok.status, 0, `two correct windows did not pass: ${ok.stdout}`);
   assert(ok.stdout.includes('inread:ok 2/2'), `the program did not count both windows: ${ok.stdout}`);
+
+  // THE WINDOW IS SEEKED TO, NOT STREAMED TO, AND THAT IS THE DEFECT THAT COST A RUN. `tail -c +N` seeks in
+  // GNU coreutils and READS AND DISCARDS in busybox — which Emby's image ships — so the first window of
+  // this corpus, at offset 1,576,983,267 because the operator records them descending, streamed a gigabyte
+  // and a half of a 1.7 GB object through a FUSE mount before the run was stopped by hand. The digest of a
+  // window deep inside a file is what proves the seek: a program that streamed from zero would still
+  // produce it, but only after reading everything before it, so the check that catches a REGRESSION is that
+  // the primitive is `dd` with a byte-granular skip and that the program refuses a `dd` without one.
+  assert(source.includes('iflag=skip_bytes,count_bytes'),
+    'the in-container read does not use a byte-granular seek');
+  assert(!/tail -c "\+/.test(source),
+    'the in-container read still streams to its offset, which busybox does not seek for');
+  assert(source.includes('inread:no-byte-granular-skip'),
+    'the program does not refuse a dd that cannot seek by bytes; it would silently digest the wrong window');
+  const deep = join(dir, 'deep.txt');
+  write(deep, `600 24 ${digestOf(600, 24)}\n`);
+  const seeked = spawnSync(shell, [shPath(script), shPath(target), shPath(deep)],
+    { encoding: 'utf8', timeout: 60_000 });
+  assertEq(seeked.status, 0,
+    `a window deep inside the object was not read correctly: ${seeked.stdout}${seeked.stderr}`);
+
+  // A SHORT READ IS NAMED RATHER THAN REPORTED AS A MISMATCH, because those are different diagnoses.
+  const past = join(dir, 'past.txt');
+  write(past, `630 64 ${'0'.repeat(64)}\n`);
+  const short = spawnSync(shell, [shPath(script), shPath(target), shPath(past)],
+    { encoding: 'utf8', timeout: 60_000 });
+  assertEq(short.status, 1, 'a window running past the end of the object was accepted');
+  assert(`${short.stdout}${short.stderr}`.includes('inread:short-read'),
+    `a short read was not named: ${short.stdout}${short.stderr}`);
 
   // A WRONG DIGEST IS A MISMATCH AND NOT A PASS.
   write(windows, `0 32 ${'f'.repeat(64)}\n`);

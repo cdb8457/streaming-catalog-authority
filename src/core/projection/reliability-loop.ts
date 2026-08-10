@@ -99,6 +99,18 @@ export const RELIABILITY_LOOP_RULES = Object.freeze({
   /** While the breaker is open, zero packets leave the host. */
   HOLD_RESOLVER_REQUESTS_MAX: 0,
 
+  /**
+   * How long the outage arm reads against an open breaker before releasing.
+   *
+   * HALF THE COOLDOWN, AND THE FRACTION IS THE POINT RATHER THAN THE NUMBER. The claim being measured is
+   * "zero requests reach the endpoint WHILE THE BREAKER IS OPEN", and the breaker closes on its own after
+   * `OPEN_COOLDOWN_MS`. A hold window that could outlast the cooldown would let the half-open probe fire
+   * inside the window being measured — one legitimate request, against a ceiling of zero, failing a
+   * correct product for doing exactly what the contract says it must. Half is strictly inside by
+   * construction and stays so however the cooldown is later changed.
+   */
+  HOLD_WINDOW_MS: PROJECTIOND_CIRCUIT_BREAKER.OPEN_COOLDOWN_MS / 2,
+
   /** Half-open lets exactly one request through. Not a fraction, not a burst. */
   HALF_OPEN_PROBES: PROJECTIOND_CIRCUIT_BREAKER.HALF_OPEN_PROBES,
 
