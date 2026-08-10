@@ -94,3 +94,8 @@ deploy/ci/acceptance/playwright-report/
 # contract deletes is no place for the record of what was measured. It also holds two copies of the
 # operator's secrets at 0600 for the length of a run. Neither belongs anywhere `git add -A` reaches.
 .projection-reliability-loop-gate/
+
+# The consumer-attachment check’s root. It holds no secret — it contacts no provider and mints no
+# credential — but an interrupted run leaves a scratch tree, and nothing here belongs where a bare
+# `git add -A` reaches.
+.projection-consumer-attachment-check/

@@ -24,6 +24,7 @@ import {
   PROJECTIOND_ADMISSION_LIMITS,
   PROJECTIOND_CIRCUIT_BREAKER,
   PROJECTION_PHASE_1_BUDGETS,
+  PROJECTIOND_CONSUMER_ATTACHMENT,
 } from '../src/core/projection/runtime-contract.js';
 
 // Projection Phase 3 — the reliability loop, offline.
@@ -992,6 +993,45 @@ test('a failing verdict never swallows the diagnosis that follows it', () => {
   assertEq(offending.length, 0,
     `a definitely-failing verdict is unguarded at line(s) ${offending.map(([n]) => n).join(', ')}; under `
     + 'set -e it ends the run before the message that explains it');
+});
+
+test('consumer attachment is a SHIPPED CONTRACT, not a fact about one gate', () => {
+  // THE ORDERING REMEDY IS ONLY DEFENSIBLE IF IT IS THE PRODUCT'S RULE RATHER THAN THIS GATE'S HABIT. A gate
+  // that quietly started its consumers earlier would be tuning the experiment; a contract that says every
+  // consumer must attach before the first mount, with the gate as one instance of it, is a deployment
+  // requirement somebody can act on.
+  assertEq(PROJECTIOND_CONSUMER_ATTACHMENT.BIND_BEFORE_FIRST_MOUNT, true,
+    'the contract no longer requires a consumer to attach before the first mount');
+  assertEq(PROJECTIOND_CONSUMER_ATTACHMENT.BIND_PROPAGATION, 'rslave', 'the bind propagation changed');
+  // THE PARENT-BIND REMEDY IS SUPERSEDED AND THE CONTRACT MUST KEEP SAYING SO. If this ever flips to the
+  // parent, the topology behind every Phase 1 data-plane result changes and those results were not taken
+  // on it — so the flip has to be a deliberate, visible edit that fails here first.
+  assertEq(PROJECTIOND_CONSUMER_ATTACHMENT.BIND_TARGET, 'the-mountpoint-itself',
+    'the contract now asks consumers to bind the parent, which changes the topology behind every Phase 1 '
+    + 'data-plane result');
+  assertEq(PROJECTIOND_CONSUMER_ATTACHMENT.REPAIRABLE_BY_THE_DAEMON, false,
+    'the contract now claims the daemon can repair a late binder; nothing measured supports that');
+  // THE THREE MAINTENANCE ACTIONS ARE ENUMERATED, and the one that survives is the one that STACKS.
+  assert(PROJECTIOND_CONSUMER_ATTACHMENT.LATE_BINDER_SURVIVES.includes('daemon-sigkill-and-restart'),
+    'the contract no longer records that a SIGKILL restart is survivable, which is why G12 always passed');
+  for (const action of ['daemon-graceful-stop-and-restart', 'external-umount-with-auto-remount']) {
+    assert(PROJECTIOND_CONSUMER_ATTACHMENT.LATE_BINDER_DOES_NOT_SURVIVE.includes(action as never),
+      `the contract no longer records ${action} as fatal to a late binder`);
+  }
+  // ...AND THE TWO LISTS ARE DISJOINT, because an action that appears in both says nothing at all.
+  for (const action of PROJECTIOND_CONSUMER_ATTACHMENT.LATE_BINDER_SURVIVES) {
+    assert(!(PROJECTIOND_CONSUMER_ATTACHMENT.LATE_BINDER_DOES_NOT_SURVIVE as readonly string[])
+      .includes(action), `${action} is recorded as both survivable and fatal`);
+  }
+  // THE PRODUCT CONTRACT DOCUMENT CARRIES IT TOO, including WHY the parent-bind remedy was superseded —
+  // because a remedy replaced without a reason is how the next reader reinstates it.
+  const contract = read('docs/PROJECTION_PHASE_0_PRODUCT_CONTRACT.md');
+  assert(/##\s*11\.\s*Consumer attachment/.test(contract),
+    'the product contract has no consumer-attachment section');
+  assert(/PARENT-BIND REMEDY IS SUPERSEDED/.test(contract),
+    'the product contract does not record that the parent-bind remedy was superseded, or why');
+  assert(contract.includes('PROJECTIOND_CONSUMER_ATTACHMENT'),
+    'the product contract does not name the machine-readable half of itself');
 });
 
 test('the consumers bind the projected path BEFORE anything is mounted there', () => {

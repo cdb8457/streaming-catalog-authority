@@ -459,6 +459,57 @@ export const PROJECTIOND_PLATFORM_SUPPORT = Object.freeze({
 } as const);
 
 /**
+ * HOW A CONSUMER MUST ATTACH TO THE PROJECTED PATH, AND IT IS A DEPLOYMENT REQUIREMENT RATHER THAN ADVICE.
+ *
+ * WHAT WAS MEASURED, on a real Unraid host, with two consumers differing in EXACTLY ONE THING — the moment
+ * they attached — and with no provider and no media server in the experiment:
+ *
+ *                                            bound a PLAIN DIRECTORY     bound an EXISTING mount
+ *   after the daemon's first mount                   reads                        reads
+ *   graceful daemon stop, then restart               READS                     cannot read
+ *   external umount + --auto-remount                 READS                     cannot read
+ *
+ * THE DAEMON IS CORRECT IN BOTH COLUMNS. It logged the serve death and the remount, and a container created
+ * AFTERWARDS saw the namespace every time. What differs is only which mount peer group the consumer's bind
+ * belongs to: a bind taken while the path is a plain directory is a slave of the PARENT's peer group, so
+ * every later mount at that path propagates into it; a bind taken over an existing mount is a slave of THAT
+ * MOUNT's peer group only, and once that mount is gone the next one belongs to a group the container never
+ * joined. Nothing the daemon does can reach it, and no product change can make it.
+ *
+ * WHY A SIGKILL RESTART IS THE EXCEPTION, AND WHY IT MISLED THIS REPOSITORY FOR SO LONG. A SIGKILL unmounts
+ * nothing, so the restart STACKS a new mount on the same mountpoint — inside the peer group the container
+ * did join — and it propagates. That is the only recovery path Phase 1's G12 exercises, which is why every
+ * data-plane gate has always passed while binding the mountpoint directly, and why the two paths that
+ * REMOVE the mount went unexamined until Projection Phase 3 ran them with consumers attached.
+ *
+ * THIS SUPERSEDES THE PARENT-BIND REMEDY. The first reading of the evidence was that a consumer must bind
+ * the PARENT of the mountpoint. That would work, and it is strictly more disruptive: it changes the
+ * topology behind every Phase 1 data-plane result, none of which were taken on it. The two-consumer
+ * experiment above is the narrower and stronger finding — the bind spelling never needed to change at all,
+ * only its ORDER — so the contract requires the order and leaves the topology alone.
+ */
+export const PROJECTIOND_CONSUMER_ATTACHMENT = Object.freeze({
+  /** A consumer binds the projected path BEFORE the daemon has ever mounted there. */
+  BIND_BEFORE_FIRST_MOUNT: true,
+  /** The bind spelling is unchanged by this rule: same source, same target, same propagation. */
+  BIND_PROPAGATION: 'rslave',
+  /** Bind the mountpoint itself, not its parent. The parent-bind remedy is superseded; see above. */
+  BIND_TARGET: 'the-mountpoint-itself',
+  /**
+   * What a consumer that attached too late survives, and what it does not. Stated as an enumeration because
+   * "restart the consumer" is the only remedy once it has happened, and an operator is entitled to know
+   * which maintenance actions require it.
+   */
+  LATE_BINDER_SURVIVES: Object.freeze(['daemon-sigkill-and-restart'] as const),
+  LATE_BINDER_DOES_NOT_SURVIVE: Object.freeze([
+    'daemon-graceful-stop-and-restart',
+    'external-umount-with-auto-remount',
+  ] as const),
+  /** There is no daemon behaviour that repairs a late binder. It is mount propagation, not this product. */
+  REPAIRABLE_BY_THE_DAEMON: false,
+} as const);
+
+/**
  * The Phase 1 amplification budget. These are the numbers the acceptance harness asserts, and they are here
  * rather than only in the plan document so a suite can import them instead of copying them.
  */

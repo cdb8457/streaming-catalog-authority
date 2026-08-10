@@ -1334,6 +1334,12 @@ step "THE THREE MEDIA SERVERS START FIRST, AND THE ORDER IS THE WHOLE OF WHETHER
 # gate exercises with a consumer attached, that need the bind to follow the directory.
 #
 # THE BIND ITSELF IS UNCHANGED. Same source, same target, same `rslave`. Only the moment changes.
+#
+# AND IT IS THE PRODUCT'S RULE RATHER THAN THIS GATE'S HABIT. `PROJECTIOND_CONSUMER_ATTACHMENT` in
+# `src/core/projection/runtime-contract.ts` and §11 of `docs/PROJECTION_PHASE_0_PRODUCT_CONTRACT.md` say a
+# consumer SHALL bind the projected path before the daemon has ever mounted there; this gate is one instance
+# of that requirement, not the reason for it. A gate that quietly started its consumers earlier would be
+# tuning the experiment until it passed — which is why the rule is shipped, pinned, and cited here.
 start_jellyfin
 start_emby
 start_plex

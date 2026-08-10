@@ -449,3 +449,43 @@ redirects, no inline key — is unchanged and **SHALL NOT** be relaxed by anythi
 That is all it proves. It **SHALL NOT** be presented as evidence for FUSE mount propagation, container mount
 visibility, media-server scan behaviour, kernel page-cache interaction, inode stability as observed by a
 media server, or daemon kill-and-recover. `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6 is the table.
+
+## 11. Consumer attachment
+
+**AMENDED BY PROJECTION PHASE 3, ON MEASURED EVIDENCE.** This section did not exist before, and it exists
+now because Phase 3 is the first thing in this repository to have run a fault with a consumer attached.
+`PROJECTIOND_CONSUMER_ATTACHMENT` in `src/core/projection/runtime-contract.ts` is the machine-readable half.
+
+11.1 A consumer of the projection — a media server, or anything else that reads the namespace — **SHALL**
+bind the projected path **before `projectiond` has ever mounted there**. The bind is otherwise unchanged:
+the **mountpoint itself**, not its parent, with `rslave` propagation.
+
+11.2 The reason is mount propagation and not this product. A bind taken while the path is a **plain
+directory** is a slave of the **parent's** peer group, so every later mount at that path propagates into it.
+A bind taken **over an existing mount** is a slave of that mount's peer group only; once that mount is gone,
+the next one belongs to a group the container never joined, and **no daemon behaviour can reach it**.
+
+11.3 What a late binder survives, measured rather than reasoned:
+
+| Maintenance action | a consumer bound before the first mount | a consumer bound over a live mount |
+|---|---|---|
+| daemon **SIGKILL** and restart | reads | **reads** — the restart *stacks* over the corpse |
+| daemon **graceful stop** and restart | reads | **cannot read** |
+| **external `umount`** with `--auto-remount` | reads | **cannot read** |
+
+11.4 **A daemon SIGKILL is the exception, and it is why this went unseen.** It unmounts nothing, so the
+restart stacks inside the peer group the consumer did join. That is the only recovery path Phase 1's G12
+exercises, which is why every data-plane gate has always passed while binding the mountpoint directly.
+
+11.5 **The remedy for a consumer that attached too late is to restart that consumer.** There is no other,
+and `REPAIRABLE_BY_THE_DAEMON` is `false` in the contract for that reason.
+
+11.6 **THE PARENT-BIND REMEDY IS SUPERSEDED, AND BY WHAT.** The first reading of this evidence — taken from
+`deploy/projection-jellyfin-dataplane-gate.sh`'s note that *"the dead mount is not what breaks recovery;
+removing it is"* — was that a consumer must bind the **parent** of the mountpoint. That would also work, and
+it is strictly more disruptive: it changes the topology behind **every Phase 1 data-plane result**, none of
+which were taken on it. A controlled two-consumer experiment then isolated the actual variable: **two
+consumers, identical in every respect including the bind spelling, differing only in when they attached**,
+and only the late one failed. The bind never needed to change; only its order did. The contract therefore
+requires the **order** and leaves the topology alone, and this paragraph records the supersession rather
+than quietly replacing one remedy with another.
