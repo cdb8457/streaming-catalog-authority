@@ -272,6 +272,49 @@ test('the gate spells none of the thresholds and reads them from the module inst
   }
 });
 
+test('MT2 IS AN ADDITION, NOT A REMOVAL, and the abort is kept for the arms it can actually serve', () => {
+  // THE ORIGINAL MT2 WAS PREDECLARED, MEASURED FALSE, AND SUPERSEDED. It asked for `mountObserved` to go
+  // stale while `mounted` was still true; the supervisor runs SetMounted(false) BEFORE RecordServeDeath, so
+  // the observation is the lagging signal and that pair cannot occur. §6.2 of the contract keeps that record.
+  // This pin holds the corrected arm's SHAPE so it cannot drift back to the impossible one.
+  if (!gateExists()) { skipBlock(GATE_ABSENT); return; }
+  const executable = shellCodeOf(read(GATE));
+  const mt2 = executable.slice(executable.indexOf('MT2_TAG='), executable.indexOf('the guarded abort'));
+  assert(mt2.length > 0, 'the MT2 overlay block is gone');
+
+  // THE FAULT ADDS A LAYER. That is why the serve loop never notices and `mounted` stays true — a fault that
+  // removed one would take the connection with it and the supervisor would correct the belief.
+  assert(/mount -t tmpfs[^\n]*"\$WORK\/mnt"/.test(mt2),
+    'MT2 no longer stacks a foreign filesystem over the live mount');
+  assert(!/fuse-abort\.sh/.test(mt2), 'MT2 is injecting the abort again, which cannot produce its divergence');
+
+  // ...AND IT ASSERTS ALL FOUR HALVES TOGETHER. Any one of them alone is satisfiable by a broken product:
+  // `foreign` alone by a mount that died, `mounted=true` alone by a field wired to the boolean, and the
+  // restoration halves are what stop the arm leaving the mount permanently broken and calling that a pass.
+  for (const half of ['"$MT2_MOUNTED" = "true"', '"$MT2_OBSERVED" = "foreign"',
+    '"$MT2_TOP_AFTER" = "fuse.projectiond"', '"$MT2_SHA_AFTER" = "$CONSUMER_SHA_BEFORE"']) {
+    assert(mt2.includes(half), `MT2 no longer requires ${half}`);
+  }
+  // THE SERVE LOOP MUST BE PROVEN UNTOUCHED, from a baseline taken before the fault. Without it, a run in
+  // which the daemon died and was silently restarted would look the same from the outside.
+  assert(mt2.includes('MT2_DEATHS_BEFORE') && mt2.includes('"$MT2_DEATHS_AFTER" = "$MT2_DEATHS_BEFORE"'),
+    'MT2 does not prove the serve loop never noticed the fault');
+
+  // EVERY TARGET IS GUARDED TO THIS RUN. This gate mounts and unmounts on a real host; an unguarded target
+  // is how a test takes something that is not its own.
+  assert(/case "\$DAEMON_CONTAINER" in[\s\S]{0,200}projection-mount-truth-daemon-\$\$\)/.test(mt2),
+    'MT2 does not verify the daemon container belongs to this run before touching its namespace');
+  assert(/"\$MT2_TOP_BEFORE" = "fuse.projectiond"/.test(mt2),
+    'MT2 stacks without first proving the top of the stack is ours');
+  assert(/"\$MT2_TOP_NOW" = "tmpfs"/.test(mt2),
+    'MT2 unmounts without first proving the top is the tmpfs it stacked');
+
+  // AND THE ABORT IS STILL RUN, as a separate fault, because MT3 needs a dead connection and MT4 needs
+  // something for --auto-remount to recover from.
+  assert(executable.includes('fuse-abort.sh'), 'the guarded abort is gone, so MT3 and MT4 lost their fault');
+  assert(/DEAD_READYZ_MS/.test(executable), 'MT3 no longer takes a reading over the dead connection');
+});
+
 test('the gate holds all six predeclared ids and cannot pass without its own control', () => {
   if (!gateExists()) { skipBlock(GATE_ABSENT); return; }
   const executable = shellCodeOf(read(GATE));

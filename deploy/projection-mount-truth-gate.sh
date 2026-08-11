@@ -390,8 +390,116 @@ case "$MT1_AGE" in
 esac
 
 # ----------------------------------------------------------------------------------------------------------
-step "MT2 — the divergence: the connection is aborted under a living daemon"
+step "MT2 — the divergence: a foreign filesystem stacked ABOVE the live mount"
 # ----------------------------------------------------------------------------------------------------------
+# THE FAULT IS AN ADDITION, NOT A REMOVAL, AND THAT IS THE WHOLE REASON THIS ARM WORKS.
+#
+# MT2 WAS ORIGINALLY AN ABORT AND THAT FORMULATION IS MEASURED FALSE. It asked for `mountObserved` to go
+# stale while `mounted` was still true. On a serve-loop death the supervisor runs `SetMounted(false)` and
+# THEN `RecordServeDeath`, so `mounted` goes false within milliseconds while the observation is the LAGGING
+# signal, updating up to a full sample interval later. There is no window in which the pair reads
+# mounted=true / observed=stale, and sampling faster cannot create one. That is recorded in §6.2 of the
+# contract document rather than quietly replaced.
+#
+# STACKING A FOREIGN FILESYSTEM OVER THE LIVE MOUNT IS THE DIVERGENCE THAT ACTUALLY EXISTS. The FUSE
+# connection is never touched, so the serve loop does not die, no supervisor code runs, and `mounted` stays
+# true — the divergence is INVISIBLE to the supervisor, which is precisely the class of state the observation
+# was added to report. The observation reads the TOP of the stack, so it sees the stranger.
+#
+# EVERY TARGET IS GUARDED TO THIS RUN: the container name must be this run's own, the pid comes from that
+# container, and the top of the stack in that namespace must already be OURS before anything is stacked on it.
+MT2_TAG="mt-overlay-$$"
+case "$DAEMON_CONTAINER" in
+  projection-mount-truth-daemon-$$) ;;
+  *) die "MT2: refusing to touch a namespace that is not this run's own daemon ($DAEMON_CONTAINER)" ;;
+esac
+MT2_PID="$(docker inspect -f '{{.State.Pid}}' "$DAEMON_CONTAINER")"
+test "${MT2_PID:-0}" -gt 0 || die "MT2: this run's daemon has no pid"
+
+# THE DAEMON'S OWN MOUNT TABLE, READ FROM THE HOST BY PID. The production image is distroless — no shell, no
+# awk, nothing to exec — so entering its mount namespace to LOOK is impossible: `nsenter` lands in a
+# filesystem with no binaries. `/proc/<pid>/mountinfo` is that namespace's table and the gate is already root
+# here. The LAST matching line is the top, which is the same ordering rule the observation itself depends on.
+mt2_top() {
+  awk '$5=="/mnt/projection"{t=$0} END{if(t==""){print "none"}else{split(t,q," - ");split(q[2],g," ");print g[1]}}' \
+    "/proc/$MT2_PID/mountinfo"
+}
+
+MT2_TOP_BEFORE="$(mt2_top)"
+test "$MT2_TOP_BEFORE" = "fuse.projectiond" \
+  || die "MT2: the top of the stack in the daemon namespace is '$MT2_TOP_BEFORE', not ours; refusing to stack"
+MT2_DEATHS_BEFORE="$(docker logs "$DAEMON_CONTAINER" 2>&1 | grep -c 'serve loop died' || true)"
+
+# STACKED ON THE HOST SIDE, AT THIS RUN'S OWN DIRECTORY, and it reaches the daemon by propagation: the daemon
+# holds this path `:rshared`, which is what carries a mount both ways.
+mount -t tmpfs -o size=1m,nr_inodes=64 "$MT2_TAG" "$WORK/mnt" \
+  || die "MT2: the temporary overlay could not be stacked"
+echo "  a tmpfs named $MT2_TAG is stacked ABOVE the live projection mount at this run's own directory"
+
+MT2_OBSERVED=""
+MT2_MOUNTED=""
+MT2_OVERLAY_MS=0
+n=0
+while [ "$n" -lt 40 ]; do
+  timed_readyz
+  MT2_OBSERVED="$(readyz_field "$READYZ_BODY" mountObserved)"
+  MT2_MOUNTED="$(readyz_field "$READYZ_BODY" mounted)"
+  MT2_OVERLAY_MS="$READYZ_MS"
+  [ "$MT2_OBSERVED" = "foreign" ] && break
+  n=$((n + 1)); sleep 0.5
+done
+MT2_DEATHS_AFTER="$(docker logs "$DAEMON_CONTAINER" 2>&1 | grep -c 'serve loop died' || true)"
+MT2_RUNNING="$(docker inspect -f '{{.State.Running}}' "$DAEMON_CONTAINER" 2>/dev/null || echo false)"
+
+# CLEANUP REMOVES ONLY WHAT THIS RUN STACKED. The top must still be a tmpfs; if it is not, the overlay is
+# already gone or something else is there, and unmounting would take the product's own mount instead.
+MT2_TOP_NOW="$(mt2_top)"
+if [ "$MT2_TOP_NOW" = "tmpfs" ]; then
+  umount "$WORK/mnt" || die "MT2: the temporary overlay could not be removed"
+  echo "  the temporary overlay was unmounted; only the tmpfs was removed"
+else
+  fail "MT2 the top of the stack is '$MT2_TOP_NOW', not the tmpfs this run stacked; nothing was unmounted"
+fi
+
+MT2_OBS_RESTORED=""
+n=0
+while [ "$n" -lt 40 ]; do
+  timed_readyz
+  MT2_OBS_RESTORED="$(readyz_field "$READYZ_BODY" mountObserved)"
+  [ "$MT2_OBS_RESTORED" = "live-projectiond" ] && break
+  n=$((n + 1)); sleep 0.5
+done
+MT2_SHA_AFTER=""
+n=0
+while [ "$n" -lt 60 ]; do
+  MT2_SHA_AFTER="$(consumer_sha)"
+  [ -n "$MT2_SHA_AFTER" ] && break
+  n=$((n + 1)); sleep 0.5
+done
+MT2_TOP_AFTER="$(mt2_top)"
+
+# THE WHOLE POINT OF THE TRANCHE IS THE TWO FIELDS DISAGREEING HERE. `mounted` is what the daemon remembers
+# doing; `mountObserved` is what is actually there. A field that could never differ from the boolean would be
+# the boolean under a second name — and the reversal is asserted with it, because a divergence that could not
+# be undone would leave the arm unable to say whether it had broken the mount permanently.
+if [ "$MT2_MOUNTED" = "true" ] && [ "$MT2_OBSERVED" = "foreign" ] \
+   && [ "$MT2_DEATHS_AFTER" = "$MT2_DEATHS_BEFORE" ] && [ "$MT2_RUNNING" = "true" ] \
+   && [ "$MT2_TOP_AFTER" = "fuse.projectiond" ] && [ "$MT2_OBS_RESTORED" = "live-projectiond" ] \
+   && [ -n "$MT2_SHA_AFTER" ] && [ "$MT2_SHA_AFTER" = "$CONSUMER_SHA_BEFORE" ]; then
+  pass "MT2 the mount is observed FOREIGN while mounted is still true, the serve loop never noticed, and" \
+       "unmounting only the overlay restored both the live observation and the consumer's digest"
+else
+  fail "MT2 mounted=$MT2_MOUNTED observed=$MT2_OBSERVED serveDeaths=$MT2_DEATHS_BEFORE->$MT2_DEATHS_AFTER" \
+       "running=$MT2_RUNNING restoredTop=$MT2_TOP_AFTER restoredObserved=$MT2_OBS_RESTORED digestRestored=" \
+       "$( [ "$MT2_SHA_AFTER" = "$CONSUMER_SHA_BEFORE" ] && echo yes || echo NO )"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+step "the guarded abort — a SEPARATE fault, and the subject of MT3 and MT4"
+# ----------------------------------------------------------------------------------------------------------
+# THE ABORT IS KEPT AND ITS ROLE IS NARROWED. It is no longer asked to produce MT2's divergence, which it
+# cannot; it is what puts a DEAD CONNECTION under /readyz for MT3 and what `--auto-remount` recovers from for
+# MT4. Both of those it does exactly.
 set +e
 ABORT_OUTPUT="$(bash "$WORK/out/fuse-abort.sh" "$WORK/mnt" 2>&1)"
 set -e
@@ -401,45 +509,37 @@ case "$(echo "$ABORT_OUTPUT" | tail -1)" in
   *) die "the fault could not be injected ($(echo "$ABORT_OUTPUT" | tail -1)), so nothing below is about it" ;;
 esac
 
-# THE OBSERVATION IS WAITED FOR, NOT SAMPLED ONCE. The sampler has its own cadence, so asking the instant the
-# abort returns would ask before the next probe had run — and would record the daemon's PREVIOUS answer as
-# though it were its answer to this fault.
-MT2_OBSERVED=""
-MT2_MOUNTED=""
-MT2_READYZ_MS=0
+# THE READING IS TAKEN WHILE THE CONNECTION IS DEAD, which is the whole value of this sample for MT3: it is
+# the moment an endpoint that probed inline would block. The observation is waited for rather than sampled
+# once, because the sampler has its own cadence and asking the instant the abort returns would record the
+# daemon's PREVIOUS answer as though it were its answer to this fault.
+DEAD_OBSERVED=""
+DEAD_READYZ_MS=0
 n=0
 while [ "$n" -lt 60 ]; do
   timed_readyz
-  MT2_OBSERVED="$(readyz_field "$READYZ_BODY" mountObserved)"
-  MT2_MOUNTED="$(readyz_field "$READYZ_BODY" mounted)"
-  MT2_READYZ_MS="$READYZ_MS"
-  [ "$MT2_OBSERVED" = "stale-projectiond" ] && break
+  DEAD_OBSERVED="$(readyz_field "$READYZ_BODY" mountObserved)"
+  DEAD_READYZ_MS="$READYZ_MS"
+  [ "$DEAD_OBSERVED" = "stale-projectiond" ] && break
   n=$((n + 1)); sleep 0.5
 done
-
-# THE WHOLE POINT OF THE TRANCHE IS THE TWO FIELDS DISAGREEING HERE. `mounted` is what the daemon remembers
-# doing; `mountObserved` is what is actually there. A field that could never differ from the boolean would be
-# the boolean under a second name.
-if [ "$MT2_OBSERVED" = "stale-projectiond" ] && [ "$MT2_MOUNTED" = "true" ]; then
-  pass "MT2 the mount is observed stale WHILE mounted is still true — belief and observation diverged"
-else
-  fail "MT2 observed=$MT2_OBSERVED mounted=$MT2_MOUNTED (wanted stale-projectiond while mounted stayed true)"
-fi
+echo "  over the dead connection: observed=$DEAD_OBSERVED, /readyz answered in ${DEAD_READYZ_MS}ms"
 
 # ----------------------------------------------------------------------------------------------------------
 step "MT3 — /readyz answered inside its budget in every arm, including over a dead connection"
 # ----------------------------------------------------------------------------------------------------------
 # IF THE ENDPOINT HAD WAITED FOR A PROBE IT COULD NOT PASS THIS. The budget is strictly under the probe
-# timeout by contract (`READYZ_CANNOT_HAVE_WAITED_FOR_A_PROBE`), and MT2's request is the one that matters:
-# it is taken while the connection is dead, which is exactly when an inline statfs would block.
+# timeout by contract (`READYZ_CANNOT_HAVE_WAITED_FOR_A_PROBE`), and the DEAD-CONNECTION request is the one
+# that matters: an inline statfs would block there for as long as the connection stayed dead. Every arm's
+# slowest request is folded in, so no reading escapes the budget by belonging to a different arm.
 MT3_WORST="$MT1_READYZ_MS"
-[ "$MT2_READYZ_MS" -gt "$MT3_WORST" ] && MT3_WORST="$MT2_READYZ_MS"
+[ "$MT2_OVERLAY_MS" -gt "$MT3_WORST" ] && MT3_WORST="$MT2_OVERLAY_MS"
+[ "$DEAD_READYZ_MS" -gt "$MT3_WORST" ] && MT3_WORST="$DEAD_READYZ_MS"
+MT3_DETAIL="(live ${MT1_READYZ_MS}ms, under a foreign overlay ${MT2_OVERLAY_MS}ms, over a dead connection ${DEAD_READYZ_MS}ms)"
 if [ "$MT3_WORST" -le "$MT_READYZ_LATENCY_BUDGET_MS" ]; then
-  pass "MT3 the slowest /readyz was ${MT3_WORST}ms against ${MT_READYZ_LATENCY_BUDGET_MS}ms" \
-       "(live ${MT1_READYZ_MS}ms, over a dead connection ${MT2_READYZ_MS}ms)"
+  pass "MT3 the slowest /readyz was ${MT3_WORST}ms against ${MT_READYZ_LATENCY_BUDGET_MS}ms $MT3_DETAIL"
 else
-  fail "MT3 the slowest /readyz was ${MT3_WORST}ms against ${MT_READYZ_LATENCY_BUDGET_MS}ms" \
-       "(live ${MT1_READYZ_MS}ms, over a dead connection ${MT2_READYZ_MS}ms)"
+  fail "MT3 the slowest /readyz was ${MT3_WORST}ms against ${MT_READYZ_LATENCY_BUDGET_MS}ms $MT3_DETAIL"
 fi
 
 # ----------------------------------------------------------------------------------------------------------

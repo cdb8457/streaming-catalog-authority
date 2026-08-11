@@ -89,7 +89,7 @@ dead FUSE mount answers `stat` from a warm attribute cache while every `open` re
 | Id | What it holds |
 |---|---|
 | `MT1` | **The control.** Daemon serving, consumer reads real bytes: `mountObserved` is `live-projectiond`, `mounted` is true, and the two AGREE. Without this arm every arm below is satisfied by a daemon that always answers "not live" |
-| `MT2` | **The divergence, and it is the measurement.** The connection is aborted under the living daemon: `mountObserved` becomes `stale-projectiond` while `mounted` is still true |
+| `MT2` | **The divergence, and it is the measurement.** A foreign filesystem (a tmpfs) is stacked **above** the live projection mount, inside the daemon's own namespace: `mountObserved` becomes `foreign` while `mounted` is still true, the serve loop never notices, and unmounting **only** the overlay restores both the live observation and the pre-attached consumer's digest. **This supersedes the original abort formulation, which was predeclared, measured false and is impossible — see §4.1** |
 | `MT3` | `/readyz` answers within `READYZ_LATENCY_BUDGET_MS` in **every** arm, including `MT2`. A measured latency, not an absence of complaints |
 | `MT4` | After `--auto-remount` recovers, `mountObserved` returns to `live-projectiond` and the **pre-attached** consumer reads the same digest again |
 | `MT5` | The sample's age never exceeds `SAMPLE_MAX_AGE_MS` while the daemon is healthy, so a stale observation cannot be read as a current one |
@@ -97,6 +97,50 @@ dead FUSE mount answers `stat` from a warm attribute cache while every `open` re
 
 **Closure:** three consecutive fresh runs, exit 0, **zero skips**, on the real Unraid host, from one frozen
 commit. A skip is a failure, as it is for every other gate here.
+
+### 4.1 MT2 WAS PREDECLARED, MEASURED FALSE, AND SUPERSEDED — and the original is kept, not deleted
+
+**THE ORIGINAL, IN ITS OWN WORDS:** *"The connection is aborted under the living daemon: `mountObserved`
+becomes `stale-projectiond` while `mounted` is still true."* It was committed before any measured run, it was
+run on the real host, and it **failed**: the observation went stale exactly as intended, and `mounted` was
+already `false`.
+
+**IT IS NOT FLAKY. IT CANNOT HAPPEN.** On a serve-loop death the supervisor runs `d.SetMounted(false)` and
+**then** `d.RecordServeDeath(...)`. So the ordering is always the one in §6.2: `mounted` goes false within
+milliseconds, while the observation is the **lagging** signal and updates up to a full sample interval later.
+There is no window in which `mounted` is true and the observation has gone stale, and sampling faster cannot
+create one — it would only shorten the interval in which the pair reads `mounted=false` / `observed=live`.
+
+**WHY THE REPLACEMENT IS A DIFFERENT KIND OF FAULT, AND WHY THAT IS THE POINT.** Every fault that *removes*
+something takes the FUSE connection with it, which wakes the supervisor, which corrects the belief — so no
+removal can ever produce this divergence against a correct daemon. Stacking a foreign filesystem **above** the
+live mount touches the connection not at all: no supervisor code runs, `mounted` stays true, and the mount the
+daemon is serving is still there underneath. The observation reads the **top** of the stack, so it sees the
+stranger. **That is a state the supervisor genuinely cannot see, which is exactly the class the observation
+was added to report.**
+
+**TWO OTHER CANDIDATES WERE TESTED FIRST AND BOTH FAILED**, and they are recorded so that this one does not
+read as the first idea that was tried: a host-side `umount -l` of the daemon mount (`observed` stayed
+`live-projectiond` — the detach does not propagate into the daemon's namespace), and a lazy unmount inside
+that namespace via `nsenter` (`observed` stayed `live-projectiond` — the mount survived it).
+
+**THE REPLACEMENT WAS PROVED BEFORE IT WAS ADOPTED, in a throwaway copy, three consecutive times**, and only
+then written into this document. Every one of the six conditions held on every run:
+
+| Run | `mounted` | `mountObserved` | serve loop | `/readyz` | live observation restored | consumer digest restored |
+|---|---|---|---|---|---|---|
+| 1 | **true** | **foreign** | alive, 0 deaths | 183 ms | yes | yes |
+| 2 | **true** | **foreign** | alive, 0 deaths | 191 ms | yes | yes |
+| 3 | **true** | **foreign** | alive, 0 deaths | 196 ms | yes | yes |
+
+**NO NUMERIC THRESHOLD MOVED.** §3 is untouched: the same sample interval, probe timeout, freshness ceiling
+and latency budget decide the amended arm. What changed is the fault, and only because the predeclared one
+asks for a state a correct daemon does not produce.
+
+**THE ABORT IS KEPT, WITH ITS ROLE NARROWED.** It is no longer asked to produce MT2's divergence. It is what
+puts a **dead connection** under `/readyz` for MT3, and what `--auto-remount` recovers from for MT4 —
+including the pre-attached consumer re-reading the same digest. Both of those it does exactly, and both were
+already passing before this amendment.
 
 ## 5. What is changed, and how the blast radius is bounded
 
