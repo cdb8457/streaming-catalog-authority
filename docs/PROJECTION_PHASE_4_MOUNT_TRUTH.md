@@ -1,10 +1,10 @@
 # Projection Phase 4 — the daemon says what is at its mount point
 
-**Status: NOT CLOSED.** Every threshold in §3 was committed before the first measured run and none has moved.
-The gate exists and has run: **five of its six arms pass**, and §6.2 is why the sixth cannot — MT2 as
-predeclared asks for a state a CORRECT daemon does not produce, and changing a predeclared arm is not a
-decision this document takes for itself. The three-run sequence has not been attempted, because a sequence of
-a gate with a failing arm proves nothing.
+**Status: CLOSED.** Every threshold in §3 was committed before the first measured run and **none has moved**.
+`npm run go:mount-truth-gate:three` completed **three consecutive fresh runs, exit 0, zero skips** on the
+real Unraid host: 18 arm verdicts, 18 pass, 0 fail, 0 skip. **§4.1 records that MT2 was predeclared, measured
+false, and superseded** — its original abort formulation asks for a state a correct daemon cannot produce, and
+the replacement was proved three times in a throwaway before it was written down.
 
 **What this tranche is, in one sentence.** `/readyz` stops reporting what the daemon *remembers* about its
 mount and starts reporting what is *observed* at it — as an additional field, next to the belief, never
@@ -189,34 +189,48 @@ it has not run.
 
 ## 6. Run record
 
-**NOT CLOSED. Five of six arms pass; MT2 as predeclared is structurally unachievable and needs a decision
-this document cannot take for itself.** The three-run sequence has not been attempted, because a sequence of
-a gate with a failing arm proves nothing.
+**CLOSED.** `npm run go:mount-truth-gate:three` completed **three consecutive fresh runs, exit 0, zero
+skips**, on the real Unraid host, from one frozen commit: **18 arm verdicts, 18 pass, 0 fail, 0 skip**, six
+arms in every run.
 
-### 6.1 What the runs measured
+| What | Value |
+|---|---|
+| frozen commit | `a2cccacfcdcb9be38c5ead6b64eb8b64cd6f7e55` |
+| frozen tree | `08ef16fe0ab79c178d7b650c5e0f5a2db5b4655f` |
+| tracked manifest | `372b10598d81e9c5` over **1,626** files, byte-identical in both directions vs `/mnt/user/appdata/catalog-p4f` |
+| image | `sha256:5d7a5618b547bb149fa458d00996672c1b4e3e715568b9462ea27dea3e4c032d` — unchanged from the build the Phase 2 gates were revalidated against, because this tranche changed no production code after that point |
+| host | Unraid `tower` |
 
-Frozen commit `195d91d`, image `sha256:5d7a5618b547bb149fa458d00996672c1b4e3e715568b9462ea27dea3e4c032d`,
-on the real Unraid host, provider-free throughout:
+| Run | Arms | Failed | Skipped | Elapsed |
+|---|---|---|---|---|
+| 1/3 | `MT1 MT2 MT3 MT4 MT5 MT6` | **0** | **0** | 22,028 ms |
+| 2/3 | `MT1 MT2 MT3 MT4 MT5 MT6` | **0** | **0** | 22,147 ms |
+| 3/3 | `MT1 MT2 MT3 MT4 MT5 MT6` | **0** | **0** | 20,702 ms |
 
-| Id | Result | Measured |
-|---|---|---|
-| `MT1` | **PASS** | `mountObserved=live-projectiond`, `mounted=true`, and the pre-attached unprivileged consumer's digest matched the value recorded outside the mount |
-| `MT2` | **FAIL** | `mountObserved=stale-projectiond` — correct — but `mounted=false`, where the arm as predeclared requires it to still be true |
-| `MT3` | **PASS** | slowest `/readyz` **207 ms** against a 1,000 ms budget, including **174 ms taken over a dead connection** — so the endpoint demonstrably did not wait for a probe |
-| `MT4` | **PASS** | the observation returned to `live-projectiond` and the **pre-attached** consumer read the same digest again |
-| `MT5` | **PASS** | the observation was **333 ms** old against a 3,000 ms ceiling |
-| `MT6` | **PASS** | container, network and volume **sets** identical; this run's mountpoints and directory asserted gone |
+Each run printed `MOUNT-TRUTH GATE PASSED: 6 of 6 arms`; the runner printed `RESULT: PASSED three consecutive
+cold-start runs`. **No `FAIL`, `GATE FAILED` or `SKIP` line occurs anywhere in the transcript**, and each arm
+id appears exactly three times as a pass.
 
-| Run | Host | Arms | Failed | Skipped | Evidence |
-|---|---|---|---|---|---|
-| 1/3 | — | — | — | — | NOT ATTEMPTED — the gate has a failing arm |
-| 2/3 | — | — | — | — | NOT ATTEMPTED |
-| 3/3 | — | — | — | — | NOT ATTEMPTED |
+### 6.1 What each arm measured
 
-### 6.2 MT2 IS NOT FLAKY. IT CANNOT HAPPEN.
+| Id | Measured, across all three runs |
+|---|---|
+| `MT1` | `mountObserved=live-projectiond`, `mounted=true`, and the pre-attached unprivileged consumer digest-matched the value recorded outside the mount |
+| `MT2` | **`mountObserved=foreign` while `mounted` stayed true**, with **zero** serve-loop deaths and the daemon still running — then unmounting **only** the tmpfs restored both the live observation and the consumer digest |
+| `MT3` | slowest `/readyz` **181 / 180 / 209 ms** against a 1,000 ms budget, folding in all three readings: live, under the foreign overlay, and **over a dead connection** (173 / 173 / 164 ms) |
+| `MT4` | `--auto-remount` restored `live-projectiond` and the **pre-attached** consumer read the same digest again |
+| `MT5` | the observation was **290 ms** old at its worst against a 3,000 ms ceiling |
+| `MT6` | container, network and volume **sets** identical; this run's mountpoints and directory asserted gone |
 
-On a serve-loop death the supervisor runs `d.SetMounted(false)` and **then** `d.RecordServeDeath(...)`
-(`projectiond/cmd/projectiond/main.go`). So the ordering is always:
+**Host before and after the sequence: 42 containers / 26 running, 17 networks, 45 volumes, 0
+`fuse.projectiond`, 0 gate run directories, 0 leftover containers, and 0 `mt-overlay-` tmpfs left anywhere**
+— the last of those is the one this tranche's own fault could have leaked, and it is asserted rather than
+assumed.
+
+### 6.2 MT2 IS NOT FLAKY; THE ORIGINAL FORMULATION WAS IMPOSSIBLE
+
+Kept exactly as measured, because the superseded arm is part of this record. On a serve-loop death the
+supervisor runs `d.SetMounted(false)` and **then** `d.RecordServeDeath(...)`:
 
 | when | `mounted` | `mountObserved` |
 |---|---|---|
@@ -224,37 +238,21 @@ On a serve-loop death the supervisor runs `d.SetMounted(false)` and **then** `d.
 | a few ms later, supervisor notices | **false** | `live` — still |
 | up to `SAMPLE_INTERVAL_MS` later | false | `stale` |
 
-**There is no window in which `mounted` is true AND the observation has gone stale, because the observation
-is always the LAGGING one.** Sampling faster cannot create the window; it would only shorten the interval in
-which the pair reads `mounted=false` / `observed=live`.
-
-**THE FINDING IS ABOUT THIS TRANCHE'S OWN PREMISE, NOT ABOUT THE PRODUCT.** §1 was written on the assumption
-that `mounted` is a stale lie. In the serve-death path it is not: the supervisor maintains it honestly, and it
-goes false *before* the observation does. The observation's independent value is real, but it lives in states
-the supervisor cannot see — a cold corpse at startup, a foreign mount, a mount replaced underneath — and an
-aborted connection is not one of them.
-
-**TWO CANDIDATE REPLACEMENT FAULTS WERE TESTED AND BOTH ARE DISPROVEN**, in a throwaway copy that has since
-been removed, so that no proposal here is speculation:
-
-| Candidate | Result |
-|---|---|
-| host-side `umount -l` of the daemon mount | `observed=live-projectiond`, `mounted=true` — the detach does not propagate into the daemon's namespace, so the observation correctly stayed live. No divergence |
-| `nsenter -t <pid> -m -- umount -l` inside the daemon's own mount namespace | `observed=live-projectiond`, `mounted=true` — `nsenter` is present and the command ran; the mount survived it. No divergence |
-
-**No third fault is proposed here**, because an untested one is exactly what these two turned out to be.
+There is no window in which `mounted` is true AND the observation has gone stale, because the observation is
+always the **lagging** one. §4.1 records what replaced it and why, and the two candidate faults that were
+tested and failed before the adopted one.
 
 ### 6.3 Offline
 
-Taken on the Windows development host at `195d91d`. **They are not gate evidence**; they are what makes a run
-worth attempting.
+Taken on the Windows development host at the frozen commit. **They are not gate evidence**; they are what
+makes a run worth attempting.
 
 | What | Result |
 |---|---|
 | `npx tsc --noEmit` | clean |
-| `npm run go:vet` / the whole Go suite | clean / every package `ok`, including 7 sampler tests and 3 observation tests |
-| `npx tsx test/projection-mount-truth.ts` | **12 passed, 0 failed, ZERO SKIPS** — the four blocks that asserted nothing are live |
-| `npx tsx test/projection-mount-hardening.ts` | 32/0, including the new pre-fault-control pin |
+| `npm run go:vet` / the whole Go suite | clean / every package `ok` |
+| `npx tsx test/projection-mount-truth.ts` | **13 passed, 0 failed, ZERO SKIPS** |
+| `npx tsx test/projection-mount-hardening.ts` | 32/0, including the pre-fault-control pin |
 | `npx tsx test/custody-runtime-closure.ts` | 39/0 |
 | `npx tsx test/projection-reliability-loop.ts` | 69/0 — Phase 3 undisturbed |
 | `npx tsx test/aggregate-suite.ts` | exit 0 |

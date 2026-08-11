@@ -197,9 +197,19 @@ test('the contract document and the module agree on every number', () => {
 
 test('the document says NOT RUN until a run says otherwise, and keeps its nonclaims', () => {
   const doc = read(DOC);
-  // A run record is the one part of a predeclared document that may not be optimistic in advance.
-  assert(/## 6\. Run record[\s\S]{0,200}\*\*NOT RUN\.\*\*/.test(doc) || /1\/3 \| — /.test(doc)
-    || /1\/3 \| Unraid/.test(doc), 'the run record neither says NOT RUN nor records a run');
+  // A RUN RECORD MAY NOT BE OPTIMISTIC IN ADVANCE. Every 1/3 row either says a run did not happen, or names
+  // the arms that did. Anything else is a row that reads as evidence without carrying any.
+  const row = /^\| 1\/3 \|([^|]*)\|/m.exec(doc);
+  if (row === null) throw new Error('the run record has no 1/3 row at all');
+  const first = (row[1] as string).trim();
+  assert(/NOT RUN|NOT ATTEMPTED|^—$/.test(first) || /MT1[\s\S]*MT6/.test(first),
+    `the 1/3 row neither declines to claim a run nor names the arms of one: "${first}"`);
+  // ...AND A CLOSED RECORD MUST SAY WHAT IT COST. A table of passes with no failure/skip columns filled in
+  // is a table nobody could disagree with.
+  if (/MT1[\s\S]*MT6/.test(first)) {
+    assert(/\*\*Status: CLOSED\.\*\*/.test(doc), 'runs are recorded but the status still says otherwise');
+    assert(/zero skips/.test(doc), 'the run record does not say whether anything was skipped');
+  }
   // THE NONCLAIMS ARE LOAD-BEARING and are the reason this tranche is allowed to be small.
   for (const phrase of ['closes only itself', 'A field is not a recovery',
     'still means what it meant', 'not a load test']) {
