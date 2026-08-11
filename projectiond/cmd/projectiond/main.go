@@ -159,7 +159,7 @@ func main() {
 	// with statfs, and statfs is the transport check precisely BECAUSE it reaches the connection — on a live
 	// mount this daemon's own serve loop answers it. A /readyz that probed inline would block for exactly as
 	// long as the thing it exists to report on is broken.
-	d.SetMountObserver(func() string { return fusefs.ProbeMountpoint(cfg.MountPoint).String() })
+	d.SetMountObserver(func() string { return fusefs.ObserveMountpoint(cfg.MountPoint).String() })
 	go d.MountSampleLoop(ctx, mountSampleInterval, mountProbeTimeout)
 
 	go func() {

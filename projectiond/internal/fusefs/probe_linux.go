@@ -277,3 +277,46 @@ func ProbeMountpoint(path string) ProbeResult {
 	var stat syscall.Statfs_t
 	return classify(syscall.Statfs(path, &stat), mountInfoEntryAt(path))
 }
+
+// ObserveMountpoint answers what is at path FOR REPORTING, and it differs from ProbeMountpoint in exactly one
+// way: it classifies by the TOP of the mount stack rather than the bottom.
+//
+// WHY THE DIFFERENCE EXISTS RATHER THAN ONE OF THEM BEING FIXED. `ProbeMountpoint` is a STARTUP decision:
+// "is the thing I am about to mount over one of my own corpses?" The mount it is about to stack over is the
+// one underneath, and its bottom-entry reading is right for that question. This one answers a different
+// question — "what is being served here right now?" — and the answer is the mount ON TOP, because that is
+// the one a reader reaches.
+//
+// THE BOTTOM ENTRY IS ROUTINELY NOT OURS AND THAT IS NORMAL. In a container the mount point IS the operator's
+// bind, and on a host whose storage is itself FUSE (Unraid's shfs, for one) that bind's file-system type is
+// the host's, not ours. So a perfectly healthy stack reads bottom=fuse.shfs, top=fuse.projectiond — and a
+// bottom-entry reading calls a live, readable, digest-matching mount FOREIGN. That was measured on the real
+// host on the first run of the mount-truth gate, with the consumer reading correct bytes at the same instant.
+//
+// IT IS A SECOND FUNCTION AND NOT AN EDIT TO THE FIRST because the startup probe and the supervisor's corpse
+// drain are both measured against `ProbeMountpoint`'s exact semantics by closed Phase 2 gates, and changing
+// what they see to fix what a REPORT says would be trading a wrong answer for a wrong subject.
+func ObserveMountpoint(path string) ProbeResult {
+	var stat syscall.Statfs_t
+	fsType, found := TopMountFsTypeAt(path)
+	return classifyObserved(syscall.Statfs(path, &stat), fsType, found)
+}
+
+// classifyObserved is `classify` over the TOP of the stack. It is separate and pure so the table below is
+// testable without a mount, which is the only way the stacked case can be asserted at all in a unit test.
+func classifyObserved(statfsErr error, topFsType string, found bool) ProbeResult {
+	switch {
+	case statfsErr == nil && !found:
+		return ProbeEmpty
+	case statfsErr == nil && topFsType == fuseProjectiondType:
+		return ProbeLiveProjectiond
+	case statfsErr == nil:
+		return ProbeForeign
+	case errors.Is(statfsErr, syscall.ENOENT):
+		return ProbeEmpty
+	case errors.Is(statfsErr, syscall.ENOTCONN) && found && topFsType == fuseProjectiondType:
+		return ProbeStaleProjectiond
+	default:
+		return ProbeForeign
+	}
+}
