@@ -440,6 +440,10 @@
       "group": "offline"
     },
     {
+      "file": "projection-mount-truth.ts",
+      "group": "offline"
+    },
+    {
       "file": "projection-multi-frontend.ts",
       "group": "offline"
     },

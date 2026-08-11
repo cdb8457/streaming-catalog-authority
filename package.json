@@ -694,7 +694,8 @@
     "test:shared-destination-lock": "tsx test/shared-destination-lock.ts",
     "test:phase321-local": "npm run test:shared-destination-lock",
     "test:custody-runtime-closure": "tsx test/custody-runtime-closure.ts",
-    "test:phase329-local": "npm run test:custody-runtime-closure"
+    "test:phase329-local": "npm run test:custody-runtime-closure",
+    "test:projection-mount-truth": "tsx test/projection-mount-truth.ts"
   },
   "dependencies": {
     "pg": "^8.13.1",

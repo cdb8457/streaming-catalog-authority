@@ -101,7 +101,43 @@ type Daemon struct {
 	serveDeath atomic.Pointer[serveDeathRecord]
 	mu         sync.Mutex
 	lastAdmit  AdmitRecord
+
+	// mountObserver answers what is ACTUALLY at the mount point, or nil when nothing has been wired.
+	//
+	// IT IS INJECTED RATHER THAN IMPORTED, and that is not indirection for its own sake. The probe is
+	// linux-only and this package is not; injecting it keeps `daemon` portable and — much more usefully —
+	// lets the sampler below be driven deterministically by a test, including the states a real FUSE mount
+	// can only be pushed into on a host with /dev/fuse.
+	mountObserver func() string
+	// mountSample is the last COMPLETED observation and when it was taken. /readyz answers from this and
+	// never from a probe of its own; see the sampler for why that is the whole design.
+	mountSample atomic.Pointer[mountObservation]
+	// probeInFlight is single-flight, and it is a FLAG rather than a property of the sampler loop because
+	// the loop alone does not provide it. Giving up WAITING for a probe does not stop the probe: the
+	// goroutine stays parked in an uninterruptible statfs until the connection is torn down. A loop that
+	// merely ran its samples one after another would therefore still start a fresh goroutine on every tick
+	// against a wedged mount, which is precisely what single-flight is supposed to prevent — measured, by
+	// the test that asserts it, before any of this reached a host.
+	probeInFlight atomic.Bool
 }
+
+// mountObservation is one completed sample: what was seen, and when.
+type mountObservation struct {
+	state string
+	at    time.Time
+}
+
+// The states a SAMPLER has that a probe does not. The other four come straight from the probe and this
+// package never spells them, because inventing a second vocabulary for the same four states is how two
+// vocabularies drift.
+const (
+	// MountStateTimeout means a probe was outstanding past the timeout and the sampler stopped waiting for
+	// it. It is NEVER conflated with a negative result: "we could not look" and "we looked and it is not
+	// live" are different facts with different first suspects.
+	MountStateTimeout = "timeout"
+	// MountStateUnchecked means no probe has completed yet, or no observer is wired at all.
+	MountStateUnchecked = "unchecked"
+)
 
 // serveDeathRecord is the immutable record of one serve-loop death: why the loop exited and when the death
 // was observed. The pointer is nil while no death is current, which is also what a successful remount
@@ -317,6 +353,81 @@ func (d *Daemon) Config() Config                              { return d.cfg }
 // SetMounted records that the namespace is actually being served. READY MEANS SERVING: a generation that
 // parsed but was never mounted is not something a health check should call ready, because nothing can read it.
 func (d *Daemon) SetMounted(mounted bool) { d.mounted.Store(mounted) }
+
+// SetMountObserver wires the thing that answers what is ACTUALLY at the mount point. Wiring is optional and
+// its absence is reported as `unchecked` rather than as a negative result.
+func (d *Daemon) SetMountObserver(observe func() string) { d.mountObserver = observe }
+
+// SampleMount takes ONE observation, bounded, and stores it if it completed. It is exported so the sampler
+// loop and a test drive exactly the same code path — a sampler whose only test is "the daemon started" is a
+// sampler nobody has actually checked.
+//
+// WHY THE BOUND IS ON THE WAIT AND NOT ON THE PROBE. `syscall.Statfs` cannot be interrupted: a probe against
+// a wedged connection returns when the connection is torn down and not before. So the timeout here bounds how
+// long THIS function waits, and the abandoned goroutine ends when the syscall does. That is also why the
+// caller must not run two at once — see MountSampleLoop.
+//
+// A PROBE THAT OVERRUNS DOES NOT OVERWRITE THE LAST GOOD SAMPLE. It records `timeout` only when there is
+// nothing better to say, and otherwise leaves the previous observation in place TO AGE. A stale sample with
+// an honest age is data; a fresh sample that says `timeout` when a probe is merely slow would erase the last
+// thing actually known about the mount.
+func (d *Daemon) SampleMount(timeout time.Duration) {
+	observe := d.mountObserver
+	if observe == nil {
+		return
+	}
+	// SINGLE-FLIGHT, AND IT HAS TO BE CHECKED HERE. A probe abandoned by an earlier call is still running;
+	// starting another would add one parked goroutine per call for as long as the mount stayed wedged.
+	if !d.probeInFlight.CompareAndSwap(false, true) {
+		d.noteProbeUnfinished()
+		return
+	}
+	done := make(chan string, 1)
+	go func() {
+		// Released when the syscall finally returns, which for a wedged mount is when the connection is torn
+		// down. Until then every later call takes the branch above.
+		defer d.probeInFlight.Store(false)
+		done <- observe()
+	}()
+	select {
+	case state := <-done:
+		d.mountSample.Store(&mountObservation{state: state, at: time.Now()})
+	case <-time.After(timeout):
+		d.noteProbeUnfinished()
+	}
+}
+
+// noteProbeUnfinished records that no observation completed this time.
+//
+// IT AGES THE LAST GOOD SAMPLE RATHER THAN REPLACING IT. Overwriting a real observation with `timeout`
+// because one probe was slow would erase the last thing actually known about the mount; the age is what
+// carries that news, and it carries it without throwing anything away. `timeout` is stored only when there
+// has never been an observation at all, because then it is the most that can honestly be said — and it is
+// still not the same word as a negative result.
+func (d *Daemon) noteProbeUnfinished() {
+	if d.mountSample.Load() == nil {
+		d.mountSample.Store(&mountObservation{state: MountStateTimeout, at: time.Now()})
+	}
+}
+
+// MountSampleLoop samples the mount point on its own cadence until the context is done.
+//
+// SINGLE-FLIGHT BY CONSTRUCTION: this loop is sequential, so a probe that blocks holds the loop rather than
+// spawning a second one. That is what bounds a wedged mount to ONE stuck goroutine instead of one per
+// interval for as long as it stays wedged, and it is why the sample ages instead of the endpoint hanging.
+func (d *Daemon) MountSampleLoop(ctx context.Context, interval, timeout time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	d.SampleMount(timeout)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			d.SampleMount(timeout)
+		}
+	}
+}
 
 // RecordServeDeath tells the status surface that the FUSE serve loop died. The supervisor calls it when it
 // observes the serve loop exit without an unmount request. It is what makes /readyz answer not-ready with a
@@ -535,6 +646,21 @@ type Status struct {
 	// hold no per-request record, no offset, no handle and no identity, and they are always on.
 	Playback      cache.PlaybackCounters `json:"playback"`
 	LastAdmission AdmitRecord            `json:"lastAdmission"`
+	// MountObserved is what was last SEEN at the mount point, as opposed to what this process remembers
+	// doing to it. `mounted` above is a boolean set once when the daemon believed it had mounted; it is
+	// never re-checked, and the two worst failures in this product's history both presented as a healthy
+	// daemon because of it — a remount into a namespace with no host peer, and a cold corpse that refused
+	// every remount, each with `ready` answering true while no consumer could read a byte.
+	//
+	// IT DOES NOT CHANGE `ready` OR `mounted`. Those keep exactly the meanings every closed gate was
+	// measured against; this is reported beside them so an operator, a restart policy or a monitor can see
+	// the difference. Folding it into `ready` is a behaviour change to an endpoint three closed phases were
+	// measured against, and it is deliberately not made here.
+	MountObserved string `json:"mountObserved"`
+	// MountObservedAgeMs is how old that observation is. It is not decoration and the verdict is worthless
+	// without it: a probe that cannot answer manifests as a sample that stops advancing, so the age IS the
+	// signal for a wedged mount, and a reader that ignored it would treat a minutes-old `live` as current.
+	MountObservedAgeMs int64 `json:"mountObservedAgeMs"`
 	// ServeError is why the FUSE serve loop exited, present only after a serve-loop death. It answers "the
 	// process is alive but the namespace is gone". Like the rest of this surface it is loopback-only.
 	ServeError string `json:"serveError,omitempty"`
@@ -561,6 +687,20 @@ func (d *Daemon) Status() Status {
 		// supervisor has observed is a mount that no longer serves, so it makes ready false even while the
 		// process is alive and remounting.
 		status.Ready = status.Mounted && d.serveDeath.Load() == nil
+	}
+	// THE OBSERVATION IS READ, NEVER TAKEN, HERE. This function runs on the /readyz request path, and the
+	// probe behind the observer decides with statfs — which reaches the connection, and on a live mount is
+	// answered by this daemon's own serve loop. Probing inline would block the health endpoint for exactly
+	// as long as the thing it exists to report on is broken, and a hung /readyz is a worse answer than a
+	// stale one because an orchestrator reads a timeout as "unknown" and a stale sample as data.
+	status.MountObserved = MountStateUnchecked
+	if sample := d.mountSample.Load(); sample != nil {
+		status.MountObserved = sample.state
+		age := time.Since(sample.at).Milliseconds()
+		if age < 0 {
+			age = 0
+		}
+		status.MountObservedAgeMs = age
 	}
 	if record := d.serveDeath.Load(); record != nil {
 		if record.err != nil {

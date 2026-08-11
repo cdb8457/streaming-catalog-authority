@@ -554,6 +554,102 @@ export const PROJECTIOND_MOUNT_TARGET = Object.freeze({
 } as const);
 
 /**
+ * WHAT THE DAEMON REPORTS ABOUT ITS OWN MOUNT, AND WHY REMEMBERING IS NOT REPORTING.
+ *
+ * THE GAP THIS CLOSES, AND THIS PRODUCT HAS FALLEN INTO IT TWICE. `status.mounted` is an in-process boolean
+ * set once when the daemon believes it has mounted, and `ready` is that boolean AND the absence of an
+ * observed serve death. Neither is ever compared against what is actually at the mount point. So the two
+ * worst failures in this product's history both presented as a healthy daemon:
+ *
+ *   - Phase 2's `--auto-remount` defect: the supervisor removed the operator's bind and remounted into a
+ *     namespace with no host peer. The daemon logged success, `/readyz` answered ready, and all three media
+ *     servers read nothing.
+ *   - The cold corpse of `PROJECTIOND_MOUNT_TARGET` above: every remount refused `ENOTCONN` while the
+ *     process was alive and believed itself to be serving.
+ *
+ * Phase 3 proved the recovery path works. This is the other half: making the daemon able to SAY when it does
+ * not. It is an OBSERVATION ALONGSIDE the belief, never a replacement for it — `ready` and `mounted` keep
+ * exactly the meanings every closed gate was measured against.
+ *
+ * WHY THE OBSERVATION CANNOT BE TAKEN ON THE REQUEST PATH. `ProbeMountpoint` decides with `statfs`, and
+ * statfs is the transport check precisely BECAUSE it reaches the connection — a live mount answers it out of
+ * the daemon's own serve loop. A health endpoint that probed inline would therefore block for exactly as
+ * long as the thing it exists to report on is broken, and a hung `/readyz` is a worse answer than a stale
+ * one. So the probe runs on its own cadence and the endpoint answers from the last sample it completed.
+ *
+ * ...AND A BLOCKED PROBE IS NOT CANCELLABLE, WHICH IS WHAT `SINGLE_FLIGHT` IS FOR. `syscall.Statfs` cannot be
+ * interrupted; a probe against a wedged connection returns when the connection is torn down and not before.
+ * The timeout below therefore bounds HOW LONG THE SAMPLER WAITS, not how long the syscall runs, and only one
+ * probe is ever outstanding — otherwise a wedged mount would accumulate one stuck goroutine per interval for
+ * as long as it stayed wedged. A probe that overruns leaves the previous sample in place and ages it, so
+ * **a probe that cannot answer manifests as a stale sample rather than as a hung endpoint**, which is why
+ * the age is published beside the verdict and is worthless without it.
+ */
+export const PROJECTIOND_MOUNT_OBSERVATION = Object.freeze({
+  /** The observation is additive. These two keep the meanings every closed gate was measured against. */
+  DOES_NOT_CHANGE: Object.freeze(['ready', 'mounted'] as const),
+  /**
+   * What the sampler may report. The first four are `fusefs.ProbeResult`'s own states, unchanged; the last
+   * two are states only a SAMPLER has and a probe does not.
+   */
+  STATES: Object.freeze([
+    // SPELLED AS `fusefs.ProbeResult.String()` SPELLS THEM, not as this file would have chosen to. The first
+    // draft used `live` and `stale`, which reads better and would have been a SECOND VOCABULARY for the same
+    // four states — the thing the paragraph above warns about, written into the contract meant to prevent it.
+    'live-projectiond', 'stale-projectiond', 'empty', 'foreign',
+    /** A probe was outstanding past `PROBE_TIMEOUT_MS` and the sampler stopped waiting for it. */
+    'timeout',
+    /** No probe has completed yet, or no observer is wired. Never conflated with a negative result. */
+    'unchecked',
+  ] as const),
+  /**
+   * How often the sampler probes, in milliseconds. **CHOSEN, with both bounds named.**
+   *
+   * BELOW: one statfs a second against a live mount is one extra FUSE operation per second, which is noise
+   * beside a single directory scan — and a health signal that lags its own subject by more than about a
+   * second is not one an operator can act on.
+   * ABOVE: it must stay well under the freshness ceiling, or a HEALTHY daemon's sample would routinely
+   * present as stale and the freshness assertion would be measuring the sampler's cadence instead of the
+   * mount.
+   */
+  SAMPLE_INTERVAL_MS: 1_000,
+  /**
+   * How long the sampler waits for one probe before giving up on it, in milliseconds. **CHOSEN, with both
+   * bounds named.**
+   *
+   * BELOW: a statfs against a healthy mount is a map read in the daemon's own process and returns in well
+   * under a millisecond, so any bound in the hundreds already separates "answering" from "not answering".
+   * ABOVE: it is what the endpoint's latency budget must beat, and a bound approaching the read deadline
+   * would let a wedged mount look merely slow for twenty seconds.
+   */
+  PROBE_TIMEOUT_MS: 2_000,
+  /** Exactly one probe outstanding at a time. See the paragraph above: it is what bounds a wedged mount. */
+  SINGLE_FLIGHT: true,
+  /**
+   * The oldest a sample may be while the daemon is healthy, in milliseconds. DERIVED: one full interval may
+   * elapse before a probe starts, and that probe may take up to its whole timeout.
+   */
+  SAMPLE_MAX_AGE_MS: 1_000 + 2_000,
+  /**
+   * What `/readyz` may take to answer, in milliseconds, in EVERY state including a wedged mount. **CHOSEN**,
+   * and the number matters far less than the property asserted beside it: it is **strictly under
+   * `PROBE_TIMEOUT_MS`**, so a handler that had waited for a probe could not pass this. That is the whole
+   * assertion — the budget exists to catch the endpoint being put back on the probe's path by a later edit.
+   */
+  READYZ_LATENCY_BUDGET_MS: 1_000,
+} as const);
+
+/**
+ * The endpoint may not be able to wait for a probe, and this is the derived fact that says so.
+ *
+ * IT IS A CHECK RATHER THAN A COMMENT, in the shape `ROTATION_REFUSAL_BELOW_BREAKER` already uses: if the
+ * latency budget ever stopped being strictly under the probe timeout, a `/readyz` that blocked on the probe
+ * would satisfy its own budget and the arm asserting it does not would quietly stop meaning anything.
+ */
+export const READYZ_CANNOT_HAVE_WAITED_FOR_A_PROBE =
+  PROJECTIOND_MOUNT_OBSERVATION.READYZ_LATENCY_BUDGET_MS < PROJECTIOND_MOUNT_OBSERVATION.PROBE_TIMEOUT_MS;
+
+/**
  * The Phase 1 amplification budget. These are the numbers the acceptance harness asserts, and they are here
  * rather than only in the plan document so a suite can import them instead of copying them.
  */

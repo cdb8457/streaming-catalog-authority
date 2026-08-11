@@ -26,6 +26,17 @@ import (
 // Version is stamped at build time. It appears in the status document and nowhere else.
 var Version = "0.1.0-phase1"
 
+// HOW OFTEN THE MOUNT POINT IS OBSERVED, AND HOW LONG ONE OBSERVATION IS WAITED FOR.
+//
+// These are the two numbers `PROJECTIOND_MOUNT_OBSERVATION` in `src/core/projection/runtime-contract.ts`
+// predeclares, and `test/projection-mount-truth.ts` fails if this file and that one disagree. They are not
+// flags: an operator who could widen the probe timeout could make a wedged mount look merely slow, and the
+// whole value of the observation is that its bound is a property of the product rather than of a deployment.
+const (
+	mountSampleInterval = 1000 * time.Millisecond
+	mountProbeTimeout   = 2000 * time.Millisecond
+)
+
 func main() {
 	configPath := flag.String("config", "", "path to the daemon configuration file")
 	mountPoint := flag.String("mount", "", "override the configured mount point")
@@ -136,6 +147,21 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// WHAT IS ACTUALLY AT THE MOUNT POINT, SAMPLED OFF THE REQUEST PATH.
+	//
+	// `status.mounted` is a boolean this process sets when it believes it has mounted, and it is never
+	// re-checked. Both of the worst failures in this product's history presented as a healthy daemon because
+	// of that: a remount into a namespace with no host peer, and a cold corpse that refused every remount,
+	// each with /readyz answering ready while no consumer could read a byte.
+	//
+	// THE PROBE CANNOT RUN ON THE REQUEST PATH, which is why it is a sampler and not a handler. It decides
+	// with statfs, and statfs is the transport check precisely BECAUSE it reaches the connection — on a live
+	// mount this daemon's own serve loop answers it. A /readyz that probed inline would block for exactly as
+	// long as the thing it exists to report on is broken.
+	d.SetMountObserver(func() string { return fusefs.ProbeMountpoint(cfg.MountPoint).String() })
+	go d.MountSampleLoop(ctx, mountSampleInterval, mountProbeTimeout)
+
 	go func() {
 		if err := d.ServeStatus(ctx); err != nil {
 			logLine("status server stopped: " + err.Error())
