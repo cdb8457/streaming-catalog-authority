@@ -445,9 +445,23 @@ await_readyz "$COLD_CONTAINER" || { docker logs "$COLD_CONTAINER" >&2 2>&1; die 
 await_namespace || { docker logs "$COLD_CONTAINER" >&2 2>&1; die "the phase 3 mount never became visible"; }
 # THE VERIFIER CAN READ IT NOW, which is what makes the same question after the fault worth asking. Without
 # this, a consumer that could never read would look identical to one that stopped being able to.
-docker exec -u 1000:1000 "$VERIFIER_CONTAINER" test -f "/media/projection/$ENTRY_PATH" >/dev/null 2>&1 \
+#
+# IT READS BYTES, AND IT USED TO READ `test -f`, WHICH IS THE ONE ANSWER THIS PHASE'S OWN SUBJECT FAKES.
+# A dead FUSE mount is served from the kernel's attribute cache for a full `attrTimeout` after the connection
+# is gone — that asymmetry is why this phase exists at all, and it is stated at the top of this file. So a
+# metadata control could be satisfied BY A CORPSE, which is precisely the state it is here to rule out: the
+# check that makes the post-fault read meaningful could itself pass over the thing being tested for. It is
+# the same class the reliability loop found twice — `test -r` in A3, and `test -f` in its readiness probe —
+# and closed both times by making something actually open the file.
+PRE_FAULT_SHA="$(docker exec -u 1000:1000 "$VERIFIER_CONTAINER" \
+  sh -c "sha256sum '/media/projection/$ENTRY_PATH'" 2>/dev/null | awk '{print $1}')"
+test -n "$PRE_FAULT_SHA" \
   || die "the pre-attached verifier cannot see the namespace even before the fault"
-echo "  it stacked over the warm corpse and is serving, and the pre-attached verifier can read it"
+# ...AND THE DIGEST IS COMPARED. A digest nothing is equal to is a byte read with the assertion left off, and
+# `$STALE_SHA` is the value recorded outside the mount that every other read in this phase is held to.
+test "$PRE_FAULT_SHA" = "$STALE_SHA" \
+  || die "the pre-attached verifier reads different bytes before the fault than were recorded outside the mount"
+echo "  it stacked over the warm corpse and is serving, and the pre-attached verifier reads the right bytes"
 
 COLD_AGE=$(( $(date +%s) - CORPSE_BORN_AT ))
 if [ "$COLD_AGE" -lt "$COLD_CORPSE_SECONDS" ]; then

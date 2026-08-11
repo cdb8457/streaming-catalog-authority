@@ -248,8 +248,24 @@ test('the gate spells none of the thresholds and reads them from the module inst
   }
   for (const value of forbidden) {
     const literal = new RegExp(`(^|[^0-9_.])${value}([^0-9_]|$)`, 'm');
-    const offending = executable.split('\n')
+    // THE LINE NUMBERS ARE THE FILE'S, WHICH MEANS INDEXING BEFORE FILTERING. Numbering the comment-stripped
+    // text instead reports lines that point at unrelated code, and a diagnostic that sends the reader to the
+    // wrong line costs more than no diagnostic at all — measured, on the first run of this very pin.
+    const offending = gate.split('\n')
       .map((line, index) => [index + 1, line] as const)
+      // A COMMENT MAY SAY A NUMBER; ONLY EXECUTABLE TEXT MAY NOT. The rule is about drift between the shell
+      // and the module, and prose is where the derivation gets explained.
+      .filter(([, line]) => !/^\s*#/.test(line))
+      // TWO FORMS ARE NOT RESTATEMENTS AND ARE NAMED RATHER THAN WAVED THROUGH, because one of the
+      // thresholds here is 1,000 and that number has two other jobs in any shell that runs containers:
+      //
+      //   `1000:1000`  a uid:gid pair. The consumer runs unprivileged and its uid is not a budget.
+      //   `/ 1000`     milliseconds to seconds. A unit conversion is arithmetic ON a threshold, not a second
+      //                copy OF one — the gate still has to have read the threshold to divide it.
+      //
+      // Neither can hide a real restatement: a threshold used as a threshold appears as a bare comparison
+      // operand (`-le 1000`), which neither pattern removes. Blanket-exempting "lines that look fine" would.
+      .map(([n, line]) => [n, line.replace(/\b\d+:\d+\b/g, '').replace(/\/\s*1000\b/g, '')] as const)
       .filter(([, line]) => literal.test(line));
     assertEq(offending.length, 0,
       `the gate spells the threshold ${value} literally at line(s) ${offending.map(([n]) => n).join(', ')}`);

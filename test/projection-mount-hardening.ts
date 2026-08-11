@@ -701,6 +701,37 @@ test('THE REMOUNT ASKS THE MOUNT POINT NOTHING: a corpse cannot answer, and it i
 // The stale-mount gate already stacks over a corpse that is SECONDS old, and that half has always passed —
 // it is precisely the case a warm attribute cache hides. The defect lives on the other side of the daemon's
 // own attrTimeout, so the gate now faces the SAME corpse again once it has gone cold.
+test('THE PRE-FAULT CONTROL READS BYTES, because a corpse answers stat from a warm cache', () => {
+  // THE DEFECT THIS CLOSES IS IN THE CONTROL, WHICH IS THE WORST PLACE TO HAVE ONE. Phase 3's cold-corpse
+  // phase establishes "the pre-attached verifier CAN read it now" before the fault, and without that the
+  // post-fault read proves nothing: a consumer that could NEVER read looks identical to one that stopped
+  // being able to. The check was `test -f`.
+  //
+  // `test -f` IS METADATA, AND METADATA IS EXACTLY WHAT THIS GATE'S OWN SUBJECT ANSWERS FALSELY. A dead FUSE
+  // mount is served from the kernel's attribute cache for a full `attrTimeout` after the connection is gone
+  // — that asymmetry is the entire reason this phase exists, and it is stated at the top of this very file.
+  // So the control could pass over a corpse, which is the one state it is there to rule out. It is the same
+  // class the reliability loop found twice (`test -r` in A3, `test -f` in await_path) and fixed both times by
+  // making something actually open the file.
+  const gate = read('deploy/projection-stale-mount-gate.sh');
+  const executable = gate.split('\n').filter((line) => !/^\s*#/.test(line)).join('\n');
+
+  // The pre-fault control is the assertion whose failure message is about seeing the namespace BEFORE the
+  // fault. It must read bytes, and it must be a digest compared against the one recorded outside the mount.
+  const control = /^[^\n]*\n?[^\n]*the pre-attached verifier cannot see the namespace even before the fault/m
+    .exec(executable);
+  assert(control !== null, 'the pre-fault control assertion is gone from the stale-mount gate');
+  assert(!/test -f[^\n]*\n[^\n]*the pre-attached verifier cannot see the namespace/.test(executable),
+    'the pre-fault control is still `test -f`, which a corpse answers from a warm attribute cache');
+  assert(/sha256sum[^\n]*\n?[^\n]*\n?[^\n]*the pre-attached verifier cannot see the namespace/.test(executable)
+    || /PRE_FAULT_SHA=/.test(executable),
+    'the pre-fault control does not take a digest, so it cannot tell a live mount from a warm corpse');
+  // ...AND THE DIGEST IS COMPARED, not merely taken. A digest nothing is equal to is a byte read with the
+  // assertion left off.
+  assert(/PRE_FAULT_SHA[\s\S]{0,400}=\s*"\$STALE_SHA"|test "\$PRE_FAULT_SHA" = "\$STALE_SHA"/.test(executable),
+    'the pre-fault digest is taken but never compared against the value recorded outside the mount');
+});
+
 test('THE STALE-MOUNT GATE FACES A COLD CORPSE, which is the only state the defect appears in', () => {
   const gate = read('deploy/projection-stale-mount-gate.sh');
   const fusefs = read('projectiond/internal/fusefs/fusefs.go');

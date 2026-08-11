@@ -695,7 +695,11 @@
     "test:phase321-local": "npm run test:shared-destination-lock",
     "test:custody-runtime-closure": "tsx test/custody-runtime-closure.ts",
     "test:phase329-local": "npm run test:custody-runtime-closure",
-    "test:projection-mount-truth": "tsx test/projection-mount-truth.ts"
+    "test:projection-mount-truth": "tsx test/projection-mount-truth.ts",
+    "go:mount-truth-gate": "bash deploy/projection-mount-truth-gate.sh",
+    "go:mount-truth-gate:three": "bash deploy/projection-mount-truth-gate-three.sh",
+    "go:mount-truth-gate:optional": "bash deploy/projection-mount-truth-gate-optional.sh",
+    "ops:projection-mount-truth": "tsx src/ops/projection-mount-truth-cli.ts"
   },
   "dependencies": {
     "pg": "^8.13.1",
