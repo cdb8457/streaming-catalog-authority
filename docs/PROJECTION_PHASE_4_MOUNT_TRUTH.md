@@ -112,8 +112,33 @@ endpoint three closed phases were measured against, and it is deferred, named he
 somebody takes rather than a thing that drifts in.
 
 **This edits `projectiond`, so the affected Phase 2 gates are re-run as part of the tranche:**
-`go:stale-mount-gate:three`, `go:serve-death-gate:three`, `go:publisher-mount-gate`. All provider-free. The
-image digest is the check that nothing else moved.
+`go:stale-mount-gate:three`, `go:serve-death-gate:three`, `go:publisher-mount-gate`. All provider-free.
+
+### 5.1 The Phase 2 re-runs — DONE, and they are the first evidence this tranche has
+
+Frozen commit `48092f5`, tree verified byte-identical in both directions over **1,620** tracked files between
+this worktree and `/mnt/user/appdata/catalog-p4` on the real Unraid host, tracked-manifest digest
+`062a15bd021c5075`. Image **`sha256:d6c31c1f8b175e309c1511c7ed686541361cc11d9f4672456e6dfd8acadf5de8`**.
+
+**THE IMAGE DIGEST MOVED, AND IT IS SUPPOSED TO HAVE.** Every build across Phases 2 and 3 produced
+`sha256:8776f28a…`, which is what said the daemon bytes had not moved. This tranche changes `projectiond`, so
+a digest that had *not* moved would mean the change was not in the image being tested. The re-runs below are
+what stands in for the constancy that digest used to provide.
+
+| Gate | Runs | Result |
+|---|---|---|
+| `go:stale-mount-gate:three` | 3 | **exit 0** — `RESULT: PASSED three consecutive cold-start runs`; PHASE 1, PHASE 2 and PHASE 3 COMPLETE in each, including the cold-corpse phase |
+| `go:serve-death-gate:three` | 3 | **exit 0** — `RESULT: PASSED three consecutive cold-start runs`; PHASE A and PHASE B COMPLETE in each |
+| `go:publisher-mount-gate` | 1 | **exit 0** — `publisher-to-mount gate PASSED` |
+
+Zero `GATE FAILED`, zero skips. Host before and after: 42 containers / 26 running, 17 networks, 45 volumes,
+**0** `fuse.projectiond`, 0 gate run directories, 0 gate containers.
+
+**WHAT THIS ESTABLISHES, AND IT IS NOT THE TRANCHE'S OWN CLAIM.** It says the additive change regressed
+nothing Phase 2 had closed — the daemon still names a corpse, still refuses to serve over one under
+`--refuse-stale`, still mounts over a cold one, still reports a serve death and remounts in place. It says
+**nothing whatever** about whether `mountObserved` reports the truth; that is §4's gate, and §6 records that
+it has not run.
 
 ## 6. Run record
 
