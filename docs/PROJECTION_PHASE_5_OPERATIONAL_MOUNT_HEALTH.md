@@ -1,7 +1,11 @@
 # Projection Phase 5 — the observation becomes operationally authoritative
 
-**Status: NOT RUN.** Every threshold in §4 was committed before the first measured run. This document says
-nothing about a Tower run until §9 records one.
+**Status: CLOSED.** Every threshold in §4 was committed before the first measured run and **none has moved**.
+`npm run go:mount-health-gate:three` completed **three consecutive fresh runs, exit 0, zero skips** on the
+real Unraid host: 36 arm verdicts, 36 pass, 0 fail, 0 skip. **§3.3 records three clauses that were
+predeclared, measured false on the first real run, and superseded** — an unconditional recovery confirmation
+that made the anti-flap policy contradict itself, a precedence that made `serve-loop-dead` unreportable, and
+an arm that passed vacuously. None of the three was a threshold.
 
 **What this tranche is, in one sentence.** `/readyz` stops answering from what the daemon *remembers* and
 starts answering from what is *observed* at its mount point — through a bounded policy, not a bare comparison
@@ -309,25 +313,112 @@ on uncertain PID or mount identity. `MH12` asserts the host's sets are identical
 
 ## 9. Run record
 
-**NOT RUN.** No measured Tower run has been taken at the time of writing.
+**CLOSED.** `npm run go:mount-health-gate:three` completed **three consecutive fresh runs, exit 0, zero
+skips**, on the real Unraid host, from one frozen commit, tree and image: **36 arm verdicts, 36 pass, 0 fail,
+0 skip**, twelve arms in every run.
+
+| What | Value |
+|---|---|
+| frozen commit | `57b4a3646332fe7b1335da18d7c15d5807090b63` |
+| frozen tree | `5eeaca7befff4e94ac7a91a981d49c0a1341c9fb` |
+| tracked manifest | `4c7c44f619d81706` over **1,634** files, byte-identical in both directions vs `/mnt/user/appdata/catalog-p5` |
+| image | `sha256:73996926dafa3078609b2ab9534032ff7032b30322fa9bcbac31643efdf82786` |
+| host | Unraid `tower` |
+
+**THE IMAGE DIGEST MOVED FROM PHASE 4'S, AND IT IS SUPPOSED TO HAVE.** This tranche changes `projectiond` —
+the readiness policy, the liveness document, a new flag and a `HEALTHCHECK` — so a digest that had *not* moved
+would mean the change was not in the image being tested. §9.1 is what stands in for the constancy that digest
+used to provide.
 
 | Run | Arms | Failed | Skipped | Elapsed |
 |---|---|---|---|---|
-| 1/3 | NOT RUN | — | — | — |
-| 2/3 | NOT RUN | — | — | — |
-| 3/3 | NOT RUN | — | — | — |
+| 1/3 | `MH1 … MH12` | **0** | **0** | 90,343 ms |
+| 2/3 | `MH1 … MH12` | **0** | **0** | 90,194 ms |
+| 3/3 | `MH1 … MH12` | **0** | **0** | 90,444 ms |
 
-### 9.1 Regression re-runs
+Each run printed `OPERATIONAL MOUNT HEALTH GATE PASSED: 12 of 12 arms`; the runner printed `RESULT: PASSED
+three consecutive cold-start runs`. **No `FAIL`, `GATE FAILED` or `SKIP` line occurs anywhere in the
+transcript**, and each arm id appears exactly three times as a pass.
 
-**NOT RUN.**
+### 9.1 Regression re-runs — DONE, from the same frozen commit, tree and image
+
+Every gate below ran on the real Unraid host at commit `57b4a36`, against image
+`sha256:73996926…`, with `PROJECTIOND_IMAGE=projectiond:phase5-frozen`, serialised one after another.
+
+| Gate | Runs | Result |
+|---|---|---|
+| `go:stale-mount-gate:three` | 3 | **exit 0** — `RESULT: PASSED three consecutive cold-start runs`; PHASE 1, PHASE 2 and PHASE 3 COMPLETE in each, including the cold-corpse phase. 90,827 / 90,506 / 90,517 ms |
+| `go:serve-death-gate:three` | 3 | **exit 0** — `RESULT: PASSED three consecutive cold-start runs`; PHASE A and PHASE B COMPLETE in each. 17,399 / 17,167 / 17,302 ms |
+| `go:sustained-outage-gate:three` | 3 | **exit 0** — `RESULT: PASSED three consecutive cold-start runs`. 89,509 / 88,674 / 89,415 ms |
+| `go:publisher-mount-gate` | 1 | **exit 0** — `publisher-to-mount gate PASSED` |
+| `go:mount-truth-gate:three` | 3 | **exit 0** — `RESULT: PASSED three consecutive cold-start runs`; 18 arm verdicts, `MT1`–`MT6` three times each, 0 fail. 20,787 / 20,806 / 21,997 ms |
+
+Zero `GATE FAILED`, zero skips, in any of them. Host before and after the whole sequence: **42 containers / 26
+running, 17 networks, 45 volumes, 0 `fuse.projectiond`**.
+
+**THE SERVE-DEATH GATE IS THE ONE THAT MATTERS MOST HERE, AND IT IS THE ONE MOST LIKELY TO HAVE BROKEN.** Its
+phase-B poller requires an **order** — ready → not-ready → ready across a serve-loop death — and Phase 5
+redefines both ends of that transition: readiness now goes false for a different reason and comes back only
+after a confirmed post-death observation. It passed three times unchanged, which is what says the widened
+not-ready window is still a window that closes.
+
+**AND THE SUSTAINED-OUTAGE GATE IS THE CONTROL FOR THE WHOLE TRANCHE.** Its subject is a provider outage that
+never touches the mount, and it asserts `ready` is **still true** afterwards. A readiness policy that had
+become trigger-happy — one that keyed on the provider, or on any fault at all rather than on the mount —
+would fail it. It passed three times, so the new policy is still deaf to everything except the mount.
 
 ### 9.2 What each arm measured
 
-**NOT RUN.**
+| Id | Measured, across all three runs |
+|---|---|
+| `MH1` | `200`/`ok`, `mountObserved=live-projectiond`, container `healthy`, and the pre-attached unprivileged consumer digest-matched the value recorded outside the mount |
+| `MH2` | `503`/`mount-observed-not-live` with `mounted` still **true**, **zero** serve-loop deaths and the daemon still running; `mountSinceLiveMs` **7,546 / 7,600 / 6,501** against a 6,000 ms hold. Unmounting **only** the tmpfs restored `200`/`ok` |
+| `MH3` | `503`/**`serve-loop-dead`** over a torn-down connection — the supervisor's knowledge outranking both the lagging observation and the `mounted` boolean it had already cleared |
+| `MH4` | a **frozen** second projectiond mount aged the observation to **6,429 / 6,408 / 6,535 ms** while the verdict still read `live-projectiond`: `503`/`mount-observation-stale`, `mounted` true, **zero** serve deaths. Releasing the block restored `200`/`ok` |
+| `MH5` | `mountBootstrapGrace` **true** early (**14,669 / 14,680 / 14,659 ms** remaining) and **false** later, with steady-state readiness resting on a live run of **16,009 / 15,988 / 16,097 ms** rather than on the grace |
+| `MH6` | a two-second fault **was reported** as a non-live observation and readiness never left `200`/`ok` |
+| `MH7` | container health `healthy` → **`unhealthy`** → `healthy` across the sustained fault, inside the 41,000 ms derived bound. Docker's own health log carried the closed-set code: `healthcheck: not ready: mount-observed-not-live` |
+| `MH8` | readiness was observed to **drop**, and the **first** ready reading after the recovery carried `live-projectiond` with a confirmed live run of **1,116 / 1,032 / 1,337 ms** against a 1,000 ms confirmation, with the grace forfeited by the death |
+| `MH9` | the **same pre-attached** unprivileged consumer read the **same digest** after the recovery |
+| `MH10` | **25 / 25 / 23** liveness readings, every one `200`/`alive` with `claimsMountUsable=false` and no readiness or mount field — including every arm in which readiness answered `503` |
+| `MH11` | slowest `/readyz` **214 / 210 / 212 ms** and slowest `/healthz` **192 / 195 / 228 ms**, both against 1,000 ms |
+| `MH12` | container, network and volume **sets** identical; this run's mountpoints, overlays, blocker and directory asserted gone |
+
+Host before and after the sequence: **42 containers / 26 running, 17 networks, 45 volumes, 0
+`fuse.projectiond`**, 0 gate run directories, 0 leftover containers, and no `mh-overlay-` tmpfs or
+`projection-mount-health-blocker-` container anywhere — the last two are the ones this tranche's own faults
+could have leaked, and they are asserted rather than assumed.
 
 ### 9.3 Offline
 
-**NOT RUN.**
+Taken on the Windows development host at the frozen commit. **They are not gate evidence**; they are what
+makes a run worth attempting.
+
+| What | Result |
+|---|---|
+| `npx tsc --noEmit` | clean |
+| `npm run go:fmt` / `go:vet` / the whole Go suite | clean / clean / every package `ok` |
+| `npx tsx test/projection-operational-mount-health.ts` | **29 passed, 0 failed, ZERO SKIPS** |
+| `npx tsx test/projection-mount-truth.ts` | 13/0 — Phase 4's pins, with the additive rule narrowed to `mounted` |
+| `npx tsx test/projection-mount-hardening.ts` | 32/0 |
+| `npx tsx test/projection-reliability-loop.ts` | 69/0 — Phase 3 undisturbed |
+| `npx tsx test/custody-runtime-closure.ts` | 39/0 |
+| `npx tsx test/projection-evidence-consistency.ts` | 4/0 |
+| `npx tsx test/aggregate-suite.ts` | exit 0 |
+| full `npm test` | 346 selected, **336 passed, 10 failed** — see below |
+
+**THE TEN FAILURES ARE PRE-EXISTING ON THIS HOST AND THAT IS VERIFIED, NOT ASSUMED.** They are the nine
+`torbox-*` suites and `operator-ui-import-endpoint.ts`. Two facts establish it, and the second is the one that
+actually settles it:
+
+1. Neither failure names anything this tranche touched. `torbox-boundary` fails on
+   `src/ops/projection-three-server-concurrency-cli.ts`, and `operator-ui-import-endpoint` fails on a literal
+   control byte in `test/projection-multi-frontend.ts` — `git diff fe6fb88..57b4a36` touches neither file.
+2. **All ten were re-run at the base commit `fe6fb88` in a clean throwaway worktree, and all ten failed
+   there identically.** A failure that reproduces on the tree this tranche started from is not this tranche's.
+
+They are recorded rather than waved past, and **no claim is made that they are fine** — only that they are not
+Phase 5's, and that Phase 5 did not make them worse.
 
 ## 10. What this tranche does not claim
 
