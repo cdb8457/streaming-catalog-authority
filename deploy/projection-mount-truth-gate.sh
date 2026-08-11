@@ -86,14 +86,41 @@ fail() { FAILED=$(( FAILED + 1 )); echo "  FAIL  $*" >&2; }
 
 # EVERY EMBEDDED SCRIPT IS A FILE IN A QUOTED HEREDOC, never an inline multi-line `node -e`.
 # `test/custody-runtime-closure.ts` parses every shipped script and refuses a line whose quotes do not close.
+# AN UNREADABLE DOCUMENT PRINTS NOTHING RATHER THAN THROWING. A field read out of a body that never arrived
+# is an ABSENT measurement, and the arm that wanted it must fail on a non-value — not die of a stack trace
+# one line after the fault it exists to measure, which is what the first real run of this gate did.
 cat > "$WORK/out/jq.cjs" <<'JQ'
 let raw = '';
 process.stdin.on('data', (chunk) => { raw += chunk; });
 process.stdin.on('end', () => {
-  const value = JSON.parse(raw)[process.argv[2]];
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    console.log('');
+    return;
+  }
+  const value = parsed[process.argv[2]];
   console.log(value === undefined ? '' : String(value));
 });
 JQ
+
+# /readyz READ WITH A RAW REQUEST, BECAUSE THE BODY MATTERS MOST EXACTLY WHEN THE STATUS IS 503.
+#
+# `/readyz` answers 503 whenever the daemon is not ready — which, after the abort MT2 injects, is precisely
+# the moment the observation is worth reading. BusyBox `wget` treats a 503 as an error and DISCARDS the body,
+# so the first real run of this gate died parsing an empty document one line after the fault it exists to
+# measure. A raw HTTP/1.0 request keeps the body whatever the status line says, and it needs no image beyond
+# the one already pinned here.
+cat > "$WORK/out/readyz.sh" <<'READYZ'
+set -eu
+addr="$1"
+host="${addr%%:*}"
+port="${addr##*:}"
+printf 'GET /readyz HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n' "$addr" \
+  | nc "$host" "$port" \
+  | sed -e '1,/^[[:space:]]*$/d'
+READYZ
 
 cat > "$WORK/out/sha.cjs" <<'SHA'
 const { createHash } = require('node:crypto');
@@ -184,8 +211,8 @@ trap cleanup EXIT
 # network namespace, which is exactly how every other gate here reads it.
 # ----------------------------------------------------------------------------------------------------------
 readyz_body() {
-  docker run --rm --network "container:$DAEMON_CONTAINER" "$VERIFY_IMAGE" \
-    wget -q -T 5 -O - "http://${STATUS_ADDR}/readyz" 2>/dev/null
+  docker run --rm --network "container:$DAEMON_CONTAINER" -v "$WORK/out:/out:ro" "$VERIFY_IMAGE" \
+    sh /out/readyz.sh "$STATUS_ADDR" 2>/dev/null
 }
 
 # ONE FIELD OUT OF /readyz. A field that is absent prints nothing rather than a zero, so an assertion about a
