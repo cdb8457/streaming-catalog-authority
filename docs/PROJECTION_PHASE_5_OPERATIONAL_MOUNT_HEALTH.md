@@ -67,19 +67,23 @@ inside the hold, and the recovery arm would be satisfiable without the mount eve
 | # | Reason code | Fires when | Graced? | Held? |
 |---|---|---|---|---|
 | 1 | `no-generation-admitted` | nothing has ever been admitted | — | — |
-| 2 | `not-mounted` | the daemon does not believe it is mounted | — | — |
-| 3 | `serve-loop-dead` | the supervisor observed the serve loop exit | — | — |
+| 2 | `serve-loop-dead` | the supervisor observed the serve loop exit | — | — |
+| 3 | `not-mounted` | the daemon does not believe it is mounted | — | — |
 | 4 | `mount-observed-not-live` | the last completed observation is `stale-projectiond`, `foreign` or `empty` | **never** | yes |
 | 5 | `mount-observation-stale` | the last completed observation says live but is older than `SAMPLE_MAX_AGE_MS` | **never** | yes |
 | 6 | `mount-observation-unavailable` | no observation has completed, or the sampler gave up on one | yes | yes |
-| 7 | `mount-recovering` | live and fresh, but the live run is shorter than `MOUNT_RECOVERY_CONFIRM_MS` | yes | — |
+| 7 | `mount-recovering` | live and fresh, but the live run is shorter than `MOUNT_RECOVERY_CONFIRM_MS` **and the fault it is recovering from was one readiness was actually withheld for** | yes | — |
 | 8 | `ok` | everything above was checked and none of it fired | — | — |
 
 **Rules 1–3 are the pre-existing readiness rules, unchanged in meaning, and they are deliberately ahead of
-everything Phase 5 added.** A daemon with nothing to serve, one that never mounted, and one whose serve loop
-the supervisor *watched* exit are not mount-observation questions. The supervisor's own knowledge is **direct
-evidence**; the observation is a **late sample of the same event**. Reporting the sample first would name the
-symptom and bury the cause.
+everything Phase 5 added.** A daemon with nothing to serve, one whose serve loop the supervisor *watched*
+exit, and one that never mounted are not mount-observation questions. The supervisor's own knowledge is
+**direct evidence**; the observation is a **late sample of the same event**. Reporting the sample first would
+name the symptom and bury the cause.
+
+> **THREE CLAUSES IN THIS TABLE WERE PREDECLARED DIFFERENTLY, MEASURED FALSE ON THE FIRST REAL TOWER RUN, AND
+> CORRECTED. NO NUMBER MOVED.** §3.3 keeps the original wording of each, what it measured, and why the
+> replacement is not a threshold being loosened to obtain green.
 
 **Rules 4 and 5 are never covered by the grace, at any age of the process.** The grace covers *"we have not
 been able to look yet"*. It never covers *"we looked and it is not live"* — that distinction is the same one
@@ -113,6 +117,57 @@ provider reference, no object identity, no OS or provider string.
 **`serveError` is the one free-text field on the readiness document and Phase 5 did not add it.** It predates
 this tranche, it is unchanged, and it is named here so that *"the readiness reasons are closed-set"* is never
 read as a claim about the whole document. Changing it is not in this tranche.
+
+### 3.3 What was predeclared, measured false, and superseded — kept, not deleted
+
+The first measured Tower run of the gate returned **10 of 12 arms passing**. Both failures were the gate
+catching **product** defects in the policy as predeclared, and one of the passes was passing **vacuously**.
+All three are recorded here, in the order the run found them, with the original wording kept.
+
+**(a) `MH6` — THE RECOVERY CONFIRMATION WAS UNCONDITIONAL, AND THAT MADE THE ANTI-FLAP POLICY CONTRADICT
+ITSELF.** *Predeclared, in its own words:* rule 7 fires when *"live and fresh, but the live run is shorter
+than `MOUNT_RECOVERY_CONFIRM_MS`"*, with no further condition. Measured: `MH6 sawNonLiveObservation=1
+lostReady=1 (code 503)` on a two-second fault.
+
+*It is not flaky and it was not a threshold problem.* Any transient long enough to produce **one** non-live
+sample necessarily restarts the live run — that is what a run *is*. So an unconditional confirmation takes
+the appliance out of service for a whole second at the **tail** of every transient whose **front** the fault
+hold had just protected. The two rules were arguing with each other, and the fault hold was losing. **The arm
+was not changed; the rule was.** Hysteresis confirms on the way back only if it actually left, so the
+confirmation now applies only when the preceding gap outlasted the hold, or contained a recorded death, or
+there was no earlier live observation at all. `MOUNT_RECOVERY_CONFIRM_MS` is **still 1,000**.
+
+**(b) `MH3` — `serve-loop-dead` WAS PREDECLARED BEHIND `not-mounted`, WHICH MADE IT UNREPORTABLE.**
+*Predeclared:* precedence `1 no-generation-admitted, 2 not-mounted, 3 serve-loop-dead`. Measured: `MH3
+code=200 reason=ok`, having polled for fifty seconds and never once seen the code it was waiting for.
+
+*It cannot happen, for the same reason Phase 4's original MT2 could not.* On a serve-loop death the
+supervisor runs `SetMounted(false)` and **then** `RecordServeDeath(...)`; on recovery it runs
+`ClearServeDeath()` and **then** `SetMounted(true)`. `mounted` is therefore false for the **entire** window in
+which a death is recorded, so a `not-mounted` that outranked it would be the only thing `/readyz` ever said.
+A reason code that cannot occur is worse than no reason code: it reads as coverage. It is also the worse of
+the two answers — a death is *why* the daemon is not mounted, and reporting the state instead of the cause is
+the same mistake as reporting the sample instead of the supervisor. **The readiness boolean is identical
+either way**, so this changes which code is published and no behaviour any closed gate was measured against.
+
+**(c) `MH8` PASSED VACUOUSLY, AND THAT IS THE MOST SERIOUS OF THE THREE.** It reported *"a confirmed live run
+of 72,305 ms"* — a run that had begun **seventy-two seconds before the abort it claimed to be a recovery
+from**. The supervisor remounts after a one-second backoff and the sampler probes once a second, so the whole
+death and recovery passed **between two samples**: no observation ever went non-live, the run continued
+unbroken across the fault, and readiness never dropped at all.
+
+*An observation taken before a death says nothing about what is on the other side of it.* That is precisely
+Phase 2's worst defect — the remount that succeeded for the daemon and for nobody else — reached through this
+tranche's new field. **A recorded serve death now ends the live run**, so the next live sample starts a new
+one and readiness returns only after a live observation taken *after* the death and confirmed. As a
+by-product the not-ready window is now bounded **below** by the supervisor's own one-second backoff plus the
+confirmation, which is what makes `MH3` and `MH8` measurements rather than races. `MH8` additionally now
+requires that readiness was observed to have **dropped** — a recovery arm that never saw an outage is an arm
+that proves nothing.
+
+**None of the three is a threshold moved after measurement.** §4 is byte-for-byte what was committed before
+the first run. What moved is the *shape* of two rules that were self-contradictory and one arm that could
+pass without measuring anything, and each replacement is pinned by a Go case that fails against the original.
 
 ## 4. The predeclared thresholds
 

@@ -64,8 +64,8 @@ func TestReadinessPrecedenceIsTheOnePhase5Predeclared(t *testing.T) {
 			ready:  false, reason: ReadyReasonNoGeneration,
 		},
 		{
-			name:   "not mounted outranks a serve death and every observation reason",
-			mutate: func(in *readinessInputs) { in.mounted = false; in.serveDead = true },
+			name:   "not mounted outranks every observation reason",
+			mutate: func(in *readinessInputs) { in.mounted = false },
 			ready:  false, reason: ReadyReasonNotMounted,
 		},
 		{
@@ -77,6 +77,15 @@ func TestReadinessPrecedenceIsTheOnePhase5Predeclared(t *testing.T) {
 				in.sample = &mountObservation{state: "foreign", at: at, lastLiveAt: at.Add(-time.Minute)}
 			},
 			ready: false, reason: ReadyReasonServeLoopDead,
+		},
+		{
+			// ...AND IT OUTRANKS `not-mounted`, WHICH WAS CORRECTED AFTER MEASUREMENT. The supervisor runs
+			// SetMounted(false) BEFORE RecordServeDeath and ClearServeDeath BEFORE SetMounted(true), so
+			// `mounted` is false for the whole window a death is recorded in. Predeclared the other way
+			// round, `serve-loop-dead` could never be reported at all — measured on the first Tower run.
+			name:   "a serve-loop death outranks not-mounted, which is the only way it is ever reportable",
+			mutate: func(in *readinessInputs) { in.mounted = false; in.serveDead = true },
+			ready:  false, reason: ReadyReasonServeLoopDead,
 		},
 		{
 			name: "a sustained foreign observation makes readiness false",
@@ -152,6 +161,40 @@ func TestReadinessPrecedenceIsTheOnePhase5Predeclared(t *testing.T) {
 					liveSince: at.Add(-MountRecoveryConfirm), lastLiveAt: at}
 			},
 			ready: true, reason: ReadyReasonOK,
+		},
+		{
+			// THE CONFIRMATION IS HYSTERESIS AND THIS IS THE CASE THAT SAYS SO. A transient the hold never
+			// believed must not be re-confirmed on the way out: an unconditional confirmation would take the
+			// appliance out of service for a whole second at the TAIL of every transient whose front the
+			// hold had just protected — measured, on Tower, as MH6 recording `lostReady=1 (code 503)`.
+			name: "a short live run after a fault the hold NEVER believed is ready at once",
+			mutate: func(in *readinessInputs) {
+				gap := MountFaultHold - time.Second
+				in.sample = &mountObservation{state: MountStateLive, at: at,
+					liveSince: at, lastLiveAt: at, runPrecededBy: at.Add(-gap)}
+			},
+			ready: true, reason: ReadyReasonOK,
+		},
+		{
+			// ...AND THE OTHER SIDE OF IT, or the clause above would have removed the confirmation entirely.
+			name: "a short live run after a fault the hold DID believe is not yet ready",
+			mutate: func(in *readinessInputs) {
+				gap := MountFaultHold + time.Second
+				in.sample = &mountObservation{state: MountStateLive, at: at,
+					liveSince: at, lastLiveAt: at, runPrecededBy: at.Add(-gap)}
+			},
+			ready: false, reason: ReadyReasonMountRecovering,
+		},
+		{
+			// A DEATH INSIDE THE GAP IS BELIEVED HOWEVER SHORT THE GAP WAS. The supervisor remounts in about
+			// a second, so a recovery from a death is exactly the case a hold-width test would wave through.
+			name: "a short live run after a SHORT gap that contained a death is not yet ready",
+			mutate: func(in *readinessInputs) {
+				in.lastServeDeathAt = at.Add(-time.Second)
+				in.sample = &mountObservation{state: MountStateLive, at: at,
+					liveSince: at, lastLiveAt: at, runPrecededBy: at.Add(-2 * time.Second)}
+			},
+			ready: false, reason: ReadyReasonMountRecovering,
 		},
 		{
 			// THE GRACE COVERS "WE HAVE NOT BEEN ABLE TO LOOK YET", and only that.
@@ -274,6 +317,42 @@ func TestTheFaultClockRunsFromTheLastLiveObservationNotTheLastSample(t *testing.
 	}
 	if !sample.liveSince.IsZero() {
 		t.Fatal("a non-live sample left the live run running, so a recovery would be confirmed by a fault")
+	}
+}
+
+// A LIVE RUN MAY NOT SPAN A SERVE-LOOP DEATH, AND THE FIRST REAL TOWER RUN IS WHAT TAUGHT US.
+//
+// The supervisor remounts in about a second and the sampler probes once a second, so an abort and its whole
+// recovery can pass BETWEEN two samples. The run then continues unbroken across the death and readiness comes
+// straight back on an observation taken before the fault — measured on Tower as a "recovery" vouched for by a
+// live run seventy-two seconds old that predated the abort entirely. An observation from before a death says
+// nothing about what is on the other side of it, which is precisely Phase 2's worst defect: the remount that
+// succeeded for the daemon and for nobody else.
+func TestARecordedDeathBreaksTheLiveRunEvenIfNoSampleEverSawTheFault(t *testing.T) {
+	d := newTestDaemon(t)
+	d.SetMountObserver(func() string { return MountStateLive })
+	d.SampleMount(time.Second)
+	before := d.mountSample.Load().liveSince
+
+	// The whole death and recovery happen between two samples: no non-live observation is ever taken.
+	d.RecordServeDeath(nil)
+	d.ClearServeDeath()
+
+	d.SampleMount(time.Second)
+	after := d.mountSample.Load()
+	if !after.liveSince.After(before) {
+		t.Fatal("the live run continued across a recorded serve death, so a recovery can be vouched for by " +
+			"an observation taken before the fault")
+	}
+	// ...AND THE NEW RUN IS THEN SUBJECT TO THE CONFIRMATION, because a death is always a believed fault.
+	verdict := decideReadiness(readinessInputs{
+		now: time.Now(), hasGeneration: true, mounted: true, sample: after,
+		mountedFirstAt:   time.Now().Add(-time.Hour),
+		lastServeDeathAt: unixNanoTime(d.lastServeDeathAt.Load()),
+	})
+	if verdict.ready || verdict.reason != ReadyReasonMountRecovering {
+		t.Fatalf("the first live sample after a death restored readiness: (%t, %q)",
+			verdict.ready, verdict.reason)
 	}
 }
 

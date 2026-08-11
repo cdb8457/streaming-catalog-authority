@@ -152,6 +152,15 @@ type mountObservation struct {
 	// which is the point. It is what the fault hold measures, and it is deliberately not derivable from the
 	// current sample: a `foreign` observation says nothing about when the mount was last well.
 	lastLiveAt time.Time
+	// runPrecededBy is when the mount was last observed live BEFORE the current run began, zero when there
+	// was no earlier live observation. It is the width of the gap the current run is recovering from.
+	//
+	// IT IS WHAT MAKES THE RECOVERY CONFIRMATION HYSTERESIS RATHER THAN A BLANKET DELAY. A confirmation that
+	// applied to every run would be the mirror of the flap the fault hold prevents: any transient long
+	// enough to produce one non-live sample restarts the run, so an unconditional confirmation would take the
+	// appliance out of service for a whole second at the TAIL of every transient the hold just protected the
+	// front of. Measured, on the first real Tower run, by the arm that exists to catch precisely that.
+	runPrecededBy time.Time
 }
 
 const (
@@ -485,9 +494,27 @@ func (d *Daemon) storeObservation(state string, at time.Time) {
 		next.lastLiveAt = at
 		// A RUN, NOT A SAMPLE. The run continues only if the previous observation was itself live; anything
 		// else — a corpse, a stranger, a probe that overran — ends it and the confirmation starts again.
-		next.liveSince = at
-		if previous != nil && !previous.liveSince.IsZero() {
+		//
+		// ...AND A RUN MAY NOT SPAN A SERVE-LOOP DEATH, WHICH THE FIRST REAL RUN IS WHAT TAUGHT US. The
+		// supervisor remounts in about a second, and the sampler probes once a second, so an abort and its
+		// whole recovery can pass BETWEEN two samples: the run then continues unbroken across the death and
+		// readiness comes straight back on an observation taken before the fault. That measured, on Tower, as
+		// a "recovery" vouched for by a live run seventy-two seconds old that predated the abort entirely.
+		// An observation from before a death cannot say anything about what is on the other side of it —
+		// which is exactly the shape of Phase 2's worst defect, where the remount succeeded for the daemon
+		// and for nobody else. So a recorded death ends the run, and the next live sample starts a new one.
+		continues := previous != nil && !previous.liveSince.IsZero()
+		if death := unixNanoTime(d.lastServeDeathAt.Load()); continues && !death.IsZero() {
+			continues = previous.liveSince.After(death)
+		}
+		if continues {
 			next.liveSince = previous.liveSince
+			next.runPrecededBy = previous.runPrecededBy
+		} else {
+			next.liveSince = at
+			if previous != nil {
+				next.runPrecededBy = previous.lastLiveAt
+			}
 		}
 	} else if previous != nil {
 		// The mount is not live NOW, and when it last was is the thing the fault hold measures. Dropping it
@@ -639,19 +666,26 @@ func decideReadiness(in readinessInputs) readinessVerdict {
 	// ---- the precedence, in order. First match wins. ----
 
 	// 1-3: the three pre-existing readiness rules, unchanged in meaning and still ahead of everything Phase 5
-	// added. A daemon with nothing to serve, one that never mounted, and one whose serve loop the supervisor
-	// watched exit are not mount-OBSERVATION questions, and reporting the lagging sample for any of them
+	// added. A daemon with nothing to serve, one whose serve loop the supervisor watched exit, and one that
+	// never mounted are not mount-OBSERVATION questions, and reporting the lagging sample for any of them
 	// would name a symptom and bury the cause.
+	//
+	// A SERVE DEATH OUTRANKS `not-mounted`, AND THAT ORDER WAS CORRECTED AFTER MEASUREMENT. Predeclared the
+	// other way round, it made `serve-loop-dead` UNREPORTABLE: the supervisor runs `SetMounted(false)` and
+	// THEN `RecordServeDeath`, and on recovery `ClearServeDeath()` and THEN `SetMounted(true)` — so `mounted`
+	// is false for the whole window in which a death is recorded, and `not-mounted` would be the only thing
+	// ever said. The first real Tower run measured exactly that. It is also the worse of the two answers: a
+	// death is WHY the daemon is not mounted. The readiness BOOLEAN is identical either way.
 	if !in.hasGeneration {
 		verdict.reason = ReadyReasonNoGeneration
 		return verdict
 	}
-	if !in.mounted {
-		verdict.reason = ReadyReasonNotMounted
-		return verdict
-	}
 	if in.serveDead {
 		verdict.reason = ReadyReasonServeLoopDead
+		return verdict
+	}
+	if !in.mounted {
+		verdict.reason = ReadyReasonNotMounted
 		return verdict
 	}
 
@@ -696,13 +730,32 @@ func decideReadiness(in readinessInputs) readinessVerdict {
 		return verdict
 	}
 
-	// Live and fresh. 7: the recovery confirmation, waived only inside the bootstrap grace — where waiving it
-	// prevents a flap rather than causing one, because the grace has already been answering ready.
+	// Live and fresh. 7: the recovery confirmation.
 	verdict.sinceLive = 0
 	if !in.sample.liveSince.IsZero() && in.now.After(in.sample.liveSince) {
 		verdict.liveRun = in.now.Sub(in.sample.liveSince)
 	}
-	if verdict.liveRun < MountRecoveryConfirm && !verdict.inGrace {
+	// IT IS HYSTERESIS, WHICH MEANS IT CONFIRMS ON THE WAY BACK ONLY IF IT ACTUALLY LEFT.
+	//
+	// Predeclared, this was unconditional, and that made it the mirror image of the flap the fault hold
+	// exists to prevent: any transient long enough to produce one non-live sample restarts the run, so an
+	// unconditional confirmation would take the appliance out of service for a whole second at the TAIL of
+	// every transient whose front the hold had just protected. The first real Tower run measured it — a
+	// two-second fault, readiness held throughout the fault and then dropped to 503 as the mount came back.
+	//
+	// So the confirmation applies only when the fault the current run is recovering FROM was one readiness
+	// was actually withheld for: a gap wider than the hold, a recorded death inside it, or no earlier live
+	// observation at all. Nothing else waits.
+	gapBefore := time.Duration(0)
+	if !in.sample.runPrecededBy.IsZero() && in.sample.liveSince.After(in.sample.runPrecededBy) {
+		gapBefore = in.sample.liveSince.Sub(in.sample.runPrecededBy)
+	}
+	faultWasBelieved := in.sample.runPrecededBy.IsZero() || gapBefore > MountFaultHold ||
+		(!in.lastServeDeathAt.IsZero() && in.lastServeDeathAt.After(in.sample.runPrecededBy))
+	// The bootstrap grace waives it too, and there waiving prevents a flap rather than causing one: the grace
+	// has already been answering ready, so requiring a confirmation as the first sample lands would take the
+	// daemon out of service at the exact moment it first proved itself well.
+	if faultWasBelieved && verdict.liveRun < MountRecoveryConfirm && !verdict.inGrace {
 		verdict.reason = ReadyReasonMountRecovering
 		return verdict
 	}

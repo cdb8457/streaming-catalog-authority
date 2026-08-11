@@ -207,22 +207,49 @@ test('the precedence puts direct evidence ahead of the lagging sample, and it is
     if (index < 0) throw new Error(`${reason} is no longer a reason code at all`);
     return index;
   };
-  assert(at('no-generation-admitted') < at('not-mounted'), 'nothing-admitted no longer outranks not-mounted');
-  assert(at('not-mounted') < at('serve-loop-dead'), 'not-mounted no longer outranks a serve death');
+  assert(at('no-generation-admitted') < at('serve-loop-dead'),
+    'nothing-admitted no longer outranks a serve death');
+  // A SERVE DEATH OUTRANKS `not-mounted`, AND THAT IS THE ONLY WAY IT IS EVER REPORTABLE. The supervisor runs
+  // SetMounted(false) BEFORE RecordServeDeath and ClearServeDeath BEFORE SetMounted(true), so `mounted` is
+  // false for the whole window a death is recorded in. Predeclared the other way round, `serve-loop-dead`
+  // could never occur at all — measured on the first real Tower run, and corrected without moving a number.
+  assert(at('serve-loop-dead') < at('not-mounted'),
+    'not-mounted outranks a serve death again, which makes serve-loop-dead an unreportable code');
   for (const observationReason of ['mount-observed-not-live', 'mount-observation-stale',
     'mount-observation-unavailable', 'mount-recovering']) {
-    assert(at('serve-loop-dead') < at(observationReason),
-      `the observation reason ${observationReason} now outranks the supervisor's own knowledge`);
+    assert(at('not-mounted') < at(observationReason),
+      `the observation reason ${observationReason} now outranks a pre-existing readiness rule`);
   }
   // ...AND THE DAEMON EVALUATES THEM IN THE SAME ORDER. A contract that listed one order while the source
   // took another would be a document about a product that does not exist.
   const decide = read(DAEMON_GO).slice(read(DAEMON_GO).indexOf('func decideReadiness'));
   let cursor = -1;
-  for (const reason of ['ReadyReasonNoGeneration', 'ReadyReasonNotMounted', 'ReadyReasonServeLoopDead']) {
+  for (const reason of ['ReadyReasonNoGeneration', 'ReadyReasonServeLoopDead', 'ReadyReasonNotMounted']) {
     const found = decide.indexOf(reason);
     assert(found > cursor, `decideReadiness no longer returns ${reason} in the predeclared order`);
     cursor = found;
   }
+});
+
+test('THE ANTI-FLAP POLICY GUARDS BOTH DIRECTIONS AND CONTRADICTS ITSELF IN NEITHER', () => {
+  // THE DEFECT THIS PINS WAS MINE, IT WAS PREDECLARED, AND THE GATE'S FIRST REAL RUN MEASURED IT. The
+  // recovery confirmation was unconditional, which makes it the mirror image of the flap the fault hold
+  // exists to prevent: any transient long enough to produce one non-live sample restarts the live run, so an
+  // unconditional confirmation takes the appliance out of service for a whole second at the TAIL of every
+  // transient whose front the hold had just protected. MH6 recorded `lostReady=1 (code 503)`.
+  const daemon = read(DAEMON_GO);
+  assert(/faultWasBelieved/.test(daemon),
+    'the recovery confirmation is unconditional again, so it reintroduces the flap the fault hold prevents');
+  assert(/faultWasBelieved && verdict\.liveRun < MountRecoveryConfirm/.test(daemon),
+    'the confirmation no longer depends on whether readiness was actually withheld for the fault before it');
+  // ...AND A RUN MAY NOT SPAN A DEATH. The supervisor remounts in about a second and the sampler probes once
+  // a second, so an abort and its whole recovery can pass BETWEEN two samples — and then readiness returns on
+  // an observation taken before the fault. Measured on Tower as a live run 72 seconds old vouching for a
+  // recovery it predated, which is exactly Phase 2's worst defect wearing this tranche's new field.
+  const store = daemon.slice(daemon.indexOf('func (d *Daemon) storeObservation'));
+  assert(/continues = previous\.liveSince\.After\(death\)/.test(store.slice(0, 2_500)),
+    'a live run can span a recorded serve death again, so a recovery can be vouched for by an observation '
+    + 'taken before the fault');
 });
 
 // ---------------------------------------------------------------------------------------------------------
@@ -610,6 +637,12 @@ test('MH8 measures the FIRST ready reading, not the last', () => {
     'MH8 no longer requires the mount to have been observed live when readiness returned');
   assert(/MH8_FIRST_GRACE" = "false"/.test(mh8),
     'MH8 no longer proves the recovery was not granted by a grace the death should have forfeited');
+  // AND IT MUST HAVE SEEN AN OUTAGE AT ALL. The first real run scored the ABSENCE of an outage as a
+  // successful recovery from one: the death and remount passed between two samples, readiness never dropped,
+  // and the arm reported a "confirmed live run" that had begun 72 seconds before the abort.
+  assert(/MH8_SAW_OUTAGE" -eq 1/.test(mh8),
+    'MH8 can conclude a recovery without ever having observed readiness drop, which is how it passed '
+    + 'vacuously on its first real run');
 });
 
 test('the gate takes its own port and no other gate has it', () => {

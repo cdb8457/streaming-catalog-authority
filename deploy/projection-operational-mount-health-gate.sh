@@ -808,17 +808,27 @@ case "$(echo "$ABORT_OUTPUT" | tail -1)" in
   *) die "the fault could not be injected ($(echo "$ABORT_OUTPUT" | tail -1)), so nothing below is about it" ;;
 esac
 
+# THE POLL HAS NO SLEEP IN IT, AND THE WINDOW IT IS LOOKING FOR IS NOT A RACE.
+#
+# The supervisor sleeps a whole second before its FIRST remount attempt, so the window in which a death is
+# recorded is bounded BELOW by that backoff — and readiness stays false past it, because a recorded death ends
+# the live run and the next live sample has to be confirmed. Sampling as fast as a container start allows puts
+# several readings inside a window that cannot be shorter than a second.
 MH3_CODE=""; MH3_REASON=""; MH3_SEEN_DEAD=0
 n=0
-while [ "$n" -lt 60 ]; do
+while [ "$n" -lt 120 ]; do
   sample_surfaces
   MH3_CODE="$READY_CODE"; MH3_REASON="$READY_REASON"
   [ "$MH3_REASON" = "$MH_REASON_SERVE_LOOP_DEAD" ] && { MH3_SEEN_DEAD=1; break; }
-  n=$((n + 1)); sleep 0.5
+  # ...and stop if the daemon has already come all the way back: continuing would only record `ok` readings
+  # and report the miss as though the fault had never been injected.
+  [ "$MH3_CODE" = "200" ] && [ "$MH3_REASON" = "$MH_REASON_OK" ] && [ "$n" -gt 8 ] && break
+  n=$((n + 1))
 done
 
 if [ "$MH3_SEEN_DEAD" -eq 1 ] && [ "$MH3_CODE" = "503" ]; then
-  pass "MH3 a dead connection answered 503/$MH3_REASON — the supervisor's knowledge outranked the observation"
+  pass "MH3 a dead connection answered 503/$MH3_REASON — the supervisor's knowledge outranked both the" \
+       "lagging observation and the `mounted` boolean it had already cleared"
 else
   docker logs "$DAEMON_CONTAINER" 2>&1 | grep -E 'serve loop died|remount' | tail -5 >&2 || true
   fail "MH3 code=$MH3_CODE reason=$MH3_REASON (the predeclared reason is $MH_REASON_SERVE_LOOP_DEAD)"
@@ -832,10 +842,19 @@ step "MH8 and MH9 — recovery requires the predeclared healthy condition, and t
 # would catch it, because the FIRST reading in which `ready` is true would carry no live observation and no
 # confirmed run. That is exactly Phase 2's worst defect — a namespace recovered for the daemon and for nobody
 # else — and it is what this arm exists to make impossible to reintroduce.
+# AN OUTAGE MUST HAVE BEEN OBSERVED, OR THERE IS NO RECOVERY TO MEASURE.
+#
+# THIS HALF WAS ADDED AFTER THE ARM PASSED VACUOUSLY. On the first real run MH8 reported "a confirmed live run
+# of 72,305 ms" — a run that had begun seventy-two seconds BEFORE the abort it claimed to be a recovery from.
+# The whole death and remount had passed between two samples, readiness never dropped, and the arm scored the
+# absence of an outage as a successful recovery from one. A recorded death now ends the live run, so this can
+# no longer happen — and the arm refuses to conclude anything without having seen the 503 either way.
+MH8_SAW_OUTAGE="$MH3_SEEN_DEAD"
 MH8_FIRST_OBSERVED=""; MH8_FIRST_RUN=""; MH8_FIRST_GRACE=""; MH8_READY=0
 n=0
 while [ "$n" -lt 240 ]; do
   sample_surfaces
+  [ "$READY_CODE" != "200" ] && MH8_SAW_OUTAGE=1
   if [ "$READY_CODE" = "200" ]; then
     MH8_FIRST_OBSERVED="$READY_OBSERVED"
     MH8_FIRST_RUN="$(body_field "$READY_BODY" mountLiveRunMs)"
@@ -843,21 +862,24 @@ while [ "$n" -lt 240 ]; do
     MH8_READY=1
     break
   fi
-  n=$((n + 1)); sleep 0.5
+  n=$((n + 1))
 done
 
 MH8_OK=0
-if [ "$MH8_READY" -eq 1 ] && [ "$MH8_FIRST_OBSERVED" = "$MH_STATE_LIVE" ] \
+if [ "$MH8_READY" -eq 1 ] && [ "$MH8_SAW_OUTAGE" -eq 1 ] \
+   && [ "$MH8_FIRST_OBSERVED" = "$MH_STATE_LIVE" ] \
    && [ -n "$MH8_FIRST_RUN" ] && [ "$MH8_FIRST_RUN" -ge "$MH_MOUNT_RECOVERY_CONFIRM_MS" ] \
    && [ "$MH8_FIRST_GRACE" = "false" ]; then
   MH8_OK=1
 fi
 if [ "$MH8_OK" -eq 1 ]; then
-  pass "MH8 the first ready reading after the recovery carried observed=$MH8_FIRST_OBSERVED and a confirmed" \
-       "live run of ${MH8_FIRST_RUN}ms, with the bootstrap grace forfeited by the death"
+  pass "MH8 readiness was observed to DROP and the first ready reading after the recovery carried" \
+       "observed=$MH8_FIRST_OBSERVED and a confirmed live run of ${MH8_FIRST_RUN}ms, with the bootstrap" \
+       "grace forfeited by the death"
 else
-  fail "MH8 becameReady=$MH8_READY observed=$MH8_FIRST_OBSERVED liveRunMs=${MH8_FIRST_RUN:-absent}" \
-       "grace=$MH8_FIRST_GRACE (the confirmation is ${MH_MOUNT_RECOVERY_CONFIRM_MS}ms)"
+  fail "MH8 sawOutage=$MH8_SAW_OUTAGE becameReady=$MH8_READY observed=$MH8_FIRST_OBSERVED" \
+       "liveRunMs=${MH8_FIRST_RUN:-absent} grace=$MH8_FIRST_GRACE" \
+       "(the confirmation is ${MH_MOUNT_RECOVERY_CONFIRM_MS}ms)"
 fi
 
 CONSUMER_SHA_AFTER=""

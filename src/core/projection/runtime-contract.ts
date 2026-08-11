@@ -706,18 +706,29 @@ export const PROJECTIOND_MOUNT_HEALTH = Object.freeze({
    * THE ORDER IS THE INTERESTING PART, NOT THE LIST. `serve-loop-dead` outranks every mount-observation
    * reason because the supervisor's own knowledge that the serve loop exited is DIRECT evidence, while the
    * observation is a late sample of the same event; reporting the sample first would name the symptom and
-   * bury the cause. `no-generation-admitted` and `not-mounted` outrank both because a daemon with nothing to
-   * serve, or one that never mounted, is not a mount-health question at all.
+   * bury the cause. `no-generation-admitted` outranks everything because a daemon with nothing to serve is
+   * not a mount-health question at all.
+   *
+   * `serve-loop-dead` ALSO OUTRANKS `not-mounted`, AND THAT ORDER WAS CORRECTED AFTER MEASUREMENT. It was
+   * predeclared the other way round, and the first real run proved that formulation makes the code
+   * UNREPORTABLE: on a serve-loop death the supervisor runs `SetMounted(false)` and THEN
+   * `RecordServeDeath(...)`, and on a successful remount it runs `ClearServeDeath()` and THEN
+   * `SetMounted(true)`. So `mounted` is false for the whole window in which a death is recorded, and a
+   * `not-mounted` that outranked it would be the only thing `/readyz` ever said — a reason code that cannot
+   * occur. It is also the worse of the two answers: a death is WHY the daemon is not mounted, and reporting
+   * the state instead of the cause is the same mistake as reporting the sample instead of the supervisor.
+   * **The readiness BOOLEAN is identical either way** — both make `ready` false — so this reorders which
+   * code is published and changes no behaviour any closed gate was measured against.
    */
   READY_REASONS: Object.freeze([
     /** Ready. Every condition below was checked and none of them fired. */
     'ok',
     /** No generation has ever been admitted, so there is nothing to serve. Pre-existing readiness rule. */
     'no-generation-admitted',
-    /** The daemon does not believe it is mounted. Pre-existing readiness rule, unchanged. */
-    'not-mounted',
     /** The supervisor observed the FUSE serve loop exit. Pre-existing readiness rule, unchanged. */
     'serve-loop-dead',
+    /** The daemon does not believe it is mounted. Pre-existing readiness rule, unchanged. */
+    'not-mounted',
     /** The last completed observation was `stale-projectiond`, `foreign` or `empty`, past the fault hold. */
     'mount-observed-not-live',
     /**
@@ -729,8 +740,16 @@ export const PROJECTIOND_MOUNT_HEALTH = Object.freeze({
     /** No observation has ever completed, or the sampler gave up on one, and the bootstrap grace is over. */
     'mount-observation-unavailable',
     /**
-     * The mount is observed live and fresh, but the live run is younger than `MOUNT_RECOVERY_CONFIRM_MS`.
-     * This is the hysteresis: readiness is withheld until the recovery has been seen more than once.
+     * The mount is observed live and fresh, but the live run is younger than `MOUNT_RECOVERY_CONFIRM_MS`
+     * AND the fault that preceded that run was one readiness was actually withheld for.
+     *
+     * THE SECOND CLAUSE WAS ADDED AFTER MEASUREMENT AND THE ARM THAT FORCED IT IS `MH6`. As predeclared the
+     * confirmation was UNCONDITIONAL, which makes it the mirror image of the very flap the fault hold exists
+     * to prevent: any transient long enough to produce one non-live sample necessarily restarts the live
+     * run, so an unconditional confirmation takes the appliance out of service for a whole second at the
+     * TAIL of every transient the hold just protected the front of. The first real Tower run measured
+     * exactly that — `MH6` recorded `lostReady=1 (code 503)` on a two-second fault. **Hysteresis confirms on
+     * the way back only if it actually left**, and that is what this now says. No threshold moved.
      */
     'mount-recovering',
   ] as const),
