@@ -699,7 +699,12 @@
     "go:mount-truth-gate": "bash deploy/projection-mount-truth-gate.sh",
     "go:mount-truth-gate:three": "bash deploy/projection-mount-truth-gate-three.sh",
     "go:mount-truth-gate:optional": "bash deploy/projection-mount-truth-gate-optional.sh",
-    "ops:projection-mount-truth": "tsx src/ops/projection-mount-truth-cli.ts"
+    "ops:projection-mount-truth": "tsx src/ops/projection-mount-truth-cli.ts",
+    "test:projection-operational-mount-health": "tsx test/projection-operational-mount-health.ts",
+    "go:mount-health-gate": "bash deploy/projection-operational-mount-health-gate.sh",
+    "go:mount-health-gate:three": "bash deploy/projection-operational-mount-health-gate-three.sh",
+    "go:mount-health-gate:optional": "bash deploy/projection-operational-mount-health-gate-optional.sh",
+    "ops:projection-mount-health": "tsx src/ops/projection-mount-health-cli.ts"
   },
   "dependencies": {
     "pg": "^8.13.1",

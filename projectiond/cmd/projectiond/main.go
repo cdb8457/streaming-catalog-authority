@@ -12,6 +12,8 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -51,6 +53,9 @@ func main() {
 		"after the FUSE serve loop dies, attempt a bounded remount instead of exiting")
 	serveExitCode := flag.Int("serve-exit-code", 3,
 		"exit code for a serve-loop death when --auto-remount is off or every remount attempt fails")
+	healthcheck := flag.Bool("healthcheck", false,
+		"read this daemon's own /readyz over loopback and exit 0 only if it is ready; this is the shipped "+
+			"container healthcheck and it starts nothing")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -67,6 +72,19 @@ func main() {
 	}
 	if *mountPoint != "" {
 		cfg.MountPoint = *mountPoint
+	}
+
+	// THE SHIPPED CONTAINER HEALTHCHECK, AND IT IS THIS BINARY BECAUSE THE IMAGE HAS NOTHING ELSE.
+	//
+	// The runtime stage is distroless: no shell, no curl, no wget, nothing that could make an HTTP request.
+	// A HEALTHCHECK therefore has to be the daemon's own binary in a mode that starts NOTHING — it reads the
+	// configuration for the status address, makes one loopback request, prints a redaction-safe verdict and
+	// exits. It constructs no daemon, opens no cache, and cannot mount.
+	//
+	// IT IS BRANCHED BEFORE `daemon.New` FOR EXACTLY THAT REASON. Constructing a daemon here would create the
+	// probe-cache directory from a health probe, every interval, as root.
+	if *healthcheck {
+		os.Exit(runHealthcheck(cfg))
 	}
 
 	d, err := daemon.New(cfg)
@@ -246,6 +264,60 @@ func main() {
 	}
 }
 
+// healthcheckClientTimeout bounds the one loopback request the healthcheck makes.
+//
+// IT IS STRICTLY UNDER THE SHIPPED HEALTHCHECK'S OWN TIMEOUT, so a daemon that cannot answer produces a
+// PROBE THAT REPORTS rather than one Docker kills: the difference is a health log that says why and one that
+// says nothing. And it is far above `/readyz`'s latency budget, so an endpoint answering inside its contract
+// can never be recorded as a timeout.
+const healthcheckClientTimeout = 4 * time.Second
+
+// runHealthcheck reads this daemon's own /readyz over loopback and returns the process exit status.
+//
+// IT FAILS CLOSED, EVERYWHERE. No status address, an unreachable endpoint, an unreadable body, a status that
+// is not 200 — every one of them is exit 1. "I could not ask" is not "yes", and a healthcheck that answered
+// healthy when it could not reach the daemon would be worse than having none: it would be a green light
+// wired to nothing, which is the exact shape of failure this whole tranche exists to remove.
+//
+// WHAT IT PRINTS IS THE REASON CODE AND NOTHING ELSE. Docker keeps healthcheck output in the container's
+// health log, so this is the one place the closed-set reason reaches an operator without them having to go
+// and read /readyz themselves. It is a code from a fixed list — no path, no origin, no OS string.
+func runHealthcheck(cfg daemon.Config) int {
+	if cfg.StatusAddr == "" {
+		fmt.Fprintln(os.Stderr, "healthcheck: no statusAddr is configured, so readiness cannot be read")
+		return 1
+	}
+	client := &http.Client{Timeout: healthcheckClientTimeout}
+	response, err := client.Get("http://" + cfg.StatusAddr + "/readyz")
+	if err != nil {
+		// The error is not echoed: it carries the address that was dialled, and this output is a document an
+		// operator pastes. That the endpoint could not be reached is the whole of what matters here.
+		fmt.Fprintln(os.Stderr, "healthcheck: the status surface could not be reached")
+		return 1
+	}
+	defer response.Body.Close()
+	// BOUNDED. The body is this daemon's own status document, but a healthcheck that could be made to read an
+	// unbounded stream is a healthcheck that can be made to hang.
+	var report struct {
+		Ready       bool   `json:"ready"`
+		ReadyReason string `json:"readyReason"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&report); err != nil {
+		fmt.Fprintln(os.Stderr, "healthcheck: the status document could not be read")
+		return 1
+	}
+	reason := report.ReadyReason
+	if reason == "" {
+		reason = "unreported"
+	}
+	if response.StatusCode != http.StatusOK || !report.Ready {
+		fmt.Fprintln(os.Stderr, "healthcheck: not ready: "+reason)
+		return 1
+	}
+	fmt.Println("healthcheck: ready: " + reason)
+	return 0
+}
+
 // remountLoop re-establishes the mount after a serve-loop death. It is bounded: three attempts with linear
 // backoff, so a dying host does not burn CPU remounting forever. Each attempt first does a best-effort
 // unmount of the dead handle, because a serve-loop death can leave the mountpoint half-attached and the next
@@ -261,6 +333,7 @@ func main() {
 //   - ProbeForeign — somebody else's, and in every containerised topology it is the OPERATOR'S BIND, the one
 //     thing that must survive for the remount to be visible to anyone. Unmounting it is the defect.
 //   - ProbeEmpty — nothing to unmount; calling unmount would act on whatever is underneath.
+//
 // remountCleanup is what the supervisor does with whatever is at the mount point before it mounts again.
 type remountCleanup int
 

@@ -131,17 +131,31 @@ test('the sampler states are the probe states plus exactly the two a sampler has
 // The additive rule, which is what stops three closed phases from being re-litigated
 // ---------------------------------------------------------------------------------------------------------
 
-test('READY AND MOUNTED ARE UNTOUCHED, and the daemon source is what is asked', () => {
-  assert(([...PROJECTIOND_MOUNT_OBSERVATION.DOES_NOT_CHANGE] as string[]).join(',') === 'ready,mounted',
-    'the additive rule no longer names both fields it protects');
+test('MOUNTED IS UNTOUCHED, and `ready` left this rule by the door Phase 4 built for it', () => {
+  // THIS PIN HAS MOVED ONCE, AND ONLY BY THE ROUTE PHASE 4 WROTE DOWN IN ADVANCE.
+  //
+  // Throughout Phase 4 it read `ready,mounted`, and §5 of that document named the remaining half explicitly:
+  // "Folding the observation into `ready` is explicitly NOT in this tranche... it is deferred, named here so
+  // it is a decision somebody takes rather than a thing that drifts in." Phase 5 is that decision. So `ready`
+  // is no longer protected here — it is governed by `PROJECTIOND_MOUNT_HEALTH` and by
+  // `test/projection-operational-mount-health.ts`, which pins the state machine that replaced it.
+  //
+  // WHAT THIS PIN STILL DOES IS THE PART THAT DID NOT CHANGE. `mounted` is still the remembered boolean, it
+  // is still never re-checked, and every gate closed in Phases 1-3 was measured against it. If a later edit
+  // folded the observation into THAT, those gates would be measuring something they were never measured
+  // against — and unlike `ready`, no tranche has ever proposed it.
+  assert(([...PROJECTIOND_MOUNT_OBSERVATION.DOES_NOT_CHANGE] as string[]).join(',') === 'mounted',
+    'the additive rule no longer names exactly the one field Phase 5 left it protecting');
   const daemon = read(DAEMON_GO);
-  // `mounted` is still the remembered boolean, and `ready` is still that AND no observed serve death. If a
-  // later edit folded the observation into either, every gate in Phases 1-3 would be measuring something it
-  // was never measured against — which is precisely the change §5 defers rather than makes.
   assert(/Mounted:\s+d\.mounted\.Load\(\),/.test(daemon),
     'status.mounted is no longer the remembered boolean the closed phases were measured against');
-  assert(/status\.Ready = status\.Mounted && d\.serveDeath\.Load\(\) == nil/.test(daemon),
-    'status.ready is no longer mounted AND the absence of an observed serve death');
+  // ...AND `ready` MUST NOW BE THE POLICY, NOT THE OLD CONJUNCTION AND NOT A BARE OBSERVATION. A revert to
+  // `mounted && no serve death` would silently undo Phase 5; wiring it straight to the latest sample would
+  // be the flapping endpoint Phase 5's whole policy exists to avoid.
+  assert(!/status\.Ready = status\.Mounted && d\.serveDeath\.Load\(\) == nil/.test(daemon),
+    'status.ready has reverted to the pre-Phase-5 conjunction, so the mount is no longer consulted');
+  assert(/status\.Ready = verdict\.ready/.test(daemon),
+    'status.ready is no longer the decision of the predeclared readiness policy');
 });
 
 test('the daemon spells the same two numbers this contract predeclares', () => {

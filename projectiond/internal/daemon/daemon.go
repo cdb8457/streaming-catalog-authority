@@ -119,24 +119,92 @@ type Daemon struct {
 	// against a wedged mount, which is precisely what single-flight is supposed to prevent — measured, by
 	// the test that asserts it, before any of this reached a host.
 	probeInFlight atomic.Bool
+
+	// mountedFirstAt is when this process FIRST mounted, in unix nanoseconds, and it is never reset — not by
+	// an unmount, and expressly not by a remount.
+	//
+	// THAT IT SURVIVES A REMOUNT IS THE WHOLE POINT. It anchors the bootstrap grace, and a grace anchored to
+	// the LATEST mount would hand every recovery a fresh window in which readiness need not be observed at
+	// all. That is precisely how both of this product's worst failures stayed invisible: each of them was a
+	// daemon that had just remounted and believed itself well.
+	mountedFirstAt atomic.Int64
+	// lastServeDeathAt is when a serve-loop death was most recently RECORDED, in unix nanoseconds, and unlike
+	// `serveDeath` it is never cleared. `ClearServeDeath` retires the current death; it does not make the
+	// death un-happen, and two policy decisions below turn on whether one ever did.
+	lastServeDeathAt atomic.Int64
 }
 
-// mountObservation is one completed sample: what was seen, and when.
+// mountObservation is one completed sample: what was seen, when — and the two facts about the STREAM that
+// one sample cannot carry on its own.
+//
+// WHY THE STREAM FACTS LIVE ON THE SAMPLE. Phase 5's readiness policy asks two questions a single
+// observation cannot answer: how long the mount has been continuously live, and how long it is since it last
+// was. Keeping them in the same immutable record under the same atomic pointer means the request path reads
+// ONE consistent moment; three separate atomics could be read across a sampler write and produce a verdict
+// that was never true of any instant.
 type mountObservation struct {
 	state string
 	at    time.Time
+	// liveSince is when the CURRENT uninterrupted run of live observations began, zero when this observation
+	// is not live. It is what the recovery confirmation measures.
+	liveSince time.Time
+	// lastLiveAt is when the mount was most recently OBSERVED live, and it carries across non-live samples —
+	// which is the point. It is what the fault hold measures, and it is deliberately not derivable from the
+	// current sample: a `foreign` observation says nothing about when the mount was last well.
+	lastLiveAt time.Time
 }
 
-// The states a SAMPLER has that a probe does not. The other four come straight from the probe and this
-// package never spells them, because inventing a second vocabulary for the same four states is how two
-// vocabularies drift.
 const (
+	// MountStateLive is the probe's own word for a mount that is ours and answering.
+	//
+	// SPELLED HERE, ONCE, AND PHASE 5 IS WHY. Phase 4 deliberately spelled none of the probe's four states in
+	// this package: the observation was reported and never judged, so there was nothing to compare against.
+	// Phase 5 makes readiness depend on the observation, which means something must know which word means
+	// healthy. One exported constant is the containment — `test/projection-operational-mount-health.ts` pins
+	// it against `fusefs.ProbeResult.String()`'s own spelling through the contract module, so this cannot
+	// become the second vocabulary Phase 4 was avoiding.
+	MountStateLive = "live-projectiond"
 	// MountStateTimeout means a probe was outstanding past the timeout and the sampler stopped waiting for
 	// it. It is NEVER conflated with a negative result: "we could not look" and "we looked and it is not
 	// live" are different facts with different first suspects.
 	MountStateTimeout = "timeout"
 	// MountStateUnchecked means no probe has completed yet, or no observer is wired at all.
 	MountStateUnchecked = "unchecked"
+)
+
+// THE READINESS POLICY, AND EVERY NUMBER IN IT IS PREDECLARED.
+//
+// These are `PROJECTIOND_MOUNT_HEALTH` in `src/core/projection/runtime-contract.ts`, and
+// `test/projection-operational-mount-health.ts` fails if this file and that one disagree. They are not
+// flags, for the same reason the sampler's cadence is not one: an operator who could widen the fault hold
+// could make a broken mount report ready indefinitely, and the whole value of the policy is that its bounds
+// are a property of the product rather than of a deployment.
+const (
+	// MountSampleMaxAge is the oldest a sample may be while the daemon is healthy. DERIVED from the sampler's
+	// interval and probe timeout, both of which live in `cmd/projectiond`.
+	MountSampleMaxAge = 3000 * time.Millisecond
+	// MountBootstrapGrace is how long after the FIRST mount an ABSENT observation does not make readiness
+	// false. It never covers a definitively non-live one, and a serve-loop death forfeits it permanently.
+	MountBootstrapGrace = 15000 * time.Millisecond
+	// MountFaultHold is how long a fault must persist, measured from the last live observation, before it is
+	// believed. DERIVED: two whole worst-case sampling windows.
+	MountFaultHold = 6000 * time.Millisecond
+	// MountRecoveryConfirm is how long the mount must be continuously observed live before readiness returns.
+	// DERIVED: one sample interval, which is the shortest run that cannot consist of a single sample.
+	MountRecoveryConfirm = 1000 * time.Millisecond
+)
+
+// The closed set of readiness reason codes, in the precedence order they are evaluated. A reader can switch
+// on these; none of them carries a path, an origin, a provider reference or an OS error string.
+const (
+	ReadyReasonOK                     = "ok"
+	ReadyReasonNoGeneration           = "no-generation-admitted"
+	ReadyReasonNotMounted             = "not-mounted"
+	ReadyReasonServeLoopDead          = "serve-loop-dead"
+	ReadyReasonMountNotLive           = "mount-observed-not-live"
+	ReadyReasonObservationStale       = "mount-observation-stale"
+	ReadyReasonObservationUnavailable = "mount-observation-unavailable"
+	ReadyReasonMountRecovering        = "mount-recovering"
 )
 
 // serveDeathRecord is the immutable record of one serve-loop death: why the loop exited and when the death
@@ -352,7 +420,15 @@ func (d *Daemon) Config() Config                              { return d.cfg }
 
 // SetMounted records that the namespace is actually being served. READY MEANS SERVING: a generation that
 // parsed but was never mounted is not something a health check should call ready, because nothing can read it.
-func (d *Daemon) SetMounted(mounted bool) { d.mounted.Store(mounted) }
+//
+// IT ALSO STAMPS THE FIRST MOUNT, ONCE. That timestamp anchors the bootstrap grace and is never moved by a
+// later mount — see `mountedFirstAt`.
+func (d *Daemon) SetMounted(mounted bool) {
+	d.mounted.Store(mounted)
+	if mounted {
+		d.mountedFirstAt.CompareAndSwap(0, time.Now().UnixNano())
+	}
+}
 
 // SetMountObserver wires the thing that answers what is ACTUALLY at the mount point. Wiring is optional and
 // its absence is reported as `unchecked` rather than as a negative result.
@@ -391,10 +467,34 @@ func (d *Daemon) SampleMount(timeout time.Duration) {
 	}()
 	select {
 	case state := <-done:
-		d.mountSample.Store(&mountObservation{state: state, at: time.Now()})
+		d.storeObservation(state, time.Now())
 	case <-time.After(timeout):
 		d.noteProbeUnfinished()
 	}
+}
+
+// storeObservation records one completed sample AND advances the two stream facts the readiness policy needs.
+//
+// THE SAMPLER IS THE ONLY WRITER, which is what makes this safe without a lock: it is called from
+// `SampleMount`, and `SampleMount`'s single-flight flag means at most one probe is ever outstanding. The
+// record it stores is immutable, so a reader on the request path sees one whole consistent moment.
+func (d *Daemon) storeObservation(state string, at time.Time) {
+	next := &mountObservation{state: state, at: at}
+	previous := d.mountSample.Load()
+	if state == MountStateLive {
+		next.lastLiveAt = at
+		// A RUN, NOT A SAMPLE. The run continues only if the previous observation was itself live; anything
+		// else — a corpse, a stranger, a probe that overran — ends it and the confirmation starts again.
+		next.liveSince = at
+		if previous != nil && !previous.liveSince.IsZero() {
+			next.liveSince = previous.liveSince
+		}
+	} else if previous != nil {
+		// The mount is not live NOW, and when it last was is the thing the fault hold measures. Dropping it
+		// here would restart that clock on every non-live sample, and a fault would never outlast the hold.
+		next.lastLiveAt = previous.lastLiveAt
+	}
+	d.mountSample.Store(next)
 }
 
 // noteProbeUnfinished records that no observation completed this time.
@@ -434,12 +534,180 @@ func (d *Daemon) MountSampleLoop(ctx context.Context, interval, timeout time.Dur
 // reason: "the process is alive but the namespace is gone" is exactly the failure mode this exists to make
 // visible.
 func (d *Daemon) RecordServeDeath(err error) {
-	d.serveDeath.Store(&serveDeathRecord{err: err, at: time.Now()})
+	now := time.Now()
+	d.serveDeath.Store(&serveDeathRecord{err: err, at: now})
+	// ...AND IT IS REMEMBERED AFTER THE DEATH IS RETIRED. `ClearServeDeath` says "this one is over"; it does
+	// not say it never happened. A daemon that has lost its namespace once forfeits the bootstrap grace and
+	// the fault hold for good, because neither of those protects against a KNOWN death — they exist to stop a
+	// sampling artefact being read as a fault, and a recorded serve-loop exit is not an artefact.
+	d.lastServeDeathAt.Store(now.UnixNano())
 }
 
 // ClearServeDeath clears a recorded serve death after the supervisor has successfully remounted.
 func (d *Daemon) ClearServeDeath() {
 	d.serveDeath.Store(nil)
+}
+
+// readinessInputs is everything the readiness decision reads, gathered ONCE.
+//
+// IT IS A STRUCT RATHER THAN SIX ARGUMENTS SO THE DECISION IS A PURE FUNCTION OF A MOMENT. The daemon is a
+// moving object; a decision that read `mounted`, then the sample, then the serve death would be a verdict
+// about three different instants, and the one it reported would be an instant that never existed. It is also
+// what lets `decideReadiness` be driven exhaustively by a table test with a fake clock, including states a
+// real FUSE mount can only be pushed into on a host with /dev/fuse.
+type readinessInputs struct {
+	now           time.Time
+	hasGeneration bool
+	mounted       bool
+	serveDead     bool
+	sample        *mountObservation
+	// mountedFirstAt anchors the bootstrap grace and is zero before the first mount.
+	mountedFirstAt time.Time
+	// lastServeDeathAt is the most recent RECORDED serve-loop death, zero if there has never been one. It is
+	// not cleared by a recovery.
+	lastServeDeathAt time.Time
+}
+
+// readinessVerdict is the decision, plus the two durations an operator needs to see why it was taken.
+type readinessVerdict struct {
+	ready bool
+	// reason is one of the closed-set codes above, always set, including `ok`.
+	reason string
+	// liveRun is how long the mount has been continuously observed live, zero when it is not live now.
+	liveRun time.Duration
+	// sinceLive is how long since the mount was last observed live, measured from the first mount when it
+	// never has been, and zero when it is live now.
+	sinceLive time.Duration
+	// inGrace reports whether the bootstrap grace is currently in force.
+	inGrace bool
+	// graceRemaining is how much of the bootstrap grace is left, zero once it is over or forfeited.
+	graceRemaining time.Duration
+}
+
+// decideReadiness is the whole Phase 5 state machine, and the order of its clauses IS the predeclared reason
+// precedence. Nothing here contacts anything, takes a probe, or blocks.
+//
+// WHY THE POLICY IS NOT "observed == live". The observation is a SAMPLE and a sample is late by construction:
+// a probe runs on its own cadence, one that overruns leaves the previous sample to age, and a successful
+// remount restores the mount up to a full interval before anything sees it. Wiring readiness straight to the
+// latest sample would make a HEALTHY daemon flap — not-ready for a second whenever a probe was slow, and
+// not-ready for a second after every recovery. So three bounded rules stand between the sample and the
+// verdict, and each of them has a failure it exists to prevent:
+//
+//   - THE BOOTSTRAP GRACE covers "we have not been able to look yet" and nothing else. Without it a cold
+//     start on a loaded host answers not-ready for a reason that is about the host.
+//   - THE FAULT HOLD requires a fault to outlast two whole worst-case sampling windows. Without it one late
+//     sample takes an appliance out of service.
+//   - THE RECOVERY CONFIRMATION requires the mount to be live for a full interval — at least two distinct
+//     observations. Without it one lucky sample puts a broken appliance back in service, which is the same
+//     defect as the first, pointing the other way.
+//
+// AND NEITHER THE GRACE NOR THE HOLD SURVIVES A KNOWN DEATH. Both exist to stop a SAMPLING ARTEFACT being
+// read as a fault. A serve-loop exit the supervisor observed is not an artefact — it is the fault — so once
+// one has been recorded, a non-live observation is believed at once and the grace is gone for the life of the
+// process.
+func decideReadiness(in readinessInputs) readinessVerdict {
+	verdict := readinessVerdict{reason: ReadyReasonOK}
+
+	// The grace window, computed first because two clauses below consult it. It is bounded, it runs from the
+	// FIRST mount, and a recorded serve death ends it permanently.
+	if !in.mountedFirstAt.IsZero() && in.lastServeDeathAt.IsZero() {
+		if elapsed := in.now.Sub(in.mountedFirstAt); elapsed < MountBootstrapGrace {
+			verdict.inGrace = true
+			verdict.graceRemaining = MountBootstrapGrace - elapsed
+		}
+	}
+
+	var lastLive time.Time
+	if in.sample != nil {
+		lastLive = in.sample.lastLiveAt
+	}
+	// How long since the mount was last OBSERVED live. With no live observation ever, the clock runs from the
+	// first mount — that is when looking became possible, and it is what bounds the bootstrap.
+	origin := lastLive
+	if origin.IsZero() {
+		origin = in.mountedFirstAt
+	}
+	if !origin.IsZero() && in.now.After(origin) {
+		verdict.sinceLive = in.now.Sub(origin)
+	}
+	// A fault is BELIEVED once it has outlasted the hold — or immediately, if a serve-loop death has been
+	// recorded since the mount was last seen well.
+	held := verdict.sinceLive > MountFaultHold ||
+		(!in.lastServeDeathAt.IsZero() && in.lastServeDeathAt.After(lastLive))
+
+	// ---- the precedence, in order. First match wins. ----
+
+	// 1-3: the three pre-existing readiness rules, unchanged in meaning and still ahead of everything Phase 5
+	// added. A daemon with nothing to serve, one that never mounted, and one whose serve loop the supervisor
+	// watched exit are not mount-OBSERVATION questions, and reporting the lagging sample for any of them
+	// would name a symptom and bury the cause.
+	if !in.hasGeneration {
+		verdict.reason = ReadyReasonNoGeneration
+		return verdict
+	}
+	if !in.mounted {
+		verdict.reason = ReadyReasonNotMounted
+		return verdict
+	}
+	if in.serveDead {
+		verdict.reason = ReadyReasonServeLoopDead
+		return verdict
+	}
+
+	state := MountStateUnchecked
+	age := time.Duration(0)
+	if in.sample != nil {
+		state = in.sample.state
+		if age = in.now.Sub(in.sample.at); age < 0 {
+			age = 0
+		}
+	}
+	liveNow := in.sample != nil && state == MountStateLive && age <= MountSampleMaxAge
+
+	if !liveNow {
+		// 4-6: WHICH KIND of not-live, and each is believed only once `held`.
+		switch {
+		case in.sample == nil || state == MountStateTimeout || state == MountStateUnchecked:
+			// "WE COULD NOT LOOK", which is the only branch the bootstrap grace covers. It is never conflated
+			// with a negative result, and the grace is never extended to one.
+			if verdict.inGrace {
+				verdict.ready = true
+				return verdict
+			}
+			verdict.reason = ReadyReasonObservationUnavailable
+		case state != MountStateLive:
+			// "WE LOOKED AND IT IS NOT LIVE" — a corpse, a stranger, or nothing at all. Definitive, and never
+			// covered by the grace at any age of the process.
+			verdict.reason = ReadyReasonMountNotLive
+		default:
+			// Live, but the verdict has stopped advancing. THIS IS THE WEDGED-MOUNT SIGNATURE: a probe that
+			// cannot answer leaves the previous sample in place to age, so a mount nobody can read presents
+			// as a stale opinion rather than as a negative one.
+			verdict.reason = ReadyReasonObservationStale
+		}
+		if held {
+			return verdict
+		}
+		// Inside the hold. The fault is real enough to name but not yet old enough to believe, so readiness
+		// stands on the last live observation — which is the anti-flap, and the whole reason it exists.
+		verdict.ready = true
+		verdict.reason = ReadyReasonOK
+		return verdict
+	}
+
+	// Live and fresh. 7: the recovery confirmation, waived only inside the bootstrap grace — where waiving it
+	// prevents a flap rather than causing one, because the grace has already been answering ready.
+	verdict.sinceLive = 0
+	if !in.sample.liveSince.IsZero() && in.now.After(in.sample.liveSince) {
+		verdict.liveRun = in.now.Sub(in.sample.liveSince)
+	}
+	if verdict.liveRun < MountRecoveryConfirm && !verdict.inGrace {
+		verdict.reason = ReadyReasonMountRecovering
+		return verdict
+	}
+	verdict.ready = true
+	return verdict
 }
 
 // ServeError reports the reason the serve loop died, or nil while no death is recorded.
@@ -663,9 +931,60 @@ type Status struct {
 	MountObservedAgeMs int64 `json:"mountObservedAgeMs"`
 	// ServeError is why the FUSE serve loop exited, present only after a serve-loop death. It answers "the
 	// process is alive but the namespace is gone". Like the rest of this surface it is loopback-only.
+	//
+	// IT IS THE ONE FREE-TEXT FIELD ON THIS DOCUMENT AND PHASE 5 DID NOT ADD IT. Phase 5's own additions are
+	// closed-set codes and numbers, deliberately; this predates them, is unchanged, and is named here so that
+	// "the readiness reasons are closed-set" is not read as a claim about the whole document.
 	ServeError string `json:"serveError,omitempty"`
 	// LastServeDeathAt is when the most recent serve-loop death was observed, RFC3339 UTC.
 	LastServeDeathAt string `json:"lastServeDeathAt,omitempty"`
+	// ReadyReason is WHY `ready` says what it says, as one of a closed set of codes, and it is present in
+	// every response including when the answer is `ok`.
+	//
+	// A BOOLEAN IS NOT AN OPERATIONAL ANSWER. Phase 5 makes `ready` false for six distinct reasons whose
+	// first suspects are completely different — nothing admitted, never mounted, a serve loop the supervisor
+	// watched exit, a stranger on the mount point, a probe that stopped answering, a recovery still being
+	// confirmed. An operator handed only `false` has to go and read logs to tell those apart, which is
+	// exactly the position this product's two worst failures left people in.
+	//
+	// IT CARRIES NO PATH, NO ORIGIN, NO PROVIDER REFERENCE AND NO OS STRING, by construction: it is one of a
+	// fixed list of constants. This document is meant to be pasteable into an issue.
+	ReadyReason string `json:"readyReason"`
+	// MountLiveRunMs is how long the mount has been CONTINUOUSLY observed live, zero when it is not live now.
+	// It is what the recovery confirmation is measured against, published so the wait is legible rather than
+	// looking like the endpoint being slow to agree.
+	MountLiveRunMs int64 `json:"mountLiveRunMs"`
+	// MountSinceLiveMs is how long since the mount was last observed live, zero while it is live now. During
+	// a fault it is the number the fault hold is compared against, so it says how much longer a fault has to
+	// persist before it is believed — and after a fault it is how long the outage actually was.
+	MountSinceLiveMs int64 `json:"mountSinceLiveMs"`
+	// MountBootstrapGrace reports whether readiness is currently entitled to stand on an ABSENT observation.
+	//
+	// IT IS PUBLISHED BECAUSE IT IS THE ONE WINDOW IN WHICH `ready` CAN BE TRUE UNOBSERVED. An operator, a
+	// monitor or a gate that wants to know whether a green answer rests on evidence or on a grace can read
+	// it here instead of inferring it from uptime.
+	MountBootstrapGrace bool `json:"mountBootstrapGrace"`
+	// MountGraceRemainingMs is how much of that window is left, and zero once it is over or forfeited.
+	MountGraceRemainingMs int64 `json:"mountGraceRemainingMs"`
+}
+
+// Liveness is the document `/healthz` answers, and its shape is the tranche's second half.
+//
+// IT ANSWERS ONE QUESTION: IS THIS PROCESS AND ITS STATUS SERVER ALIVE. Once `ready` can be false while the
+// process is perfectly healthy — which is exactly what Phase 5 introduced — a supervisor keying on the only
+// endpoint there is cannot tell "restart me" from "do not send me traffic yet", and restarting a daemon whose
+// mount is merely being confirmed is how a transient becomes an outage.
+//
+// IT MAKES NO CLAIM ABOUT THE MOUNT, AND IT SAYS SO IN THE DOCUMENT. `claimsMountUsable` is a constant
+// `false`. A nonclaim that has to be inferred from the ABSENCE of a field is one a later edit adds a field
+// beside without noticing; one that is written down is one a reader and a test can both hold this surface to.
+type Liveness struct {
+	Alive         bool  `json:"alive"`
+	UptimeSeconds int64 `json:"uptimeSeconds"`
+	// Surface names what this document is, so a response cannot be mistaken for `/readyz`'s.
+	Surface string `json:"surface"`
+	// ClaimsMountUsable is always false. See above: it is the nonclaim, stated rather than implied.
+	ClaimsMountUsable bool `json:"claimsMountUsable"`
 }
 
 func (d *Daemon) Status() Status {
@@ -678,23 +997,25 @@ func (d *Daemon) Status() Status {
 		Playback:            d.Playback.Counters(),
 		LastAdmission:       d.LastAdmit(),
 	}
-	if snap := d.Store.Current(); snap != nil {
+	snap := d.Store.Current()
+	if snap != nil {
 		status.GenerationID = snap.GenerationID()
 		status.GenerationSequence = snap.Sequence()
 		status.Entries = snap.Tree.FileCount
 		status.TotalBytes = snap.Tree.TotalBytes
-		// Ready is "a generation is admitted AND it is actually being served". A serve-loop death that the
-		// supervisor has observed is a mount that no longer serves, so it makes ready false even while the
-		// process is alive and remounting.
-		status.Ready = status.Mounted && d.serveDeath.Load() == nil
 	}
 	// THE OBSERVATION IS READ, NEVER TAKEN, HERE. This function runs on the /readyz request path, and the
 	// probe behind the observer decides with statfs — which reaches the connection, and on a live mount is
 	// answered by this daemon's own serve loop. Probing inline would block the health endpoint for exactly
 	// as long as the thing it exists to report on is broken, and a hung /readyz is a worse answer than a
 	// stale one because an orchestrator reads a timeout as "unknown" and a stale sample as data.
+	//
+	// PHASE 5 MADE THAT PROPERTY LOAD-BEARING RATHER THAN MERELY TIDY. Readiness now DEPENDS on this
+	// observation, so an inline probe here would not just make the endpoint slow — it would make an appliance
+	// with a wedged mount unable to report that it has one.
+	sample := d.mountSample.Load()
 	status.MountObserved = MountStateUnchecked
-	if sample := d.mountSample.Load(); sample != nil {
+	if sample != nil {
 		status.MountObserved = sample.state
 		age := time.Since(sample.at).Milliseconds()
 		if age < 0 {
@@ -702,6 +1023,24 @@ func (d *Daemon) Status() Status {
 		}
 		status.MountObservedAgeMs = age
 	}
+
+	// ONE MOMENT, ONE VERDICT. Every input is taken here and the decision is a pure function of them, so the
+	// document cannot report a readiness that was true of no instant.
+	verdict := decideReadiness(readinessInputs{
+		now:              time.Now(),
+		hasGeneration:    snap != nil,
+		mounted:          status.Mounted,
+		serveDead:        d.serveDeath.Load() != nil,
+		sample:           sample,
+		mountedFirstAt:   unixNanoTime(d.mountedFirstAt.Load()),
+		lastServeDeathAt: unixNanoTime(d.lastServeDeathAt.Load()),
+	})
+	status.Ready = verdict.ready
+	status.ReadyReason = verdict.reason
+	status.MountLiveRunMs = verdict.liveRun.Milliseconds()
+	status.MountSinceLiveMs = verdict.sinceLive.Milliseconds()
+	status.MountBootstrapGrace = verdict.inGrace
+	status.MountGraceRemainingMs = verdict.graceRemaining.Milliseconds()
 	if record := d.serveDeath.Load(); record != nil {
 		if record.err != nil {
 			status.ServeError = record.err.Error()
@@ -729,11 +1068,28 @@ func (d *Daemon) ServeStatus(ctx context.Context) error {
 // a port — a route whose only test is "the daemon started" is a route nobody has actually checked.
 func (d *Daemon) statusMux() *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+	// LIVENESS, AND IT IS NOT READINESS. It answers whether this process and its status server are alive and
+	// nothing else — no mount field, no generation, no readiness. It never reads the mount observation, so it
+	// cannot be made slow or false by a broken mount, which is the only property that makes it useful once
+	// `/readyz` can legitimately answer 503 on a perfectly healthy process.
+	//
+	// LOOPBACK ONLY, ON THE ROUTE AND NOT ONLY ON THE BIND. The listener already refuses every interface but
+	// the local one; judging the request as well means the guarantee survives somebody putting this mux behind
+	// a different listener. A malformed or missing remote address reads as NOT loopback.
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		if !requestIsLoopback(r) {
+			http.NotFound(w, r)
+			return
+		}
+		// READ-ONLY, AND ONLY A READ. A mistaken POST is a visible 405 rather than an apparent success.
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "the liveness surface is read-only", http.StatusMethodNotAllowed)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"alive": true, "uptimeSeconds": int64(time.Since(d.startedAt).Seconds()),
-		})
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(d.Liveness())
 	})
 	// THE CACHE DIAGNOSTIC, AND IT IS ABSENT UNLESS SOMEBODY TURNED IT ON.
 	//
@@ -772,12 +1128,37 @@ func (d *Daemon) statusMux() *http.ServeMux {
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		status := d.Status()
 		w.Header().Set("Content-Type", "application/json")
+		// NEVER CACHED. Readiness is a statement about now, and a stored copy would be read later as though
+		// it described then — which is the whole class of mistake this tranche exists to remove.
+		w.Header().Set("Cache-Control", "no-store")
 		if !status.Ready {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
 		_ = json.NewEncoder(w).Encode(status)
 	})
 	return mux
+}
+
+// Liveness answers whether this process and its status server are alive. It reads a clock and two constants;
+// it never touches the mount observation, the store or the serve loop.
+func (d *Daemon) Liveness() Liveness {
+	return Liveness{
+		Alive:         true,
+		UptimeSeconds: int64(time.Since(d.startedAt).Seconds()),
+		Surface:       "liveness",
+		// ALWAYS FALSE, AND IT IS A CONSTANT ON PURPOSE. It is the nonclaim written into the document so that
+		// a reader never has to infer it and a later edit cannot quietly contradict it.
+		ClaimsMountUsable: false,
+	}
+}
+
+// unixNanoTime turns a stored nanosecond stamp back into a time, mapping the zero stamp to the zero time so
+// "never happened" stays distinguishable from "happened at the epoch".
+func unixNanoTime(nanos int64) time.Time {
+	if nanos == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, nanos)
 }
 
 // serveStatusMux runs the status server over routes that were built and can be tested separately.

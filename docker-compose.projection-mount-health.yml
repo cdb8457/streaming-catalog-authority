@@ -1,0 +1,45 @@
+# Projection Phase 5 — a real, migrated PostgreSQL for the OPERATIONAL MOUNT HEALTH gate.
+#
+# WHY A SEPARATE FILE, AND A SEPARATE PORT. Every gate here has to be startable BESIDE every other one: a
+# previous run, or another gate, or an installation, must not be able to lend it state. So this takes its own
+# project name, its own network, its own port and throwaway storage. 5610 is the next free number after the
+# block the existing gates hold (5470-5600), and `test/projection-operational-mount-health.ts` cross-checks it
+# against every other compose file here so the claim stays true rather than staying written down.
+#
+# WHAT IS NOT HERE, AND ITS ABSENCE IS DELIBERATE. No provider, no endpoint, no credential, no media server.
+# The gate's subject is what the daemon SAYS about its own mount point and how a container healthcheck reads
+# it, so the only other participants are one unprivileged consumer and one fault-injecting daemon the gate
+# starts itself. A file that mentioned an endpoint would make it possible for this gate to contact one.
+#
+# NEITHER DAEMON IS HERE EITHER. `deploy/projection-operational-mount-health-gate.sh` starts both — the
+# subject and the frozen blocker MH4 needs — with the narrow authority a FUSE mount requires (/dev/fuse,
+# CAP_SYS_ADMIN, root inside the container). Their launch flags ARE the experiment, so they belong in the
+# script that runs them rather than in a file that reads as infrastructure somebody should copy.
+
+name: projection-mount-health-gate
+
+services:
+  postgres:
+    # PINNED BY DIGEST, like every other external image this gate touches. A moving tag would mean two
+    # consecutive runs of the same gate were runs of possibly different things.
+    image: postgres:16@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20
+    environment:
+      POSTGRES_DB: catalog
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "${PROJECTION_MOUNT_HEALTH_GATE_PG_PORT:-5610}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d catalog"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    tmpfs:
+      # Throwaway, and it says so in the only way that cannot be forgotten: its storage does not survive the
+      # container. A gate that left a volume behind would eventually be run against the previous run's state,
+      # and "it passed" would stop meaning "it passed from nothing".
+      - /var/lib/postgresql/data
+
+networks:
+  default:
+    name: projection-mount-health-gate

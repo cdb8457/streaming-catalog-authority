@@ -444,6 +444,10 @@
       "group": "offline"
     },
     {
+      "file": "projection-operational-mount-health.ts",
+      "group": "offline"
+    },
+    {
       "file": "projection-multi-frontend.ts",
       "group": "offline"
     },

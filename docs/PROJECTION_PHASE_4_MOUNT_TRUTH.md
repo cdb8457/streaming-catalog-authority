@@ -67,7 +67,7 @@ this document restates none of them from memory — `test/projection-mount-truth
 | `READYZ_LATENCY_BUDGET_MS` | **1,000** | **CHOSEN**, and the number matters far less than the property asserted beside it: it is **strictly under `PROBE_TIMEOUT_MS`**, so a handler that had waited for a probe could not pass it. `READYZ_CANNOT_HAVE_WAITED_FOR_A_PROBE` is that check as code, in the shape `ROTATION_REFUSAL_BELOW_BREAKER` already uses |
 | `STATES` | `live-projectiond`, `stale-projectiond`, `empty`, `foreign`, `timeout`, `unchecked` | the first four are `fusefs.ProbeResult`'s own states unchanged; the last two are states a **sampler** has and a probe does not |
 | `SINGLE_FLIGHT` | **true** | §2. It is what bounds a wedged mount |
-| `DOES_NOT_CHANGE` | `ready`, `mounted` | the additive rule, as code |
+| `DOES_NOT_CHANGE` | `ready`, `mounted` | the additive rule, as code. **`ready` was removed from it by Phase 5 — see the note under §5** |
 
 **No existing threshold is touched by this tranche**, and `test/projection-mount-truth.ts` pins that
 directly: `ready` and `mounted` keep the meanings every closed gate was measured against.
@@ -157,6 +157,13 @@ already does.
 **Folding the observation into `ready` is explicitly NOT in this tranche.** It is a behaviour change to an
 endpoint three closed phases were measured against, and it is deferred, named here so it is a decision
 somebody takes rather than a thing that drifts in.
+
+> **SUPERSEDED BY PHASE 5, WHICH IS THE DOOR THIS PARAGRAPH BUILT.** `docs/PROJECTION_PHASE_5_OPERATIONAL_MOUNT_HEALTH.md`
+> takes that decision deliberately: `ready` now depends on the observation through a bounded policy — a
+> bootstrap grace, a fault hold and a recovery confirmation — and `PROJECTIOND_MOUNT_OBSERVATION.DOES_NOT_CHANGE`
+> is `['mounted']` from that tranche onward. **Nothing measured in this document is withdrawn.** Every run
+> recorded below was taken against the additive behaviour described here, and it was true of it. What changed
+> afterwards is what a later tranche did on purpose, by the route this paragraph named in advance.
 
 **This edits `projectiond`, so the affected Phase 2 gates are re-run as part of the tranche:**
 `go:stale-mount-gate:three`, `go:serve-death-gate:three`, `go:publisher-mount-gate`. All provider-free.
@@ -266,6 +273,7 @@ makes a run worth attempting.
 - **It is not a monitoring product.** There is no alerting, no history, no threshold on the field itself —
   one sample, its age, and the states a probe can return.
 - **`ready` still means what it meant.** An operator keying on `ready` sees no change, which is the point.
+  *(True of this tranche and measured as such. **Phase 5 changed it deliberately** — see the note in §5.)*
 - **It is not a load test and no figure here is a performance claim.** The latency budget is an upper bound
   asserted against a wedged mount, not a measurement of how fast the endpoint is.
 - **One host.** Three green runs on a host that is not Linux or Unraid close nothing at all.

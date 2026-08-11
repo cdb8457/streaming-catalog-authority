@@ -206,10 +206,39 @@ func TestServeDeathMakesReadyFalseUntilCleared(t *testing.T) {
 	if d.Status().Ready {
 		t.Fatal("a serve-loop death must make ready false even while mounted")
 	}
+
+	// PHASE 5 CHANGED WHAT COMES NEXT, DELIBERATELY, AND THIS IS THE LINE THAT MOVED.
+	//
+	// Until Phase 5 a cleared serve death restored `ready` on its own. That is exactly the shape of Phase 2's
+	// worst defect: the supervisor remounted, cleared the death, and the namespace it recovered had no host
+	// peer — `ready` said yes and no consumer could read a byte. Readiness now requires the mount to have
+	// been OBSERVED live, and a death forfeits the bootstrap grace, so clearing the death alone is not enough
+	// on purpose. The old expectation is kept here as the first assertion so the change is visible rather
+	// than merely absent.
 	d.ClearServeDeath()
-	if !d.Status().Ready {
-		t.Fatal("a successful remount must restore ready")
+	if d.Status().Ready {
+		t.Fatal("a cleared death alone restored ready, with the mount never observed live")
 	}
+	if got := d.Status().ReadyReason; got != ReadyReasonObservationUnavailable {
+		t.Fatalf("a recovery with no observation reported %q", got)
+	}
+	observeLiveRun(d, MountRecoveryConfirm)
+	if !d.Status().Ready {
+		t.Fatalf("a confirmed live observation did not restore ready: %q", d.Status().ReadyReason)
+	}
+}
+
+// observeLiveRun puts a CONFIRMED live observation in place: fresh, and with a live run long enough to have
+// satisfied the recovery confirmation.
+//
+// IT BACKDATES THE RUN RATHER THAN SLEEPING FOR IT. The confirmation is a whole second; a unit test that
+// waited it out would add a second to the suite for every case that needed a healthy mount, and a suite
+// nobody runs is not a pin.
+func observeLiveRun(d *Daemon, run time.Duration) {
+	now := time.Now()
+	d.mountSample.Store(&mountObservation{
+		state: MountStateLive, at: now, liveSince: now.Add(-run), lastLiveAt: now,
+	})
 }
 
 // The /readyz handler carries the reason: a serve death is answered 503 with the reason in the body, and the
@@ -240,11 +269,20 @@ func TestReadyzReportsServeDeathReason(t *testing.T) {
 		t.Fatalf("the 503 must say why, got %s", recorder.Body.String())
 	}
 
+	// AS ABOVE: PHASE 5 REQUIRES THE RECOVERY TO BE OBSERVED, NOT MERELY DECLARED. Clearing the death is the
+	// supervisor saying it remounted; a confirmed live observation is the mount saying so.
 	d.ClearServeDeath()
 	recorder = httptest.NewRecorder()
 	d.statusMux().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("a cleared death alone answered %d, with the mount never observed live", recorder.Code)
+	}
+
+	observeLiveRun(d, MountRecoveryConfirm)
+	recorder = httptest.NewRecorder()
+	d.statusMux().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
-		t.Fatalf("after a remount the daemon must be ready again, got %d", recorder.Code)
+		t.Fatalf("after an observed remount the daemon must be ready again, got %d", recorder.Code)
 	}
 }
 

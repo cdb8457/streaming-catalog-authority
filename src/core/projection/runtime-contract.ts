@@ -586,8 +586,26 @@ export const PROJECTIOND_MOUNT_TARGET = Object.freeze({
  * the age is published beside the verdict and is worthless without it.
  */
 export const PROJECTIOND_MOUNT_OBSERVATION = Object.freeze({
-  /** The observation is additive. These two keep the meanings every closed gate was measured against. */
-  DOES_NOT_CHANGE: Object.freeze(['ready', 'mounted'] as const),
+  /**
+   * What the OBSERVATION still does not change.
+   *
+   * IT SAID `['ready', 'mounted']` THROUGHOUT PHASE 4 AND THAT RECORD STANDS. Phase 4 was additive on
+   * purpose: it put an observation beside the belief and changed neither, so that no gate closed in Phases
+   * 1-3 could start failing on a tranche whose whole content was a new read-only field. §5 of
+   * `docs/PROJECTION_PHASE_4_MOUNT_TRUTH.md` then named the remaining half explicitly — *"Folding the
+   * observation into `ready` is explicitly NOT in this tranche... it is deferred, named here so it is a
+   * decision somebody takes rather than a thing that drifts in."*
+   *
+   * **PHASE 5 IS THAT DECISION, TAKEN DELIBERATELY, AND `ready` HAS THEREFORE LEFT THIS LIST.** It is not a
+   * lapsed guarantee: it is the one this repository wrote down in advance so that changing it would have to
+   * be an act. `PROJECTIOND_MOUNT_HEALTH` is the policy that replaced it, and Phase 5's contract document
+   * carries the state machine, the reason precedence and the regression matrix that came with it.
+   *
+   * `mounted` REMAINS UNTOUCHED, and that is the whole of what is left here. It is still the boolean the
+   * daemon sets when it believes it has mounted, still never re-checked, and still the thing every closed
+   * gate was measured against — which is exactly why readiness had to stop being a synonym for it.
+   */
+  DOES_NOT_CHANGE: Object.freeze(['mounted'] as const),
   /**
    * What the sampler may report. The first four are `fusefs.ProbeResult`'s own states, unchanged; the last
    * two are states only a SAMPLER has and a probe does not.
@@ -648,6 +666,206 @@ export const PROJECTIOND_MOUNT_OBSERVATION = Object.freeze({
  */
 export const READYZ_CANNOT_HAVE_WAITED_FOR_A_PROBE =
   PROJECTIOND_MOUNT_OBSERVATION.READYZ_LATENCY_BUDGET_MS < PROJECTIOND_MOUNT_OBSERVATION.PROBE_TIMEOUT_MS;
+
+/**
+ * Projection Phase 5 — the observation becomes OPERATIONALLY AUTHORITATIVE, and liveness stops being
+ * conflated with it.
+ *
+ * WHAT PHASE 4 LEFT ON THE TABLE, DELIBERATELY. Phase 4 §5 said, in as many words: *"Folding the observation
+ * into `ready` is explicitly NOT in this tranche. It is a behaviour change to an endpoint three closed phases
+ * were measured against, and it is deferred, named here so it is a decision somebody takes rather than a
+ * thing that drifts in."* **This is that decision, taken.** `mounted` is untouched and still means what it
+ * always meant; `ready` now also requires that the mount was actually OBSERVED to be live.
+ *
+ * WHY A BARE `observed == live` WOULD BE A DEFECT, NOT A FIX. The observation is a SAMPLE, and a sample is
+ * late by construction: a probe runs on its own cadence, a probe that overruns leaves the previous sample to
+ * age, and a remount restores the mount up to a full interval before the next sample sees it. Wiring `ready`
+ * straight to the latest sample would therefore make a HEALTHY daemon flap — not-ready for a second every
+ * time a probe was slow, and not-ready for a second after every successful recovery. So the endpoint answers
+ * from a bounded POLICY over the sample stream, and the policy has exactly three moving parts:
+ *
+ *   - a BOOTSTRAP GRACE, so a daemon that has not yet been able to look is not accused of being broken;
+ *   - a FAULT HOLD, so one late or one non-live sample cannot flap health;
+ *   - a RECOVERY CONFIRMATION, so one lucky sample cannot restore it either.
+ *
+ * ...AND LIVENESS IS A DIFFERENT QUESTION FROM READINESS, WHICH IS THE OTHER HALF OF THIS TRANCHE. Once
+ * `ready` can be false while the process is perfectly alive, a supervisor that keys on the only endpoint
+ * there is cannot tell "restart me" from "do not send me traffic". `/healthz` therefore answers ONLY whether
+ * the process and its status server are alive, and it says so in the document rather than leaving it to be
+ * inferred: `claimsMountUsable` is `false`, always, by construction.
+ */
+export const PROJECTIOND_MOUNT_HEALTH = Object.freeze({
+  /**
+   * The closed set of readiness reason codes, in the PRECEDENCE ORDER the daemon evaluates them. First match
+   * wins, and `readyReason` is always present — including when it is `ok`.
+   *
+   * THEY ARE CODES AND NOTHING ELSE. No path, no URL, no origin, no provider reference, no object identity,
+   * no OS error string. This surface is meant to be pasteable into an issue, which is the same rule
+   * `AdmitRecord.Refusal` has always been held to.
+   *
+   * THE ORDER IS THE INTERESTING PART, NOT THE LIST. `serve-loop-dead` outranks every mount-observation
+   * reason because the supervisor's own knowledge that the serve loop exited is DIRECT evidence, while the
+   * observation is a late sample of the same event; reporting the sample first would name the symptom and
+   * bury the cause. `no-generation-admitted` and `not-mounted` outrank both because a daemon with nothing to
+   * serve, or one that never mounted, is not a mount-health question at all.
+   */
+  READY_REASONS: Object.freeze([
+    /** Ready. Every condition below was checked and none of them fired. */
+    'ok',
+    /** No generation has ever been admitted, so there is nothing to serve. Pre-existing readiness rule. */
+    'no-generation-admitted',
+    /** The daemon does not believe it is mounted. Pre-existing readiness rule, unchanged. */
+    'not-mounted',
+    /** The supervisor observed the FUSE serve loop exit. Pre-existing readiness rule, unchanged. */
+    'serve-loop-dead',
+    /** The last completed observation was `stale-projectiond`, `foreign` or `empty`, past the fault hold. */
+    'mount-observed-not-live',
+    /**
+     * The last completed observation said live, but it is older than `SAMPLE_MAX_AGE_MS` and has been for
+     * longer than the fault hold. THIS IS THE WEDGED-MOUNT SIGNATURE: a probe that cannot answer leaves the
+     * previous sample in place to age, so a mount nobody can read presents as a verdict that stops advancing.
+     */
+    'mount-observation-stale',
+    /** No observation has ever completed, or the sampler gave up on one, and the bootstrap grace is over. */
+    'mount-observation-unavailable',
+    /**
+     * The mount is observed live and fresh, but the live run is younger than `MOUNT_RECOVERY_CONFIRM_MS`.
+     * This is the hysteresis: readiness is withheld until the recovery has been seen more than once.
+     */
+    'mount-recovering',
+  ] as const),
+  /**
+   * How long after the daemon FIRST mounts an ABSENT observation does not make readiness false, in
+   * milliseconds. **CHOSEN, with both bounds named.**
+   *
+   * BELOW: it must comfortably exceed `SAMPLE_MAX_AGE_MS` plus the time a cold container takes to reach its
+   * first completed probe, or a healthy daemon on a loaded host would answer not-ready at startup for a
+   * reason that is about the host rather than about the mount — and every gate that waits for `ready` would
+   * inherit that flake.
+   * ABOVE: this is the ONLY window in which readiness can be true without the mount having been observed at
+   * all, so it is the window in which the failures this tranche exists to catch could still hide. It is held
+   * strictly under the shipped healthcheck's start period, so the first healthcheck probe that Docker
+   * actually counts is one the grace can no longer answer.
+   *
+   * IT IS NOT A GRACE FOR A BROKEN MOUNT. A DEFINITIVELY non-live observation — `foreign`, `empty`,
+   * `stale-projectiond` — is never covered by it, at any age of the process. The grace covers "we have not
+   * been able to look yet", never "we looked and it is not live".
+   *
+   * ...AND IT IS FORFEITED PERMANENTLY BY A SERVE-LOOP DEATH. A daemon that has already lost its namespace
+   * once has proved it can; granting a recovery a fresh window in which it need not be observed at all is
+   * precisely how both of this product's worst failures stayed invisible.
+   */
+  MOUNT_BOOTSTRAP_GRACE_MS: 15_000,
+  /**
+   * How long a fault must PERSIST before it makes readiness false, in milliseconds, measured from the moment
+   * the mount was last observed live. **DERIVED:** `2 x SAMPLE_MAX_AGE_MS`.
+   *
+   * TWO FULL WORST-CASE SAMPLING WINDOWS, and the derivation is the argument. One window is the longest a
+   * healthy daemon can legitimately go without a fresh verdict (a full interval before a probe starts, plus a
+   * probe that takes its whole timeout). A hold of ONE window would therefore fire on the ordinary worst case
+   * and readiness would flap on a busy host. Two is the smallest multiple that requires a fault to survive a
+   * complete observation opportunity it could not have merely slept through.
+   */
+  MOUNT_FAULT_HOLD_MS: 2 * (1_000 + 2_000),
+  /**
+   * How long the mount must be CONTINUOUSLY observed live before readiness returns, in milliseconds.
+   * **DERIVED:** `SAMPLE_INTERVAL_MS`.
+   *
+   * A live run spanning a full interval cannot consist of one sample, so this is the shortest bound that
+   * guarantees TWO distinct completed live observations. One lucky sample restoring readiness is the mirror
+   * of one unlucky sample destroying it, and a policy that guarded only one direction would be half a policy.
+   */
+  MOUNT_RECOVERY_CONFIRM_MS: 1_000,
+  /**
+   * What `/healthz` may take to answer, in milliseconds, in EVERY state including a wedged mount. **CHOSEN**,
+   * and as with the readiness budget the number matters far less than the property beside it: it is strictly
+   * under `PROBE_TIMEOUT_MS`, so a liveness endpoint that had somehow been put on the probe's path could not
+   * pass it. Liveness that can block on the mount is not liveness.
+   */
+  LIVEZ_LATENCY_BUDGET_MS: 1_000,
+  /** The shipped container healthcheck's interval, in seconds. */
+  HEALTHCHECK_INTERVAL_S: 10,
+  /** The shipped container healthcheck's per-probe timeout, in seconds. */
+  HEALTHCHECK_TIMEOUT_S: 5,
+  /**
+   * The shipped container healthcheck's start period, in seconds. Held strictly ABOVE the bootstrap grace:
+   * a probe answered on the strength of the grace must never be one Docker counts toward `healthy`.
+   */
+  HEALTHCHECK_START_PERIOD_S: 20,
+  /** Consecutive failing probes before Docker calls the container unhealthy. */
+  HEALTHCHECK_RETRIES: 3,
+  /**
+   * The longest a sustained mount fault may take to show up as an UNHEALTHY container, in milliseconds.
+   * **DERIVED:** the daemon's own fault hold, plus every retry Docker will spend, plus one whole probe
+   * timeout for the last of them. It is the gate's upper bound and nothing else — not a target, and not a
+   * claim about how fast a fault is noticed.
+   */
+  HEALTHCHECK_UNHEALTHY_BOUND_MS: (2 * (1_000 + 2_000)) + (3 * 10 * 1_000) + (5 * 1_000),
+  /**
+   * How long the gate holds a TRANSIENT mount fault, in milliseconds. **DERIVED, with both bounds named.**
+   *
+   * ABOVE `SAMPLE_INTERVAL_MS`: shorter and the fault could come and go between two probes, so the arm would
+   * assert that readiness survived a fault the daemon never saw — the unfailable shape this repository has
+   * now found five separate times. The arm therefore also requires that a non-live observation was ACTUALLY
+   * REPORTED during the transient, and this bound is what makes that requirement satisfiable.
+   * BELOW `MOUNT_FAULT_HOLD_MS - SAMPLE_MAX_AGE_MS`: longer and readiness would be ENTITLED to go false, so
+   * a run in which it did would be the product behaving correctly and the arm would be wrong to fail it.
+   */
+  ANTI_FLAP_TRANSIENT_MS: 2_000,
+} as const);
+
+/**
+ * `/healthz` could not have waited for a probe either, and this is the derived fact that says so. Same shape
+ * as `READYZ_CANNOT_HAVE_WAITED_FOR_A_PROBE`, and it exists for the same reason: the liveness budget is only
+ * worth asserting while it is strictly under the probe timeout.
+ */
+export const LIVEZ_CANNOT_HAVE_WAITED_FOR_A_PROBE =
+  PROJECTIOND_MOUNT_HEALTH.LIVEZ_LATENCY_BUDGET_MS < PROJECTIOND_MOUNT_OBSERVATION.PROBE_TIMEOUT_MS;
+
+/**
+ * The bootstrap grace is over before Docker counts anything, and this is the derived fact that says so.
+ *
+ * WITHOUT IT THE SHIPPED HEALTHCHECK WOULD BE MEASURING THE GRACE. Docker ignores failures during
+ * `start-period`; if the start period were the SHORTER of the two, the first probe it counted could be one
+ * that `/readyz` answered `ok` purely because the daemon had not yet been able to look at its own mount, and
+ * a container could report `healthy` having never observed a live mount at all.
+ */
+export const HEALTHCHECK_START_PERIOD_CLEARS_BOOTSTRAP_GRACE =
+  PROJECTIOND_MOUNT_HEALTH.HEALTHCHECK_START_PERIOD_S * 1_000
+    > PROJECTIOND_MOUNT_HEALTH.MOUNT_BOOTSTRAP_GRACE_MS;
+
+/**
+ * A readiness answer inside its own budget can never be recorded as a healthcheck TIMEOUT, and this is the
+ * derived fact that says so. If the probe timeout were the shorter of the two, an endpoint that answered
+ * perfectly within its contract would still be counted as a failure, and the container's health would be
+ * reporting Docker's impatience rather than the daemon's readiness.
+ */
+export const HEALTHCHECK_TIMEOUT_CLEARS_READINESS_BUDGET =
+  PROJECTIOND_MOUNT_HEALTH.HEALTHCHECK_TIMEOUT_S * 1_000
+    > PROJECTIOND_MOUNT_OBSERVATION.READYZ_LATENCY_BUDGET_MS;
+
+/**
+ * THE DAEMON DECIDES WHAT IS BROKEN; DOCKER ONLY REPEATS IT. Docker's own retry budget must be longer than
+ * the daemon's fault hold, or the container's health would flip on Docker's retry count while `/readyz` was
+ * still — correctly — reporting `ok` through a transient. The anti-flap policy has to live in ONE place, and
+ * this is the check that keeps it there.
+ */
+export const DAEMON_DECIDES_UNHEALTHY_NOT_DOCKER =
+  PROJECTIOND_MOUNT_HEALTH.HEALTHCHECK_RETRIES * PROJECTIOND_MOUNT_HEALTH.HEALTHCHECK_INTERVAL_S * 1_000
+    > PROJECTIOND_MOUNT_HEALTH.MOUNT_FAULT_HOLD_MS;
+
+/**
+ * The fault hold and the bootstrap grace both outlast one whole worst-case sampling window, and the transient
+ * the anti-flap arm injects fits strictly inside the hold. Three derivations that are worthless separately:
+ * if any one of them stopped holding, an arm would still pass while measuring something else.
+ */
+export const MOUNT_HEALTH_POLICY_IS_BOUNDED_BY_ITS_SAMPLER =
+  PROJECTIOND_MOUNT_HEALTH.MOUNT_FAULT_HOLD_MS > PROJECTIOND_MOUNT_OBSERVATION.SAMPLE_MAX_AGE_MS
+  && PROJECTIOND_MOUNT_HEALTH.MOUNT_BOOTSTRAP_GRACE_MS > PROJECTIOND_MOUNT_OBSERVATION.SAMPLE_MAX_AGE_MS
+  && PROJECTIOND_MOUNT_HEALTH.MOUNT_RECOVERY_CONFIRM_MS >= PROJECTIOND_MOUNT_OBSERVATION.SAMPLE_INTERVAL_MS
+  && PROJECTIOND_MOUNT_HEALTH.ANTI_FLAP_TRANSIENT_MS > PROJECTIOND_MOUNT_OBSERVATION.SAMPLE_INTERVAL_MS
+  && PROJECTIOND_MOUNT_HEALTH.ANTI_FLAP_TRANSIENT_MS
+    < PROJECTIOND_MOUNT_HEALTH.MOUNT_FAULT_HOLD_MS - PROJECTIOND_MOUNT_OBSERVATION.SAMPLE_MAX_AGE_MS;
 
 /**
  * The Phase 1 amplification budget. These are the numbers the acceptance harness asserts, and they are here
