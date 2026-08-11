@@ -827,8 +827,12 @@ while [ "$n" -lt 120 ]; do
 done
 
 if [ "$MH3_SEEN_DEAD" -eq 1 ] && [ "$MH3_CODE" = "503" ]; then
+  # NO BACKTICKS IN A DOUBLE-QUOTED ARGUMENT. The first run of this line printed "and the  boolean it had
+  # already cleared": the shell had run `mounted` as a COMMAND and substituted its empty output. It cost
+  # nothing here because the word is not a program, which is exactly why it is worth fixing rather than
+  # leaving for a line where the word is.
   pass "MH3 a dead connection answered 503/$MH3_REASON — the supervisor's knowledge outranked both the" \
-       "lagging observation and the `mounted` boolean it had already cleared"
+       "lagging observation and the mounted boolean it had already cleared"
 else
   docker logs "$DAEMON_CONTAINER" 2>&1 | grep -E 'serve loop died|remount' | tail -5 >&2 || true
   fail "MH3 code=$MH3_CODE reason=$MH3_REASON (the predeclared reason is $MH_REASON_SERVE_LOOP_DEAD)"
