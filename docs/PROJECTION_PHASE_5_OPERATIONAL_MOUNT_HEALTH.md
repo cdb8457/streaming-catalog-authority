@@ -354,7 +354,15 @@ Every gate below ran on the real Unraid host at commit `57b4a36`, against image
 | `go:mount-truth-gate:three` | 3 | **exit 0** — `RESULT: PASSED three consecutive cold-start runs`; 18 arm verdicts, `MT1`–`MT6` three times each, 0 fail. 20,787 / 20,806 / 21,997 ms |
 
 Zero `GATE FAILED`, zero skips, in any of them. Host before and after the whole sequence: **42 containers / 26
-running, 17 networks, 45 volumes, 0 `fuse.projectiond`**.
+running, 17 networks, 45 volumes, 0 `fuse.projectiond`**, 0 leftover gate containers, 0 `mh-overlay-` tmpfs,
+0 gate run directories, and nothing listening on this gate's port.
+
+**ONE EMPTY DIRECTORY WAS LEFT AND IT IS RECORDED RATHER THAN GLOSSED.** `go:publisher-mount-gate` has no
+`:three` wrapper, and the wrapper is what removes a gate's home directory — so it left
+`.projection-publisher-gate`, empty, inside this task's own staging tree. It was removed with `rmdir`, which
+refuses a non-empty directory and therefore could not have taken anything with it. The frozen tree at
+`/mnt/user/appdata/catalog-p5` and the image `projectiond:phase5-frozen` are **deliberately kept**: they are
+the custody of what these runs were taken from, and deleting them would delete the evidence.
 
 **THE SERVE-DEATH GATE IS THE ONE THAT MATTERS MOST HERE, AND IT IS THE ONE MOST LIKELY TO HAVE BROKEN.** Its
 phase-B poller requires an **order** — ready → not-ready → ready across a serve-loop death — and Phase 5
