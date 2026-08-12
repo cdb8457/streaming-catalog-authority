@@ -65,6 +65,17 @@ echo "  /dev/fuse is reachable from a container"
 #
 # A HOST WITHOUT `nsenter` MAKES THOSE TWO ARMS SKIP, AND A SKIP IS A FAILURE HERE. This gate has no optional
 # arms: an unproven bound is not a proven one.
+#
+# ...AND `nsenter -m` ALONE IS NOT ENOUGH, WHICH THE SECOND REAL TOWER RUN IS WHAT TAUGHT US. Entering the
+# target's mount namespace means the command is resolved in the TARGET's filesystem, and the runtime stage of
+# this image is distroless: no shell, no `mount`, nothing but the daemon. `nsenter` reported `failed to
+# execute mount: No such file or directory`, which is a true statement about a container with no userland.
+#
+# So a STATIC busybox is copied in first, from a digest-pinned image, and the injector runs THAT. It lives
+# inside a container this run created and removes, it is never executed on the host, and the mask it makes is
+# confined to that container's own mount namespace — verified restored inside the arm and, in any case, gone
+# with the container.
+RC_BUSYBOX_IMAGE="busybox@sha256:0872fb3a7632ba9d0ae46a8e832a62b30ce83a6f220b8bb52903d9cf477dabe3"
 RC_HAS_NSENTER=0
 command -v nsenter >/dev/null 2>&1 && RC_HAS_NSENTER=1
 
@@ -308,7 +319,27 @@ consumer_sha() {
 }
 
 serve_deaths() { docker logs "$DAEMON_CONTAINER" 2>&1 | grep -c 'serve loop died' || true; }
-remount_starts() { docker logs "$DAEMON_CONTAINER" 2>&1 | grep -c 'remount attempt 1/3' || true; }
+
+# HOW MANY REMOUNTS THE SERVE SUPERVISOR HAS STARTED, AND THE ANCHOR IS WHAT MAKES IT A COUNT OF REMOUNTS.
+#
+# `remount attempt 1/3` occurs on THREE lines of one attempt — the announcement, the `: calling mount` bracket
+# and the `: mounted` or `: returned` result — so an unanchored count reported one remount as three. Measured
+# on the real host, where RC10 read `serveSupervisorRemounts=3` for a single serve-loop death. Anchoring to
+# end-of-line counts the announcement and nothing else.
+remount_starts() { docker logs "$DAEMON_CONTAINER" 2>&1 | grep -cE 'remount attempt 1/3$' || true; }
+
+# WHAT THE RECOVERY LOOP HAS ACTUALLY DONE, READ FROM THE DAEMON'S OWN LOG RATHER THAN CAUGHT ON THE SURFACE.
+#
+# THE STATUS SURFACE PUBLISHES AN ACTION ONLY WHILE IT IS IN FLIGHT, which is about a second, and every
+# reading here costs a container start. So an arm that required CATCHING `recover-stale-mount` on `/readyz`
+# was a race the product could win and the gate could still lose — measured, on the second real Tower run,
+# where the generation advanced 0 -> 1 and the arm reported `sawAction=0`. The log line is emitted by the
+# supervisor at the moment it acts and is durable, so the fact is read where it cannot be missed.
+recovery_actions() { docker logs "$DAEMON_CONTAINER" 2>&1 | grep -cE 'projectiond: recovery: recover-' || true; }
+recovery_last_action() {
+  docker logs "$DAEMON_CONTAINER" 2>&1 | grep -oE 'projectiond: recovery: recover-[a-z-]+' | tail -1 \
+    | sed 's/^projectiond: recovery: //'
+}
 
 DAEMON_PID=""
 daemon_top()   { sh "$WORK/out/top-mount.sh" "/proc/$DAEMON_PID/mountinfo" /mnt/projection; }
@@ -652,21 +683,21 @@ case "$(echo "$RC4_ABORT" | tail -1)" in
 esac
 docker rm -f "$BLOCKER_CONTAINER" >/dev/null 2>&1 || true
 
-RC4_SAW_ACTION=0
-RC4_ACT_REASON=""
+RC4_ACTIONS_BEFORE="$(recovery_actions)"
 RC4_WAIT_S=$(( ((RC_MOUNT_FAULT_HOLD_MS + RC_RECOVERY_SUSTAIN_MS) / 1000) + 40 ))
 n=0
 while [ "$n" -lt "$RC4_WAIT_S" ]; do
   sample
-  case "$REC_REASON" in
-    "$RC_CODE_RECOVER_STALE_MOUNT"|"$RC_CODE_RECOVER_MOUNT_EMPTY"|"$RC_CODE_RECOVER_OBSERVATION_STALE")
-      RC4_SAW_ACTION=1; RC4_ACT_REASON="$REC_REASON" ;;
-  esac
   [ -n "$REC_GENERATION" ] && [ "$REC_GENERATION" != "$RC4_GENERATION_BEFORE" ] && break
   n=$((n + 1)); sleep 1
 done
 RC4_GENERATION_AFTER="$REC_GENERATION"
 RC4_DEATHS_AFTER="$(serve_deaths)"
+# THE ACTION AND ITS REASON COME FROM THE LOG, WHICH IS DURABLE, RATHER THAN FROM CATCHING A ONE-SECOND STATE.
+RC4_ACTIONS_AFTER="$(recovery_actions)"
+RC4_ACT_REASON="$(recovery_last_action)"
+RC4_SAW_ACTION=0
+[ "$RC4_ACTIONS_AFTER" -eq "$(( RC4_ACTIONS_BEFORE + 1 ))" ] && RC4_SAW_ACTION=1
 
 if [ "$RC4_GENERATION_AFTER" = "$(( RC4_GENERATION_BEFORE + 1 ))" ] && [ "$RC4_SAW_ACTION" -eq 1 ]; then
   pass "RC4 a sustained fault on one of our own mounts was acted on exactly once ($RC4_ACT_REASON):" \
@@ -803,7 +834,12 @@ else
   # SUBJECT CONTAINER'S OWN mount namespace, so every `Mount()` is refused for a reason that has nothing to do
   # with the mount point — which is the only way to make the remount fail without making the fault itself
   # unrepresentative. It dies with the container, and it is removed inside this arm regardless.
-  nsenter -t "$DAEMON_PID" -m -- mount --bind /dev/null /dev/fuse \
+  docker run --rm -v "$WORK/out:/out" "$RC_BUSYBOX_IMAGE" cp /bin/busybox /out/busybox \
+    || die "RC8: a static busybox could not be extracted, so the injector has nothing to run in a distroless container"
+  test -s "$WORK/out/busybox" || die "RC8: the extracted busybox is empty"
+  docker cp "$WORK/out/busybox" "$DAEMON_CONTAINER:/busybox" \
+    || die "RC8: the injector could not be placed in this run's own daemon container"
+  nsenter -t "$DAEMON_PID" -m -- /busybox mount --bind /dev/null /dev/fuse \
     || die "RC8: /dev/fuse could not be masked in this run's own daemon namespace"
   echo "  every mount syscall in the subject's namespace will now be refused"
 
@@ -913,7 +949,7 @@ else
   # three attempts PER RESTART. The mask is removed first so that the restarted daemon is HEALTHY in every
   # respect except its inherited ledger — a daemon that came back locked out because it was still broken
   # would prove nothing about persistence.
-  nsenter -t "$DAEMON_PID" -m -- umount /dev/fuse >/dev/null 2>&1 || true
+  nsenter -t "$DAEMON_PID" -m -- /busybox umount /dev/fuse >/dev/null 2>&1 || true
   docker rm -f "$DAEMON_CONTAINER" >/dev/null 2>&1 || true
   start_daemon
   await_ready 240 || { docker logs "$DAEMON_CONTAINER" 2>&1 | tail -30 >&2; \

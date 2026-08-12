@@ -708,6 +708,7 @@
     "go:recovery-gate": "bash deploy/projection-recovery-gate.sh",
     "go:recovery-gate:three": "bash deploy/projection-recovery-gate-three.sh",
     "go:recovery-gate:optional": "bash deploy/projection-recovery-gate-optional.sh",
+    "go:alpha-acceptance": "bash deploy/projection-alpha-acceptance.sh",
     "ops:projection-mount-health": "tsx src/ops/projection-mount-health-cli.ts",
     "ops:projection-recovery": "tsx src/ops/projection-recovery-cli.ts"
   },

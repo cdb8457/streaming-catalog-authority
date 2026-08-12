@@ -554,6 +554,28 @@ test('the alpha command never prints a credential, and never removes data', () =
     'the status surface prints serveError, which is the one free-text field on the readiness document');
 });
 
+test('the alpha install matrix drives the SHIPPED command and holds every predeclared arm', () => {
+  const ACCEPTANCE = join(repoRoot, 'deploy', 'projection-alpha-acceptance.sh');
+  if (!existsSync(ACCEPTANCE)) skipBlock('deploy/projection-alpha-acceptance.sh is NOT YET WRITTEN');
+  const gate = read(ACCEPTANCE);
+  // IT DRIVES THE SHIPPED SCRIPT AND NOT AN IMITATION OF IT. A matrix that reimplemented the verbs would be
+  // testing itself, and every refusal it proved would be a refusal nobody had ever run.
+  assert(gate.includes('bash "$HERE/projection-alpha.sh" "$@"'),
+    'the install matrix no longer drives the shipped operator command');
+  for (let i = 1; i <= 11; i += 1) {
+    assert(new RegExp(`\\bAA${i}\\b`).test(gate), `arm AA${i} is missing from the install matrix`);
+  }
+  // BYTES, NEVER A METADATA SUBSTITUTE, and the consumer is attached BEFORE anything is mounted.
+  assert(gate.includes('sha256sum'), 'the install matrix no longer reads bytes through the consumer');
+  // BY INDEX, NOT BY A FIXED WINDOW. The two are hundreds of lines apart by design — every refusal arm runs
+  // between them — so a character-count window made this pin about how much prose sits in the middle.
+  const attachAt = gate.indexOf(':rslave');
+  const installAt = gate.indexOf('alpha install >');
+  assert(attachAt > 0 && installAt > attachAt,
+    'the consumer is no longer attached before install, so §11 of the product contract is not exercised');
+  assert(gate.includes('"endpoints": []'), 'the install matrix is no longer provider-free by construction');
+});
+
 test('the environment contract example names every required variable and holds no credential', () => {
   if (!existsSync(ALPHA_ENV)) skipBlock('deploy/projectiond-alpha.env.example is NOT YET WRITTEN');
   const env = read(ALPHA_ENV);
