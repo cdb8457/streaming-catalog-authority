@@ -918,7 +918,15 @@ else
   # nanoseconds. The Docker log stamps are kept as an INDEPENDENT corroboration below.
   RC8_LEDGER="$WORK/cache/recovery/recovery-ledger.json"
   RC8_LEDGER_STAMPS=""
+  # SEEDED WITH WHAT IS ALREADY THERE, BECAUSE RC4 ALREADY SPENT AN ATTEMPT AND ITS STAMP IS STILL IN THE
+  # LEDGER. `lastAttemptUnixNano` is not cleared by the refund that followed it — deliberately, because the
+  # cooldown is measured from the last attempt whether it succeeded or not — so a loop starting from an empty
+  # baseline records RC4's stamp as this arm's first. Measured: four ledger stamps against three log lines,
+  # which the corroboration caught rather than the arm passing on a gap between two different arms.
   RC8_LAST_STAMP=""
+  if [ -s "$RC8_LEDGER" ]; then
+    RC8_LAST_STAMP="$(node "$REL/out/jq.cjs" lastAttemptUnixNano < "$RC8_LEDGER" 2>/dev/null || true)"
+  fi
   RC8_WAIT_S=$(( ((RC_RECOVERY_COOLDOWN_MS * (RC_RECOVERY_MAX_ATTEMPTS + 1)) / 1000) + 90 ))
   RC8_LOCKED=0
   n=0
