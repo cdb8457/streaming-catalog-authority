@@ -83,10 +83,22 @@ PROJECTIOND_ALPHA_MOUNT PROJECTIOND_ALPHA_SECRETS_DIR"
 REQUIRED_FILES="PROJECTIOND_ALPHA_CONFIG"
 REQUIRED_OTHER="PROJECTIOND_ALPHA_IMAGE"
 
-# THE DIRECTORIES THIS APPLIANCE MAY CREATE AND OWN. The media root is deliberately NOT among them: it is the
+# THE DIRECTORIES THIS APPLIANCE MAY CREATE. The media root is deliberately NOT among them: it is the
 # operator's existing library, and a script that created it would be a script that could create it in the
 # wrong place and then fill it.
-OWNED_DIRS="PROJECTIOND_ALPHA_MANIFEST_DIR PROJECTIOND_ALPHA_CACHE_DIR PROJECTIOND_ALPHA_MOUNT"
+CREATED_DIRS="PROJECTIOND_ALPHA_MANIFEST_DIR PROJECTIOND_ALPHA_CACHE_DIR PROJECTIOND_ALPHA_MOUNT"
+
+# THE DIRECTORIES THIS APPLIANCE CLAIMS AS ITS OWN, WHICH IS A SHORTER LIST, AND A REAL RUN IS WHY.
+#
+# The manifest directory is the CONTROL PLANE'S. The daemon mounts it read-only precisely because it consumes
+# generations and never publishes one, so a control plane that had already published — which is the ordinary
+# case, and the one the install matrix produced — leaves it non-empty and carrying nobody's marker. Claiming
+# it made `install` refuse a perfectly correct installation, and writing a marker into it would have been
+# this appliance putting its name on somebody else's directory.
+#
+# What it does own is what it WRITES: the cache (the probe records and the recovery ledger) and the mount
+# point (where it mounts). Those are the two a wrong path would damage.
+OWNED_DIRS="PROJECTIOND_ALPHA_CACHE_DIR PROJECTIOND_ALPHA_MOUNT"
 
 # An absolute, clean, non-ambiguous path. Anything else is refused rather than resolved: resolving a relative
 # path means resolving it against whatever directory the operator happened to be in.
@@ -285,14 +297,19 @@ preflight() {
 # ----------------------------------------------------------------------------------------------------------
 install_appliance() {
   preflight
-  for name in $OWNED_DIRS; do
+  for name in $CREATED_DIRS; do
     eval "value=\${$name:-}"
     if [ ! -d "$value" ]; then
       mkdir -p "$value"
       say "created $name"
     fi
+  done
+  for name in $OWNED_DIRS; do
+    eval "value=\${$name:-}"
     # THE MARKER IS WHAT MAKES A SECOND INSTALL IDEMPOTENT AND A WRONG PATH LOUD. It is written only into a
-    # directory this run either created or already owned, both of which `check_dir_ownership` has decided.
+    # directory this run either created or already owned, both of which `check_dir_ownership` has decided —
+    # and only into the two this appliance actually writes to. The manifest directory is the control plane's
+    # and gets no marker.
     if [ ! -e "$(marker_path "$value")" ]; then
       printf 'projection-alpha owns this directory. Removing this file does not remove the data.\n' \
         > "$(marker_path "$value")"

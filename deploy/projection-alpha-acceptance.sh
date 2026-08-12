@@ -226,15 +226,20 @@ alpha install > "$WORK/out/install-2.log" 2>&1 || die "AA3: a second install fai
 alpha start   > "$WORK/out/start-1.log"   2>&1 || die "AA3: start failed"
 alpha start   > "$WORK/out/start-2.log"   2>&1 || die "AA3: a second start failed, so start is not idempotent"
 AA3_HEALTH="$(docker inspect -f '{{.State.Health.Status}}' "$APPLIANCE" 2>/dev/null || echo unknown)"
+# THE TWO THIS APPLIANCE ACTUALLY WRITES TO, AND NOT THE MANIFEST DIRECTORY. That one belongs to the control
+# plane — the daemon mounts it read-only because it consumes generations and never publishes one — so a
+# marker there would be this appliance putting its name on somebody else's directory. Measured: with the
+# manifest claimed, `install` refused a perfectly correct installation the moment a generation existed.
 AA3_MARKERS=0
-for dir in "$WORK/manifest" "$WORK/cache" "$WORK/mnt"; do
+for dir in "$WORK/cache" "$WORK/mnt"; do
   [ -e "$dir/.projection-alpha-owned" ] && AA3_MARKERS=$(( AA3_MARKERS + 1 ))
 done
-if [ "$AA3_HEALTH" = "healthy" ] && [ "$AA3_MARKERS" -eq 3 ]; then
-  pass "AA3 install and start are both idempotent, the appliance is $AA3_HEALTH, and it owns exactly its own"
-       "three directories"
+AA3_MANIFEST_UNCLAIMED=1
+[ -e "$WORK/manifest/.projection-alpha-owned" ] && AA3_MANIFEST_UNCLAIMED=0
+if [ "$AA3_HEALTH" = "healthy" ] && [ "$AA3_MARKERS" -eq 2 ] && [ "$AA3_MANIFEST_UNCLAIMED" -eq 1 ]; then
+  pass "AA3 install and start are both idempotent, the appliance is $AA3_HEALTH, it claims exactly the two"        "directories it writes to, and it left the control plane's manifest directory unclaimed"
 else
-  fail "AA3 health=$AA3_HEALTH markers=$AA3_MARKERS/3"
+  fail "AA3 health=$AA3_HEALTH ownedMarkers=$AA3_MARKERS/2 manifestUnclaimed=$AA3_MANIFEST_UNCLAIMED"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
