@@ -230,16 +230,20 @@ AA3_HEALTH="$(docker inspect -f '{{.State.Health.Status}}' "$APPLIANCE" 2>/dev/n
 # plane — the daemon mounts it read-only because it consumes generations and never publishes one — so a
 # marker there would be this appliance putting its name on somebody else's directory. Measured: with the
 # manifest claimed, `install` refused a perfectly correct installation the moment a generation existed.
+# THE CACHE MARKER IS THE ONE THAT CAN BE SEEN WHILE THE APPLIANCE IS RUNNING. The mount point's marker is
+# written into the directory and the namespace is then mounted OVER it, so ownership of the mount point is
+# proved by the live mount itself — which is what `check_dir_ownership` was taught to accept after a second
+# `start` refused for exactly this reason.
 AA3_MARKERS=0
-for dir in "$WORK/cache" "$WORK/mnt"; do
-  [ -e "$dir/.projection-alpha-owned" ] && AA3_MARKERS=$(( AA3_MARKERS + 1 ))
-done
+[ -e "$WORK/cache/.projection-alpha/owned" ] && AA3_MARKERS=$(( AA3_MARKERS + 1 ))
+AA3_MOUNT_IS_OURS=0
+findmnt -rno TARGET,FSTYPE 2>/dev/null | grep -qxF "$WORK/mnt fuse.projectiond" && AA3_MOUNT_IS_OURS=1
 AA3_MANIFEST_UNCLAIMED=1
-[ -e "$WORK/manifest/.projection-alpha-owned" ] && AA3_MANIFEST_UNCLAIMED=0
-if [ "$AA3_HEALTH" = "healthy" ] && [ "$AA3_MARKERS" -eq 2 ] && [ "$AA3_MANIFEST_UNCLAIMED" -eq 1 ]; then
-  pass "AA3 install and start are both idempotent, the appliance is $AA3_HEALTH, it claims exactly the two"        "directories it writes to, and it left the control plane's manifest directory unclaimed"
+[ -e "$WORK/manifest/.projection-alpha/owned" ] && AA3_MANIFEST_UNCLAIMED=0
+if [ "$AA3_HEALTH" = "healthy" ] && [ "$AA3_MARKERS" -eq 1 ] && [ "$AA3_MOUNT_IS_OURS" -eq 1 ]    && [ "$AA3_MANIFEST_UNCLAIMED" -eq 1 ]; then
+  pass "AA3 install and start are both idempotent, the appliance is $AA3_HEALTH, it claims the cache it"        "writes to and holds its mount point with its own file system, and it left the control plane's"        "manifest directory unclaimed"
 else
-  fail "AA3 health=$AA3_HEALTH ownedMarkers=$AA3_MARKERS/2 manifestUnclaimed=$AA3_MANIFEST_UNCLAIMED"
+  fail "AA3 health=$AA3_HEALTH cacheMarker=$AA3_MARKERS mountIsOurs=$AA3_MOUNT_IS_OURS"        "manifestUnclaimed=$AA3_MANIFEST_UNCLAIMED"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
@@ -276,8 +280,7 @@ for forbidden in 'http://' 'https://' "$ENTRY_PATH" 'serveError' 'Bearer'; do
   fi
 done
 if [ "$AA5_OK" -eq 1 ]; then
-  pass "AA5 the status surface names the recovery state, reason, generation and remediation, and carries no"
-       "URL, media identity or free-text error"
+  pass "AA5 the status surface names the recovery state, reason, generation and remediation, and carries no" \n       "URL, media identity or free-text error"
 else
   fail "AA5 the status surface is incomplete or leaked something"
 fi
@@ -312,8 +315,7 @@ while [ "$n" -lt 90 ]; do
   n=$((n + 1)); sleep 2
 done
 if [ "$AA6_SEEN" -eq 1 ] && [ "$AA6_UNTOUCHED" -eq 1 ] && [ "$AA6_RECOVERED" -eq 1 ]; then
-  pass "AA6 a foreign overlay showed as inspect-mount-owner on the operator surface, was left EXACTLY where"
-       "it was, and the appliance returned to healthy once it was removed"
+  pass "AA6 a foreign overlay showed as inspect-mount-owner on the operator surface, was left EXACTLY where" \n       "it was, and the appliance returned to healthy once it was removed"
 else
   fail "AA6 sawRemediation=$AA6_SEEN overlayUntouched=$AA6_UNTOUCHED returnedHealthy=$AA6_RECOVERED"
 fi
@@ -351,8 +353,7 @@ while [ "$n" -lt 90 ]; do
   n=$((n + 1)); sleep 2
 done
 if [ "$AA8_HAS_RECORD" -eq 1 ] && [ "$AA8_RUNNING" -eq 1 ]; then
-  pass "AA8 upgrade recorded a rollback target before changing anything, and rollback returned to it with"
-       "the appliance healthy"
+  pass "AA8 upgrade recorded a rollback target before changing anything, and rollback returned to it with" \n       "the appliance healthy"
 else
   fail "AA8 recordedRollbackTarget=$AA8_HAS_RECORD healthyAfterRollback=$AA8_RUNNING"
 fi
@@ -416,8 +417,7 @@ done
 [ -d "$WORK" ] && { AA11_OK=0; echo "  this run's own directory still exists" >&2; }
 rm -f "$GATE_ROOT"/host-*-"$$".txt 2>/dev/null || true
 if [ "$AA11_OK" -eq 1 ]; then
-  pass "AA11 the container, network and volume SETS are identical and this run's mountpoints and directory"
-       "are gone"
+  pass "AA11 the container, network and volume SETS are identical and this run's mountpoints and directory" \n       "are gone"
 else
   fail "AA11 the host is not as it was found"
 fi

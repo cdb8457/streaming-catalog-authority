@@ -48,7 +48,14 @@ CONTAINER="projection-alpha-projectiond"
 # WHERE THIS APPLIANCE RECORDS WHAT IT OWNS. It is under the cache directory, which is the one place the
 # contract already requires to be durable and writable, so `install` needs no further authority than it
 # already has.
-MARKER_NAME=".projection-alpha-owned"
+#
+# IT IS A FILE INSIDE A DIRECTORY, AND A REAL RUN IS WHY. The cache directory is swept at every daemon
+# startup: `NewProbeCache` removes every FILE whose name is not a cache record, which is right for the `.tmp`
+# leftovers it was written for and ate a plain marker file for breakfast. Measured on the real host as
+# `ownedMarkers=0/2` moments after a successful install. The sweep skips directories, so the marker lives in
+# one — and it is the same shape of defect that ate the recovery ledger, found in the same place, one arm
+# later.
+MARKER_NAME=".projection-alpha/owned"
 UPGRADE_RECORD_NAME=".projection-alpha-previous-image"
 
 VERB="${1:-}"
@@ -322,6 +329,7 @@ install_appliance() {
     # and only into the two this appliance actually writes to. The manifest directory is the control plane's
     # and gets no marker.
     if [ ! -e "$(marker_path "$value")" ]; then
+      mkdir -p "$(dirname "$(marker_path "$value")")"
       printf 'projection-alpha owns this directory. Removing this file does not remove the data.\n' \
         > "$(marker_path "$value")"
     fi
