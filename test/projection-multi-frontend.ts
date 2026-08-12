@@ -605,7 +605,7 @@ test('THE BAKE-OFF RECORD AND ITS MARKER AGREE, and no run of it may declare a w
 
   // THESE HOLD IN BOTH STATES. A harness with no declared threshold may never crown anything, run or not.
   for (const stale of [/the naive path (is|was) (slower|worse|beaten)/i, /projectiond (wins|won|beats)/i,
-    /rclone (is|was) (fixed|beaten|worse)/i, /winner is/i]) {
+    /rclone (is|was) (fixed|beaten|worse)/i, /(?<!no )\bwinner is\b/i]) {
     assert(!stale.test(flat), `the bake-off document declares a winner it has no threshold for: ${String(stale)}`);
   }
   assert(/no winner is declared|does not declare a winner/i.test(flat),

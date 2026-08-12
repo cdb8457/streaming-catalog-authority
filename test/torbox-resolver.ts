@@ -1,5 +1,5 @@
 import {
-  chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync,
+  chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { createServer, type RequestListener } from 'node:http';
@@ -2704,11 +2704,12 @@ async function main(): Promise<void> {
     const bin = join(dir, 'bin');
     mkdirSync(bin);
     // A stand-in for WSL's launcher: on PATH, executable, and unable to address the path it is handed.
-    // `.cmd` on win32 because that is what `spawnSync` will resolve through PATHEXT; a bare name there
-    // would simply not be found and would prove nothing.
+    // On win32 this must be an actual `.exe`: Node's shell-free spawn does not resolve a `.cmd` shim,
+    // even though cmd.exe would. A copy of Node itself is deterministic here — handed a shell script, it
+    // exits non-zero — and proves that the first executable on PATH was really selected.
     const refusal = 'cannot address a Windows path from here';
     if (process.platform === 'win32') {
-      writeFileSync(join(bin, 'bash.cmd'), `@echo off\r\n>&2 echo ${refusal}\r\nexit /b 127\r\n`);
+      copyFileSync(process.execPath, join(bin, 'bash.exe'));
     } else {
       const poisoned = join(bin, 'bash');
       writeFileSync(poisoned, `#!/bin/sh\necho '${refusal}' >&2\nexit 127\n`);
@@ -2747,7 +2748,7 @@ async function main(): Promise<void> {
 
       // AND THE SELECTION IS BY EXECUTION, NOT BY NAME: a candidate that exists and is executable but
       // cannot do the job is rejected.
-      assert(!shellCanRunAScript(process.platform === 'win32' ? join(bin, 'bash.cmd') : join(bin, 'bash')),
+      assert(!shellCanRunAScript(process.platform === 'win32' ? join(bin, 'bash.exe') : join(bin, 'bash')),
         'the verifier accepted a shell that cannot run a script, so it is checking existence rather than '
         + 'capability');
     } finally {

@@ -153,7 +153,7 @@ async function main(): Promise<void> {
       //
       // WHY A SECOND MODE EXISTS AT ALL. G18 rendezvouses three scanners at a provider read HELD at its own
       // fake endpoint. A REAL provider has no control surface, so Projection Phase 3 — which puts these same
-      // three servers on a real TorBox object — cannot arm one. `runConcurrentScans` has always supported
+      // three servers on a real provider object — cannot arm one. `runConcurrentScans` has always supported
       // that (it arms nothing when either option is absent); only this CLI made the two flags compulsory.
       //
       // CONTAINMENT, ENFORCED RATHER THAN PROMISED. Absent the flag, both remain required and every Phase 1
