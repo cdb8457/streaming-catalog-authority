@@ -756,15 +756,17 @@ Asserted after every attempt, against the baseline captured before any Phase 7 c
 ### 11.9 THE ARM LEDGER — exactly which of the six ran, and how often
 
 **THIS TABLE IS THE ONLY PLACE AN ARM COUNT MAY BE READ FROM**, and it exists because the roadmap row denied
-a run it recorded two sentences later. What it said is kept, as a quotation and marked as retired:
+a run that the same row recorded further down. What it said is kept verbatim, as a quotation and marked as
+retired:
 
 > **HISTORICALLY — SUPERSEDED.** *"NOT ONE OF THE SIX RECOVERY ARMS HAS EVER RUN, so every sentence in §3.1
-> is a contract rather than a measurement."*
+> is a contract rather than a measurement, and three consecutive fresh sequences were never attempted."*
 
-**IT WAS FALSE WHEN IT WAS WRITTEN AND THE SAME PARAGRAPH PROVED IT**, three sentences later, by recording R1
-measuring FALSE twice. Both were written from the same two runs; only one of them was true. The half that
-survives is the second clause — §3.1 **is** a contract for R2 to R6 — and the arm ledger below is what the
-first clause should always have been.
+**IT WAS FALSE WHEN IT WAS WRITTEN AND THE SAME PARAGRAPH PROVED IT**, later in the same row, by recording R1
+measuring FALSE twice. Both halves were written from the same two runs; only one of them was true. **TWO OF
+ITS THREE CLAUSES SURVIVE** — §3.1 **is** a contract for R2 to R6, and three consecutive fresh sequences
+**were** never attempted — and it is the first clause that the ledger below is what should always have stood
+in place of.
 
 **THE QUOTATION ABOVE IS INSIDE A BLOCKQUOTE AND THAT IS LOAD-BEARING RATHER THAN TYPOGRAPHY.**
 `test/projection-evidence-consistency.ts` treats a universal denial as a live claim **unless** it is quoted:
