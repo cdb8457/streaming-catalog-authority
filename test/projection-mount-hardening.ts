@@ -575,8 +575,19 @@ test('THE REMOUNT LOOP UNMOUNTS ONLY WHAT IS OURS, so --auto-remount recovers fo
   assert(/fusefs\.ProbeMountpoint\(cfg\.MountPoint\)/.test(loop),
     'the guard is not driven by the mountpoint probe, so it is guessing what is at the path');
   // The decision is a named function so a test can drive the shipped one, and it must refuse a foreign mount.
-  assert(/func planRemountCleanup\(probe fusefs\.ProbeResult\) remountCleanup/.test(main),
+  //
+  // PROJECTION PHASE 7 WIDENED THE SIGNATURE AGAIN, AND THIS PIN'S CLAIM IS STILL UNCHANGED. The decision now
+  // takes the BOTTOM of the mount stack and the TOP of it, because `ProbeMountpoint` answers about the bottom
+  // and in every containerised topology this daemon ships in the bottom entry is the operator's own bind — so
+  // after a serve-loop death the pair was ENOTCONN over somebody else's file-system type, `classify` answered
+  // FOREIGN, and the corpse drain below was never reached at all. Phase 6 §9.7 measured exactly that on the
+  // real host and named removing the corpses as next work. What this test has always been about is the other
+  // half: that nothing which is not ours is ever touched, and the foreign row below is where that lives.
+  assert(/func planRemountCleanup\(probe, observed fusefs\.ProbeResult\) remountCleanup/.test(main),
     'the cleanup decision is inlined, so no off-host test can drive the shipped decision');
+  assert(/fusefs\.ObserveMountpoint\(cfg\.MountPoint\)/.test(loop),
+    'the plan is no longer told what is on TOP of the stack, so a corpse above the operator bind is invisible '
+    + 'to it again and every recovery stacks another dead layer under it');
   assert(read('projectiond/cmd/projectiond/remount_linux_test.go').includes('planRemountCleanup('),
     'no test drives the shipped cleanup decision');
   const decision = main.slice(main.indexOf('func planRemountCleanup('));

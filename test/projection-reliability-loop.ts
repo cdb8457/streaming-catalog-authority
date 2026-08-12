@@ -380,15 +380,30 @@ test('A3 requires the assertion this whole tranche exists for', () => {
 // Containment of the one shared-code change
 // ---------------------------------------------------------------------------------------------------------
 
-test('--no-barrier reaches no gate but this one', () => {
+test('--no-barrier reaches no gate but the two that face a real provider', () => {
+  // THE ALLOWED SET GREW BY ONE AND THE REASON IS THE SAME ONE THAT PUT PHASE 3 IN IT. `concurrent-scan`
+  // requires `--endpoint` and `--barrier-ref` because G18 rendezvouses three scanners at a HELD provider
+  // read, and a real provider has no control surface to hold anything at. Projection Phase 7 puts the same
+  // three servers on the same mount over the same real provider, so it faces the same absence.
+  //
+  // WHAT THE CONTAINMENT IS STILL FOR, UNCHANGED. Every Phase 1 caller must be bit-for-bit unaffected: the
+  // flag may not drift into a gate whose endpoint IS controllable, because there the barrier is the whole
+  // instrument. Naming the second caller here is what keeps that a decision somebody took rather than a
+  // check that quietly stopped applying.
+  const allowed = new Set(['projection-reliability-loop-gate.sh', 'projection-phase7-gate.sh']);
   const dir = join(repoRoot, 'deploy');
   const offenders: string[] = [];
   for (const entry of readdirNames(dir)) {
     if (!entry.endsWith('.sh')) continue;
-    if (entry === 'projection-reliability-loop-gate.sh') continue;
+    if (allowed.has(entry)) continue;
     if (read(`deploy/${entry}`).includes('--no-barrier')) offenders.push(entry);
   }
   assertEq(offenders.length, 0, `--no-barrier appears in ${offenders.join(', ')}`);
+  // AND BOTH OF THE ALLOWED TWO ACTUALLY USE IT, so the exception cannot outlive the caller it was made for.
+  for (const entry of allowed) {
+    assert(read(`deploy/${entry}`).includes('--no-barrier'),
+      `${entry} is exempted from the containment and does not use the flag; the exemption is stale`);
+  }
 });
 
 test('the barrier stays mandatory when nobody asks for it, and the pair is refused', () => {
