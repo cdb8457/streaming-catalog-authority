@@ -855,6 +855,13 @@ else
   # is stacked above and ITS connection is torn down, which the subject observes as `stale-projectiond` while
   # its own serve loop never notices. That is the fault the recovery loop exists for, and it is the only one
   # that leaves a living daemon to spend a budget.
+  # THE BASELINE IS TAKEN BEFORE THE BLOCKER STARTS, WHICH IS THE ONLY ORDER THAT IS NOT A RACE. Reading it
+  # afterwards means a blocker that mounted quickly is already counted, and "it never landed" is then a
+  # statement about how fast the container started.
+  RC8_MOUNTS_BEFORE="$(daemon_mounts)"
+  RC8_TOP_BEFORE="$(daemon_top | awk '{print $1}')"
+  echo "  before the blocker: $RC8_MOUNTS_BEFORE of ours at the mount point, top id $RC8_TOP_BEFORE"
+
   docker run -d --name "$BLOCKER_CONTAINER" \
     --network "$NETWORK" --user 0:0 \
     --cap-drop ALL --cap-add SYS_ADMIN --security-opt apparmor:unconfined \
@@ -866,14 +873,26 @@ else
     -v "$WORK/mnt:/mnt/projection:rshared" \
     "$IMAGE" --config /etc/projectiond/config.json --poll 60s >/dev/null
 
-  RC8_MOUNTS_BEFORE="$(daemon_mounts)"
+  # BOTH GUARDS, THE SAME TWO RC4 USES: the count of ours goes up AND the top of the chain is a different
+  # mount id. Either alone can be satisfied by something that is not the blocker landing.
   RC8_LANDED=0
   n=0
-  while [ "$n" -lt 60 ]; do
-    if [ "$(daemon_mounts)" -gt "$RC8_MOUNTS_BEFORE" ]; then RC8_LANDED=1; break; fi
+  while [ "$n" -lt 120 ]; do
+    if [ "$(daemon_mounts)" -gt "$RC8_MOUNTS_BEFORE" ] \
+       && [ "$(daemon_top | awk '{print $1}')" != "$RC8_TOP_BEFORE" ]; then
+      RC8_LANDED=1; break
+    fi
     n=$((n + 1)); sleep 0.5
   done
-  test "$RC8_LANDED" -eq 1 || die "RC8: the second mount never landed above this run's own mount"
+  if [ "$RC8_LANDED" -ne 1 ]; then
+    # THE EVIDENCE A DIAGNOSIS NEEDS, PRINTED WHERE THE FAILURE IS. Counts, mount ids and the blocker's own
+    # closed-set log lines — no path beyond this run's own directory and nothing a provider ever said.
+    echo "  after waiting: $(daemon_mounts) of ours, top $(daemon_top)" >&2
+    docker logs "$BLOCKER_CONTAINER" 2>&1 | tail -10 | sed 's/^/  blocker: /' >&2 || true
+    docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}}' "$BLOCKER_CONTAINER" 2>/dev/null \
+      | sed 's/^/  blocker container: /' >&2 || true
+    die "RC8: the second mount never landed above this run's own mount"
+  fi
 
   RC8_TOP="$(daemon_top | awk '{print $2}')"
   test "$RC8_TOP" = "fuse.projectiond" || die "RC8: the top of the stack is '$RC8_TOP', not ours"
