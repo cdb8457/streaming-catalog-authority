@@ -701,10 +701,15 @@
     "go:mount-truth-gate:optional": "bash deploy/projection-mount-truth-gate-optional.sh",
     "ops:projection-mount-truth": "tsx src/ops/projection-mount-truth-cli.ts",
     "test:projection-operational-mount-health": "tsx test/projection-operational-mount-health.ts",
+    "test:projection-bounded-recovery": "tsx test/projection-bounded-recovery.ts",
     "go:mount-health-gate": "bash deploy/projection-operational-mount-health-gate.sh",
     "go:mount-health-gate:three": "bash deploy/projection-operational-mount-health-gate-three.sh",
     "go:mount-health-gate:optional": "bash deploy/projection-operational-mount-health-gate-optional.sh",
-    "ops:projection-mount-health": "tsx src/ops/projection-mount-health-cli.ts"
+    "go:recovery-gate": "bash deploy/projection-recovery-gate.sh",
+    "go:recovery-gate:three": "bash deploy/projection-recovery-gate-three.sh",
+    "go:recovery-gate:optional": "bash deploy/projection-recovery-gate-optional.sh",
+    "ops:projection-mount-health": "tsx src/ops/projection-mount-health-cli.ts",
+    "ops:projection-recovery": "tsx src/ops/projection-recovery-cli.ts"
   },
   "dependencies": {
     "pg": "^8.13.1",

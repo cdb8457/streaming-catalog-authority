@@ -1,0 +1,98 @@
+# Projection Phase 6 — THE CANONICAL DEPLOYABLE ALPHA PROFILE.
+#
+# THIS IS THE ONE AN OPERATOR RUNS. `docker-compose.projectiond.operator.yml` says in its own first line that
+# it is NOT a release stack, and that is still true and still where four closed tranches' documents point.
+# This file is its descendant, not its replacement, and everything it adds is something an appliance needs
+# that a harness does not: a pinned identity, a healthcheck, a durable place for the recovery budget, its own
+# project and network, and the recovery flag visible rather than buried.
+#
+# WHAT IT NEEDS FROM THE HOST — every one of these is validated by `deploy/projection-alpha.sh preflight`,
+# which refuses an ambiguous or relative path rather than resolving one:
+#
+#   PROJECTIOND_ALPHA_IMAGE       the pinned image reference. NO DEFAULT, deliberately: an appliance whose
+#                                 image tag floats is an appliance whose evidence describes something else
+#   PROJECTIOND_ALPHA_MANIFEST_DIR  where the control plane publishes pointer.json and the artifact
+#   PROJECTIOND_ALPHA_MEDIA_ROOT    the local media root the manifest's `local` sources are relative to
+#   PROJECTIOND_ALPHA_CACHE_DIR     a DURABLE directory. The scan-window cache lives here AND SO DOES THE
+#                                 RECOVERY LEDGER, so a tmpfs here would be a recovery budget every restart
+#                                 refunds — which is not a budget
+#   PROJECTIOND_ALPHA_MOUNT         the host directory the namespace appears at, which media servers read
+#   PROJECTIOND_ALPHA_CONFIG        the daemon configuration file
+#   PROJECTIOND_ALPHA_SECRETS_DIR   the directory holding provider token FILES. A credential is a PATH here
+#                                 and never a value: there is no variable in this contract that holds one,
+#                                 so an environment that leaked could not leak one
+#
+# WHY IT IS PRIVILEGED-ISH. A FUSE mount needs /dev/fuse and CAP_SYS_ADMIN, and it needs bidirectional mount
+# propagation for the mount to be visible to other containers on the host. Those are granted explicitly here
+# rather than assumed by the image, which runs non-root by default. Everything else is dropped.
+#
+# WHAT THIS PROFILE DOES NOT DO. It does not touch an existing media library, a user share, an unrelated
+# container, network or volume, or any Docker restart policy beyond its own. `restart: unless-stopped` is the
+# same policy the operator harness has always had, and Phase 6 changes nothing about it: recovery happens
+# INSIDE the living process, so a container that was never going to be restarted still is not.
+
+name: projection-alpha
+
+services:
+  projectiond:
+    # NO DEFAULT TAG. `${VAR:?message}` makes an unset image a refusal with a sentence rather than a silent
+    # start of whatever `projectiond:latest` happens to be on this host.
+    image: ${PROJECTIOND_ALPHA_IMAGE:?set PROJECTIOND_ALPHA_IMAGE to a pinned image reference}
+    container_name: projection-alpha-projectiond
+    # Root and CAP_SYS_ADMIN are needed to mount. Everything else is dropped.
+    user: "0:0"
+    cap_drop: ["ALL"]
+    cap_add: ["SYS_ADMIN"]
+    security_opt: ["apparmor:unconfined", "no-new-privileges:true"]
+    devices: ["/dev/fuse:/dev/fuse"]
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    command:
+      - --config=/etc/projectiond/config.json
+      - --poll=5s
+      # THE TWO SUPERVISORS, SPELLED IN THE PROFILE RATHER THAN IN AN ENVIRONMENT VARIABLE.
+      #
+      # An operator reading this file must be able to see that the daemon will ACT on a fault. Recovery is off
+      # by default in the daemon precisely so that turning it on is a visible, deliberate choice, and hiding
+      # that choice behind a variable would undo the whole reason for the default.
+      #
+      # WHAT THEY ARE BOUNDED BY is `docs/PROJECTION_PHASE_6_DEPLOYABLE_ALPHA.md` §3: only a fault readiness
+      # already believed, only after it sustains a second whole hold, only on a mount that is ours, and only
+      # three times before a durable lockout that a human clears.
+      - --auto-remount
+      - --auto-recover
+    volumes:
+      # The manifest directory is READ-ONLY to the daemon: it consumes generations, it never publishes one.
+      - ${PROJECTIOND_ALPHA_MANIFEST_DIR:?set PROJECTIOND_ALPHA_MANIFEST_DIR}:/var/lib/projectiond/manifest:ro
+      - ${PROJECTIOND_ALPHA_MEDIA_ROOT:?set PROJECTIOND_ALPHA_MEDIA_ROOT}:/var/lib/projectiond/media:ro
+      # DURABLE, AND THE RECOVERY LEDGER IS WHY IT MATTERS MORE THAN IT USED TO. A re-scan being free depends
+      # on the probe cache surviving a reboot; a recovery BUDGET being a bound depends on the ledger doing the
+      # same, because a budget the next restart refunds authorises an unbounded number of attempts.
+      - ${PROJECTIOND_ALPHA_CACHE_DIR:?set PROJECTIOND_ALPHA_CACHE_DIR}:/var/lib/projectiond/cache
+      - ${PROJECTIOND_ALPHA_CONFIG:?set PROJECTIOND_ALPHA_CONFIG}:/etc/projectiond/config.json:ro
+      # TOKEN FILES, READ-ONLY. The configuration names a PATH under here; no value ever passes through the
+      # environment, the command line or this file.
+      - ${PROJECTIOND_ALPHA_SECRETS_DIR:?set PROJECTIOND_ALPHA_SECRETS_DIR}:/run/secrets:ro
+      # rshared is what makes the mount visible to a media server in another container.
+      - ${PROJECTIOND_ALPHA_MOUNT:?set PROJECTIOND_ALPHA_MOUNT}:/mnt/projection:rshared
+    # THE SHIPPED HEALTHCHECK IS IN THE IMAGE AND IS RESTATED HERE ONLY TO BE VISIBLE.
+    #
+    # Its four numbers are Phase 5's predeclared ones and are derived against the daemon's own policy: the
+    # start period strictly clears the bootstrap grace, so Docker never counts a probe the grace answered;
+    # the timeout strictly clears the readiness budget, so an in-contract answer is never recorded as a
+    # timeout; and retries x interval strictly outlasts the fault hold, so THE DAEMON decides what is broken
+    # and Docker only repeats it.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/projectiond", "--config=/etc/projectiond/config.json", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    # UNCHANGED FROM THE OPERATOR HARNESS, AND PHASE 6 DOES NOT TOUCH IT. Docker's restart policies do not
+    # react to health status at all — a container whose healthcheck fails does not exit — so this restarts on
+    # a CRASH and on nothing else, exactly as it always has.
+    restart: unless-stopped
+
+networks:
+  default:
+    name: projection-alpha

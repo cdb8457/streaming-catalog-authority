@@ -448,6 +448,10 @@
       "group": "offline"
     },
     {
+      "file": "projection-bounded-recovery.ts",
+      "group": "offline"
+    },
+    {
       "file": "projection-multi-frontend.ts",
       "group": "offline"
     },
