@@ -442,6 +442,64 @@ test, including three new ones written specifically for it, and was byte-identic
 host. It took a **real recovery gate on a real host** to find that it destroyed the thing it was protecting,
 one layer above where the floor could see it.
 
+### 11.4.1 And then the fix worked, and PHASE 6's OWN GATE STOPPED BEING ABLE TO ASSERT ITS ARM
+
+**THE DRAIN NOW DOES EXACTLY WHAT IT WAS MADE REACHABLE TO DO, IN THE DAEMON'S OWN WORDS:**
+
+```
+projectiond: recovery: recover-stale-mount
+projectiond: detaching one of ours at /mnt/projection: floor 1, now 3, on top fuse.projectiond
+projectiond: detached 1 stale mount(s) of ours at /mnt/projection before remounting
+             (now on top: fuse.projectiond (live-projectiond), which is not a corpse and is not ours to remove)
+```
+
+The corpse goes, the live mount stays, and the subject daemon that used to exit inside a minute stayed
+`Up (healthy)` throughout. **And `RC8`, `RC9` and `RC11` still fail — for a completely different reason, and
+it is the interesting one.**
+
+```
+FAIL  RC8 attempts=0 (budget 3)
+FAIL  RC9 lockedOut=0 heldThroughout=0 reason=no-action-healthy generation=2->2
+```
+
+**`no-action-healthy` IS THE WHOLE FINDING.** `RC8` produces an unrecoverable fault by masking `/dev/fuse`
+so that every `Mount()` is refused, and then stacking a second daemon's corpse above the subject. Its premise
+— stated in Phase 6 §4 and true when it was written — is that **the mount syscall is the only thing that can
+repair that fault**, so a mount that cannot succeed drives the budget to exhaustion and a lockout.
+
+**THAT PREMISE IS NO LONGER TRUE, BECAUSE THE PRODUCT GOT BETTER.** The drain removes the corpse, the mount
+point becomes healthy again, readiness confirms it, and the budget is refunded — **without any mount syscall
+succeeding**. The gate is asserting a state its own injector can no longer produce.
+
+**WHAT THIS IS AND IS NOT.** It is **not** a regression in the daemon: every arm of Phase 6's gate that is
+about repairing a fault passes, including `RC4` (`recover-stale-mount`, generation 0 → 1), `RC7` (confirmed
+and refunded), `RC12` (the same pre-attached consumer read the same digest afterwards), `RC5` (the foreign
+refusal), `RC6` and `RC10` (exactly one supervisor acting) and `RC13` (host cleanliness). It **is** a real
+blocker for the §9 matrix, and repairing it means giving `RC8` a fault whose repair genuinely requires a
+successful mount — which Phase 6 §11.2.1 #2 already records as hard, because aborting the subject's own
+connection under a masked `/dev/fuse` kills the process instead.
+
+**IT IS RECORDED AND NOT WORKED AROUND.** Loosening `RC8` to accept the new behaviour would be editing a
+closed tranche's assertion to fit a result, which is the one thing this repository's evidence discipline
+exists to prevent.
+
+### 11.4.2 A SECOND RESIDUAL, MEASURED, AND THE PREDECLARED THRESHOLD IS WHAT NAMES IT
+
+The same daemon log shows the layer count going `now 3` → `now 4` across successive faults. The dead layers
+are drained; what accumulates now is a **live** one, because when the fault was *somebody else's* corpse the
+subject's own mount was never broken — and the recovery remounts anyway, stacking a second live layer over a
+first that is still connected.
+
+**`MOUNT_LAYERS_ABOVE_FLOOR_MAX` IS 1 AND THIS WOULD MEASURE 2**, which is exactly what a predeclared
+threshold is for. §4.2 says a layer count outside the bound that is *"then argued to be acceptable rather
+than fixed or recorded as a NO-GO"* is a NO-GO, and §12 records it as one.
+
+**WHY IT WAS NOT FIXED IN THIS SESSION, AS A DECISION RATHER THAN AN OMISSION.** The repair is small — after
+a drain that removed something, re-observe, and skip the remount if the mount point is already live — but it
+would be a **third** change to the daemon's mount lifecycle in one sitting, and the only instrument that can
+validate it end to end is the Phase 7 matrix, which is blocked on §11.3. Shipping an unvalidated third change
+to Phase 3's hardest-won code is the churn this repository's discipline exists to prevent.
+
 ### 11.5 Offline
 
 Taken on the Windows development host, at candidate 3. **They are not gate evidence**; they are what makes a
