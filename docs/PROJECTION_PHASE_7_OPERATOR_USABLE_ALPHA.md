@@ -487,6 +487,56 @@ here rather than quietly deleted, and the reader is now the recovery gate's own:
 reads a 503 as the answer it is, while still leaving an unreachable daemon distinguishable from a refusing
 one.
 
+### 11.3.2 AND THEN THE DAEMON SAID IT IN ONE LINE, WHICH IS THE FINDING THE WHOLE TRANCHE PAID FOR
+
+The same attempt's preserved daemon log, on the failing path, in full:
+
+```
+projectiond: automatic recovery is ENABLED: bounded, budgeted, and it will never unmount
+             anything that is not this daemon's own
+projectiond: recovery refused: refuse-foreign-mount (inspect-mount-owner)
+
+daemon container: running exit=0
+--- mount survey (after the R1 fault) ---
+host rows at the mount point or beneath it: 0
+```
+
+**THE APPLIANCE DID NOT FAIL TO NOTICE, AND IT DID NOT FAIL TO REPORT. IT REFUSED, DELIBERATELY, BY THE
+CLOSED-SET RULE PHASE 6 CALLS ITS MOST IMPORTANT ROW.** `refuse-foreign-mount`, remediation
+`inspect-mount-owner`, no budget spent, no generation advanced, the process alive — every one of those is the
+designed behaviour and every one of them is correct against Phase 6 §3.2 as written.
+
+**WHY IT FIRES HERE, AND IT IS A PROPERTY OF THE TOPOLOGY RATHER THAN OF THE FAULT.** When the projectiond
+mount is removed from beneath the daemon, what remains at the mount point **inside the container** is the
+operator's own bind — and on an Unraid host that bind's file-system type is the host's `fuse.shfs`. So
+`ObserveMountpoint` answers **foreign**, the classification table's only row for
+`mount-observed-not-live` + `foreign` is a refusal, and `recover-mount-empty` — the row that exists in that
+table for exactly this fault — **is unreachable in the topology the alpha ships in.**
+
+**SO THE PREDECLARED CLAUSE IS RECORDED AS SUPERSEDED, IN THE SHAPE PHASE 4 §4.1 AND PHASE 5 §3.3 USED.**
+
+> **HISTORICALLY — SUPERSEDED.** §3.1's R1 row: *"the recovery supervisor classifies it as **its own to
+> repair**, spends **exactly one** attempt inside `RECOVERY_ACTION_BUDGET_MS`, and the namespace is readable
+> by a sibling again inside `RECOVERY_READY_BUDGET_MS`."*
+
+**IT WAS MEASURED FALSE AND IT IS NOT A THRESHOLD.** What it asked for is a state a daemon obeying Phase 6's
+own table cannot produce in a container, and the correction is not to weaken the clause — it is to decide
+whether the table is right.
+
+**THE DECISION PHASE 8 OWES, STATED SO IT IS TAKEN BY SOMEBODY RATHER THAN DRIFTING IN.** The refusal's whole
+justification is that *unmounting* something that is not ours is the `--auto-remount` defect. But the
+recovery action here is a **stack**, not an unmount: `planRemountCleanup` returns `nothing` for a foreign
+mount and the remount lands on top — **which is exactly what this daemon does at startup, over this same
+bind, every single time it starts.** The daemon already has the fact that separates the two cases:
+`mountsAtStartup`, the count taken before it mounted anything. If the count at the mount point is at or below
+that floor, **nothing of ours is there and nothing has been stacked on us** — the mount is simply gone, and
+mounting is the startup path, not a new destructive capability.
+
+**THIS TRANCHE DOES NOT MAKE THAT CHANGE**, and the reason is the same one §11.4.2 gives: it would be a third
+edit to the daemon's mount lifecycle in one sitting, it changes a **closed** tranche's published
+classification table, and the only instrument that could validate it end to end is the matrix that is still
+blocked at this very arm. It is written down here as the next decision rather than taken quietly.
+
 **WHY IT MATTERS MORE THAN ANY OTHER ARM.** An external `umount` of the projected path is the single most
 likely operator-side accident on this whole appliance, and it is the fault `recover-mount-empty` exists in
 Phase 6 §3.2's table for. On the evidence of this run, in the topology the alpha actually ships in, **the
@@ -663,8 +713,9 @@ caught only by a real host.
    daemon — the most likely operator-side accident there is, and the fault `recover-mount-empty` exists in
    Phase 6 §3.2's table for — and **the appliance did not repair it**: no attempt spent, no generation
    advanced, the namespace never back, and the operator's four windows reading **0 of 4** afterwards. The
-   daemon was alive and unhealthy throughout, so what it was *reporting* is not yet known: the reader that
-   could not hear a 503 has been replaced and the arm is owed one more measurement.
+   daemon was alive, and its own log says exactly what it did: `recovery refused: refuse-foreign-mount
+   (inspect-mount-owner)`. **The refusal is correct against Phase 6 §3.2 as written**, which is why §11.3.2
+   records the R1 clause as SUPERSEDED and names the classification decision that Phase 8 owes.
 2. **FIVE OF THE SIX RECOVERY ARMS HAVE STILL NEVER RUN.** R1 is the first arm and it stops the run.
    Everything this document says about R2 to R6 is a contract, not a measurement.
 3. **THE PROVIDER'S EGRESS ALLOWLIST IS PERISHABLE AND IT STOPPED ONE ATTEMPT OUTRIGHT.** §11.3. It is not a
