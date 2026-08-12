@@ -424,6 +424,52 @@ moving between pool members inside a single working session — the arithmetic �
 does not write `endpoint.json`. The blocker was escalated to the operator with a digest and a count and
 nothing else.
 
+### 11.3.1 Attempt 3 — the provider rotated BACK, stages A, B and C went fully green, and arm R1 measured FALSE
+
+The recheck answered `allowed` again on `09e2a517af25` — the origin Phase 3 §11.5 watched for fifty-four
+minutes — so the run was launched inside that stretch. **Everything before stage D passed**, including the
+three things attempt 1 could not:
+
+| What | Measured |
+|---|---|
+| `P7-B-seeks` × 3 | **10 / 10 on every server**, each verified by that server's own verifier — ten distinct media-time positions, backwards transitions and one beyond 90 % of duration, every segment decoded |
+| `P7-B-play-decoded-seconds` × 3 | **306 / 300 / 300** against a 300 s floor, **all three at once**, startups **1,500 / 1,600 / 1,510 ms** against 10,000 ms |
+| `P7-C-concurrent-play-overlapped` | pass |
+| `P7-B-transcode-decoded-seconds` × 3 | **324 / 324 / 300** against a 300 s floor — the hevc source now correctly accepted, and every one of the three servers transcoded a real provider's object for five minutes |
+| `P7-C-catalogue` × 3, `P7-C-windows-after` | pass, **4 / 4** |
+
+**AND THEN ARM R1 MEASURED FALSE, WHICH IS THE MOST IMPORTANT SINGLE RESULT IN THIS DOCUMENT.**
+
+```
+before R1: 1 mount(s) of ours and 1 row(s) of any kind at the mount point, against a floor of 0
+PASS  P7-R1-fault-took-the-mount
+FAIL  P7-R1-action-ms 34304/33000
+FAIL  P7-R1-reason        reason='none' observation='none' lastAction=''
+FAIL  P7-R1-remediation   'absent'
+PASS  P7-R1-attempts 0/1
+PASS  P7-R1-single-flight 0/1
+FAIL  P7-R1-generation    advanced from 0 to ?
+FAIL  P7-R1-ready-ms      [no measurement was taken]
+FAIL  P7-arm-windows:R1 0/4
+```
+
+**WHAT THAT SAYS, STATED AS WHAT WAS OBSERVED RATHER THAN AS A DIAGNOSIS.** The projectiond mount was
+removed from beneath a living daemon — the fault landed, and `P7-R1-fault-took-the-mount` is the assertion
+that it did. For the whole thirty-four-second budget afterwards **the daemon's status surface answered
+nothing at all**: not a refusal, not a fault code, not a remediation. No recovery attempt was spent, the
+generation never moved, the namespace never came back, and the operator's four approved windows read **0 of
+4** afterwards.
+
+**WHAT IS NOT DETERMINED BY THIS RUN, AND IT IS NAMED RATHER THAN GUESSED.** `reason='none'` has two
+readings — a daemon that had exited, and a daemon that was alive and no longer reachable — and nothing else
+this run recorded separates them. **That is a gate defect and it is fixed**: R1 now preserves the daemon's own
+log, its container status and exit code, and the host mount survey, on the failing path.
+
+**WHY IT MATTERS MORE THAN ANY OTHER ARM.** An external `umount` of the projected path is the single most
+likely operator-side accident on this whole appliance, and it is the fault `recover-mount-empty` exists in
+Phase 6 §3.2's table for. On the evidence of this run, in the topology the alpha actually ships in, **the
+appliance did not repair it and did not report it**. §12 is a NO-GO and this is the first reason.
+
 ### 11.4 The defects the runs found, in the order the runs found them
 
 **FIVE SO FAR. TWO ARE IN SHIPPED PRODUCT CODE AND ONE OF THOSE WAS INTRODUCED BY THIS TRANCHE AND CAUGHT BY
@@ -591,12 +637,20 @@ caught only by a real host.
 
 **WHAT IS BLOCKING IT, IN ORDER:**
 
-1. **THE OPERATOR'S EGRESS ALLOWLIST.** §11.3. TorBox is currently serving an origin the operator has not
-   allowlisted, so every read through the mount fails EIO before any arm can run. This is not a product
-   defect and this tranche will not write that file. **It needs an operator action and nothing else.**
-2. **THE SIX RECOVERY ARMS HAVE NEVER RUN.** Everything about stage D in this document is a contract, not a
-   measurement.
-3. **The drain-liveness fix of §11.4 #5 is not yet re-frozen and its regression matrix is not yet green.**
+1. **ARM R1 MEASURED FALSE.** §11.3.1. The mount was removed from beneath a living daemon — the most likely
+   operator-side accident there is, and the fault `recover-mount-empty` exists for — and the appliance
+   **neither repaired it nor reported it**: no attempt spent, no generation advanced, no reason, no
+   remediation, and the operator's windows reading 0 of 4 afterwards. Whether the daemon had exited or was
+   alive and unreachable is not determined by that run, and the gate that could not tell them apart has been
+   fixed rather than argued about.
+2. **FIVE OF THE SIX RECOVERY ARMS HAVE STILL NEVER RUN.** R1 is the first arm and it stops the run.
+   Everything this document says about R2 to R6 is a contract, not a measurement.
+3. **THE PROVIDER'S EGRESS ALLOWLIST IS PERISHABLE AND IT STOPPED ONE ATTEMPT OUTRIGHT.** §11.3. It is not a
+   product defect, it needs an operator action, and it makes the three-consecutive-fresh-run rule expensive
+   in a way §7 predeclared.
+4. **`RC8`/`RC9`/`RC11` cannot assert their arm against this candidate.** §11.4.1. Not a regression, and not
+   something to be fixed by loosening the assertion.
+5. **The mount-layer residual of §11.4.2 is unfixed**, and `MOUNT_LAYERS_ABOVE_FLOOR_MAX` would measure 2.
 
 **WHAT IS NOT BLOCKING IT, AND IS WORTH SAYING BECAUSE IT IS THE EXPENSIVE HALF:** the topology stands up,
 the three servers attach before the first mount, the operator's windows match through the mount and inside
