@@ -502,7 +502,7 @@ to Phase 3's hardest-won code is the churn this repository's discipline exists t
 
 ### 11.5 Offline
 
-Taken on the Windows development host, at candidate 3. **They are not gate evidence**; they are what makes a
+Taken on the Windows development host, at the FINAL candidate `7cb02d5a3909a283ea2851275933ace2160184c7` unless a row says otherwise. **They are not gate evidence**; they are what makes a
 run worth attempting.
 
 | What | Result |
@@ -515,7 +515,7 @@ run worth attempting.
 | `npx tsx test/projection-bounded-recovery.ts` | 42/0 — Phase 6's pins, including both source digests |
 | `npx tsx test/custody-runtime-closure.ts` | 39/0 — every shipped `.sh` parses under LF and CRLF |
 | `npx tsx test/projection-evidence-consistency.ts` | 4/0 |
-| full `npm run test:offline` | **314 selected, 312 passed, 2 failed** at candidate 1 — both failures real and both fixed (§11.6); **to be re-run at the final candidate** |
+| full `npm run test:offline` | **314 selected, 314 passed, 0 failed, 0 required-but-skipped**, re-run at the final candidate in 690 s. It was **312/2** at candidate 1 and both failures were real and are §11.6 |
 
 ### 11.6 The two closed suites that went red, and why both were right to
 
@@ -530,6 +530,40 @@ run worth attempting.
   scanners at. The allowed set is now **two, named**, and the test additionally requires that **both** allowed
   callers use the flag, so an exemption cannot outlive the caller it was made for.
 
+### 11.8 The §9 regression matrix — EIGHT OF NINE GREEN, from the final frozen candidate
+
+Every gate below ran on the real Unraid host from tree `0930f951…` (commit `7cb02d5`), with
+`PROJECTIOND_IMAGE=projectiond:phase7-frozen` (`sha256:911df075be6fd8ce72f6a81d003645e019217a4893d3515ea04a728fb9c003e2`),
+serialised one after another.
+
+| Gate | Runs | Result |
+|---|---|---|
+| `go:stale-mount-gate:three` | 3 | **exit 0** |
+| `go:serve-death-gate:three` | 3 | **exit 0** |
+| `go:mount-truth-gate:three` | 3 | **exit 0** |
+| `go:mount-health-gate:three` | 3 | **exit 0** |
+| `go:sustained-outage-gate:three` | 3 | **exit 0** |
+| `go:publisher-mount-gate` | 1 | **exit 0** |
+| `go:rclone-comparison-gate` | 1 | **exit 0** |
+| `deploy/projection-alpha-acceptance.sh` | 1 | **exit 0 — 11 of 11 arms**, driving the shipped operator command |
+| `go:recovery-gate:three` | 3 | **FAILED, 0 pass / 3 fail** — `RC8`, `RC9`, `RC11`, identically in every run, for the reason §11.4.1 gives |
+
+**THE FOUR MOST EXPOSED GATES ARE AMONG THE GREEN ONES, AND THAT IS THE POINT OF NAMING THEM.**
+`stale-mount`'s whole subject is a cold corpse, which is exactly what the changed drain now removes;
+`serve-death`'s is the remount path the change lives on; `mount-truth`'s is the `ObserveMountpoint` the change
+adds a second caller to; and `sustained-outage` is the control that fails if the supervisor ever became
+trigger-happy. All four passed three times each.
+
+**AND THE ALPHA INSTALL MATRIX PASSED ALL ELEVEN ARMS AGAINST THE CHANGED DAEMON**, including `AA6` — the
+foreign overlay left exactly where it was — and `AA7`, the same pre-attached consumer reading the same digest
+after the fault. That is the shipped operator command, driven end to end, on the candidate that carries both
+product changes.
+
+**THE ONE FAILURE IS `RC8`/`RC9`/`RC11` AND IT IS NOT A REGRESSION IN THE DAEMON.** §11.4.1 is what it is:
+those three arms need a fault the product can no longer be prevented from repairing. Every arm of that same
+gate which is about **repairing** a fault passed in all three runs — `RC1` through `RC7`, `RC10`, `RC12` and
+`RC13`.
+
 ### 11.7 Host cleanliness
 
 Asserted after every attempt, against the baseline captured before any Phase 7 container existed:
@@ -541,6 +575,10 @@ Asserted after every attempt, against the baseline captured before any Phase 7 c
 | volume set | **identical** |
 | `fuse.projectiond` mounts on the host | **0** |
 | run directories under the gate root | **0** |
+| running-container set | **identical** |
+| empty gate roots left by the regression matrix | removed with `rmdir`, which refuses a non-empty directory and therefore could not have taken anything with it |
+| kept evidence | the six run transcripts, at 0600 in a 0700 directory under `.projection-phase7-gate/evidence/`, searched and carrying no credential, bearer token or query-string secret. The frozen tree at `/mnt/user/appdata/catalog-p7` and the image `projectiond:phase7-frozen` are kept for the same reason Phase 6 kept its own |
+| operator data | **untouched.** No production mount, no existing media library, no user share, no unrelated container, network or volume, and no operator secret was modified. `endpoint.json` was read and never written |
 
 ## 12. The readiness decision
 
