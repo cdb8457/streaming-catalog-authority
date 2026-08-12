@@ -607,7 +607,7 @@ attempting.
 | `npx tsx test/projection-mount-truth.ts` | 13/0 — Phase 4's pins, undisturbed |
 | `npx tsx test/custody-runtime-closure.ts` | 39/0 |
 | `npx tsx test/projection-evidence-consistency.ts` | 4/0 |
-| full `npm run test:offline` | **313 selected, 313 passed, 0 failed** |
+| full `npm run test:offline` | **313 selected, 313 passed, 0 failed** — re-run after the audit correction, still 313/313 |
 
 **THE FULL OFFLINE INVENTORY IS CLEAN, AND THAT IS BETTER THAN THE BASELINE THIS TRANCHE INHERITED.** Phase 5
 recorded ten pre-existing failures on this host under `npm test`. `test:offline` at this commit selects 313
