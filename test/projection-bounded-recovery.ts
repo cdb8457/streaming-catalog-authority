@@ -615,10 +615,16 @@ test('the tranche document holds its run record and its decision until they are 
   // EXISTS FOR. This pin is what stops §11 and §12 being written from an intention.
   const record = doc.slice(doc.indexOf('## 11. Run record'), doc.indexOf('## 13.'));
   assert(record.length > 100, 'the run record section could not be located');
+  // THE IMPLICATION RUNS ONE WAY, AND WRITING IT AS AN EQUALITY WAS WRONG. A measured closure of the recovery
+  // gate does not by itself make the ALPHA a GO — the readiness decision also depends on the regression
+  // matrix, the install matrix and the narrow real-provider acceptance, any of which can hold it at NO-GO
+  // with the gate perfectly closed. What must never happen is the other direction: a GO written without a
+  // measured closure under it. That is the thing this pin exists to make impossible.
   const measured = /three consecutive fresh runs, exit 0/.test(record);
   const decision = /\*\*GO\*\*/.test(doc.slice(doc.indexOf('## 12.'), doc.indexOf('## 13.')));
-  assert(measured === decision,
-    'the readiness decision and the run record disagree: one of them was written from an intention');
+  assert(!decision || measured,
+    'the readiness decision says GO and the run record records no measured closure, so it was written from '
+    + 'an intention');
 });
 
 test('the roadmap records Phase 5 CLOSED with its exact frozen identity and claims nothing more', () => {
