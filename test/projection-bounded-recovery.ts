@@ -680,7 +680,10 @@ test('the closure record names a frozen COMMIT and a frozen TREE, not just a com
   // being written; the identity is recorded in the commit that follows the runs. That is the repository's
   // ordinary sequence and it is not a licence — a record that claims GO while holding its identity is
   // claiming a closure nobody can check, and that is the exact shape of the defect this block exists for.
-  if (/HELD/.test(identity)) {
+  // THE HELD STATE IS A TABLE ROW, NOT A WORD ANYWHERE IN THE SECTION. Matching the bare word made the
+  // section's own EXPLANATION of why it had once been held read as the held state itself, so the block
+  // skipped — asserting nothing — on a record that was fully filled in.
+  if (/\|\s*frozen (commit|tree)\s*\|\s*\*\*HELD\*\*/.test(identity)) {
     assert(!claimsGo(doc),
       'the readiness decision claims GO while the frozen identity is still HELD, so the closure names no '
       + 'source anybody could verify it against');

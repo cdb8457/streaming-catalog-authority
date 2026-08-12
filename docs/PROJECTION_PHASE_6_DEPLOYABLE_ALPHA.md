@@ -1,15 +1,17 @@
 # Projection Phase 6 — the deployable alpha
 
-**Status: RE-FREEZING. The closure record was found FALSE by a coordinator audit and is being re-measured.**
-Every threshold, arm and acceptance rule in §3 to §10 was committed **before** the first measured Tower run
-and **none has moved**. What was wrong was the *identity*: §11.1 named a frozen commit and called the changes
-after it "gate-only", when four of them modified `deploy/projection-alpha.sh` — the shipped operator command —
-and the figures it published had come from **three different trees**, none of them the one it named. §11.1.1
-keeps the false wording and what it cost.
+**Status: CLOSED — the alpha is a GO on one measured combination, from one frozen source.** Every threshold,
+arm and acceptance rule in §3 to §10 was committed **before** the first measured Tower run and **none has
+moved**.
 
-**THE FIX IS A RE-FREEZE AND A RE-RUN, NOT A REWORDING.** §11.2, §11.4, §11.5 and §11.7 are HELD; their
-previous figures are discarded rather than relabelled, and §12 holds at NO-GO until they are measured again
-from one frozen source. §11.6 is the one piece of evidence not re-run, and it says so in its own heading.
+**A COORDINATOR AUDIT FOUND THE FIRST CLOSURE RECORD'S IDENTITY FALSE AND IT COST A FULL RE-MEASUREMENT.**
+§11.1 had named a frozen commit and called the changes after it "gate-only", when four of them modified
+`deploy/projection-alpha.sh` — the shipped operator command — and the figures it published had come from
+**three different trees**, none of them the one it named. §11.1.1 keeps the false wording and what it cost.
+The fix was a re-freeze and a re-run of every provider-free acceptance, not a rewording: `go:recovery-gate:three`
+**42 arm verdicts, 0 fail, 0 skip**, the install matrix **11 of 11**, and all seven regression gates green —
+every one of them from tree `5f6a8276…`. §11.6, the real-provider gate, is the one piece of evidence not
+re-run, and its heading says so.
 
 **IT TOOK SEVEN ATTEMPTS AT THE GATE AND SIX AT THE INSTALL MATRIX, AND FINDING THINGS IS WHAT THEY WERE FOR.**
 Nineteen defects: eleven in the gates and **eight in the product**, including one that made the durable
@@ -435,20 +437,28 @@ alpha-candidate checkpoint with every remaining blocker precisely named. It does
 
 | What | Value |
 |---|---|
-| frozen commit | **HELD** — see below |
-| frozen tree | **HELD** — see below |
-| tracked manifest | **HELD** — files, and byte-identity in both directions vs `/mnt/user/appdata/catalog-p6` |
+| frozen commit | `c70ecb05843ce22128613e78adc676b1c8ec5110` |
+| frozen tree | `5f6a82763ecdd207dd06e308b1e55e0d6d558341` |
+| tracked manifest | `36e971ea74090cff` over **1,649** files, byte-identical in both directions vs `/mnt/user/appdata/catalog-p6` |
 | image | `sha256:a5f12b92d80464a6e3e280498f22a3bd86e732718cee554b549c6ef58e53aef9` |
 | host | Unraid `tower` |
 | OPERATOR SOURCE DIGEST | `6dbb238d51f6415f0b323b95ddee7cc642b1690bcad147524eec4f5710791f73` |
 | GATE SOURCE DIGEST | `afc38f3da63ad2edb45eae0ee5c3f82c0f640a0f96793b8f95e9c094bb7cbfab` |
 
-**THE COMMIT AND TREE ARE HELD BECAUSE A DOCUMENT CANNOT NAME THE COMMIT THAT CONTAINS IT.** The source
-frozen and staged to the host is the commit this file is committed as, so its own hash is not knowable while
-it is being written; it is recorded in the commit that follows the runs, together with the byte-identity
-evidence. `test/projection-bounded-recovery.ts` permits that **only** while §12 does not claim GO — a record
+**THE COMMIT AND TREE WERE HELD WHILE THIS WAS A CANDIDATE, BECAUSE A DOCUMENT CANNOT NAME THE COMMIT THAT
+CONTAINS IT.** The source frozen and staged to the host is `c70ecb0` — the commit this file was committed as
+before any of the runs below — and its identity is recorded here, in the commit that follows them.
+`test/projection-bounded-recovery.ts` permits the held state **only** while §12 does not claim GO: a record
 that claimed a closure while holding its own identity would be a closure nobody could check, which is the
 defect this whole section exists to make impossible.
+
+**HOW THE TREE WAS STAGED, AND WHAT WAS COMPARED.** `/mnt/user/appdata/catalog-p6` was moved aside and
+recreated **empty**, `git archive c70ecb0` was extracted into it, and a sorted per-file sha256 manifest of
+the host was diffed against the same manifest taken from `git archive` — **1,649 files, empty diff, both
+directions**. The comparison is against the archive rather than against the Windows checkout, because
+`.gitattributes` marks some files `eol=crlf` and comparing the checkout would show drift that is only line
+endings. `node_modules` and the preserved real-provider evidence directory are excluded from the manifest
+and are the only things carried across.
 
 **THE TWO SOURCE DIGESTS ARE WHAT STOPS THIS SECTION GOING STALE AGAIN, AND THEY ARE NOT DECORATION.** A
 record that merely NAMES a commit can be falsified by the next commit without anything noticing — which is
@@ -514,11 +524,21 @@ moved in this correction**. Every commit in it touches `deploy/`, `docs/` or `te
 a recovery supervisor, two flags, six status fields and a fix to the probe cache — so a digest that had *not*
 moved would mean the change was not in the image being tested.
 
-### 11.2 The recovery gate
+### 11.2 The recovery gate — CLOSED, from the frozen source in §11.1
 
-**HELD — BEING RE-MEASURED FROM THE FROZEN SOURCE NAMED IN §11.1.** The figures this section carried were
-taken from tree `541313c0…` (commit `83191eb`), which the audit in §11.1.1 showed was not the frozen source this record names. They
-are **discarded rather than relabelled**, and this section is rewritten once, from the re-run.
+`npm run go:recovery-gate:three`, staged from frozen tree `5f6a8276…` (commit `c70ecb0`), completed
+**three consecutive fresh runs, exit 0, zero skips** on the real Unraid host: **42 arm verdicts, 42 pass,
+0 fail, 0 skip**, fourteen arms in every run.
+
+| Run | Arms | Failed | Skipped | Elapsed |
+|---|---|---|---|---|
+| 1/3 | `RC1 … RC13` + the closed-set sweep | **0** | **0** | 261,891 ms |
+| 2/3 | the same | **0** | **0** | 263,182 ms |
+| 3/3 | the same | **0** | **0** | 262,219 ms |
+
+The runner printed `RESULT: PASSED three consecutive cold-start runs`. **No `FAIL`, `GATE FAILED` or `SKIP`
+line occurs anywhere in the transcript.** Reconciled independently: 42 `PASS` lines, **13 distinct `RC` ids
+appearing three times each** = 39, plus the closed-set sweep three times = 42.
 
 ### 11.2.1 What the seven attempts before it cost, kept rather than glossed
 
@@ -585,17 +605,74 @@ attempting.
 recorded ten pre-existing failures on this host under `npm test`. `test:offline` at this commit selects 313
 suites and every one of them passes.
 
-### 11.4 The alpha install matrix
+### 11.4 The alpha install matrix — PASSED, from the frozen source in §11.1
 
-**HELD — BEING RE-MEASURED FROM THE FROZEN SOURCE NAMED IN §11.1.** The figures this section carried were
-taken from tree `1e3f4cd7…` (commit `a02730d`), which the audit in §11.1.1 showed was not the frozen source this record names. They
-are **discarded rather than relabelled**, and this section is rewritten once, from the re-run.
+`bash deploy/projection-alpha-acceptance.sh`, staged from frozen tree `5f6a8276…` (commit `c70ecb0`), on
+the real Unraid host: **11 of 11 arms, 0 failed**, in 30,000 ms on a warm host.
 
-### 11.5 The §7 regression matrix
+**THIS IS THE ONE THE AUDIT WAS ABOUT.** It drives the **shipped** operator command, and the shipped operator
+command is what the false record had mis-attributed — so of everything in §11 this is the measurement that
+most needed to come from a source somebody can check. It now does, and the `OPERATOR SOURCE DIGEST` in §11.1
+is what keeps it that way.
 
-**HELD — BEING RE-MEASURED FROM THE FROZEN SOURCE NAMED IN §11.1.** The figures this section carried were
-taken from tree `1e3f4cd7…` (commit `a02730d`), which the audit in §11.1.1 showed was not the frozen source this record names. They
-are **discarded rather than relabelled**, and this section is rewritten once, from the re-run.
+| Id | Measured |
+|---|---|
+| `AA1` | `preflight` refused with no consumer attached, exit 1, and **created nothing** |
+| `AA2` | a relative path, a `..` segment, a host root directory and a floating image tag were each **refused rather than resolved** |
+| `AA3` | `install` and `start` are both idempotent; the appliance is `healthy`; it claims the cache it writes to, holds its mount point with its own file system, and **left the control plane's manifest directory unclaimed** |
+| `AA4` | the pre-attached unprivileged consumer digest-matched bytes recorded outside the mount |
+| `AA5` | the status surface names the recovery state, reason, generation and remediation, and carries **no URL, media identity or free-text error** |
+| `AA6` | a foreign overlay showed as `inspect-mount-owner`, was **left exactly where it was**, and the appliance returned to `healthy` once a human removed it |
+| `AA7` | the **same** consumer read the **same** digest after the fault |
+| `AA8` | `upgrade` recorded a rollback target **before** changing anything, and `rollback` returned to it |
+| `AA9` | `reset-recovery` cleared the durable budget, and a second run of it is still a success |
+| `AA10` | `stop` is idempotent, the appliance is gone, and the media, manifest and cache are untouched |
+| `AA11` | the host's container, network and volume **sets** are identical; this run's mountpoints and directory are gone |
+
+**IT TOOK SIX ATTEMPTS TO GET HERE AND FOUND FOUR PRODUCT DEFECTS, ALL IN THE OPERATOR COMMAND.**
+
+| Found by | What it was |
+|---|---|
+| `AA1` | **`preflight` exited 1 with NO MESSAGE in the exact condition every first-run operator is in.** Under `set -euo pipefail` the consumer scan's loop body ends in a `grep` that fails when nothing matches; `pipefail` carried that through `wc -l` and `set -e` killed the whole preflight before it could say a word |
+| `AA3` | **The appliance was claiming the control plane's manifest directory**, so `install` refused a perfectly correct installation the moment a generation existed |
+| `AA3` | **`start` was not idempotent**, because the ownership marker is written into the mount point and the namespace is then mounted **over** it |
+| `AA3` | **The probe cache ate the ownership marker too** — the same sweep that ate the recovery ledger, found one arm later, on a second victim |
+
+Two further defects were the gate's own: four `pass` messages whose second line had no continuation (the
+shell ran it as a command and each lost half its report), and `AA6` asking `findmnt --target` what *contains*
+the path — which on a stacked mount point answers with the **bottom** of the stack, so an untouched overlay
+was reported as touched.
+
+### 11.5 The §7 regression matrix — DONE, from the frozen source in §11.1
+
+Every gate below ran on the real Unraid host from frozen tree `5f6a8276…` (commit `c70ecb0`) with
+`PROJECTIOND_IMAGE=projectiond:phase6-frozen` (`sha256:a5f12b92…`), serialised one after another in the same
+sequence as the two above.
+
+| Gate | Runs | Result |
+|---|---|---|
+| `go:mount-health-gate:three` | 3 | **exit 0** — 269 s |
+| `go:mount-truth-gate:three` | 3 | **exit 0** — 63 s |
+| `go:serve-death-gate:three` | 3 | **exit 0** — 53 s |
+| `go:stale-mount-gate:three` | 3 | **exit 0** — 271 s |
+| `go:sustained-outage-gate:three` | 3 | **exit 0** — 269 s |
+| `go:publisher-mount-gate` | 1 | **exit 0** — 100 s |
+| `go:rclone-comparison-gate` | 1 | **exit 0** — 135 s |
+
+Zero failures, zero skips, in any of them.
+
+**THE SUSTAINED-OUTAGE GATE IS THE CONTROL FOR THIS TRANCHE.** Its subject is a provider outage that never
+touches the mount, and it asserts `ready` is **still true** afterwards. A recovery supervisor that had become
+trigger-happy would fail it. It passed three times, so the supervisor is still deaf to everything except the
+mount.
+
+**AND THE SERVE-DEATH GATE IS THE ONE MOST LIKELY TO HAVE BROKEN**, because Phase 6 adds a second caller to
+the exact supervisor path it measures. It passed three times unchanged.
+
+**ONE OBSERVATION THAT IS NOT THIS TRANCHE'S TO ACT ON.** `go:rclone-comparison-gate`'s own nonclaim list
+still ends with *"no run of this gate has ever happened on a real Linux or Unraid host"*. These runs are two
+more. Correcting that sentence belongs to the phase that owns the gate, and it is recorded here rather than
+quietly edited.
 
 ### 11.6 The narrow real-provider acceptance — PASSED, and NOT re-run
 
@@ -627,43 +704,54 @@ above are counts, and the one path named is this run's own evidence file. The or
 touched**: it did not need maintenance on this run, and if it had, this tranche's rule was to emit a digest
 and a count and **ask**.
 
-### 11.7 Host cleanup — asserted
+### 11.7 Host cleanup — asserted, against the pre-Phase-6 baseline
 
-**HELD — RE-ASSERTED AFTER THE RE-RUN.** The figures below describe the host across the runs the superseded
-record named. They are rewritten from the re-run, and the baseline they are compared against is the same one
-captured before any Phase 6 container existed.
-
-Before and after the **entire** sequence — recovery gate ×7 attempts, three closure sequences, the install
-matrix ×6 attempts, seven regression gates and the real-provider gate:
+Before and after **everything** — the seven recovery-gate attempts, the discarded closure sequences, the six
+install-matrix attempts, the real-provider gate, and then the whole re-acceptance from the frozen source:
 
 | What | Result |
 |---|---|
-| container set | **identical** |
+| container set | **identical** to the baseline captured before any Phase 6 container existed |
 | network set | **identical** |
 | volume set | **identical** |
 | `fuse.projectiond` mounts on the host | **0** |
 | mountpoints under this task's staging root | **0** |
 
-**FOUR GATE ROOTS WERE LEFT AND THEY ARE RECORDED RATHER THAN GLOSSED.** Three of them —
-`.projection-alpha-acceptance`, `.projection-publisher-gate` and `.projection-rclone-gate` — were **empty**,
-because those gates have no `:three` wrapper and the wrapper is what removes a gate's home directory. They
-were removed with `rmdir`, which refuses a non-empty directory and therefore could not have taken anything
-with it. The fourth, `.projection-torbox-real-gate`, is **deliberately kept**: it holds this run's own
-evidence file, and deleting it would delete the evidence. The frozen tree at `/mnt/user/appdata/catalog-p6`
-and the image `projectiond:phase6-frozen` are kept for the same reason.
+**THE BASELINE IS THE ORIGINAL ONE, NOT A FRESH ONE.** Comparing against a snapshot taken after the work
+began would have made a leak invisible, so the comparison is against the container, network and volume sets
+captured before the first Phase 6 container was ever created — 42 containers, 17 networks, 45 volumes.
+
+**THREE EMPTY GATE ROOTS WERE LEFT AND ONE FULL ONE IS KEPT.**
+`.projection-alpha-acceptance`, `.projection-publisher-gate` and `.projection-rclone-gate` were each
+verified to hold **0 entries** and removed with `rmdir`, which refuses a non-empty directory and therefore
+could not have taken anything with it. `.projection-torbox-real-gate` is **deliberately kept**: it holds the
+real-provider evidence file, and deleting it would delete the evidence. The frozen tree at
+`/mnt/user/appdata/catalog-p6` and the image `projectiond:phase6-frozen` are kept for the same reason.
+
+**THE SUPERSEDED STAGING COPY WAS REMOVED.** Re-freezing moved the old tree aside to
+`/mnt/user/appdata/catalog-p6-old` so the new one could be extracted into an empty directory rather than
+over the top of it; that copy has been removed. Only `node_modules` and the real-provider evidence were
+carried across, and neither is in the manifest §11.1 compares.
 
 **NOTHING OUTSIDE THIS TASK'S OWN ROOTS WAS TOUCHED.** No production mount, no existing media library, no
 user share, no unrelated container, network or volume, and no operator secret was modified. The TorBox
 corpus was read and never written.
 
-
 ## 12. The alpha readiness decision
 
-**HELD AT NO-GO, PENDING §11.** The measurements this decision rested on came from trees the record did not
-name (§11.1.1). A GO requires demonstrated Tower evidence **from the frozen source in §11.1**, and this
-section is rewritten once, from those measurements. Everything below it — the supported combination, the
-commands, the boundaries, the rough edges — is unchanged by the audit and is left in place, because none of
-it was what was false.
+# **GO — for a rough-edged alpha, on exactly one supported combination.**
+
+**AND THIS TIME IT RESTS ON ONE FROZEN SOURCE, WHICH IS WHAT THE PREVIOUS GO DID NOT.** Every provider-free
+measurement in §11 — the recovery gate's 42 verdicts, the install matrix's 11 arms and all seven regression
+gates — was taken from tree `5f6a8276…` (commit `c70ecb0`), staged byte-identically to the host in both
+directions, against image `sha256:a5f12b92…` rebuilt from that same tree. The one exception is §11.6, whose
+heading says so.
+
+**WHAT THE AUDIT CHANGED ABOUT THE VERDICT: NOTHING, AND THAT IS WORTH STATING PLAINLY RATHER THAN QUIETLY.**
+Every re-run reproduced its result — 42/42, 11/11, seven gates green, zero skips — so the previous figures
+were not wrong, they were *unverifiable*. A GO that cannot be traced to one source is not a weaker GO, it is
+a different kind of claim, and the correction was worth a full re-measurement precisely because that
+distinction is the whole point of this repository's evidence discipline.
 
 ### 12.1 What can be installed today
 
