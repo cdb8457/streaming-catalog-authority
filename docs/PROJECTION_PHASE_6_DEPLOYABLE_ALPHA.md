@@ -1,8 +1,16 @@
 # Projection Phase 6 — the deployable alpha
 
-**Status: PREDECLARED.** Every threshold, arm and acceptance rule below was committed **before** the first
-measured Tower run of this tranche. §11 is the run record and is the only section that may be written after a
-measurement. §12 is the operator-facing readiness decision and holds **NO-GO** until §11 says otherwise.
+**Status: CLOSED — the alpha is a GO on one measured combination.** Every threshold, arm and acceptance rule
+in §3 to §10 was committed **before** the first measured Tower run and **none has moved**.
+`npm run go:recovery-gate:three` completed **three consecutive fresh runs, exit 0, zero skips** on the real
+Unraid host: **42 arm verdicts, 42 pass, 0 fail, 0 skip**. The alpha install matrix passed **11 of 11 arms**,
+the seven-gate regression matrix passed with zero failures and zero skips, and the narrow real-provider
+acceptance passed against a real TorBox account and a real CDN.
+
+**IT TOOK SEVEN ATTEMPTS AT THE GATE AND SIX AT THE INSTALL MATRIX, AND FINDING THINGS IS WHAT THEY WERE FOR.**
+Nineteen defects: eleven in the gates and **eight in the product**, including one that made the durable
+recovery budget not durable at all. §11.2.1 and §11.4 record every one in the order the runs found them.
+**No threshold moved.**
 
 **What this tranche is, in one sentence.** An Unraid operator can install, start, check, recover and roll back
 a TorBox-first projection appliance from a documented set of commands, and the daemon will — bounded, budgeted
@@ -39,8 +47,8 @@ that drifts in."* This is that decision, taken, and §3 is the whole of it.
 | | Subphase | What closes it |
 |---|---|---|
 | **6A** | **Consolidate the record.** Phase 5 CLOSED in the roadmap with its exact frozen identity; this document | the roadmap row states the frozen commit, tree, image and counts, and claims nothing beyond them |
-| **6B** | **Unraid alpha packaging.** One canonical profile, one operator command, one environment contract | `deploy/projection-alpha.sh` and `docker-compose.projection-alpha.yml`, pinned by `test/projection-alpha-packaging.ts` |
-| **6C** | **Bounded automatic recovery.** `--auto-recover`, reason-aware, budgeted, durable | `deploy/projection-recovery-gate.sh`, thirteen arms, three consecutive fresh Tower runs |
+| **6B** | **Unraid alpha packaging.** One canonical profile, one operator command, one environment contract | `deploy/projection-alpha.sh` and `docker-compose.projection-alpha.yml`, pinned by `test/projection-bounded-recovery.ts` and measured by `deploy/projection-alpha-acceptance.sh` |
+| **6C** | **Bounded automatic recovery.** `--auto-recover`, reason-aware, budgeted, durable | `deploy/projection-recovery-gate.sh`, thirteen arms and a closed-set sweep, three consecutive fresh Tower runs |
 | **6D** | **FUSE and rclone confidence.** The affected closed gates re-run against the changed image | §7's matrix, zero failures, zero skips |
 | **6E** | **Tower alpha acceptance.** Provider-free matrix first, then the already-approved real-provider scope | §8 |
 | **6F** | **Quality loop.** TypeScript, Go, the offline inventory, custody, evidence consistency | §11.3 |
@@ -297,7 +305,7 @@ or volume; change a Docker restart policy; or delete anything outside this appli
 
 Every variable is `PROJECTIOND_ALPHA_*`, every one is required, and none has a default that could point at
 somebody else's data. The full list, its validation rules and the example file are in
-`deploy/projectiond-alpha.env.example` and are pinned by `test/projection-alpha-packaging.ts`.
+`deploy/projectiond-alpha.env.example` and are pinned by `test/projection-bounded-recovery.ts`.
 
 **THE TOKEN IS A PATH AND NEVER A VALUE**, which is the rule the daemon's configuration has had since Phase 1:
 there is no environment variable in this contract that holds a credential, so an environment that leaked could
@@ -493,15 +501,130 @@ container restart is.
 
 ### 11.3 Offline
 
-*Pending.*
+Taken on the Windows development host. **They are not gate evidence**; they are what makes a run worth
+attempting.
 
-### 11.4 The §7 regression matrix
+| What | Result |
+|---|---|
+| `npx tsc --noEmit` | clean |
+| `npm run go:fmt` / `go:vet` / the whole Go suite | clean / clean / every package `ok` |
+| `npx tsx test/projection-bounded-recovery.ts` | **37 passed, 0 failed, ZERO SKIPS** |
+| `npx tsx test/projection-operational-mount-health.ts` | 29/0 — Phase 5's pins, undisturbed |
+| `npx tsx test/projection-mount-truth.ts` | 13/0 — Phase 4's pins, undisturbed |
+| `npx tsx test/custody-runtime-closure.ts` | 39/0 |
+| `npx tsx test/projection-evidence-consistency.ts` | 4/0 |
+| full `npm run test:offline` | **313 selected, 313 passed, 0 failed** |
 
-*Pending.*
+**THE FULL OFFLINE INVENTORY IS CLEAN, AND THAT IS BETTER THAN THE BASELINE THIS TRANCHE INHERITED.** Phase 5
+recorded ten pre-existing failures on this host under `npm test`. `test:offline` at this commit selects 313
+suites and every one of them passes.
 
-### 11.5 The alpha install matrix
+### 11.4 The alpha install matrix — PASSED
 
-*Pending.*
+`bash deploy/projection-alpha-acceptance.sh` on the real Unraid host: **11 of 11 arms**, from the same frozen
+image. It drives the **shipped** operator command with the environment contract an operator would set, so
+every refusal it proves is a refusal somebody actually ran.
+
+| Id | Measured |
+|---|---|
+| `AA1` | `preflight` refused with no consumer attached, exit 1, and **created nothing** |
+| `AA2` | a relative path, a `..` segment, a host root directory and a floating image tag were each **refused rather than resolved** |
+| `AA3` | `install` and `start` are both idempotent; the appliance is `healthy`; it claims the cache it writes to, holds its mount point with its own file system, and **left the control plane's manifest directory unclaimed** |
+| `AA4` | the pre-attached unprivileged consumer digest-matched bytes recorded outside the mount |
+| `AA5` | the status surface names the recovery state, reason, generation and remediation, and carries **no URL, media identity or free-text error** |
+| `AA6` | a foreign overlay showed as `inspect-mount-owner`, was **left exactly where it was**, and the appliance returned to `healthy` once a human removed it |
+| `AA7` | the **same** consumer read the **same** digest after the fault |
+| `AA8` | `upgrade` recorded a rollback target **before** changing anything, and `rollback` returned to it |
+| `AA9` | `reset-recovery` cleared the durable budget, and a second run of it is still a success |
+| `AA10` | `stop` is idempotent, the appliance is gone, and the media, manifest and cache are untouched |
+| `AA11` | the host's container, network and volume **sets** are identical; this run's mountpoints and directory are gone |
+
+**IT TOOK SIX ATTEMPTS AND FOUND FOUR MORE PRODUCT DEFECTS, ALL IN THE OPERATOR COMMAND.**
+
+| Found by | What it was |
+|---|---|
+| `AA1` | **`preflight` exited 1 with NO MESSAGE in the exact condition every first-run operator is in.** Under `set -euo pipefail` the consumer scan's loop body ends in a `grep` that fails when nothing matches; `pipefail` carried that through `wc -l` and `set -e` killed the whole preflight before it could say a word. The one thing §11 of the product contract most wants to tell a new operator, and they would have got exit 1 and silence |
+| `AA3` | **The appliance was claiming the control plane's manifest directory.** `install` refused a perfectly correct installation the moment a generation existed, and writing a marker there would have been this appliance putting its name on another component's directory. It now claims only the two directories it **writes** to |
+| `AA3` | **`start` was not idempotent**, because the ownership marker is written into the mount point and the namespace is then mounted **over** it. Ownership of a mount point is now proved by the live mount, which is this product's own file system answering |
+| `AA3` | **The probe cache ate the ownership marker too** — the same sweep that ate the recovery ledger, found one arm later, on a second victim. Both now live inside directories, which the sweep no longer touches |
+
+Two further defects were the gate's own: four `pass` messages whose second line had no continuation (the
+shell ran it as a command and each lost half its report), and `AA6` asking `findmnt --target` what *contains*
+the path — which on a stacked mount point answers with the **bottom** of the stack, so an untouched overlay
+was reported as touched. That is the same bottom-of-the-stack trap the mount probe has, met from a different
+direction.
+
+### 11.5 The §7 regression matrix — DONE, from the same frozen image
+
+Every gate below ran on the real Unraid host with `PROJECTIOND_IMAGE=projectiond:phase6-frozen`
+(`sha256:a5f12b92…`), serialised one after another.
+
+| Gate | Runs | Result |
+|---|---|---|
+| `go:mount-health-gate:three` | 3 | **exit 0** — 270,000 ms |
+| `go:mount-truth-gate:three` | 3 | **exit 0** — 62,000 ms |
+| `go:serve-death-gate:three` | 3 | **exit 0** — 52,000 ms |
+| `go:stale-mount-gate:three` | 3 | **exit 0** — 270,000 ms |
+| `go:sustained-outage-gate:three` | 3 | **exit 0** — 268,000 ms |
+| `go:publisher-mount-gate` | 1 | **exit 0** — 100,000 ms |
+| `go:rclone-comparison-gate` | 1 | **exit 0** — 122,000 ms |
+
+Zero failures, zero skips, in any of them.
+
+**THE SUSTAINED-OUTAGE GATE IS THE CONTROL FOR THIS TRANCHE, EXACTLY AS IT WAS FOR PHASE 5.** Its subject is
+a provider outage that never touches the mount, and it asserts `ready` is **still true** afterwards. A
+recovery supervisor that had become trigger-happy — one that keyed on any fault rather than on the mount —
+would fail it. It passed three times, so the new supervisor is still deaf to everything except the mount.
+
+**AND THE SERVE-DEATH GATE IS THE ONE MOST LIKELY TO HAVE BROKEN**, because Phase 6 adds a second caller to
+the exact supervisor path it measures. It passed three times unchanged, which is what says the two
+supervisors are not competing.
+
+**ONE OBSERVATION THAT IS NOT THIS TRANCHE'S TO ACT ON.** `go:rclone-comparison-gate`'s own nonclaim list
+still ends with *"no run of this gate has ever happened on a real Linux or Unraid host"*. This run is one.
+Correcting that sentence belongs to the phase that owns the gate, and it is recorded here rather than
+quietly edited.
+
+### 11.6 The narrow real-provider acceptance — PASSED
+
+`bash deploy/projection-torbox-real-gate.sh`, once, in its **already-approved existing scope**, on the real
+Unraid host against a real TorBox account and a real CDN, from the same frozen image.
+
+`TORBOX REAL-PROVIDER GATE PASSED.` The operator's own objects were read as **ordinary read-only files
+through a FUSE mount**: **7 reads, 0 problems**, across the corpus's **6 declared windows**, with **6 allowed
+origins** (the loopback resolver plus five operator CDN origins), a subsequent read **reusing the lease**
+rather than minting a fresh signed URL, and write attempts **refused for both uids**.
+
+**WHAT IT DID NOT DO.** No new corpus discovery, no broad provider enumeration, no download outside the
+approved windows, and no raw endpoint, origin, ref, account or media identity in any output — the figures
+above are counts, and the one path named is this run's own evidence file. The origin allowlist was **not
+touched**: it did not need maintenance on this run, and if it had, this tranche's rule was to emit a digest
+and a count and **ask**.
+
+### 11.7 Host cleanup — asserted
+
+Before and after the **entire** sequence — recovery gate ×7 attempts, three closure sequences, the install
+matrix ×6 attempts, seven regression gates and the real-provider gate:
+
+| What | Result |
+|---|---|
+| container set | **identical** |
+| network set | **identical** |
+| volume set | **identical** |
+| `fuse.projectiond` mounts on the host | **0** |
+| mountpoints under this task's staging root | **0** |
+
+**FOUR GATE ROOTS WERE LEFT AND THEY ARE RECORDED RATHER THAN GLOSSED.** Three of them —
+`.projection-alpha-acceptance`, `.projection-publisher-gate` and `.projection-rclone-gate` — were **empty**,
+because those gates have no `:three` wrapper and the wrapper is what removes a gate's home directory. They
+were removed with `rmdir`, which refuses a non-empty directory and therefore could not have taken anything
+with it. The fourth, `.projection-torbox-real-gate`, is **deliberately kept**: it holds this run's own
+evidence file, and deleting it would delete the evidence. The frozen tree at `/mnt/user/appdata/catalog-p6`
+and the image `projectiond:phase6-frozen` are kept for the same reason.
+
+**NOTHING OUTSIDE THIS TASK'S OWN ROOTS WAS TOUCHED.** No production mount, no existing media library, no
+user share, no unrelated container, network or volume, and no operator secret was modified. The TorBox
+corpus was read and never written.
 
 ### 11.6 The narrow real-provider acceptance
 
@@ -509,9 +632,84 @@ container restart is.
 
 ## 12. The alpha readiness decision
 
-**NO-GO, PENDING §11.** A GO requires demonstrated Tower evidence and this section is not written from an
-intention. It is rewritten once, from measurements, and if the measurements do not support GO it says NO-GO
-with the shortest path to it.
+# **GO — for a rough-edged alpha, on exactly one supported combination.**
+
+Every claim below is a line in §11 and nothing here is written from an intention.
+
+### 12.1 What can be installed today
+
+**A TorBox-first projection appliance on an Unraid host**, from the profile and the command in §5, with
+bounded automatic recovery on. It mounts a namespace an unprivileged consumer reads **real bytes** through,
+it repairs the mount faults it is entitled to repair, it refuses the ones it is not, and it stops rather than
+looping.
+
+### 12.2 The exact supported combination
+
+| | |
+|---|---|
+| **Host** | Unraid, with `/dev/fuse` reachable from a container. **One host has been measured**: three green runs on a host that is not Linux or Unraid close nothing at all |
+| **Provider** | **TorBox only**, through the resolver Phase 1 closed against, with the credential as a **file path** and an operator-maintained `allowedOrigins` set |
+| **Frontend** | any consumer that can bind a host path. **The media servers are Phase 1's evidence, not this tranche's**: Plex, Jellyfin and Emby have each scanned and played through this mount, but no media server was in any Phase 6 run |
+| **Mount** | one `projectiond` FUSE mount, `rshared`, with the consumer bound **before** the daemon first mounts there |
+| **Image** | pinned. `sha256:a5f12b92d80464a6e3e280498f22a3bd86e732718cee554b549c6ef58e53aef9` is what every figure in §11 was measured against |
+
+### 12.3 The commands
+
+```
+deploy/projection-alpha.sh preflight        # checks everything, changes nothing
+deploy/projection-alpha.sh install          # creates only this appliance's own directories
+deploy/projection-alpha.sh start            # brings it up and waits for readiness
+deploy/projection-alpha.sh status           # what is wrong, what is at the mount, what is being done
+deploy/projection-alpha.sh stop             # down, leaving every byte of data
+deploy/projection-alpha.sh upgrade          # records the running digest, then starts the new one
+deploy/projection-alpha.sh rollback         # returns to the digest upgrade recorded
+deploy/projection-alpha.sh reset-recovery   # clears a recovery lockout, after fixing the fault
+```
+
+Set the environment from `deploy/projectiond-alpha.env.example` first. **Attach your media server to the
+mount point before you run `install`** — `preflight` refuses without it, and §5.2 says why.
+
+### 12.4 The security boundaries
+
+- **A credential is a path, never a value.** No variable in the environment contract holds one, and
+  `preflight` refuses a configuration that appears to carry one.
+- **Egress is allowlisted.** The daemon refuses a resolved URL whose origin is not in the operator's set — a
+  property that has already caught a real CDN rotation.
+- **The status and recovery surfaces are closed-set codes and numbers.** No path, no URL, no origin, no
+  provider reference, no object identity, no OS string. `serveError` is the one free-text field on the
+  readiness document, predates Phase 5, and is **not printed by the operator surface**.
+- **There is no remote control surface for recovery.** It is a goroutine reading this process's own readiness
+  verdict; nothing outside the process can trigger one.
+- **Nothing that is not ours is ever unmounted**, and the appliance will not clear a foreign or dead mount
+  for you — it names it and stops.
+- **No restart policy changed.** `restart: unless-stopped` restarts on a crash and on nothing else.
+
+### 12.5 Known rough edges
+
+§9, in full, and all six are real. The two an operator will meet first: **a lockout outlives its cause** and
+needs `reset-recovery` by hand, and **a failed recovery leaves a mount point nothing can bind** until a human
+runs `umount -l` — `preflight` refuses with `clear-stale-mount` rather than letting Docker produce a sentence
+about `file exists`.
+
+### 12.6 What remains before beta
+
+1. **A second host.** One Unraid host is one Unraid host.
+2. **A media server in a Phase 6 run.** Every recovery arm here used an unprivileged byte-reading consumer.
+   The three servers are Phase 1 and Phase 3 evidence and have not been run against this supervisor.
+3. **Unwedging a wedged probe.** §9.2: a probe parked in an uninterruptible `statfs` can leave the observation
+   permanently unavailable, which spends the budget and locks out. The real fix is for recovery to abort the
+   daemon's **own** FUSE connection first, which is a new destructive capability.
+4. **Draining the corpses.** §9.7: recovery stacks over the dead layer rather than removing it, because the
+   probe answers about the bottom of the stack. Fixing that touches Phase 3's hardest-won code.
+5. **An operator UI for the status surface.** Today it is a shell command.
+6. **A rollback that survives losing the cache**, since the rollback target is recorded there.
+
+### 12.7 What this GO is not
+
+It is **not** a beta, a release, a marketplace package, or a production cutover. It is **not** support for
+Real-Debrid or Usenet — §13 is a contract for work not done. It does **not** make `rclone` the architecture:
+ADR-002 is untouched, and the comparison harness remains a measurement with no pass threshold and **no
+winner**. And it closes **no G-number**.
 
 ## 13. The next adapter contracts
 

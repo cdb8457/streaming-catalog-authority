@@ -642,8 +642,24 @@ test('the roadmap records Phase 5 CLOSED with its exact frozen identity and clai
   assert(row.includes('no G-number'), 'the Phase 5 row no longer records that it closes no G-number');
   const six = roadmap.split('\n').find((line) => line.startsWith('| **Projection Phase 6**'));
   if (six === undefined) throw new Error('the roadmap has no Phase 6 row');
-  assert(six.includes('**OPEN**'),
-    'the roadmap Phase 6 row does not open holding nothing');
+  // A ROW MAY SAY `OPEN` HOLDING NOTHING, OR `CLOSED` HOLDING EVERYTHING — AND NOTHING IN BETWEEN. This pin
+  // was written when the row said OPEN and it demanded that word, which would have made closing the tranche
+  // a test failure. What it is actually for is the other case: a CLOSED row that does not name the image its
+  // figures came from, the counts, or what it refuses to claim is a row somebody will read as meaning more
+  // than it says.
+  if (six.includes('**OPEN**')) {
+    assert(six.includes('holding **nothing**'), 'an OPEN Phase 6 row must say it holds nothing');
+  } else {
+    assert(six.includes('**CLOSED**'), 'the Phase 6 row is neither OPEN nor CLOSED');
+    assert(/sha256:[0-9a-f]{64}/.test(six),
+      'the CLOSED Phase 6 row names no frozen image, so its figures describe nothing in particular');
+    assert(/\d+ arm verdicts, \d+ pass, 0 fail, 0 skip/.test(six),
+      'the CLOSED Phase 6 row states no evidence count');
+    assert(six.includes('does NOT close'),
+      'the CLOSED Phase 6 row records no nonclaims, which is the half a roadmap row usually loses');
+    assert(six.includes('No threshold moved'),
+      'the CLOSED Phase 6 row does not say whether a threshold moved after measurement');
+  }
 });
 
 test('the Go table drives the shipped decision and covers both sides of the sustain boundary', () => {
