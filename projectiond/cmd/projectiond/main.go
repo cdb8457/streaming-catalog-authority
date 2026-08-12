@@ -101,7 +101,13 @@ func main() {
 	// having looked at it.
 	if *resetRecovery {
 		if err := daemon.ResetRecoveryLedger(cfg.ProbeCacheDir); err != nil {
-			fail("the recovery ledger could not be reset")
+			// THE MESSAGE CARRIES A REMEDIATION AND STILL NO OS ERROR, and a real Tower run is why it needed
+			// one. The cache directory belongs to the uid the daemon runs as — root in every shipped profile,
+			// because a FUSE mount needs it — while this image's DEFAULT user is `nonroot`. So a reset run as
+			// `docker run <image> --reset-recovery`, without saying who to be, is refused by the filesystem
+			// and the operator is told only that it failed. The one thing they need to know is said here.
+			fail("the recovery ledger could not be reset; run this as the user that owns the cache " +
+				"directory (the shipped profiles run the daemon as root, so: --user 0:0)")
 		}
 		logLine("recovery ledger reset; automatic recovery will act again when it is enabled")
 		return

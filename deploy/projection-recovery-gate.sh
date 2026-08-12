@@ -1013,11 +1013,17 @@ else
 
   # ...AND A HUMAN IS THE ONLY THING THAT CLEARS IT. The reset runs in the shipped image, in the mode that
   # constructs no daemon and cannot mount.
-  docker run --rm \
+  # AS THE UID THAT OWNS THE CACHE, AND THE FIRST RUN THAT GOT THIS FAR IS WHY IT SAYS SO.
+  #
+  # The image's DEFAULT user is `nonroot`; the daemon runs as root in every shipped profile because a FUSE
+  # mount needs it, so the ledger and its directory belong to root. A reset that did not say who to be was
+  # refused by the filesystem, and the arm reported "--reset-recovery refused" with no way to tell that from
+  # the flag being broken. The daemon now says what to do about it, and this captures what it said.
+  RC11_RESET_OUT="$(docker run --rm --user 0:0 \
     -v "$WORK/cache:/var/lib/projectiond/cache" \
     -v "$WORK/config.json:/etc/projectiond/config.json:ro" \
-    "$IMAGE" --config /etc/projectiond/config.json --reset-recovery >/dev/null 2>&1 \
-    || die "RC11: --reset-recovery refused"
+    "$IMAGE" --config /etc/projectiond/config.json --reset-recovery 2>&1)" \
+    || die "RC11: --reset-recovery refused: $RC11_RESET_OUT"
   docker rm -f "$DAEMON_CONTAINER" >/dev/null 2>&1 || true
   start_daemon
   await_ready 240 || die "RC11: the daemon never became ready after the reset"

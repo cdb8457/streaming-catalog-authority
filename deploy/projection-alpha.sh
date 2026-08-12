@@ -418,7 +418,10 @@ reset_recovery() {
     docker exec "$CONTAINER" /usr/local/bin/projectiond \
       --config=/etc/projectiond/config.json --reset-recovery
   else
-    docker run --rm \
+    # AS THE UID THAT OWNS THE CACHE. The image's default user is `nonroot` and the shipped profile runs the
+    # daemon as root, because a FUSE mount needs it — so a reset that did not say who to be would be refused
+    # by the filesystem, and the operator would be told only that it failed.
+    docker run --rm --user 0:0 \
       -v "$PROJECTIOND_ALPHA_CACHE_DIR:/var/lib/projectiond/cache" \
       -v "$PROJECTIOND_ALPHA_CONFIG:/etc/projectiond/config.json:ro" \
       "$PROJECTIOND_ALPHA_IMAGE" --config=/etc/projectiond/config.json --reset-recovery
