@@ -2730,6 +2730,28 @@ arm_R1() {
   record "P7-R1-ready-ms" le "$( [ "$recovered_ok" -eq 1 ] && echo "$ready_ms" || echo "" )" \
     "$P7_RECOVERY_READY_BUDGET_MS" \
     "from the fault to a sibling container reading a byte through the mount again" || true
+  # WHEN THIS ARM FAILS, THE DAEMON'S OWN ACCOUNT IS THE DIAGNOSIS AND THE CLEANUP CONTRACT IS ABOUT TO
+  # DELETE IT. Its first real execution recorded `reason='none' observation='none'` for thirty-four seconds,
+  # which says the status surface was not answering at all — and NOTHING else in the run said whether that
+  # was a daemon that had exited or a daemon that was alive and no longer reachable. Two readings, one
+  # measurement, and the log is the only thing that separates them. It carries no secret by construction, and
+  # it is kept at 0600 in the 0700 evidence directory exactly as Phase 3's A3 keeps its own.
+  if [ "$gone" -ne 1 ] || [ "$acted" -ne 0 ] || [ "$recovered_ok" -ne 1 ]; then
+    mkdir -p "$EVIDENCE_DIR" && chmod 700 "$EVIDENCE_DIR"
+    if docker logs "$MOUNT_CONTAINER" > "$EVIDENCE_DIR/r1-daemon-$$.log" 2>&1; then
+      chmod 600 "$EVIDENCE_DIR/r1-daemon-$$.log"
+      echo "  the daemon's own account is kept at $REL_GATE_ROOT/evidence/r1-daemon-$$.log" >&2
+      echo "--- what it says about the death, the remount and the recovery ---" >&2
+      grep -E "serve loop died|remount|recovery|stale|foreign|detach|exiting" \
+        "$EVIDENCE_DIR/r1-daemon-$$.log" | tail -15 >&2 || true
+    else
+      echo "  THE DAEMON CONTAINER COULD NOT BE READ AT ALL, which is itself the diagnosis" >&2
+    fi
+    docker inspect -f "  daemon container: {{.State.Status}} exit={{.State.ExitCode}}" "$MOUNT_CONTAINER" >&2 \
+      2>/dev/null || echo "  daemon container: GONE" >&2
+    echo "  --- mount survey (after the R1 fault) ---" >&2
+    bash "$WORK/out/mountrows.sh" "$WORK/mnt" "host" >&2 || true
+  fi
   record "P7-R1" bool "$( [ "$gone" -eq 1 ] && [ "$acted" -eq 0 ] && [ "$recovered_ok" -eq 1 ] && echo 1 || echo 0 )" "" \
     "the mount lost beneath a living daemon, recovered by the recovery supervisor" || true
 }
