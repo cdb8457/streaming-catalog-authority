@@ -415,15 +415,81 @@ alpha-candidate checkpoint with every remaining blocker precisely named. It does
 
 ## 11. Run record
 
-**HELD. Nothing below this line may be written before it is measured.**
-
 ### 11.1 Frozen identity
 
-*Pending.*
+| What | Value |
+|---|---|
+| frozen commit | `57200c8455c8bb276d23a06fd2b27175e986bd92` (gate-only changes after it; §11.2 names them) |
+| image | `sha256:a5f12b92d80464a6e3e280498f22a3bd86e732718cee554b549c6ef58e53aef9` |
+| host | Unraid `tower` |
 
-### 11.2 The recovery gate
+**THE IMAGE DIGEST MOVED FROM PHASE 5'S AND IT IS SUPPOSED TO HAVE.** This tranche changes `projectiond` —
+a recovery supervisor, two flags, six status fields and a fix to the probe cache — so a digest that had *not*
+moved would mean the change was not in the image being tested. **It then did NOT move across the last three
+commits**, which are gate-only, and that is the check that says the daemon bytes under test are the same
+bytes in every run below.
 
-*Pending.*
+### 11.2 The recovery gate — CLOSED
+
+`npm run go:recovery-gate:three` completed **three consecutive fresh runs, exit 0, zero skips**, on the real
+Unraid host: **42 arm verdicts, 42 pass, 0 fail, 0 skip**, fourteen arms in every run.
+
+| Run | Arms | Failed | Skipped | Elapsed |
+|---|---|---|---|---|
+| 1/3 | `RC1 … RC13` + the closed-set sweep | **0** | **0** | 264,281 ms |
+| 2/3 | the same | **0** | **0** | 264,560 ms |
+| 3/3 | the same | **0** | **0** | 267,380 ms |
+
+Each run printed `BOUNDED RECOVERY GATE PASSED: 14 of 14 arms`; the runner printed `RESULT: PASSED three
+consecutive cold-start runs`. **No `FAIL`, `GATE FAILED` or `SKIP` line occurs anywhere in the transcript.**
+
+Host before and after the whole sequence: container, network and volume **sets identical**, **zero**
+`catalog-p6` mountpoints, and the gate's own root gone.
+
+### 11.2.1 What the seven attempts before it cost, kept rather than glossed
+
+**IT TOOK SEVEN RUNS TO GET ONE GREEN ONE, AND FIVE OF THE NINE DEFECTS WERE IN THE GATE.** Every one is
+recorded here in the order the runs found them, because the sequence of what was believed when is the record.
+
+| # | Found by | What it was | Where the fix went |
+|---|---|---|---|
+| 1 | run 1 | `RC6` required exactly one of our mounts, a precondition copied from an arm that runs **before** any recovery. By then `RC4`'s recovery had happened and the namespace legitimately held three | the gate — the guard is now on the **identity** of what will be aborted |
+| 2 | reading, after run 1 | `RC8` masked `/dev/fuse` and then aborted the **subject's** connection, which kills its serve loop — so the serve supervisor's three remounts would all fail against the mask and the process would exit, leaving nothing alive to spend a recovery budget | the gate — the fault is now produced the way `RC4` produces it |
+| 3 | run 2 | `RC4` asked the gate to **catch a one-second state**: the action code is on `/readyz` only while the attempt is in flight, and every reading costs a container start. Measured `generation 0 → 1` with `sawAction=0` | the gate — the action is read from the daemon's log, which is durable |
+| 4 | run 2 | `RC10` counted **one remount as three**: `remount attempt 1/3` occurs on three lines of one attempt | the gate — anchored to end-of-line |
+| 5 | run 2 | The `RC8` injector **could not run at all**, and the reason is the image being right: `nsenter -m` resolves its command in the target's filesystem, and the runtime stage is distroless. The kernel said so plainly — `failed to execute mount: No such file or directory` | the gate — a digest-pinned static busybox is copied in first |
+| 6 | run 4 | `RC8`'s landing check read its own baseline **after** starting the blocker | the gate |
+| 7 | **run 4** | **A daemon that exhausts its budget leaves a mount point NOTHING CAN BIND.** A dead FUSE mount answers `stat` with `ENOTCONN`; Docker's bind setup reads that as *"file exists"* and refuses to start the next container, with a message that tells an operator nothing | **the product** — `preflight` now refuses with the closed-set remediation `clear-stale-mount` |
+| 8 | **run 5** | **THE PROBE CACHE WAS DELETING THE RECOVERY LEDGER ON EVERY STARTUP.** §11.2.2 |  **the product** |
+| 9 | **run 6** | `--reset-recovery` said only that it had failed. The image's default user is `nonroot` while every shipped profile runs the daemon as root, so the ledger is root-owned and a reset that did not say who to be was refused by the filesystem | **the product** — the daemon now names the remediation, and both callers pass `--user 0:0` |
+| 10 | the closure sequence | `RC8` was measuring a **proxy** for the cooldown, biased low by construction — the gate's own observation time by a whole poll (18,955 ms), then Docker's log timestamp by the gap between granting the attempt and writing the line (19,999 ms) | the gate — it now reads the stamps the cooldown is compared against, **corroborated** by Docker's independent ones |
+| 11 | the closure sequence | `RC8` counted `RC4`'s attempt stamp as one of its own, because `lastAttemptUnixNano` is deliberately not cleared by a refund. **The corroboration is what caught it** — the arm refused because the two clocks disagreed on how many attempts there had been | the gate |
+
+**No threshold moved.** §3.3 is byte-for-byte what was committed before the first run.
+
+### 11.2.2 The most serious thing this tranche produced, and it was in code the tranche did not write
+
+`RC11` — the one arm whose whole subject is the property that makes the budget a bound — failed on run 5 with
+`stateAfterRestart=idle attempts=0`. A daemon that had just exhausted its budget and locked itself out came
+back from a container restart with a clean slate, **cheerfully ready**.
+
+`NewProbeCache` sweeps its directory at startup and removes every entry whose name is not a record name. That
+is right for the `.tmp` leftovers of an interrupted write, which is what it was written for. But that
+directory is also **the one place the operator contract requires to be durable and writable**, so it is
+exactly where anything else durable naturally goes — and Phase 6 put the recovery ledger there. The sweep
+deleted it on every single startup.
+
+**So the whole argument for `restart: unless-stopped` being safe was false.** An in-memory budget of three
+authorises three attempts *per restart*, which is unbounded, and that is precisely why the ledger was made
+durable. It was durable in every respect except surviving the thing it existed to survive.
+
+**The fix is in the cache, not in the tranche that found it.** A directory was never that cache's to remove:
+`os.Remove` on one succeeds only when it is **empty**, so anything with a file in it survived *by accident* —
+right up until the first startup after somebody cleared it. The sweep now skips directories outright, and the
+ledger has moved into one of its own. Both halves are pinned: `TestNewProbeCacheLeavesDirectoriesAlone` drives
+the real constructor and **fails against the previous cache** (verified: it deleted the empty directory), and
+`TestTheProbeCacheDoesNotEatTheLedger` builds a whole daemon against a ledger's own directory, which is what a
+container restart is.
 
 ### 11.3 Offline
 

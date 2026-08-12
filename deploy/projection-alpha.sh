@@ -148,6 +148,13 @@ status_port_from_config() {
 # mechanical: `test/custody-runtime-closure.ts` parses every shipped script under all three line endings and
 # refuses a line whose quotes do not close, and a multi-line `$( ... )` carrying Go-template quoting is
 # exactly the shape it cannot read. An unreadable line is not an empty one.
+#
+# ...AND IT ENDS WITH `return 0`, WHICH IS NOT A FORMALITY. Under `set -euo pipefail` the loop body's last
+# command is a `grep` that FAILS when there is no match, so with nothing attached this function returned
+# non-zero, `pipefail` carried that through `| wc -l`, and `set -e` killed the whole preflight — silently,
+# exit 1, with no message at all. Measured on the real host: the very first arm of the install matrix got
+# `rc=1` and an empty explanation, in exactly the condition an operator meets on their first ever run.
+# "Nothing matched" is an ANSWER here, not a failure.
 consumers_bound_to() {
   local target="$1" name
   docker ps --format '{{.Names}}' 2>/dev/null | while read -r name; do
@@ -155,6 +162,7 @@ consumers_bound_to() {
     docker inspect -f '{{range .Mounts}}{{.Source}}{{println}}{{end}}' "$name" 2>/dev/null \
       | grep -qxF "$target" && printf '%s\n' "$name"
   done
+  return 0
 }
 
 # MOUNTS AT A PATH THAT ARE NOT OURS. `findmnt` is Linux; on a host without it the question cannot be asked,
