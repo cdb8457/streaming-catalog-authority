@@ -214,6 +214,26 @@ preflight() {
     fi
   fi
 
+  # A DEAD PROJECTIOND MOUNT AT THE MOUNT POINT, WHICH IS A REFUSAL WITH A REMEDIATION RATHER THAN A DOCKER
+  # ERROR, AND A REAL TOWER RUN IS WHY IT EXISTS.
+  #
+  # A mount point carrying a dead FUSE mount answers `stat` with ENOTCONN. Docker's bind setup reads that as
+  # "file exists" and refuses to start the container at all:
+  #   error while creating mount source path '...': mkdir '...': file exists
+  # — which tells an operator nothing about what is wrong or what to do. It is exactly the state a daemon that
+  # exhausted its recovery budget leaves behind, so the operator most likely to meet it is the one already
+  # having a bad day.
+  #
+  # THE APPLIANCE DOES NOT CLEAR IT ITSELF, DELIBERATELY. Unmounting something at the operator's mount point
+  # is the one action this whole tranche refuses to take automatically, and a preflight that quietly did it
+  # would be a worse version of the `--auto-remount` defect. It says what is there and what clears it.
+  if [ -e "$PROJECTIOND_ALPHA_MOUNT" ] && ! ls "$PROJECTIOND_ALPHA_MOUNT" >/dev/null 2>&1; then
+    warn "the mount point is a DEAD mount: it answers stat but cannot be read. Nothing can bind it, and this"
+    warn "appliance will not unmount it for you. Clear it with:  umount -l <your mount point>"
+    warn "remediation: clear-stale-mount"
+    failures=$(( failures + 1 ))
+  fi
+
   # THE MOUNT POINT. A mount that is not ours at the mount point is the single most dangerous state to start
   # into: the daemon would stack over it, and any recovery would then be looking at a foreign mount it
   # correctly refuses to touch — an appliance that can never repair itself.
@@ -348,6 +368,9 @@ status_appliance() {
                               projection-alpha.sh reset-recovery
     check-cache-directory   the recovery ledger could not be read or written. The cache directory is the
                             first suspect: it must be durable and writable by the daemon.
+    clear-stale-mount       the mount point carries a DEAD mount: it answers stat and cannot be read, so
+                            nothing — not even Docker — can bind it. This appliance will not unmount it for
+                            you. Clear it with:  umount -l <your mount point>
 REMEDY
 }
 

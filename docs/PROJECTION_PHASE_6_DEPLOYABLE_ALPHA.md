@@ -381,7 +381,15 @@ alpha-candidate checkpoint with every remaining blocker precisely named. It does
 4. **No alerting, no history, no trend.** The surface is a point-in-time document. Everything an operator
    knows about the past is `recoveryGeneration` and `recoveryLastOutcome`.
 5. **One provider.** TorBox, through the adapter Phase 1 closed against. §10 is explicit about what that means.
-6. **A recovery usually STACKS OVER the corpse rather than removing it, and the first Tower run is what made
+6. **A daemon that exhausts its budget leaves a mount point NOTHING CAN BIND, and only a human clears it.**
+   Found on the fourth Tower run. A dead FUSE mount answers `stat` with `ENOTCONN`, and Docker's bind setup
+   reads that as *"file exists"* and refuses to start the next container at all — with a message that tells an
+   operator nothing about what is wrong. `preflight` now **refuses** with the closed-set remediation
+   `clear-stale-mount` and the exact command (`umount -l`). **The appliance deliberately does not clear it
+   itself**: unmounting something at the operator's mount point is the one action this whole tranche refuses
+   to take automatically, and a preflight that quietly did it would be a worse version of the `--auto-remount`
+   defect.
+7. **A recovery usually STACKS OVER the corpse rather than removing it, and the first Tower run is what made
    that concrete.** `ProbeMountpoint` reads the *bottom* entry of a stacked mount point, and in every
    containerised topology this daemon ships in that entry is the operator's own bind — which the supervisor
    correctly declines to touch. So `planRemountCleanup` returns "nothing", the drain does not run, and the

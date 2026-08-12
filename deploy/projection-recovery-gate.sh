@@ -905,37 +905,56 @@ else
   esac
   docker rm -f "$BLOCKER_CONTAINER" >/dev/null 2>&1 || true
 
-  # THE BUDGET IS DRIVEN TO EXHAUSTION AND EVERY ATTEMPT'S START IS STAMPED, because RC8's whole claim is
-  # about the SPACING between them: an attempt that followed another inside the cooldown would be the bound
-  # not holding, and a gate that only counted attempts could not tell.
+  # THE BUDGET IS DRIVEN TO EXHAUSTION. The COUNT is read from the status surface; the SPACING is not.
   RC8_WAIT_S=$(( ((RC_RECOVERY_COOLDOWN_MS * (RC_RECOVERY_MAX_ATTEMPTS + 1)) / 1000) + 90 ))
   RC8_LOCKED=0
   n=0
   while [ "$n" -lt "$RC8_WAIT_S" ]; do
     sample
-    if [ -n "$REC_ATTEMPTS" ] && [ "$REC_ATTEMPTS" != "$RC8_LAST_ATTEMPTS" ]; then
-      RC8_LAST_ATTEMPTS="$REC_ATTEMPTS"
-      RC8_ATTEMPT_STAMPS="$RC8_ATTEMPT_STAMPS $(date +%s%3N)"
-    fi
     [ "$REC_STATE" = "$RC_STATE_LOCKED_OUT" ] && { RC8_LOCKED=1; break; }
     n=$((n + 1)); sleep 1
   done
   RC8_ATTEMPTS="$REC_ATTEMPTS"
   RC9_STATE="$REC_STATE"; RC9_REASON="$REC_REASON"; RC9_REMEDIATION="$REC_REMEDIATION"
   RC9_GENERATION="$REC_GENERATION"
+
+  # THE SPACING IS MEASURED FROM DOCKER'S OWN TIMESTAMPS ON THE DAEMON'S LOG, AND THE FIRST FORMULATION WAS
+  # MEASURING THE GATE INSTEAD OF THE PRODUCT.
+  #
+  # It stamped the host clock at the moment it OBSERVED the attempt counter change — and every observation
+  # here costs a container start, so an observation lands up to a whole polling interval after the event.
+  # Measured, on the real host: three attempts, the closest observed pair 18,955 ms apart against a 20,000 ms
+  # cooldown. That 1,045 ms is one poll, not a bound being broken, and an arm that failed on it would be
+  # asserting how fast this gate can make an HTTP request.
+  #
+  # `docker logs -t` timestamps each line when the DAEMON WROTE IT, from Docker's clock rather than from the
+  # gate's or the daemon's. It is independent of both, and it is the moment the attempt actually started.
+  # The last `RECOVERY_MAX_ATTEMPTS` action lines are this arm's, because every earlier arm's action is
+  # already accounted for and RC4's is the only other one.
+  RC8_ATTEMPT_STAMPS="$(docker logs -t "$DAEMON_CONTAINER" 2>&1 \
+    | grep -E 'projectiond: recovery: recover-' \
+    | tail -n "$RC_RECOVERY_MAX_ATTEMPTS" \
+    | awk '{print $1}' \
+    | while read -r when; do date -d "$when" +%s%3N 2>/dev/null || true; done \
+    | tr '\n' ' ')"
   echo "  attempts=$RC8_ATTEMPTS state=$RC9_STATE reason=$RC9_REASON stamps:$RC8_ATTEMPT_STAMPS"
 
-  # THE SPACING, COMPUTED FROM THE STAMPS. Consecutive attempt starts must be at least a whole cooldown
-  # apart; anything less means two attempts could overlap, which is the one thing the cooldown is for.
   RC8_MIN_GAP=""
   RC8_PREV=""
+  RC8_STAMP_COUNT=0
   for stamp in $RC8_ATTEMPT_STAMPS; do
+    RC8_STAMP_COUNT=$(( RC8_STAMP_COUNT + 1 ))
     if [ -n "$RC8_PREV" ]; then
       gap=$(( stamp - RC8_PREV ))
       if [ -z "$RC8_MIN_GAP" ] || [ "$gap" -lt "$RC8_MIN_GAP" ]; then RC8_MIN_GAP="$gap"; fi
     fi
     RC8_PREV="$stamp"
   done
+  # A GAP COMPUTED FROM FEWER STAMPS THAN THERE WERE ATTEMPTS IS NOT A MEASUREMENT OF THE SPACING. Without
+  # this the arm would pass on two stamps out of three, which is the unfailable shape all over again.
+  if [ "$RC8_STAMP_COUNT" -ne "$RC_RECOVERY_MAX_ATTEMPTS" ]; then
+    RC8_MIN_GAP=""
+  fi
 
   if [ "$RC8_ATTEMPTS" = "$RC_RECOVERY_MAX_ATTEMPTS" ] && [ -n "$RC8_MIN_GAP" ] \
      && [ "$RC8_MIN_GAP" -ge "$RC_RECOVERY_COOLDOWN_MS" ]; then
@@ -970,6 +989,20 @@ else
   # would prove nothing about persistence.
   nsenter -t "$DAEMON_PID" -m -- /busybox umount /dev/fuse >/dev/null 2>&1 || true
   docker rm -f "$DAEMON_CONTAINER" >/dev/null 2>&1 || true
+
+  # THE DEAD LAYERS THIS ARM PRODUCED HAVE TO GO BEFORE ANYTHING CAN BIND THE PATH AGAIN, AND FINDING THAT OUT
+  # IS THE MOST USEFUL THING THIS ARM HAS DONE.
+  #
+  # A mount point carrying a dead FUSE mount answers `stat` with ENOTCONN, and Docker's bind setup reads that
+  # as "file exists" and refuses: `error while creating mount source path ... file exists`. So a daemon that
+  # exhausted its budget leaves a host path that the NEXT container cannot bind — which is an operator
+  # problem, not a gate problem, and `deploy/projection-alpha.sh preflight` now refuses with a named
+  # remediation rather than letting Docker produce that sentence.
+  #
+  # Here the gate clears its OWN run directory with the shared helper, which unmounts only underneath this
+  # run's root and verifies rather than assumes.
+  projection_gate_unmount_run "$GATE_ROOT" "$WORK" "$VERIFY_IMAGE" \
+    || die "RC11: this run's own dead mount layers could not be cleared"
   start_daemon
   await_ready 240 || { docker logs "$DAEMON_CONTAINER" 2>&1 | tail -30 >&2; \
     die "RC11: the restarted daemon never became ready"; }
