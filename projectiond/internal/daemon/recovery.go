@@ -66,7 +66,13 @@ const (
 	// taken AFTER the attempt rather than from the one that granted it.
 	RecoveryConfirm = 4000 * time.Millisecond
 	// RecoveryLedgerFilename is where the budget lives, inside the daemon's DURABLE cache directory.
-	RecoveryLedgerFilename = "recovery-ledger.json"
+	//
+	// IT IS IN A SUBDIRECTORY OF ITS OWN, AND THAT IS NOT TIDINESS. The probe cache owns the top level of
+	// that directory and sweeps out every name it does not recognise; a ledger sitting beside its records was
+	// deleted on every startup, so the lockout that makes an infinite restart loop unreachable did not
+	// survive a restart. `RC11` measured it on the real host. The cache no longer touches directories at all,
+	// and this no longer sits where it could.
+	RecoveryLedgerFilename = "recovery/recovery-ledger.json"
 	// recoveryLedgerVersion is the on-disk shape. An unknown version is unreadable rather than guessed at,
 	// which locks out — see loadRecoveryLedger for why that is the safe direction.
 	recoveryLedgerVersion = 1
@@ -469,6 +475,11 @@ func writeRecoveryLedger(path string, ledger RecoveryLedger) error {
 	ledger.Version = recoveryLedgerVersion
 	raw, err := json.Marshal(ledger)
 	if err != nil {
+		return err
+	}
+	// THE DIRECTORY IS CREATED HERE AND NOT AT STARTUP, because a supervisor that has never spent anything
+	// has nothing to record and should leave no trace at all.
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	temp := path + ".tmp"

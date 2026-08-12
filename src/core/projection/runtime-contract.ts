@@ -1093,8 +1093,17 @@ export const PROJECTIOND_MOUNT_RECOVERY = Object.freeze({
    * after a crash, a restart, an upgrade and a host reboot.
    */
   LEDGER_IS_CRASH_PERSISTENT: true,
-  /** Where the ledger lives, relative to the daemon's configured `probeCacheDir`. */
-  LEDGER_FILENAME: 'recovery-ledger.json',
+  /**
+   * Where the ledger lives, relative to the daemon's configured `probeCacheDir`.
+   *
+   * IN A SUBDIRECTORY OF ITS OWN, AND A REAL TOWER RUN IS WHY. The probe cache owns the top level of that
+   * directory and sweeps out every name it does not recognise — which is right for the `.tmp` leftovers it
+   * was written for, and deleted the ledger on every startup. So the lockout that exists to make an infinite
+   * restart loop unreachable **did not survive a restart**, which is the one thing it had to do. `RC11`
+   * measured it: `stateAfterRestart=idle attempts=0`. The cache now skips directories outright and this no
+   * longer sits where it could be swept.
+   */
+  LEDGER_FILENAME: 'recovery/recovery-ledger.json',
   /**
    * How a lockout is cleared. **BY A HUMAN, AND BY NOTHING ELSE.**
    *

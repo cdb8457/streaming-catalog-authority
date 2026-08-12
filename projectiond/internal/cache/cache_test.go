@@ -791,3 +791,41 @@ func TestConcurrentReleaseGetAndPutKeepBothLedgersConsistent(t *testing.T) {
 		t.Fatal("the caps were meant to keep both eviction paths busy; nothing was evicted")
 	}
 }
+
+// TestNewProbeCacheLeavesDirectoriesAlone is the regression for the most serious defect Projection Phase 6
+// produced, and the defect was in THIS file rather than in the tranche that found it.
+//
+// The startup sweep removes every entry whose name is not a record name. It was written for the `.tmp`
+// leftovers of an interrupted write, and for those it is right. But the cache directory is also the one place
+// the operator contract requires to be DURABLE and writable, so it is where anything else durable naturally
+// goes — and Phase 6 put the recovery ledger there. The sweep deleted it on every startup, so the lockout
+// that exists to make an infinite restart loop unreachable did not survive a restart. `RC11` measured it on a
+// real Unraid host: `stateAfterRestart=idle attempts=0`, with the daemon cheerfully ready.
+//
+// THE CASE THAT ACTUALLY FAILED BEFORE THE FIX IS THE EMPTY ONE, and that is why it is here. `os.Remove` on
+// a directory succeeds only when it is empty, so a directory with a file in it survived by accident — right
+// up until the first startup after somebody cleared it.
+func TestNewProbeCacheLeavesDirectoriesAlone(t *testing.T) {
+	dir := t.TempDir()
+	empty := filepath.Join(dir, "recovery")
+	if err := os.MkdirAll(empty, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	occupied := filepath.Join(dir, "somethingelse")
+	if err := os.MkdirAll(occupied, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(occupied, "keepme"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := NewProbeCache(dir, 1<<20, 1<<16); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{empty, occupied, filepath.Join(occupied, "keepme")} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("the probe cache removed %s, which was never its to remove: %v", path, err)
+		}
+	}
+}

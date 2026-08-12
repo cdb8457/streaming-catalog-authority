@@ -189,6 +189,22 @@ func NewProbeCache(dir string, maxTotal, maxPerItem int64) (*ProbeCache, error) 
 	for _, item := range items {
 		name := item.Name()
 		path := filepath.Join(dir, name)
+		// A DIRECTORY IS NOT A CACHE RECORD AND IS NEVER THIS CACHE'S TO REMOVE, AND A REAL TOWER RUN IS WHY
+		// THIS LINE EXISTS.
+		//
+		// The sweep below removes every entry whose name is not a record name — which is right for the `.tmp`
+		// leftovers it was written for, and was quietly catastrophic for anything else that shared this
+		// directory. Phase 6 put the durable recovery ledger in the same place the operator contract already
+		// requires to be durable and writable, and this loop DELETED IT ON EVERY STARTUP. So the lockout that
+		// exists to make an infinite restart loop unreachable did not survive a restart, which is the one
+		// thing it had to do. `RC11` measured exactly that: `stateAfterRestart=idle attempts=0`.
+		//
+		// `os.Remove` on a directory only ever succeeds when it is EMPTY, so the ledger happened to survive
+		// whenever it existed — accidental correctness that would have held right up until the first restart
+		// after a reset. Skipping directories outright is the rule that does not depend on that.
+		if item.IsDir() {
+			continue
+		}
 		if !recordNamePattern.MatchString(name) {
 			// Includes the `.tmp` leftovers of a write that never completed. They were never visible under a
 			// real name, so they are simply removed.

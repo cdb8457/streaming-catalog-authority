@@ -293,6 +293,9 @@ func TestAbsentLedgerIsAFreshBudgetAndAnUnreadableOneLocksOut(t *testing.T) {
 		t.Fatalf("an absent ledger should be a fresh budget, got %+v", d.recovery.ledger)
 	}
 
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, RecoveryLedgerFilename)), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, RecoveryLedgerFilename), []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -310,6 +313,9 @@ func TestAFutureLedgerVersionIsUnreadableRatherThanGuessedAt(t *testing.T) {
 	dir := t.TempDir()
 	raw, err := json.Marshal(RecoveryLedger{Version: recoveryLedgerVersion + 1, LockedOut: true})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, RecoveryLedgerFilename)), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, RecoveryLedgerFilename), raw, 0o600); err != nil {
@@ -371,6 +377,53 @@ func TestTheLockoutSurvivesTheProcess(t *testing.T) {
 	// A SECOND RESET IS A SUCCESSFUL ONE. The post-condition is "there is no spent budget here".
 	if err := ResetRecoveryLedger(dir); err != nil {
 		t.Fatalf("resetting an already-clear ledger should succeed: %v", err)
+	}
+}
+
+// TestTheProbeCacheDoesNotEATTheLedger is the regression for the defect `RC11` found on the real host, and
+// it is the most serious one this tranche has produced.
+//
+// The ledger lives inside the daemon's DURABLE cache directory, which is the one place the operator contract
+// already requires to be durable and writable. The probe cache owns the top level of that directory and
+// sweeps out every name it does not recognise — so the ledger was deleted on EVERY startup, and the lockout
+// that exists to make an infinite restart loop unreachable did not survive a restart. Measured on Tower as
+// `stateAfterRestart=idle attempts=0`, with the daemon cheerfully ready.
+//
+// THE TEST DRIVES THE REAL CONSTRUCTOR, not an imitation of the sweep. `daemon.New` builds the probe cache
+// exactly as a starting daemon does, so this fails against a cache that removes what it does not recognise
+// and passes against one that leaves directories alone.
+func TestTheProbeCacheDoesNotEatTheLedger(t *testing.T) {
+	dir := t.TempDir()
+	first := &Daemon{cfg: Config{ProbeCacheDir: dir}}
+	first.EnableRecovery(true)
+	first.recovery.mu.Lock()
+	first.recovery.ledger.Attempts = RecoveryMaxAttempts
+	first.recovery.ledger.LockedOut = true
+	first.recovery.ledger.LockoutCode = RecoveryBudgetExhausted
+	err := first.persistLedgerLocked()
+	first.recovery.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A DAEMON STARTING FROM NOTHING, which is what a container restart is. `New` constructs the probe cache
+	// against the same directory before anything reads the ledger.
+	restarted, err := New(Config{
+		ProbeCacheDir: dir,
+		MountPoint:    filepath.Join(dir, "mnt"),
+		PointerPath:   filepath.Join(dir, "manifest", "pointer.json"),
+		StatusAddr:    "127.0.0.1:0",
+	})
+	if err != nil {
+		t.Fatalf("a daemon could not be constructed against the ledger's own directory: %v", err)
+	}
+	defer func() { _ = restarted.Close() }()
+	restarted.EnableRecovery(true)
+	if !restarted.recovery.ledger.LockedOut {
+		t.Fatal("the lockout did not survive a daemon construction, so the budget is not a bound")
+	}
+	if restarted.recovery.ledger.Attempts != RecoveryMaxAttempts {
+		t.Fatalf("the spent budget did not survive: %+v", restarted.recovery.ledger)
 	}
 }
 
