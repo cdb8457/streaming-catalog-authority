@@ -662,6 +662,32 @@ func remountLoop(d *daemon.Daemon, cfg daemon.Config, debug, strictMount bool, m
 					stoppedAt = fsType
 					break
 				}
+				// ...AND IT MUST BE DEAD. THE TYPE SAYS WHOSE IT IS AND SAYS NOTHING ABOUT WHETHER IT IS
+				// STILL SERVING ANYBODY, AND THAT DISTINCTION COST THE FIRST REGRESSION RUN OF PHASE 7.
+				//
+				// Measured, on the real host, in the recovery gate's own RC8: the mount point held
+				// [operator bind][THIS DAEMON'S LIVE MOUNT][a second daemon's corpse]. The drain removed the
+				// corpse — correct — then found another `fuse.projectiond` mount above the floor and removed
+				// THAT TOO, which was the live one this process was serving through. Its own log:
+				//
+				//	detaching one of ours at /mnt/projection: floor 1, now 3, on top fuse.projectiond
+				//	detaching one of ours at /mnt/projection: floor 1, now 2, on top fuse.projectiond
+				//	serve loop died: the FUSE serve loop exited without a requested unmount
+				//
+				// The floor is not enough on its own, because OUR OWN LIVE MOUNT IS ALSO ABOVE IT. What
+				// separates the two is the transport, and that is the one question a corpse answers
+				// instantly and unambiguously: FUSE caches nothing for `statfs`, so a dead connection
+				// answers ENOTCONN immediately while a live one is answered by this daemon's own serve loop.
+				//
+				// SO THE DRAIN REMOVES ONLY WHAT IT HAS JUST CONFIRMED IS DEAD. Three conditions now stand
+				// between a mount and a detach — above the measured startup floor, of our own type, and with
+				// its transport gone — and a live mount of ours ends the loop untouched, which is the state
+				// that was being destroyed.
+				if observedTop := fusefs.ObserveMountpoint(cfg.MountPoint); observedTop != fusefs.ProbeStaleProjectiond {
+					stoppedAt = fmt.Sprintf("%s (%s), which is not a corpse and is not ours to remove",
+						fsType, observedTop)
+					break
+				}
 				// THE EVIDENCE A DIAGNOSTIC NEEDS, AT THE MOMENT THE DECISION IS MADE. Counts and a
 				// file-system type: no path beyond the operator's own mount point, no identity, no bytes.
 				logLine(fmt.Sprintf("detaching one of ours at %s: floor %d, now %d, on top %s",

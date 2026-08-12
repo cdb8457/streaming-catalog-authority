@@ -601,6 +601,18 @@ test('THE REMOUNT LOOP UNMOUNTS ONLY WHAT IS OURS, so --auto-remount recovers fo
     'our own LIVE mount no longer takes the ordinary unmount, which would detach it from every consumer');
   assert(/unix\.Unmount\(cfg\.MountPoint, unix\.MNT_DETACH\)/.test(loop),
     'the lazy detach is not the MNT_DETACH the plan names');
+  // ...AND THE DRAIN NEVER REMOVES A MOUNT IT HAS NOT CONFIRMED IS DEAD, which is the condition Projection
+  // Phase 7's FIRST REGRESSION RUN added after the drain took this daemon's own live mount.
+  //
+  // Measured on the real host in the recovery gate's RC8: the mount point held [operator bind][THIS DAEMON'S
+  // LIVE MOUNT][a second daemon's corpse]. The drain removed the corpse, correctly, then found another
+  // `fuse.projectiond` mount above the floor and removed THAT — and the daemon's own log records both
+  // detaches and then "serve loop died". The floor cannot separate the two, because our own live mount is
+  // above it as well; only the transport can, and a corpse answers ENOTCONN to `statfs` instantly.
+  assert(/observedTop := fusefs\.ObserveMountpoint\(cfg\.MountPoint\)/.test(loop)
+    && /observedTop != fusefs\.ProbeStaleProjectiond/.test(loop),
+    'the drain no longer confirms that the layer it is about to detach is DEAD, so a live mount of ours '
+    + 'stacked under a corpse is removed along with it and the serve loop dies');
 });
 
 test('THE CORPSE DRAIN FAILS CLOSED: an unmeasured floor authorises no detach at all', () => {
