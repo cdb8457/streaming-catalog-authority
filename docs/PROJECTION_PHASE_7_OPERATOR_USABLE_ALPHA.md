@@ -344,16 +344,18 @@ measures three times over with the same injector.
 **INCOMPLETE. THE TRANCHE HAS NOT CLOSED AND §12 IS A NO-GO.** What follows is what was measured, from
 which frozen source, and what stopped each attempt. Every figure names the tree it came from.
 
-### 11.1 The frozen candidates, in the order they existed
+### 11.1 The frozen candidates, and which measurement came from which
 
-**THE CANDIDATE MOVED THREE TIMES AND EACH MOVE IS RECORDED RATHER THAN GLOSSED**, because Phase 6's whole
-correction was about a record that named one commit and published figures from three trees.
+**THE CANDIDATE MOVED FOUR TIMES AND EACH MOVE IS RECORDED RATHER THAN GLOSSED**, because Phase 6's whole
+correction was about a record that named one commit and published figures from three trees. **THREE OF THE
+FOUR PRODUCED MEASUREMENTS, AND NO FIGURE IN §11 IS ATTRIBUTED TO A CANDIDATE THAT DID NOT PRODUCE IT.**
 
-| # | Commit | Tree | Staged manifest | Image | What it was |
-|---|---|---|---|---|---|
-| 1 | `c35fee0f7922f5339245e6065a41078542e3e843` | `64abb0113006d6c099a831d18d8fa56af8cf14ca` | `a762e4e6…` over **1,657** files, byte-identical in **both** directions | `sha256:83b529f04fc472fb91338adb4b29a53a06803c128a13ec9d4ee164bb07499707` | superseded before any measured run, by the two closed-suite corrections |
-| 2 | `79fc79d2db89737f4f79a18b75ce927895c28a79` | — | `d86db06c…` over **1,658** files, byte-identical in **both** directions | **the same** `sha256:83b529f0…`, rebuilt from the re-frozen tree | attempt 1 and attempt 2 ran from this |
-| 3 | `922310e2f72cdcfbdccb679f11a3b12ed88f3fff` | — | — | — | the drain-liveness fix §11.4 forced; not yet re-frozen at the time of writing |
+| # | Commit | Staged manifest | Image | What ran from it |
+|---|---|---|---|---|
+| 1 | `c35fee0f7922f5339245e6065a41078542e3e843` | `a762e4e6…` over **1,657** files, byte-identical in **both** directions | `sha256:83b529f04fc472fb91338adb4b29a53a06803c128a13ec9d4ee164bb07499707` | **NOTHING.** Superseded before any measured run, by the two closed-suite corrections of §11.6 |
+| 2 | `79fc79d2db89737f4f79a18b75ce927895c28a79` | `d86db06c…` over **1,658** files, byte-identical in **both** directions | **the same** `sha256:83b529f0…`, rebuilt from the re-frozen tree | **attempt 1** (§11.2), **attempt 2** (§11.3, BLOCKED), and the **first** `go:recovery-gate:three`, which is where §11.4 #5 was found |
+| 3 | `7cb02d5a3909a283ea2851275933ace2160184c7` | `0930f951…` over **1,658** files, byte-identical in **both** directions | `sha256:911df075be6fd8ce72f6a81d003645e019217a4893d3515ea04a728fb9c003e2` | the **second** `go:recovery-gate:three`, the **whole §11.7 regression matrix including the alpha install matrix**, and **attempt 3** (§11.3.1) |
+| 4 | `2697ddeddb7eae51f8021714039bf49165200009` | `fe2e606c…`, byte-identical in **both** directions | **the same** `sha256:911df075…`, rebuilt from the re-frozen tree | **attempt 4** only (§11.3.2) |
 
 **THE STAGING PROOF IS THE ONE PHASE 6 DID NOT HAVE, AND IT IS SYMMETRIC.** `/mnt/user/appdata/catalog-p7`
 was removed and recreated **empty**, `git archive <commit>` was extracted into it, and a sorted per-file
@@ -361,22 +363,41 @@ sha256 manifest was computed **independently on each side** — from the archive
 from the extracted tree on Tower. The two manifests hash to the same value, which is a stronger statement
 than an empty diff in one direction.
 
-**THE IMAGE DIGEST DID NOT MOVE BETWEEN CANDIDATE 1 AND 2, AND THAT IS A MEASUREMENT.** It was rebuilt from
-the re-frozen tree on the host and produced `sha256:83b529f0…` again, which is what says no daemon byte moved
-in those corrections. It **did** move from Phase 6's `sha256:a5f12b92…`, and it is supposed to have: this
-tranche changes `projectiond`.
+**THE IMAGE MOVED EXACTLY ONCE, AND THAT IS A MEASUREMENT RATHER THAN AN ASSUMPTION.** Candidates 1 and 2
+both rebuilt to `sha256:83b529f0…` and candidates 3 and 4 both rebuilt to `sha256:911df075…`. The single move
+is between candidate 2 and candidate 3, which is the drain-liveness fix of §11.4 #5 — the only commit in this
+tranche after the first freeze that touches `projectiond/`. Both digests differ from Phase 6's
+`sha256:a5f12b92…`, and they are supposed to: this tranche changes the daemon.
+
+### 11.1.1 The source digests, per candidate, because two of the three moved
+
+**A SINGLE ROW OF DIGESTS WOULD BE THE PHASE 6 DEFECT AGAIN.** The operator source never moved; the gate
+source moved twice and the daemon source once, so each is given against the candidate it belongs to.
+
+| Candidate | OPERATOR SOURCE | GATE SOURCE (Phase 7) | `projectiond/` tree | image |
+|---|---|---|---|---|
+| 2 — `79fc79d` | `33005b52c9896455` | `87b7238355d25e89` | `4e4771110608b037` | `sha256:83b529f0…` |
+| 3 — `7cb02d5` | `33005b52c9896455` | `87b7238355d25e89` | **`6a8a371f04ff113d`** | `sha256:911df075…` |
+| 4 — `2697dde` | `33005b52c9896455` | **`23cb90f0b1d0f193`** | `6a8a371f04ff113d` | `sha256:911df075…` |
+
+**THE OPERATOR SOURCE DIGEST IS THE SAME AT EVERY CANDIDATE**, which is what makes §11.7's alpha install
+matrix attributable: the shipped operator command an operator runs did not move at any point in this tranche.
+The full digest is `33005b52c989645586c0fbe35fdf4572489b7a74ec97785f22b20e89435cf2f3`; the abbreviations above
+are its first sixteen characters and the same convention is used for the other two columns.
+
+**THE GATE SOURCE MOVED BETWEEN CANDIDATE 3 AND 4**, which is why attempt 3 and attempt 4 are recorded as two
+attempts and not as one repeated: `2697dde` added the R1 diagnostic preservation of §11.4 #6. It changes what
+the gate KEEPS on a failing path and nothing it asserts, and §11.3.2 is what that change bought.
 
 | What | Value |
 |---|---|
 | host | Unraid `tower` |
-| OPERATOR SOURCE DIGEST | `33005b52c989645586c0fbe35fdf4572489b7a74ec97785f22b20e89435cf2f3` |
-| GATE SOURCE DIGEST (Phase 7) | `24b4edd90432c30b50e09b2fed8505cb2fdc11b3860ca2b43e1a5f4f3cf47b68` |
 | host baseline before anything | **42** containers, **26** running, **17** networks, **45** volumes, **0** `fuse.projectiond` mounts |
 
-The two source digests cover the same five operator files Phase 6 named, and the six files that are Phase 7's
-gate: the gate, its two wrappers, its compose file, its contract module and its CLI.
+The operator digest covers the same five files Phase 6 named; the gate digest covers the six that are Phase
+7's gate — the gate, its two wrappers, its compose file, its contract module and its CLI.
 
-### 11.2 Attempt 1 — the furthest any run has reached, and what it measured on the way
+### 11.2 Attempt 1 — what it measured before it died at arm 1
 
 `bash deploy/projection-phase7-gate.sh`, from candidate 2, image `sha256:83b529f0…`, on Unraid `tower`.
 **It died at arm 1 of 6 on a gate defect** (§11.4 #3). Everything before that is a measurement and is
@@ -402,6 +423,10 @@ close.
 object through this appliance **for five minutes each, simultaneously** — Phase 3's window was thirty seconds
 per server and its plays were serial. It closes nothing: attempt 1 exited non-zero, and a run that did not
 finish proves nothing about the six arms it never reached.
+
+**AND IT IS NOT THE FURTHEST ANY RUN REACHED — ATTEMPTS 3 AND 4 WENT PAST IT**, so nothing in this section
+should be read as the tranche's best figures. Attempt 1's seeks and two of its three transcodes were failed by
+the two instrument defects §11.4 #1 and #2 name, and §11.3.1 is the same stages with both of those fixed.
 
 ### 11.3 Attempt 2 — BLOCKED, not failed, on the operator's egress allowlist
 
@@ -544,8 +569,23 @@ appliance did not repair it and did not report it**. §12 is a NO-GO and this is
 
 ### 11.4 The defects the runs found, in the order the runs found them
 
-**FIVE SO FAR. TWO ARE IN SHIPPED PRODUCT CODE AND ONE OF THOSE WAS INTRODUCED BY THIS TRANCHE AND CAUGHT BY
-ITS OWN REGRESSION MATRIX**, which is the most useful thing in this section.
+**THIS TABLE IS THE CANONICAL LEDGER. EVERY DEFECT COUNT ANYWHERE ELSE IN THIS REPOSITORY IS DERIVED FROM
+IT AND IS PINNED TO IT** by `test/projection-evidence-consistency.ts`, which counts the rows and the
+product-fix rows and fails if this document's headline or the roadmap row states anything else. It said
+**FIVE, TWO IN THE PRODUCT** for the interval between the run that found #5 and the run that found #7, which
+is exactly the class of stale summary that pin now exists to catch.
+
+**SEVEN DEFECTS. THREE ARE IN SHIPPED PRODUCT CODE, AND ONE OF THOSE THREE WAS INTRODUCED BY THIS TRANCHE
+AND CAUGHT BY ITS OWN REGRESSION MATRIX** — which is the most useful thing in this section.
+
+**WHAT COUNTS AS A ROW HERE, STATED SO THE NUMBER IS CHECKABLE RATHER THAN A JUDGEMENT.** A row is a defect a
+**measured run on the real host** found. Two corrections this tranche also made are deliberately **not** rows
+and are recorded elsewhere, because counting them here would make the number mean something different every
+time somebody re-derived it:
+
+- the quoted `awk` program split over five lines, which `test/custody-runtime-closure.ts` refused on the
+  development host **before the first measured run** (`c35fee0`);
+- the two **closed suites** that went red on this tranche's product changes, which are §11.6.
 
 | # | Found by | What it was | Where the fix went |
 |---|---|---|---|
@@ -555,10 +595,22 @@ ITS OWN REGRESSION MATRIX**, which is the most useful thing in this section.
 | 4 | the regression matrix | **THE CORPSE DRAIN WAS NEVER REACHED IN A CONTAINER**, which is Phase 6 §9.7 measured from the inside. `planRemountCleanup` classified from `ProbeMountpoint`, which reads the BOTTOM of the stack, and in every containerised topology the bottom entry is the operator's bind — `fuse.shfs` on Unraid. After a serve-loop death the pair is ENOTCONN over somebody else's type, and `classify` has exactly one answer for that: FOREIGN | **the product** — the plan now also reads what is on TOP, and drains when the top is our own dead mount. A foreign mount on top still plans nothing |
 | 5 | **the regression matrix, on the fix for #4** | **AND THEN THE DRAIN TOOK THIS DAEMON'S OWN LIVE MOUNT.** Phase 6's own `RC8`, run from the Phase 7 candidate: the mount point held the operator's bind, **this daemon's live mount**, and a second daemon's corpse above it. The drain removed the corpse — correct — and then removed the live one, because "above the floor and of our type" describes both. Its own log: `detaching one of ours … floor 1, now 3` / `floor 1, now 2` / `serve loop died` / `remount attempts exhausted` / `exiting`. Reproduced identically on all three runs of the three-runner | **the product** — a third condition now stands between a mount and a detach: its transport must be **confirmed gone**. FUSE caches nothing for `statfs`, so a corpse answers ENOTCONN instantly while a live mount is answered by this daemon's own serve loop |
 
+| 6 | attempt 3, arm R1 | **THE ARM FAILED HOLDING ITS OWN DIAGNOSIS AND THE CLEANUP WAS ABOUT TO DELETE IT.** R1 recorded `reason='none' observation='none'` for its whole budget, and nothing else the run kept separated *"the daemon exited"* from *"the daemon is alive and unreachable"*. Two readings, one measurement | the gate — R1 now keeps the daemon's own log, the container's status and exit code, and the host mount survey, on the failing path only, which is exactly what Phase 3's `A3` does |
+| 7 | attempts 3 and 4, arm R1 | **THE GATE COULD NOT READ A 503, WHICH IS THE ANSWER EVERY FAULT IT INJECTS PRODUCES.** `daemon_status` came from Phase 3, where Phase 6 §7 records it as **defined and never called**; its first real use was this arm and it was `wget -q -O -`, which exits non-zero and writes **nothing** for any status outside 2xx. So the instrument reported the product as silent about the one question it was built to ask, while the daemon was `Up (unhealthy)` throughout | the gate — the recovery gate's own reader, ported: a raw HTTP/1.0 request with the status line and the body kept apart, 200 and 503 both read, and anything else still leaving the caller with nothing so an unreachable daemon stays distinguishable from a refusing one |
+
 **#5 IS THE ARGUMENT FOR THE WHOLE REGRESSION MATRIX, STATED PLAINLY.** The fix for #4 passed every offline
 test, including three new ones written specifically for it, and was byte-identical in both directions on the
 host. It took a **real recovery gate on a real host** to find that it destroyed the thing it was protecting,
 one layer above where the floor could see it.
+
+**#6 AND #7 ARE BOTH INSTRUMENT DEFECTS ON THE SAME ARM, AND #7 IS THE MORE SERIOUS OF THE TWO** — it caused
+this document to publish, for one revision, the sentence *"the appliance did not repair it **and did not
+report it**"* about an appliance that was reporting a precise closed-set refusal the whole time. §11.3.2
+withdraws that half in place rather than deleting it, and §11.4 #7 is why it was ever written.
+
+**FOUR OF THE SEVEN ARE IN THE INSTRUMENT AND THREE ARE IN THE PRODUCT**, and the split is worth stating
+because it is the same split every closed tranche here has reported: the gates find product defects by being
+wrong first.
 
 ### 11.4.1 And then the fix worked, and PHASE 6's OWN GATE STOPPED BEING ABLE TO ASSERT ITS ARM
 
@@ -620,20 +672,21 @@ to Phase 3's hardest-won code is the churn this repository's discipline exists t
 
 ### 11.5 Offline
 
-Taken on the Windows development host, at the FINAL candidate `7cb02d5a3909a283ea2851275933ace2160184c7` unless a row says otherwise. **They are not gate evidence**; they are what makes a
-run worth attempting.
+Taken on the Windows development host **at the current `HEAD`**, which §11.10 distinguishes from the last
+candidate that was frozen and run. **They are not gate evidence**; they are what makes a run worth attempting,
+and running them at `HEAD` proves nothing about a host.
 
 | What | Result |
 |---|---|
 | `npx tsc --noEmit` | clean |
 | `npm run go:fmt` / `go:vet` / `go test ./...` | clean / clean / every package `ok` |
-| `npx tsx test/projection-phase7.ts` | **34 passed, 0 failed**, and **four** of them failed first and were real |
+| `npx tsx test/projection-phase7.ts` | **35 passed, 0 failed**, and **four** of them failed first and were real |
 | `npx tsx test/projection-mount-hardening.ts` | 32/0 — Phase 2's pins, with the two new drain conditions added |
 | `npx tsx test/projection-reliability-loop.ts` | 69/0, 1 block skipped and named (`win32` carries no POSIX mode) |
 | `npx tsx test/projection-bounded-recovery.ts` | 42/0 — Phase 6's pins, including both source digests |
 | `npx tsx test/custody-runtime-closure.ts` | 39/0 — every shipped `.sh` parses under LF and CRLF |
-| `npx tsx test/projection-evidence-consistency.ts` | 4/0 |
-| full `npm run test:offline` | **314 selected, 314 passed, 0 failed, 0 required-but-skipped**, re-run at the final candidate in 690 s. It was **312/2** at candidate 1 and both failures were real and are §11.6 |
+| `npx tsx test/projection-evidence-consistency.ts` | **8/0** — with the four Phase 7 assertions §11.11 describes |
+| full `npm run test:offline` | **314 selected, 314 passed, 0 failed, 0 required-but-skipped**, last measured at candidate 3 in 698 s. It was **312/2** at candidate 1 and both failures were real and are §11.6 |
 
 ### 11.6 The two closed suites that went red, and why both were right to
 
@@ -648,11 +701,13 @@ run worth attempting.
   scanners at. The allowed set is now **two, named**, and the test additionally requires that **both** allowed
   callers use the flag, so an exemption cannot outlive the caller it was made for.
 
-### 11.8 The §9 regression matrix — EIGHT OF NINE GREEN, from the final frozen candidate
+### 11.7 The §9 regression matrix — EIGHT OF NINE GREEN, from candidate 3
 
-Every gate below ran on the real Unraid host from tree `0930f951…` (commit `7cb02d5`), with
-`PROJECTIOND_IMAGE=projectiond:phase7-frozen` (`sha256:911df075be6fd8ce72f6a81d003645e019217a4893d3515ea04a728fb9c003e2`),
-serialised one after another.
+Every gate below ran on the real Unraid host from **candidate 3** — tree manifest `0930f951…`, commit
+`7cb02d5` — with `PROJECTIOND_IMAGE=projectiond:phase7-frozen`
+(`sha256:911df075be6fd8ce72f6a81d003645e019217a4893d3515ea04a728fb9c003e2`), serialised one after another.
+**Candidate 4 changed the Phase 7 gate and nothing else** (§11.1.1), so none of these gates has a subject
+that moved after this matrix ran; that is a check a reader can make rather than a reassurance.
 
 | Gate | Runs | Result |
 |---|---|---|
@@ -682,30 +737,129 @@ those three arms need a fault the product can no longer be prevented from repair
 gate which is about **repairing** a fault passed in all three runs — `RC1` through `RC7`, `RC10`, `RC12` and
 `RC13`.
 
-### 11.7 Host cleanliness
+### 11.8 Host cleanliness
 
 Asserted after every attempt, against the baseline captured before any Phase 7 container existed:
 
 | What | Result |
 |---|---|
-| container set | **identical** after attempt 1 and after attempt 2 |
+| container set | **identical** after every attempt and after every regression gate |
 | network set | **identical** |
 | volume set | **identical** |
+| running-container set | **identical** |
 | `fuse.projectiond` mounts on the host | **0** |
 | run directories under the gate root | **0** |
-| running-container set | **identical** |
 | empty gate roots left by the regression matrix | removed with `rmdir`, which refuses a non-empty directory and therefore could not have taken anything with it |
 | kept evidence | the six run transcripts, at 0600 in a 0700 directory under `.projection-phase7-gate/evidence/`, searched and carrying no credential, bearer token or query-string secret. The frozen tree at `/mnt/user/appdata/catalog-p7` and the image `projectiond:phase7-frozen` are kept for the same reason Phase 6 kept its own |
 | operator data | **untouched.** No production mount, no existing media library, no user share, no unrelated container, network or volume, and no operator secret was modified. `endpoint.json` was read and never written |
+
+### 11.9 THE ARM LEDGER — exactly which of the six ran, and how often
+
+**THIS TABLE IS THE ONLY PLACE AN ARM COUNT MAY BE READ FROM**, and it exists because the roadmap row denied
+a run it recorded two sentences later. What it said is kept, as a quotation and marked as retired:
+
+> **HISTORICALLY — SUPERSEDED.** *"NOT ONE OF THE SIX RECOVERY ARMS HAS EVER RUN, so every sentence in §3.1
+> is a contract rather than a measurement."*
+
+**IT WAS FALSE WHEN IT WAS WRITTEN AND THE SAME PARAGRAPH PROVED IT**, three sentences later, by recording R1
+measuring FALSE twice. Both were written from the same two runs; only one of them was true. The half that
+survives is the second clause — §3.1 **is** a contract for R2 to R6 — and the arm ledger below is what the
+first clause should always have been.
+
+**THE QUOTATION ABOVE IS INSIDE A BLOCKQUOTE AND THAT IS LOAD-BEARING RATHER THAN TYPOGRAPHY.**
+`test/projection-evidence-consistency.ts` treats a universal denial as a live claim **unless** it is quoted:
+an asserted denial beside a record of the thing happening is the contradiction it fails on, and a denial in a
+`>` block is history. So a future writer cannot retire a false sentence by indenting it, and cannot smuggle a
+live one in either — the marker has to be a quotation of something that is no longer claimed.
+
+| Arm | Times executed | Outcome | Where |
+|---|---|---|---|
+| **R1** | **2** — attempts 3 and 4 | **FAILED, identically both times.** `P7-R1-action-ms` 34,304 and 34,085 against 33,000; no attempt spent; the generation never advanced; the namespace never came back; the operator's four windows read **0 of 4** afterwards | §11.3.1, §11.3.2 |
+| **R2** | **0** | never reached — R1 stops the run | — |
+| **R3** | **0** | never reached | — |
+| **R4** | **0** | never reached | — |
+| **R5** | **0** | never reached | — |
+| **R6** | **0** | never reached | — |
+
+**SO: ONE ARM OF SIX HAS RUN, IT RAN TWICE, AND IT FAILED BOTH TIMES. NO COMPLETE SIX-ARM SEQUENCE HAS EVER
+RUN, AND THEREFORE NO SEQUENCE HAS EVER BEEN REPEATED** — the three-consecutive-fresh-runs rule of §4.1 was
+never reached, let alone attempted three times.
+
+**AND EVERYTHING §3.1 SAYS ABOUT R2 TO R6 IS A CONTRACT RATHER THAN A MEASUREMENT.** Their injectors are
+written, pinned offline and unexecuted on a host.
+
+### 11.10 THE CURRENT `HEAD` IS NOT A MEASURED CANDIDATE, AND THIS SECTION IS WHERE THAT IS SAID
+
+**DOCUMENTATION-ONLY CLOSURE COMMITS MAY NOT PRETEND TO BE MEASURED SOURCE**, which is the Phase 6 defect in
+its most tempting form: a record that ends at a commit nothing was run from.
+
+| | Commit | Gate source | `projectiond/` | Ran on a host? |
+|---|---|---|---|---|
+| last candidate **frozen, staged and run** | `2697ddeddb7eae51f8021714039bf49165200009` | `23cb90f0b1d0f193` | `6a8a371f04ff113d` | **yes** — attempt 4 |
+| the candidate everything else ran from | `7cb02d5a3909a283ea2851275933ace2160184c7` | `87b7238355d25e89` | `6a8a371f04ff113d` | **yes** — §11.7's matrix, the second recovery-gate sequence, attempt 3 |
+| **current `HEAD`** | this commit | **`99bd5fe30f004185` and later** | `6a8a371f04ff113d`, **unmoved** | **NO** |
+
+**WHAT MOVED AFTER THE LAST MEASURED RUN, NAMED RATHER THAN CHARACTERISED.** Exactly one commit changed
+gate source after candidate 4 and before this correction: `ac2cf4a`, the §11.4 #7 status-reader fix. It
+touches `deploy/projection-phase7-gate.sh` and nothing else, and **it has never been executed on a host.**
+Everything since is this document, the roadmap row and `test/`.
+
+**WHAT THAT COSTS, STATED AS A DEPENDENCY RATHER THAN A DISCLAIMER:**
+
+- **§11.7's regression matrix and §11.3.1's attempt 3 depend on candidate 3**, whose `projectiond/` tree is
+  the one still at `HEAD` — so the *daemon* those figures describe is the daemon this record ends with. That
+  is checkable: `git rev-parse HEAD:projectiond` is `6a8a371f04ff113d`.
+- **§11.3.2's attempt 4 depends on candidate 4**, which differs from candidate 3 only in what the gate KEEPS
+  on a failing path.
+- **NO FIGURE IN §11 WAS TAKEN WITH THE GATE AS IT STANDS AT `HEAD`.** The status-reader fix is the reason
+  §11.3.2 could be written at all, and it is itself unrun. **The first thing the next Phase 7 attempt owes is
+  a re-freeze**, and every arm figure it produces will be the first taken with an instrument that can read a
+  refusal.
+- **The operator source never moved** — `33005b52c9896455` at every candidate and at `HEAD` — so §11.7's
+  alpha install matrix describes the command that ships today.
+
+### 11.11 The pins that make this record check itself, and the tamper that proves they bite
+
+**A COORDINATOR AUDIT FOUND TWO CONTRADICTIONS IN THIS RECORD AND NO TEST HAD NOTICED EITHER.** The roadmap
+row denied a run it recorded three sentences later, and both documents went on stating **five** defects and
+**two** in the product while the ledger at §11.4 had grown to **seven** and **three**. Neither is a threshold
+and neither is a measurement error — they are the record disagreeing with itself, which is the exact failure
+`test/projection-evidence-consistency.ts` was built for and did not cover.
+
+**FOUR ASSERTIONS NOW COVER IT, AND EACH WAS PROVED TO BITE BY A TEMPORARY TAMPER THAT WAS THEN REVERTED:**
+
+| Assertion | Tamper | What it said |
+|---|---|---|
+| `PHASE7-RECOVERY-ARM-RUN-EXISTENCE` (a new axis) | re-assert the retired arm denial §11.9 quotes, unquoted, in the roadmap row | **FAILED** — *"docs/PROJECTION_ROADMAP.md deny that it ever happened while …PHASE_7… records that it did"* |
+| the roadmap's defect counts against the ledger | roadmap says **five / two** | **FAILED** — *"does not state 'seven defects', which is what §11.4's table holds. It said FIVE for the whole interval in which the ledger held seven"* |
+| this document's headline against its own table | headline says **two** in the product | **FAILED** — *"§11.4 lists 7 defect row(s), 3 of them fixed in the product, but no headline in the document states…"* |
+| the arm ledger against the roadmap | — | passes; it requires the roadmap to NAME every arm the ledger records as having executed, so silence is not a way out either |
+
+**THE COUNTS ARE DERIVED, NOT RESTATED.** The check parses §11.4's table, counts the rows, counts the rows
+whose fix cell says **the product**, and requires both documents to state those two numbers. A row added
+without updating either prose summary fails immediately — which is precisely what would have happened when
+defects #6 and #7 landed.
+
+**AND THE HISTORY RULE IS NARROW ON PURPOSE.** A universal denial counts as **asserted** unless it is inside
+a markdown blockquote, so this record can keep the false sentence it retired — as every closed tranche here
+does — without the check either passing over a live claim or forcing the history to be deleted to go green.
+Italics and bold do not exempt anything; only a `>` quotation does.
+
+**AND THE FIRST THING THAT RULE CAUGHT WAS THIS SECTION.** The table above originally reproduced the retired
+sentence verbatim, in a table cell, to describe the tamper — and the axis failed the document immediately,
+because a table cell is an assertion. The cell now points at §11.9's blockquote instead of repeating it. That
+is the pin working on the writer who wrote it, within a minute of it existing, which is the most that can
+honestly be said for any check of this kind.
 
 ## 12. The readiness decision
 
 # **NO-GO.**
 
 **§4.2 forbids a GO here and every one of its clauses is unsatisfied.** Three consecutive fresh complete
-sequences have not been run; **no run has completed a single one of the six recovery arms**; and the tranche
-has spent two of its five known defects on shipped product code, one of them introduced by this tranche and
-caught only by a real host.
+sequences have not been run; **no complete six-arm sequence has ever run at all**; **one arm of six has
+executed, twice, and failed both times** (§11.9); and the tranche has spent **three of its seven** known
+defects on shipped product code, one of them introduced by this tranche and caught only by a real host
+(§11.4).
 
 **WHAT IS BLOCKING IT, IN ORDER:**
 
@@ -724,9 +878,13 @@ caught only by a real host.
 4. **`RC8`/`RC9`/`RC11` cannot assert their arm against this candidate.** §11.4.1. Not a regression, and not
    something to be fixed by loosening the assertion.
 5. **The mount-layer residual of §11.4.2 is unfixed**, and `MOUNT_LAYERS_ABOVE_FLOOR_MAX` would measure 2.
+6. **THE GATE AT `HEAD` HAS NEVER RUN.** §11.10. One commit — the §11.4 #7 status-reader fix — changed gate
+   source after the last measured candidate, so the next attempt owes a re-freeze before it owes anything
+   else.
 
 **WHAT IS NOT BLOCKING IT, AND IS WORTH SAYING BECAUSE IT IS THE EXPENSIVE HALF:** the topology stands up,
 the three servers attach before the first mount, the operator's windows match through the mount and inside
 every server, the three-way overlap is observed, **all three servers direct-play a real provider's object for
-five minutes simultaneously**, at least one of them transcodes it for five minutes, and the host is left
-exactly as it was found. §11.2 is that, measured.
+five minutes simultaneously**, **all three seek ten verified media-time positions**, **all three transcode it
+for five minutes**, and the host is left exactly as it was found. **§11.3.1 is that, measured** — §11.2 is the
+same stages one candidate earlier, with two of them failed by instruments that were wrong.
