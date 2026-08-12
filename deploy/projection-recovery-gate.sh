@@ -906,11 +906,31 @@ else
   docker rm -f "$BLOCKER_CONTAINER" >/dev/null 2>&1 || true
 
   # THE BUDGET IS DRIVEN TO EXHAUSTION. The COUNT is read from the status surface; the SPACING is not.
+  #
+  # THE SPACING IS THE STAMPS THE COOLDOWN IS ACTUALLY COMPARED AGAINST, AND NOTHING ELSE WILL DO.
+  # `decideRecovery` asks whether `now - lastAttemptAt` has reached the cooldown, and `lastAttemptAt` is
+  # written into the durable ledger at the instant the attempt is granted. Every other clock is a proxy:
+  #   - the gate's own observation time is late by up to a whole polling interval (measured: 18,955 ms);
+  #   - Docker's timestamp on the daemon's log line is late by the gap between granting the attempt and
+  #     writing the line — sub-millisecond, and enough. Measured on a fresh run: 19,999 ms against 20,000 ms,
+  #     a bound reported as broken by one millisecond of its own measurement error.
+  # The ledger is on this host, in this run's own directory, and it holds the exact quantity under test in
+  # nanoseconds. The Docker log stamps are kept as an INDEPENDENT corroboration below.
+  RC8_LEDGER="$WORK/cache/recovery/recovery-ledger.json"
+  RC8_LEDGER_STAMPS=""
+  RC8_LAST_STAMP=""
   RC8_WAIT_S=$(( ((RC_RECOVERY_COOLDOWN_MS * (RC_RECOVERY_MAX_ATTEMPTS + 1)) / 1000) + 90 ))
   RC8_LOCKED=0
   n=0
   while [ "$n" -lt "$RC8_WAIT_S" ]; do
     sample
+    if [ -s "$RC8_LEDGER" ]; then
+      RC8_STAMP="$(node "$REL/out/jq.cjs" lastAttemptUnixNano < "$RC8_LEDGER" 2>/dev/null || true)"
+      if [ -n "$RC8_STAMP" ] && [ "$RC8_STAMP" != "$RC8_LAST_STAMP" ]; then
+        RC8_LAST_STAMP="$RC8_STAMP"
+        RC8_LEDGER_STAMPS="$RC8_LEDGER_STAMPS $RC8_STAMP"
+      fi
+    fi
     [ "$REC_STATE" = "$RC_STATE_LOCKED_OUT" ] && { RC8_LOCKED=1; break; }
     n=$((n + 1)); sleep 1
   done
@@ -939,13 +959,15 @@ else
     | tr '\n' ' ')"
   echo "  attempts=$RC8_ATTEMPTS state=$RC9_STATE reason=$RC9_REASON stamps:$RC8_ATTEMPT_STAMPS"
 
+  # THE MEASUREMENT: the daemon's own attempt stamps, in NANOSECONDS, which is the quantity its cooldown
+  # compares. Converted to whole milliseconds only for the message.
   RC8_MIN_GAP=""
   RC8_PREV=""
   RC8_STAMP_COUNT=0
-  for stamp in $RC8_ATTEMPT_STAMPS; do
+  for stamp in $RC8_LEDGER_STAMPS; do
     RC8_STAMP_COUNT=$(( RC8_STAMP_COUNT + 1 ))
     if [ -n "$RC8_PREV" ]; then
-      gap=$(( stamp - RC8_PREV ))
+      gap=$(( (stamp - RC8_PREV) / 1000000 ))
       if [ -z "$RC8_MIN_GAP" ] || [ "$gap" -lt "$RC8_MIN_GAP" ]; then RC8_MIN_GAP="$gap"; fi
     fi
     RC8_PREV="$stamp"
@@ -956,13 +978,39 @@ else
     RC8_MIN_GAP=""
   fi
 
+  # THE CORROBORATION, AND IT IS WHAT STOPS THIS ARM BEING THE PRODUCT MARKING ITS OWN HOMEWORK. The ledger
+  # is the daemon's own record; Docker's timestamps on the daemon's log are a third party's. The two must
+  # agree on HOW MANY attempts happened and on the span between the first and the last, to within one tick.
+  RC8_LOG_COUNT=0
+  RC8_LOG_FIRST=""
+  RC8_LOG_LAST=""
+  for stamp in $RC8_ATTEMPT_STAMPS; do
+    RC8_LOG_COUNT=$(( RC8_LOG_COUNT + 1 ))
+    [ -z "$RC8_LOG_FIRST" ] && RC8_LOG_FIRST="$stamp"
+    RC8_LOG_LAST="$stamp"
+  done
+  RC8_CORROBORATED=0
+  if [ "$RC8_LOG_COUNT" -eq "$RC8_STAMP_COUNT" ] && [ -n "$RC8_LOG_FIRST" ] && [ -n "$RC8_LEDGER_STAMPS" ]; then
+    RC8_LEDGER_FIRST="$(echo "$RC8_LEDGER_STAMPS" | awk '{print $1}')"
+    RC8_LEDGER_LAST="$(echo "$RC8_LEDGER_STAMPS" | awk '{print $NF}')"
+    RC8_LEDGER_SPAN=$(( (RC8_LEDGER_LAST - RC8_LEDGER_FIRST) / 1000000 ))
+    RC8_LOG_SPAN=$(( RC8_LOG_LAST - RC8_LOG_FIRST ))
+    RC8_SPAN_DIFF=$(( RC8_LEDGER_SPAN - RC8_LOG_SPAN ))
+    [ "$RC8_SPAN_DIFF" -lt 0 ] && RC8_SPAN_DIFF=$(( -RC8_SPAN_DIFF ))
+    [ "$RC8_SPAN_DIFF" -le "$RC_RECOVERY_TICK_MS" ] && RC8_CORROBORATED=1
+    echo "  corroboration: ledger span ${RC8_LEDGER_SPAN}ms, Docker log span ${RC8_LOG_SPAN}ms"
+  fi
+
   if [ "$RC8_ATTEMPTS" = "$RC_RECOVERY_MAX_ATTEMPTS" ] && [ -n "$RC8_MIN_GAP" ] \
-     && [ "$RC8_MIN_GAP" -ge "$RC_RECOVERY_COOLDOWN_MS" ]; then
+     && [ "$RC8_MIN_GAP" -ge "$RC_RECOVERY_COOLDOWN_MS" ] && [ "$RC8_CORROBORATED" -eq 1 ]; then
     pass "RC8 a recovery that cannot succeed spent exactly $RC8_ATTEMPTS attempts, the closest two of them" \
-         "${RC8_MIN_GAP}ms apart against a ${RC_RECOVERY_COOLDOWN_MS}ms cooldown"
+         "${RC8_MIN_GAP}ms apart against a ${RC_RECOVERY_COOLDOWN_MS}ms cooldown, and Docker's own" \
+         "timestamps agree with the daemon's record to within one tick"
   else
     fail "RC8 attempts=${RC8_ATTEMPTS:-absent} (budget $RC_RECOVERY_MAX_ATTEMPTS)" \
-         "closestGapMs=${RC8_MIN_GAP:-unmeasured} against ${RC_RECOVERY_COOLDOWN_MS}ms"
+         "closestGapMs=${RC8_MIN_GAP:-unmeasured} against ${RC_RECOVERY_COOLDOWN_MS}ms" \
+         "corroboratedByDockerTimestamps=$RC8_CORROBORATED (ledger stamps $RC8_STAMP_COUNT," \
+         "log lines $RC8_LOG_COUNT)"
   fi
 
   # RC9: LOCKED OUT, AND IT STAYS LOCKED OUT. The second half is the arm: a lockout that only held for a
