@@ -280,7 +280,8 @@ for forbidden in 'http://' 'https://' "$ENTRY_PATH" 'serveError' 'Bearer'; do
   fi
 done
 if [ "$AA5_OK" -eq 1 ]; then
-  pass "AA5 the status surface names the recovery state, reason, generation and remediation, and carries no" \n       "URL, media identity or free-text error"
+  pass "AA5 the status surface names the recovery state, reason, generation and remediation, and carries no"  \
+       "URL, media identity or free-text error"
 else
   fail "AA5 the status surface is incomplete or leaked something"
 fi
@@ -300,11 +301,16 @@ while [ "$n" -lt 60 ]; do
   if grep -q 'inspect-mount-owner' "$WORK/out/status-fault.log"; then AA6_SEEN=1; break; fi
   n=$((n + 1)); sleep 2
 done
-if findmnt -rno FSTYPE --target "$WORK/mnt" 2>/dev/null | head -1 | grep -qx tmpfs; then
+# THE PRESENCE OF A tmpfs MOUNT AT EXACTLY THIS TARGET, NOT "WHAT `--target` RESOLVES TO".
+#
+# `findmnt --target` answers a question about the filesystem CONTAINING a path, and on a stacked mount point
+# the first row it prints is the bottom of the stack — which is the appliance's own mount, not the overlay.
+# Measured: `overlayUntouched=0` for an overlay that was sitting there untouched. It is the same
+# bottom-of-the-stack trap the mount probe has, met from a different direction.
+AA6_UNTOUCHED=0
+if findmnt -rno TARGET,FSTYPE 2>/dev/null | grep -qxF "$WORK/mnt tmpfs"; then
   AA6_UNTOUCHED=1
   umount "$WORK/mnt" || die "AA6: the overlay could not be removed"
-else
-  AA6_UNTOUCHED=0
 fi
 n=0
 AA6_RECOVERED=0
@@ -315,7 +321,8 @@ while [ "$n" -lt 90 ]; do
   n=$((n + 1)); sleep 2
 done
 if [ "$AA6_SEEN" -eq 1 ] && [ "$AA6_UNTOUCHED" -eq 1 ] && [ "$AA6_RECOVERED" -eq 1 ]; then
-  pass "AA6 a foreign overlay showed as inspect-mount-owner on the operator surface, was left EXACTLY where" \n       "it was, and the appliance returned to healthy once it was removed"
+  pass "AA6 a foreign overlay showed as inspect-mount-owner on the operator surface, was left EXACTLY where"  \
+       "it was, and the appliance returned to healthy once it was removed"
 else
   fail "AA6 sawRemediation=$AA6_SEEN overlayUntouched=$AA6_UNTOUCHED returnedHealthy=$AA6_RECOVERED"
 fi
@@ -353,7 +360,8 @@ while [ "$n" -lt 90 ]; do
   n=$((n + 1)); sleep 2
 done
 if [ "$AA8_HAS_RECORD" -eq 1 ] && [ "$AA8_RUNNING" -eq 1 ]; then
-  pass "AA8 upgrade recorded a rollback target before changing anything, and rollback returned to it with" \n       "the appliance healthy"
+  pass "AA8 upgrade recorded a rollback target before changing anything, and rollback returned to it with"  \
+       "the appliance healthy"
 else
   fail "AA8 recordedRollbackTarget=$AA8_HAS_RECORD healthyAfterRollback=$AA8_RUNNING"
 fi
@@ -417,7 +425,8 @@ done
 [ -d "$WORK" ] && { AA11_OK=0; echo "  this run's own directory still exists" >&2; }
 rm -f "$GATE_ROOT"/host-*-"$$".txt 2>/dev/null || true
 if [ "$AA11_OK" -eq 1 ]; then
-  pass "AA11 the container, network and volume SETS are identical and this run's mountpoints and directory" \n       "are gone"
+  pass "AA11 the container, network and volume SETS are identical and this run's mountpoints and directory"  \
+       "are gone"
 else
   fail "AA11 the host is not as it was found"
 fi
