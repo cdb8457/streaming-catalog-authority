@@ -1810,11 +1810,9 @@ recovery_refusals() {
 # IT COUNTS ONLY `fuse.projectiond` ROWS AT EXACTLY THIS PATH. A tmpfs stacked by R5 is not one of ours and
 # must not be counted as one; a row BENEATH the mount point belongs to somebody else's filesystem.
 count_our_layers() {
-  awk -v target="$WORK/mnt" '
-    { sep = 0
-      for (i = 1; i <= NF; i++) { if ($i == "-") { sep = i; break } }
-      if ($5 == target && sep > 0 && $(sep + 1) == "fuse.projectiond") n++ }
-    END { print n + 0 }' /proc/self/mountinfo
+  # ONE LINE, BECAUSE A QUOTED PROGRAM SPLIT OVER TWO IS ONE `test/custody-runtime-closure.ts` CANNOT PARSE
+  # — the same construction defect Phase 3 §9 recorded against a `node -e` and pinned a suite against.
+  awk -v target="$WORK/mnt" '{ sep = 0; for (i = 1; i <= NF; i++) { if ($i == "-") { sep = i; break } } if ($5 == target && sep > 0 && $(sep + 1) == "fuse.projectiond") n++ } END { print n + 0 }' /proc/self/mountinfo
 }
 count_rows_at_mountpoint() {
   awk -v target="$WORK/mnt" '$5 == target { n++ } END { print n + 0 }' /proc/self/mountinfo
@@ -2960,11 +2958,7 @@ arm_R5() {
 
   # AND THE OVERLAY IS ASSERTED STILL MOUNTED AND UNMODIFIED, which is the assertion this whole arm exists for.
   local still=0 top
-  top="$(awk -v target="$WORK/mnt" '
-    { sep = 0
-      for (i = 1; i <= NF; i++) { if ($i == "-") { sep = i; break } }
-      if ($5 == target && sep > 0) { t = $(sep + 1) } }
-    END { print t }' /proc/self/mountinfo)"
+  top="$(awk -v target="$WORK/mnt" '{ sep = 0; for (i = 1; i <= NF; i++) { if ($i == "-") { sep = i; break } } if ($5 == target && sep > 0) { t = $(sep + 1) } } END { print t }' /proc/self/mountinfo)"
   [ "$top" = "tmpfs" ] && still=1
   record "P7-R5-overlay-still-mounted" bool "$still" "" \
     "the tmpfs the gate stacked is STILL the top of the stack; the appliance touched nothing that was not its own" || true
