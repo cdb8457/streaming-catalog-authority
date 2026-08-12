@@ -887,6 +887,281 @@ export const MOUNT_HEALTH_POLICY_IS_BOUNDED_BY_ITS_SAMPLER =
     < PROJECTIOND_MOUNT_HEALTH.MOUNT_FAULT_HOLD_MS - PROJECTIOND_MOUNT_OBSERVATION.SAMPLE_MAX_AGE_MS;
 
 /**
+ * PROJECTION PHASE 6 — BOUNDED AUTOMATIC RECOVERY. What the daemon may DO about the state Phase 5 taught it
+ * to REPORT, and — far more importantly — everything it may not.
+ *
+ * PHASE 5 CLOSED SAYING "IT REPORTS; IT DOES NOT ACT", AND NAMED THIS AS THE DECISION SOMEBODY WOULD HAVE TO
+ * TAKE. This is that decision. The reason it is a whole tranche rather than an `if` is that an appliance
+ * which restarts itself is one failure away from an appliance that restarts itself forever, and a remount
+ * loop with no floor is strictly worse than a mount that stays broken and says so: the broken mount is
+ * visible, and the loop looks like activity.
+ *
+ * SO THE ENTIRE CONTRACT HERE IS ABOUT REFUSING. Only a fault Phase 5's policy ALREADY BELIEVED may be acted
+ * on; only a fault that then SUSTAINS may be acted on; only a mount that is OURS may be touched; only a
+ * BOUNDED number of attempts may ever be spent; and the budget is written to durable storage BEFORE the
+ * attempt, so a supervisor that cannot record what it is about to spend does not spend it.
+ *
+ * THE ACTION IS NOT NEW CODE. It is the remount the serve-death supervisor has used since Phase 2, with the
+ * mount-identity guards Phase 3 cost nineteen gate defects to get right. Phase 6 adds a second REASON to call
+ * it and nothing whatever to what it does — which is the only form of this feature that does not reopen
+ * `--auto-remount`, the defect that recovered for the daemon and for nobody else.
+ */
+export const PROJECTIOND_MOUNT_RECOVERY = Object.freeze({
+  /**
+   * The closed set of recovery decision codes, and it is the WHOLE vocabulary: every action, every refusal
+   * and every deliberate inaction is one of these. No arbitrary log text is an API here — the same rule
+   * `READY_REASONS` is held to, for the same reason, which is that an operator, a gate and a monitor must be
+   * able to key off this without parsing prose.
+   *
+   * THEY DIVIDE INTO FOUR KINDS AND THE DIVISION IS LOAD-BEARING. `no-action-*` is a state that is not a
+   * fault or not yet one. `refuse-*` is a fault the supervisor CAN see and is NOT ENTITLED to act on — the
+   * foreign mount is the whole reason this kind exists. `recover-*` is an action being taken, named by the
+   * fault it is taken for. `recovery-*` is what became of one.
+   */
+  DECISION_CODES: Object.freeze([
+    /** Readiness is `ok`. Nothing to do, and the overwhelmingly common answer. */
+    'no-action-healthy',
+    /** `--auto-recover` is off. The daemon reports exactly as Phase 5 left it and acts on nothing. */
+    'no-action-disabled',
+    /** Readiness is `mount-recovering`: the daemon's own confirmation is running. Acting here would abort a
+     * recovery in order to start one. */
+    'no-action-confirming',
+    /** `no-generation-admitted`. A control-plane problem; no remount can produce a generation. */
+    'no-action-nothing-to-serve',
+    /** `not-mounted` with no recorded death — startup or shutdown. The mount is not this loop's to make. */
+    'no-action-not-mounted',
+    /**
+     * `serve-loop-dead`. THE SERVE SUPERVISOR OWNS THIS AND THIS LOOP MUST NOT ALSO ACT. A death is direct
+     * evidence handled by the path that observed it; a second supervisor reacting to the late sample of the
+     * same event is how one fault becomes two remounts.
+     */
+    'no-action-serve-supervisor-owns',
+    /** An actionable class is present but has not yet sustained `RECOVERY_SUSTAIN_MS`. */
+    'no-action-not-sustained',
+    /** An actionable class is present and the cooldown since the last attempt has not elapsed. */
+    'no-action-cooldown',
+    /** An attempt is in flight. Single-flight is the property; this is what it looks like from outside. */
+    'no-action-attempt-in-flight',
+    /** The budget is spent. The daemon serves and reports; it will not act again without a manual reset. */
+    'no-action-locked-out',
+    /** An action was decided but the supervisor could not accept it before the next tick. Nothing spent. */
+    'no-action-supervisor-busy',
+    /**
+     * `mount-observed-not-live` with a FOREIGN observation. REFUSED, AND THIS IS THE MOST IMPORTANT ENTRY IN
+     * THE TABLE. Something that is not ours is on the mount point; in every containerised topology this
+     * daemon ships in, the likeliest candidate is the operator's own bind — the one mount that must survive
+     * for a recovery to be visible to anybody. Unmounting it is the exact defect `--auto-remount` shipped
+     * once already. A supervisor that cannot tell those apart must do nothing, and say which.
+     */
+    'refuse-foreign-mount',
+    /** An observation or a readiness reason this table does not recognise. Unidentified is not a licence. */
+    'refuse-unknown-state',
+    /** Acting: our own STALE mount is what is observed. A corpse of ours is ours to clear. */
+    'recover-stale-mount',
+    /** Acting: the mount point is observed EMPTY — the namespace was removed out from under the daemon. */
+    'recover-mount-empty',
+    /** Acting: the observation says live and has STOPPED ADVANCING. The wedged-mount signature. */
+    'recover-observation-stale',
+    /** Acting: no observation has ever completed and the grace and the hold are both spent. */
+    'recover-observation-unavailable',
+    /** An attempt returned a mount. The budget resets only after `RECOVERY_CONFIRM_MS` of `ok`. */
+    'recovery-succeeded',
+    /** An attempt returned no mount, within its deadline. Counted, and the cooldown starts. */
+    'recovery-failed',
+    /** An attempt did not return within `RECOVERY_ATTEMPT_DEADLINE_MS`. Counted, and single-flight holds. */
+    'recovery-attempt-timeout',
+    /** The last attempt of the budget failed. The lockout is now in force and is persisted. */
+    'recovery-budget-exhausted',
+    /**
+     * The ledger could not be READ. Failing closed means locking out: a supervisor that cannot see how much
+     * of its budget is already spent must not spend more. An ABSENT ledger is not this — that is a first run.
+     */
+    'recovery-ledger-unreadable',
+    /**
+     * The ledger could not be WRITTEN, so the attempt was refused BEFORE it happened. This is the clause
+     * that makes the bound survive a crash: an attempt whose spend cannot be recorded is an unbounded one.
+     */
+    'recovery-ledger-unwritable',
+  ] as const),
+  /**
+   * The closed set of recovery STATES the status surface publishes. An operator needs to know which of these
+   * they are in before they know whether to touch anything, and `recoveryReason` alone cannot say it: the
+   * same code means different things while acting and while cooling down.
+   */
+  STATES: Object.freeze([
+    /** `--auto-recover` is off. */
+    'disabled',
+    /** Nothing actionable is being reported. */
+    'idle',
+    /** Something actionable is being reported and is being timed against the sustain window. */
+    'observing',
+    /** An attempt is in flight. */
+    'acting',
+    /** An attempt has completed and the cooldown has not elapsed. */
+    'cooling-down',
+    /** The budget is spent, or the ledger is unusable. Nothing further will be attempted. */
+    'locked-out',
+  ] as const),
+  /**
+   * The closed set of REMEDIATIONS. An operator surface that says what is wrong and not what to do about it
+   * sends people to the logs, which is where every path this repository has ever regretted begins.
+   *
+   * THEY ARE CODES, NOT SENTENCES, AND CARRY NO PATH. `inspect-mount-owner` does not say WHICH mount; the
+   * operator knows their own mount point and the status document is meant to be pasteable into an issue.
+   */
+  REMEDIATIONS: Object.freeze([
+    'none',
+    /** Something not ours is on the mount point. A human decides what it is before anything is unmounted. */
+    'inspect-mount-owner',
+    /** The budget is spent. `projectiond --reset-recovery` after the underlying fault is fixed. */
+    'reset-recovery-ledger',
+    /** The ledger is unreadable or unwritable. The cache directory is the first suspect. */
+    'check-cache-directory',
+  ] as const),
+  /**
+   * How often the recovery decision is evaluated, in milliseconds. **DERIVED:** `SAMPLE_INTERVAL_MS`.
+   *
+   * The decision is a pure function of the readiness verdict, and the readiness verdict cannot change faster
+   * than the sampler that feeds it. Evaluating more often than that is polling a constant.
+   */
+  RECOVERY_TICK_MS: 1_000,
+  /**
+   * How long an actionable class must be reported CONTINUOUSLY before anything is done about it, in
+   * milliseconds. **DERIVED:** `MOUNT_FAULT_HOLD_MS`.
+   *
+   * IT IS THE SECOND HOLD, AND IT IS DELIBERATELY THE SAME LENGTH AS THE FIRST. Phase 5's fault hold already
+   * proved the fault is not a sampling artefact — that is what makes readiness false at all, and this loop
+   * never acts on a fault readiness has not already believed. What this window adds is proof that the fault
+   * is not one the daemon's OWN recovery paths were about to clear: a serve-death remount, a confirmation, a
+   * probe that came back. One whole further fault-hold window is the smallest bound that cannot be slept
+   * through by any of those.
+   *
+   * SO THE TIME-TO-ACT IS THE SUM AND IT IS SUPPOSED TO BE. `MOUNT_FAULT_HOLD_MS + RECOVERY_SUSTAIN_MS` =
+   * twelve seconds of a fault nobody else fixed. An appliance that remounts faster than that is one that
+   * remounts on transients.
+   */
+  RECOVERY_SUSTAIN_MS: 2 * (1_000 + 2_000),
+  /**
+   * The longest one attempt may take before it is abandoned, in milliseconds. **CHOSEN, both bounds named.**
+   *
+   * ABOVE: the shipped remount spends up to six seconds of linear backoff across three attempts plus the
+   * mount calls themselves, so a deadline that could fire during a remount that was going to succeed would
+   * turn a recovery into a lockout.
+   * BELOW: an attempt that has not come back is one whose thread may be inside an uninterruptible syscall —
+   * a `statfs` against a wedged connection returns when the connection is torn down and not before. This is
+   * how long the supervisor waits before it stops expecting an answer, counts the attempt, and STOPS: it
+   * never starts a second attempt over an abandoned one, because two remounts racing on one mount point is
+   * the failure this whole tranche exists to make impossible.
+   */
+  RECOVERY_ATTEMPT_DEADLINE_MS: 20_000,
+  /**
+   * How long after an attempt before another may be started, in milliseconds. **DERIVED:**
+   * `RECOVERY_ATTEMPT_DEADLINE_MS`.
+   *
+   * The derivation is the argument: an attempt may be ABANDONED rather than finished, so the only cooldown
+   * that guarantees two attempts cannot overlap in wall-clock is one that outlasts the whole deadline of the
+   * previous one. Anything shorter is a cooldown that is correct only when nothing went wrong.
+   */
+  RECOVERY_COOLDOWN_MS: 20_000,
+  /**
+   * How many attempts may EVER be spent before the lockout, between resets. **CHOSEN.**
+   *
+   * Three is the budget the serve-death remount has spent since Phase 2, and the symmetry is deliberate: an
+   * operator who knows one bound knows both. A fourth attempt at an action that has failed three times
+   * across a minute is not a recovery, it is a loop — and the whole content of this tranche is that the loop
+   * is the worse failure.
+   */
+  RECOVERY_MAX_ATTEMPTS: 3,
+  /**
+   * How long readiness must be continuously `ok` after an attempt before the budget resets, in milliseconds.
+   * **DERIVED:** `MOUNT_RECOVERY_CONFIRM_MS + SAMPLE_MAX_AGE_MS`.
+   *
+   * READINESS RETURNING IS NOT ENOUGH ON ITS OWN. `ok` already required a confirmed live run, so it is a
+   * real observation and not a lucky sample — but it can be granted by a sample taken up to a whole
+   * worst-case window ago. Adding one such window is the smallest addition that guarantees the `ok` which
+   * refunds the budget was re-derived from an observation taken AFTER the attempt, rather than from the one
+   * that granted it. Refunding on anything weaker is how a budget stops being a budget.
+   */
+  RECOVERY_CONFIRM_MS: 1_000 + 3_000,
+  /**
+   * Whether the ledger survives a process restart. **TRUE, AND IT IS THE POINT.**
+   *
+   * A budget held in memory is reset by the thing it exists to bound. `restart: unless-stopped` restarts a
+   * daemon that exits, so an in-memory budget of three would authorise three attempts per restart and
+   * therefore an unbounded number of attempts — which is precisely the infinite remount loop this contract
+   * forbids. The ledger is written to the DURABLE cache directory, and a lockout in it is still a lockout
+   * after a crash, a restart, an upgrade and a host reboot.
+   */
+  LEDGER_IS_CRASH_PERSISTENT: true,
+  /** Where the ledger lives, relative to the daemon's configured `probeCacheDir`. */
+  LEDGER_FILENAME: 'recovery-ledger.json',
+  /**
+   * How a lockout is cleared. **BY A HUMAN, AND BY NOTHING ELSE.**
+   *
+   * `projectiond --reset-recovery` clears the ledger and exits. It constructs no daemon, opens no cache and
+   * cannot mount. Every automatic clearing rule that was considered — a timer, an uptime, a quiet period —
+   * is a rule under which a flapping appliance eventually resumes flapping without anybody having looked at
+   * it, and the operational cost of a lockout that outlives its cause is a status field somebody reads,
+   * which is the cheap failure. This is named as a rough edge in the alpha document rather than defended as
+   * elegant.
+   */
+  LOCKOUT_CLEARED_BY: 'projectiond --reset-recovery',
+  /**
+   * Whether enabling recovery changes any Docker restart policy. **FALSE, AND NO PROFILE MAY MAKE IT TRUE
+   * WITHOUT SAYING SO.** Phase 5 §5.1 recorded that Docker's `restart:` policies do not react to health at
+   * all; Phase 6 does not wire them together either. Recovery happens INSIDE the living process, so a
+   * container that was never going to be restarted still is not.
+   */
+  CHANGES_RESTART_POLICY: false,
+  /**
+   * Whether the recovery control surface is reachable from anywhere. **FALSE.** The loop is a goroutine
+   * reading this process's own readiness verdict; there is no socket, no route and no flag that can trigger
+   * a recovery from outside the process. Loopback-only was the weaker property that was available; this is
+   * the stronger one that was cheaper.
+   */
+  HAS_REMOTE_CONTROL_SURFACE: false,
+} as const);
+
+/**
+ * A fault must outlast BOTH holds before anything is done about it, and this is the derived fact that says
+ * so. Same shape as `MOUNT_HEALTH_POLICY_IS_BOUNDED_BY_ITS_SAMPLER`, and it fails if either window is ever
+ * shortened to the point where a recovery could fire on a fault readiness had not already believed.
+ */
+export const RECOVERY_NEVER_ACTS_ON_A_FAULT_READINESS_DID_NOT_BELIEVE =
+  PROJECTIOND_MOUNT_RECOVERY.RECOVERY_SUSTAIN_MS >= PROJECTIOND_MOUNT_HEALTH.MOUNT_FAULT_HOLD_MS
+  && PROJECTIOND_MOUNT_RECOVERY.RECOVERY_TICK_MS <= PROJECTIOND_MOUNT_OBSERVATION.SAMPLE_INTERVAL_MS
+  && PROJECTIOND_MOUNT_RECOVERY.RECOVERY_SUSTAIN_MS > PROJECTIOND_MOUNT_HEALTH.ANTI_FLAP_TRANSIENT_MS;
+
+/**
+ * Two attempts cannot overlap in wall-clock even when the first was abandoned rather than finished, and this
+ * is the derived fact that says so. A cooldown shorter than the attempt deadline is a cooldown that is
+ * correct only when nothing went wrong, which is the case it is not for.
+ */
+export const RECOVERY_ATTEMPTS_CANNOT_OVERLAP =
+  PROJECTIOND_MOUNT_RECOVERY.RECOVERY_COOLDOWN_MS >= PROJECTIOND_MOUNT_RECOVERY.RECOVERY_ATTEMPT_DEADLINE_MS;
+
+/**
+ * The budget is finite, durable and cleared only by a human, and this is the derived fact that says so. All
+ * three together are what make an infinite remount loop unreachable: finite bounds one process's attempts,
+ * durable bounds every process's, and manual clearing means nothing but a person ever refunds them.
+ */
+export const RECOVERY_CANNOT_LOOP_FOREVER =
+  PROJECTIOND_MOUNT_RECOVERY.RECOVERY_MAX_ATTEMPTS > 0
+  && PROJECTIOND_MOUNT_RECOVERY.RECOVERY_MAX_ATTEMPTS < 10
+  && PROJECTIOND_MOUNT_RECOVERY.LEDGER_IS_CRASH_PERSISTENT
+  && PROJECTIOND_MOUNT_RECOVERY.LOCKOUT_CLEARED_BY === 'projectiond --reset-recovery'
+  && !PROJECTIOND_MOUNT_RECOVERY.CHANGES_RESTART_POLICY;
+
+/**
+ * The budget is refunded only by an `ok` that was re-derived after the attempt, and this is the derived fact
+ * that says so: the confirmation window strictly outlasts one whole worst-case sampling window.
+ */
+export const RECOVERY_REFUND_REQUIRES_A_FRESH_OBSERVATION =
+  PROJECTIOND_MOUNT_RECOVERY.RECOVERY_CONFIRM_MS > PROJECTIOND_MOUNT_OBSERVATION.SAMPLE_MAX_AGE_MS
+  && PROJECTIOND_MOUNT_RECOVERY.RECOVERY_CONFIRM_MS
+    === PROJECTIOND_MOUNT_HEALTH.MOUNT_RECOVERY_CONFIRM_MS + PROJECTIOND_MOUNT_OBSERVATION.SAMPLE_MAX_AGE_MS;
+
+/**
  * The Phase 1 amplification budget. These are the numbers the acceptance harness asserts, and they are here
  * rather than only in the plan document so a suite can import them instead of copying them.
  */

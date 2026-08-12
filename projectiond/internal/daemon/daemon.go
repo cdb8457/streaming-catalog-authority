@@ -132,6 +132,10 @@ type Daemon struct {
 	// `serveDeath` it is never cleared. `ClearServeDeath` retires the current death; it does not make the
 	// death un-happen, and two policy decisions below turn on whether one ever did.
 	lastServeDeathAt atomic.Int64
+
+	// recovery is Phase 6's bounded automatic recovery: the durable budget, the sustain window and the last
+	// published decision. It has its own mutex because the readiness path must never wait on a ledger write.
+	recovery recoveryState
 }
 
 // mountObservation is one completed sample: what was seen, when — and the two facts about the STREAM that
@@ -1019,6 +1023,20 @@ type Status struct {
 	MountBootstrapGrace bool `json:"mountBootstrapGrace"`
 	// MountGraceRemainingMs is how much of that window is left, and zero once it is over or forfeited.
 	MountGraceRemainingMs int64 `json:"mountGraceRemainingMs"`
+	// The Phase 6 recovery surface, embedded so its six fields sit at the top level of the document beside
+	// the readiness ones an operator is already reading.
+	//
+	// STRICTLY ADDITIVE, AND THAT IS ASSERTED RATHER THAN INTENDED. `ready`, `mounted`, `readyReason` and
+	// every Phase 4 and Phase 5 field keep the exact meanings the closed gates were measured against; this
+	// tranche adds fields beside them and moves none of them. `PROJECTIOND_MOUNT_RECOVERY.DOES_NOT_CHANGE`
+	// is that as a pin.
+	//
+	// WHY RECOVERY IS ON THE READINESS DOCUMENT AND NOT A THIRD ENDPOINT. An operator looking at a 503 needs
+	// three answers in one place: what is wrong (`readyReason`), what is actually at the mount
+	// (`mountObserved`), and whether anything is being done about it (`recoveryState`). Splitting the third
+	// one onto its own surface means the answer to "is this fixing itself?" is a second request whose reply
+	// describes a different instant.
+	RecoverySnapshot
 }
 
 // Liveness is the document `/healthz` answers, and its shape is the tranche's second half.
@@ -1105,6 +1123,10 @@ func (d *Daemon) Status() Status {
 	if status.RetainedGenerations == nil {
 		status.RetainedGenerations = []string{}
 	}
+	// THE RECOVERY SNAPSHOT IS READ, NEVER DECIDED, HERE — the same rule the observation above follows. The
+	// decision belongs to the recovery loop, which owns the sustain window and the durable budget; a status
+	// request that took one would advance a clock that is supposed to be advanced by time.
+	status.RecoverySnapshot = d.RecoveryStatus()
 	return status
 }
 

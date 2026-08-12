@@ -53,6 +53,12 @@ func main() {
 		"after the FUSE serve loop dies, attempt a bounded remount instead of exiting")
 	serveExitCode := flag.Int("serve-exit-code", 3,
 		"exit code for a serve-loop death when --auto-remount is off or every remount attempt fails")
+	autoRecover := flag.Bool("auto-recover", false,
+		"act on a SUSTAINED mount fault that readiness already believes, bounded by a durable budget "+
+			"(Projection Phase 6; off by default, and it never touches a mount that is not ours)")
+	resetRecovery := flag.Bool("reset-recovery", false,
+		"clear the durable recovery budget and exit. It constructs no daemon, opens no cache and cannot "+
+			"mount. This is the only thing that clears a recovery lockout")
 	healthcheck := flag.Bool("healthcheck", false,
 		"read this daemon's own /readyz over loopback and exit 0 only if it is ready; this is the shipped "+
 			"container healthcheck and it starts nothing")
@@ -85,6 +91,20 @@ func main() {
 	// probe-cache directory from a health probe, every interval, as root.
 	if *healthcheck {
 		os.Exit(runHealthcheck(cfg))
+	}
+
+	// THE ONLY THING THAT CLEARS A RECOVERY LOCKOUT, AND IT IS A HUMAN TYPING IT.
+	//
+	// It is branched here for the same reason the healthcheck is: it must construct no daemon, open no cache
+	// and be incapable of mounting. Every automatic clearing rule that was considered — a timer, an uptime, a
+	// quiet period — is a rule under which a flapping appliance eventually resumes flapping without anybody
+	// having looked at it.
+	if *resetRecovery {
+		if err := daemon.ResetRecoveryLedger(cfg.ProbeCacheDir); err != nil {
+			fail("the recovery ledger could not be reset")
+		}
+		logLine("recovery ledger reset; automatic recovery will act again when it is enabled")
+		return
 	}
 
 	d, err := daemon.New(cfg)
@@ -227,6 +247,23 @@ func main() {
 	defer d.SetMounted(false)
 	logLine(fmt.Sprintf("serving generation %d", record.Sequence))
 
+	// PROJECTION PHASE 6 — BOUNDED AUTOMATIC RECOVERY, and the wiring is where the single-flight guarantee
+	// actually lives.
+	//
+	// EVERY MUTATION OF `mount` STAYS IN THIS ONE GOROUTINE. The recovery loop decides and REQUESTS; it never
+	// mounts, never unmounts and never touches the handle. That is not tidiness — a second goroutine calling
+	// `remountLoop` would race the serve-death path on one mount point, and it would also leave this select
+	// waiting on a `Done()` channel belonging to a mount that had already been replaced. A channel request
+	// serviced by the owner makes both impossible without a lock, and makes "exactly one recovery at a time"
+	// a property of the shape rather than a discipline somebody has to keep.
+	d.EnableRecovery(*autoRecover)
+	recoveryRequests := make(chan recoveryRequest)
+	if d.RecoveryEnabled() {
+		logLine("automatic recovery is ENABLED: bounded, budgeted, and it will never unmount anything that " +
+			"is not this daemon's own")
+		go recoveryLoop(ctx, d, recoveryRequests)
+	}
+
 	// THE SUPERVISOR. The serve loop can die while the process lives: an external umount or a closed
 	// /dev/fuse tears the connection down from underneath us. A daemon that parked on Wait() and exited 0
 	// over a vanished namespace is a media server with no files, so the tail of main is a select that tells
@@ -260,6 +297,106 @@ func main() {
 			d.ClearServeDeath()
 			d.SetMounted(true)
 			logLine(fmt.Sprintf("remounted; serving generation %d", record.Sequence))
+		case request := <-recoveryRequests:
+			// A RECOVERY THE RECOVERY LOOP DECIDED ON AND THIS GOROUTINE PERFORMS.
+			//
+			// The budget is spent HERE, inside `RecoveryBeginAttempt`, and not where the decision was taken:
+			// between the two the serve-death branch above may have fixed the very fault this was for, and
+			// spending a budget on somebody else's repair is how three attempts become one real attempt and
+			// two accidents. Begin re-checks the class and writes the ledger BEFORE anything happens, so an
+			// attempt whose spend cannot be recorded never happens at all.
+			granted, code := d.RecoveryBeginAttempt(request.class, time.Now())
+			if !granted {
+				logLine("recovery not started: " + code)
+				request.reply <- false
+				continue
+			}
+			logLine("recovery: " + code)
+			// THE SAME REMOUNT THE SERVE-DEATH PATH USES, WITH THE SAME GUARDS AND NOTHING ADDED. Phase 6
+			// contributes a second REASON to call this and no new behaviour inside it: `planRemountCleanup`
+			// still only ever touches our own mount, and the drain still never goes below the floor counted
+			// before this process mounted anything.
+			ok := remountLoop(d, cfg, *debug, *strictMount, &mount, mountsAtStartup, startupCountKnown)
+			if ok {
+				// A REMOUNT IS NOT YET A RECOVERY, WHICH IS WHY NOTHING IS CLEARED HERE BUT THE FLAG. The
+				// serve-death branch above clears a death because it recorded one; this branch recorded
+				// nothing, and `mounted` was never set false — the fault it is repairing is one the daemon's
+				// own belief could not see. The budget is refunded only by observed, confirmed readiness.
+				logLine("recovery: remount returned a mount; readiness must still confirm it")
+			} else {
+				logLine("recovery: no remount succeeded")
+			}
+			d.RecoveryFinishAttempt(ok)
+			request.reply <- ok
+		}
+	}
+}
+
+// recoveryRequest is one recovery the recovery loop has decided on and the mount owner will perform. The
+// reply channel is BUFFERED so a requester that has already given up on its deadline cannot wedge the owner.
+type recoveryRequest struct {
+	class string
+	reply chan bool
+}
+
+// recoveryLoop is Phase 6's supervisor. It decides and it requests; it performs nothing.
+//
+// IT HAS NO SURFACE. There is no socket, no route and no flag that can trigger a recovery from outside this
+// process — the loop reads this daemon's own readiness verdict in memory. "Loopback-only" was the weaker
+// property that was available and this is the stronger one that was cheaper.
+//
+// THE ATTEMPT DEADLINE IS APPLIED HERE RATHER THAN BY THE OWNER, AND THE REASON IS WHAT AN ABANDONED ATTEMPT
+// IS. A remount can park in an uninterruptible `statfs` against a wedged connection, which returns when the
+// connection is torn down and not before; nothing can cancel it. So the deadline bounds how long this loop
+// WAITS, records the attempt as spent, and then stops for good: `RecoveryAbandonAttempt` deliberately does
+// not release single-flight, because a second remount against a mount point the first one is still inside is
+// the worst blast radius in this product.
+func recoveryLoop(ctx context.Context, d *daemon.Daemon, requests chan<- recoveryRequest) {
+	ticker := time.NewTicker(daemon.RecoveryTick)
+	defer ticker.Stop()
+	lastLogged := ""
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		decision := d.RecoveryDecide(time.Now())
+		if !decision.Act() {
+			// EVERY DECISION IS PUBLISHED ON THE STATUS SURFACE AND ONLY CHANGES ARE LOGGED. A refusal is a
+			// STATE, so an operator reading /readyz a minute after a foreign overlay appeared still sees why
+			// nothing is happening — while the log does not repeat itself once a second forever.
+			if code := decision.Code(); code != lastLogged {
+				lastLogged = code
+				if decision.IsRefusal() {
+					logLine("recovery refused: " + code + " (" + decision.Remediation() + ")")
+				}
+			}
+			continue
+		}
+		lastLogged = decision.Code()
+		reply := make(chan bool, 1)
+		// A BOUNDED HANDOFF. If the owner is busy — servicing a serve-loop death, most likely — this waits
+		// one tick and then abandons the decision WITHOUT SPENDING ANYTHING. The fault will still be there
+		// next tick if nobody fixed it, and it will not be if somebody did.
+		select {
+		case requests <- recoveryRequest{class: decision.Code(), reply: reply}:
+		case <-time.After(daemon.RecoveryTick):
+			logLine("recovery deferred: " + daemon.RecoveryNoActionSupervisorBusy)
+			continue
+		case <-ctx.Done():
+			return
+		}
+		select {
+		case <-reply:
+		case <-time.After(daemon.RecoveryAttemptDeadline):
+			// The attempt is past its deadline. It is counted, and nothing further is ever attempted.
+			d.RecoveryAbandonAttempt()
+			logLine("recovery: " + daemon.RecoveryAttemptTimeout +
+				"; no further attempt will be made by this process")
+			return
+		case <-ctx.Done():
+			return
 		}
 	}
 }
