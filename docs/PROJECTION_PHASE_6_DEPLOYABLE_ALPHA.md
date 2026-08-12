@@ -381,6 +381,15 @@ alpha-candidate checkpoint with every remaining blocker precisely named. It does
 4. **No alerting, no history, no trend.** The surface is a point-in-time document. Everything an operator
    knows about the past is `recoveryGeneration` and `recoveryLastOutcome`.
 5. **One provider.** TorBox, through the adapter Phase 1 closed against. §10 is explicit about what that means.
+6. **A recovery usually STACKS OVER the corpse rather than removing it, and the first Tower run is what made
+   that concrete.** `ProbeMountpoint` reads the *bottom* entry of a stacked mount point, and in every
+   containerised topology this daemon ships in that entry is the operator's own bind — which the supervisor
+   correctly declines to touch. So `planRemountCleanup` returns "nothing", the drain does not run, and the
+   remount lands on top. It **works**: readiness confirms, and a pre-attached consumer reads the identical
+   digest afterwards, which `RC12` measures. What it means is that a mount point which has survived several
+   recoveries carries several of this daemon's dead layers, exactly as the startup path has always tolerated.
+   Removing them safely needs the probe to answer about the *top* of the stack, which is a change to Phase 3's
+   hardest-won code and is **named as next work rather than done here**.
 
 ## 10. What this tranche does not claim
 

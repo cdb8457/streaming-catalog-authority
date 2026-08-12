@@ -725,8 +725,25 @@ step "RC6 and RC10 — a serve-loop death belongs to the serve supervisor, and o
 RC6_GENERATION_BEFORE="$REC_GENERATION"
 RC6_REMOUNTS_BEFORE="$(remount_starts)"
 RC6_MOUNTS="$(daemon_mounts)"
-test "$RC6_MOUNTS" = "1" \
-  || die "RC6: the daemon namespace holds $RC6_MOUNTS of our mounts, not one; refusing to abort"
+# THE GUARD IS ON THE IDENTITY OF WHAT WILL BE ABORTED, NOT ON HOW MANY OF OURS ARE THERE, AND THE FIRST REAL
+# TOWER RUN IS WHY.
+#
+# This arm originally required EXACTLY ONE of our mounts, copied from an arm that runs before any recovery
+# has happened. By the time RC6 runs, RC4's recovery has already been performed — and the shipped supervisor
+# recovers by STACKING over the corpse rather than by removing it, because `ProbeMountpoint` reads the bottom
+# entry of a stacked mount point and correctly declines to touch what it finds there (the operator's bind).
+# So the namespace legitimately held three of ours, and the arm refused to run over a state the product had
+# produced on purpose.
+#
+# WHAT ACTUALLY MAKES THE ABORT SAFE IS UNCHANGED AND IS ASSERTED HERE INSTEAD: the injector only ever tears
+# down the TOP of the chain, only when it is `fuse.projectiond`, and only at or under this run's own mount
+# point. The host serves its array over shfs, which is also FUSE, so that guard is the one that matters.
+RC6_TOP_TYPE="$(daemon_top | awk '{print $2}')"
+test "$RC6_TOP_TYPE" = "fuse.projectiond" \
+  || die "RC6: the top of the stack is '$RC6_TOP_TYPE', not ours; refusing to abort"
+test "${RC6_MOUNTS:-0}" -ge 1 \
+  || die "RC6: the daemon namespace holds none of our mounts; there is nothing to abort"
+echo "  the daemon namespace holds $RC6_MOUNTS of our mounts, and the top of the chain is $RC6_TOP_TYPE"
 
 set +e
 RC6_ABORT="$(bash "$WORK/out/fuse-abort.sh" "$WORK/mnt" 2>&1)"
@@ -794,8 +811,34 @@ else
   RC8_ATTEMPT_STAMPS=""
   RC8_LAST_ATTEMPTS="$REC_ATTEMPTS"
 
-  # THE FAULT: the mount point is emptied out from under the daemon by removing its own mount, which is a
-  # state the table calls actionable and which no remount can repair while the syscall is refused.
+  # THE FAULT IS A CORPSE OF SOMEBODY ELSE'S MAKING, AND IT MUST NOT BE THE SUBJECT'S OWN DEATH.
+  #
+  # Aborting the SUBJECT's connection here would kill its serve loop, and with `/dev/fuse` masked the
+  # SERVE supervisor's own three remounts would all fail and the process would exit — leaving nothing alive
+  # to measure a recovery budget on. So the fault is produced exactly as RC4 produces it: a second projectiond
+  # is stacked above and ITS connection is torn down, which the subject observes as `stale-projectiond` while
+  # its own serve loop never notices. That is the fault the recovery loop exists for, and it is the only one
+  # that leaves a living daemon to spend a budget.
+  docker run -d --name "$BLOCKER_CONTAINER" \
+    --network "$NETWORK" --user 0:0 \
+    --cap-drop ALL --cap-add SYS_ADMIN --security-opt apparmor:unconfined \
+    --device /dev/fuse:/dev/fuse \
+    -v "$WORK/manifest:/var/lib/projectiond/manifest:ro" \
+    -v "$WORK/media:/var/lib/projectiond/media:ro" \
+    -v "$WORK/blocker-cache:/var/lib/projectiond/cache" \
+    -v "$WORK/blocker-config.json:/etc/projectiond/config.json:ro" \
+    -v "$WORK/mnt:/mnt/projection:rshared" \
+    "$IMAGE" --config /etc/projectiond/config.json --poll 60s >/dev/null
+
+  RC8_MOUNTS_BEFORE="$(daemon_mounts)"
+  RC8_LANDED=0
+  n=0
+  while [ "$n" -lt 60 ]; do
+    if [ "$(daemon_mounts)" -gt "$RC8_MOUNTS_BEFORE" ]; then RC8_LANDED=1; break; fi
+    n=$((n + 1)); sleep 0.5
+  done
+  test "$RC8_LANDED" -eq 1 || die "RC8: the second mount never landed above this run's own mount"
+
   RC8_TOP="$(daemon_top | awk '{print $2}')"
   test "$RC8_TOP" = "fuse.projectiond" || die "RC8: the top of the stack is '$RC8_TOP', not ours"
   set +e
@@ -805,6 +848,7 @@ else
     abort:done*) : ;;
     *) die "RC8: the fault could not be injected ($(echo "$RC8_ABORT" | tail -1))" ;;
   esac
+  docker rm -f "$BLOCKER_CONTAINER" >/dev/null 2>&1 || true
 
   # THE BUDGET IS DRIVEN TO EXHAUSTION AND EVERY ATTEMPT'S START IS STAMPED, because RC8's whole claim is
   # about the SPACING between them: an attempt that followed another inside the cooldown would be the bound
