@@ -1,9 +1,8 @@
 # Projection Phase 7 — the operator-usable alpha
 
-**Status: OPEN — this document is the contract, and it was committed before the first measured run.**
-Every arm, threshold, repetition rule, cleanup requirement and exclusion in §2 to §10 is predeclared. §11 is
-the run record and is empty until a run has been taken. **No threshold in §4 may move after the first
-measured run**; a clause that measures FALSE is recorded as **superseded**, with what it said kept whole,
+**Status: NO-GO — the contract in §2 to §10 was committed before the first measured run; §11 is what has been measured and §12 is the decision.**
+Every arm, threshold, repetition rule, cleanup requirement and exclusion in §2 to §10 is predeclared and
+**none has moved**. §11 is the run record. **No threshold in §4 may move after the first measured run**; a clause that measures FALSE is recorded as **superseded**, with what it said kept whole,
 exactly as Phase 4 §4.1 and Phase 5 §3.3 did — never edited into agreement with a result.
 
 **What Phase 7 is, in one sentence.** Phase 6's bounded automatic recovery, done to a mount that **three
@@ -342,9 +341,169 @@ measures three times over with the same injector.
 
 ## 11. Run record
 
-**EMPTY. Nothing has been run.** Every figure below this line will name the frozen commit, tree and image it
-came from, and the two source digests that make a stale record impossible.
+**INCOMPLETE. THE TRANCHE HAS NOT CLOSED AND §12 IS A NO-GO.** What follows is what was measured, from
+which frozen source, and what stopped each attempt. Every figure names the tree it came from.
+
+### 11.1 The frozen candidates, in the order they existed
+
+**THE CANDIDATE MOVED THREE TIMES AND EACH MOVE IS RECORDED RATHER THAN GLOSSED**, because Phase 6's whole
+correction was about a record that named one commit and published figures from three trees.
+
+| # | Commit | Tree | Staged manifest | Image | What it was |
+|---|---|---|---|---|---|
+| 1 | `c35fee0f7922f5339245e6065a41078542e3e843` | `64abb0113006d6c099a831d18d8fa56af8cf14ca` | `a762e4e6…` over **1,657** files, byte-identical in **both** directions | `sha256:83b529f04fc472fb91338adb4b29a53a06803c128a13ec9d4ee164bb07499707` | superseded before any measured run, by the two closed-suite corrections |
+| 2 | `79fc79d2db89737f4f79a18b75ce927895c28a79` | — | `d86db06c…` over **1,658** files, byte-identical in **both** directions | **the same** `sha256:83b529f0…`, rebuilt from the re-frozen tree | attempt 1 and attempt 2 ran from this |
+| 3 | `922310e2f72cdcfbdccb679f11a3b12ed88f3fff` | — | — | — | the drain-liveness fix §11.4 forced; not yet re-frozen at the time of writing |
+
+**THE STAGING PROOF IS THE ONE PHASE 6 DID NOT HAVE, AND IT IS SYMMETRIC.** `/mnt/user/appdata/catalog-p7`
+was removed and recreated **empty**, `git archive <commit>` was extracted into it, and a sorted per-file
+sha256 manifest was computed **independently on each side** — from the archive on the development host and
+from the extracted tree on Tower. The two manifests hash to the same value, which is a stronger statement
+than an empty diff in one direction.
+
+**THE IMAGE DIGEST DID NOT MOVE BETWEEN CANDIDATE 1 AND 2, AND THAT IS A MEASUREMENT.** It was rebuilt from
+the re-frozen tree on the host and produced `sha256:83b529f0…` again, which is what says no daemon byte moved
+in those corrections. It **did** move from Phase 6's `sha256:a5f12b92…`, and it is supposed to have: this
+tranche changes `projectiond`.
+
+| What | Value |
+|---|---|
+| host | Unraid `tower` |
+| OPERATOR SOURCE DIGEST | `33005b52c989645586c0fbe35fdf4572489b7a74ec97785f22b20e89435cf2f3` |
+| GATE SOURCE DIGEST (Phase 7) | `24b4edd90432c30b50e09b2fed8505cb2fdc11b3860ca2b43e1a5f4f3cf47b68` |
+| host baseline before anything | **42** containers, **26** running, **17** networks, **45** volumes, **0** `fuse.projectiond` mounts |
+
+The two source digests cover the same five operator files Phase 6 named, and the six files that are Phase 7's
+gate: the gate, its two wrappers, its compose file, its contract module and its CLI.
+
+### 11.2 Attempt 1 — the furthest any run has reached, and what it measured on the way
+
+`bash deploy/projection-phase7-gate.sh`, from candidate 2, image `sha256:83b529f0…`, on Unraid `tower`.
+**It died at arm 1 of 6 on a gate defect** (§11.4 #3). Everything before that is a measurement and is
+recorded here, naming the run it came from, exactly as Phase 3 §8 records observations from runs that did not
+close.
+
+| What | Measured |
+|---|---|
+| **stage A — the healthy baseline** | **14 verdicts, all pass.** Three real digest-pinned media servers bound the projected path before anything was mounted there; one manifest generation; the operator's real TorBox object admitted and mounted; the resolver refused at the transport from the gate network |
+| `P7-A-recovery-idle` | `recoveryState=idle`, `recoveryReason=no-action-healthy`, `recoveryAttempts=0`, `recoveryGeneration=0` on a healthy appliance with three media servers reading through it |
+| `P7-A-windows` / `P7-A-stat` | **4 of 4** operator windows digest-matched through the mount against values recorded outside it; an ordinary regular file at exactly the published size by `lstat` |
+| `P7-A-inread` × 3 | all three servers read the **same four windows inside their own containers as their own uid** |
+| `P7-A-catalogue` × 3 | all three catalogued both published identities at the published size as ordinary files, through each server's **own** predicate |
+| **`P7-A-layers`** | **1 above a floor of 0** — the first time this repository has ever counted the layers at a projection mount point |
+| **stage C — concurrency** | `P7-C-overlap-three-way-observed` **pass**: all three observed scanning one real-provider namespace on one clock, with a fully attributed three-way sample |
+| **stage B — five minutes of paced direct play, ALL THREE AT ONCE** | **emby 306 s, jellyfin 300 s, plex 300 s of DECODED MEDIA TIME**, against a 300 s floor, with startups of **1,500 / 1,600 / 1,480 ms** against a 10,000 ms budget — *while the other two were also in flight* |
+| **`P7-C-concurrent-play-overlapped`** | **pass** — an instant existed at which all three servers' consumers were decoding the same object through the same mount, measured from the three progress traces rather than inferred from three launches |
+| **stage B — the forced transcode** | **plex: 300 s of decoded h264** against a 300 s floor. Emby and Jellyfin produced **324 decoded seconds each, 108 distinct segments, every one decoded, longest arrival gap 3 s** — and were then failed by a shipped assertion that was wrong (§11.4 #2) |
+| **stage C — after the whole playback window** | all three catalogues unchanged; `P7-C-windows-after` **4 of 4**, slowest read 630 ms |
+| host afterwards | container, network and volume **sets identical** to the baseline; **0** `fuse.projectiond` mounts; no run directory left |
+
+**WHAT THAT IS AND IS NOT.** It is the first time three real media servers have played a real provider's
+object through this appliance **for five minutes each, simultaneously** — Phase 3's window was thirty seconds
+per server and its plays were serial. It closes nothing: attempt 1 exited non-zero, and a run that did not
+finish proves nothing about the six arms it never reached.
+
+### 11.3 Attempt 2 — BLOCKED, not failed, on the operator's egress allowlist
+
+`bash deploy/projection-phase7-gate.sh`, from candidate 2. It died in setup on
+`P7-A-entry-is-decodable-video`, with the decoder saying `Input/output error`.
+
+**THAT IS §7's PREDECLARED BLOCKER AND IT IS NOT A PRODUCT DEFECT.** The redaction-safe recheck, run
+immediately afterwards and unchanged in shape since Phase 3:
+
+```
+allowedOriginCount=5    resolvedOriginDigest=d4064d307d25
+resolvedOriginInAllowlist=NO    verdict=disallowed    observedAt 2026-08-12T16:32:17Z
+```
+
+`d4064d307d25` is one of the two origins Phase 3 §11.7 already recorded as **observed and not allowlisted**.
+The same recheck had answered `allowed` on `3cfc7340a785` twenty-eight minutes earlier, which is the provider
+moving between pool members inside a single working session — the arithmetic §11.7 measured.
+
+**PER §7 THIS RUN IS RECORDED AS BLOCKED AND COUNTS TOWARD NOTHING IN EITHER DIRECTION**, and this tranche
+does not write `endpoint.json`. The blocker was escalated to the operator with a digest and a count and
+nothing else.
+
+### 11.4 The defects the runs found, in the order the runs found them
+
+**FIVE SO FAR. TWO ARE IN SHIPPED PRODUCT CODE AND ONE OF THOSE WAS INTRODUCED BY THIS TRANCHE AND CAUGHT BY
+ITS OWN REGRESSION MATRIX**, which is the most useful thing in this section.
+
+| # | Found by | What it was | Where the fix went |
+|---|---|---|---|
+| 1 | attempt 1, stage B | the gate's seek counter asked the driver's output for `positionSeconds`; every shipped driver writes `requestedSeconds`. It counted zero distinct positions **beside a verifier that had just passed all ten of its own assertions**, and recorded `0/10` three times over a product that had done the whole thing correctly | the gate — and an unreadable count now fails as an ABSENT measurement rather than as ten seeks that did not happen |
+| 2 | attempt 1, stage B | **THREE SHIPPED DRIVERS WROTE THE PROPERTY AND THEN ASSERTED THE FIXTURE.** Each says *"a transcode to h264 from a source that was already h264 would prove nothing about an encoder"* and then compares the source against `TRANSCODE_SOURCE_VIDEO_CODEC` — the codec this repository's own **synthetic** corpus uses. The operator's object is **hevc**; all three transcoded it correctly for five minutes and two of them were then failed for it. Against Phase 1's mpeg4 corpus the two questions have the same answer, which is why five closed tranches never told them apart | **the product** — one shared decision, `transcodeSourceIsWorthTranscoding`, at all five call sites. Every input that passed before still passes, so no closed result is retired; an absent or blank codec is now a failure rather than a pass |
+| 3 | attempt 1, arm 1 | the gate is generated, and the generator rendered a backslash-n into a **real newline inside a quoted JavaScript string**. The arm log would not parse, and node said so at the first line of arm 1 of 6 — **after** everything in §11.2 had been measured and thrown away | the gate — and an offline assertion now EXTRACTS every program the gate embeds and runs `node --check` over it, so it fails in milliseconds on the development host instead of two hours into a metered run |
+| 4 | the regression matrix | **THE CORPSE DRAIN WAS NEVER REACHED IN A CONTAINER**, which is Phase 6 §9.7 measured from the inside. `planRemountCleanup` classified from `ProbeMountpoint`, which reads the BOTTOM of the stack, and in every containerised topology the bottom entry is the operator's bind — `fuse.shfs` on Unraid. After a serve-loop death the pair is ENOTCONN over somebody else's type, and `classify` has exactly one answer for that: FOREIGN | **the product** — the plan now also reads what is on TOP, and drains when the top is our own dead mount. A foreign mount on top still plans nothing |
+| 5 | **the regression matrix, on the fix for #4** | **AND THEN THE DRAIN TOOK THIS DAEMON'S OWN LIVE MOUNT.** Phase 6's own `RC8`, run from the Phase 7 candidate: the mount point held the operator's bind, **this daemon's live mount**, and a second daemon's corpse above it. The drain removed the corpse — correct — and then removed the live one, because "above the floor and of our type" describes both. Its own log: `detaching one of ours … floor 1, now 3` / `floor 1, now 2` / `serve loop died` / `remount attempts exhausted` / `exiting`. Reproduced identically on all three runs of the three-runner | **the product** — a third condition now stands between a mount and a detach: its transport must be **confirmed gone**. FUSE caches nothing for `statfs`, so a corpse answers ENOTCONN instantly while a live mount is answered by this daemon's own serve loop |
+
+**#5 IS THE ARGUMENT FOR THE WHOLE REGRESSION MATRIX, STATED PLAINLY.** The fix for #4 passed every offline
+test, including three new ones written specifically for it, and was byte-identical in both directions on the
+host. It took a **real recovery gate on a real host** to find that it destroyed the thing it was protecting,
+one layer above where the floor could see it.
+
+### 11.5 Offline
+
+Taken on the Windows development host, at candidate 3. **They are not gate evidence**; they are what makes a
+run worth attempting.
+
+| What | Result |
+|---|---|
+| `npx tsc --noEmit` | clean |
+| `npm run go:fmt` / `go:vet` / `go test ./...` | clean / clean / every package `ok` |
+| `npx tsx test/projection-phase7.ts` | **34 passed, 0 failed**, and **four** of them failed first and were real |
+| `npx tsx test/projection-mount-hardening.ts` | 32/0 — Phase 2's pins, with the two new drain conditions added |
+| `npx tsx test/projection-reliability-loop.ts` | 69/0, 1 block skipped and named (`win32` carries no POSIX mode) |
+| `npx tsx test/projection-bounded-recovery.ts` | 42/0 — Phase 6's pins, including both source digests |
+| `npx tsx test/custody-runtime-closure.ts` | 39/0 — every shipped `.sh` parses under LF and CRLF |
+| `npx tsx test/projection-evidence-consistency.ts` | 4/0 |
+| full `npm run test:offline` | **314 selected, 312 passed, 2 failed** at candidate 1 — both failures real and both fixed (§11.6); **to be re-run at the final candidate** |
+
+### 11.6 The two closed suites that went red, and why both were right to
+
+**NEITHER IS A THRESHOLD AND NEITHER PRODUCT BEHAVIOUR CHANGED.**
+
+- `test/projection-mount-hardening.ts` pinned `planRemountCleanup`'s exact signature, and this tranche added
+  a parameter. Its own comment already recorded Phase 3 widening the same function's RETURN and the pin's
+  claim being unchanged; this is that, one tranche later. It now also pins the two conditions the widening
+  exists for.
+- `test/projection-reliability-loop.ts` asserted `--no-barrier` reaches no gate in `deploy/` except Phase 3's.
+  Phase 7 is the second gate that faces a real provider, which has no control surface to rendezvous three
+  scanners at. The allowed set is now **two, named**, and the test additionally requires that **both** allowed
+  callers use the flag, so an exemption cannot outlive the caller it was made for.
+
+### 11.7 Host cleanliness
+
+Asserted after every attempt, against the baseline captured before any Phase 7 container existed:
+
+| What | Result |
+|---|---|
+| container set | **identical** after attempt 1 and after attempt 2 |
+| network set | **identical** |
+| volume set | **identical** |
+| `fuse.projectiond` mounts on the host | **0** |
+| run directories under the gate root | **0** |
 
 ## 12. The readiness decision
 
-**NOT TAKEN.** It is taken in §12 after §11 carries a complete record, and §4.2 is what forbids it in advance.
+# **NO-GO.**
+
+**§4.2 forbids a GO here and every one of its clauses is unsatisfied.** Three consecutive fresh complete
+sequences have not been run; **no run has completed a single one of the six recovery arms**; and the tranche
+has spent two of its five known defects on shipped product code, one of them introduced by this tranche and
+caught only by a real host.
+
+**WHAT IS BLOCKING IT, IN ORDER:**
+
+1. **THE OPERATOR'S EGRESS ALLOWLIST.** §11.3. TorBox is currently serving an origin the operator has not
+   allowlisted, so every read through the mount fails EIO before any arm can run. This is not a product
+   defect and this tranche will not write that file. **It needs an operator action and nothing else.**
+2. **THE SIX RECOVERY ARMS HAVE NEVER RUN.** Everything about stage D in this document is a contract, not a
+   measurement.
+3. **The drain-liveness fix of §11.4 #5 is not yet re-frozen and its regression matrix is not yet green.**
+
+**WHAT IS NOT BLOCKING IT, AND IS WORTH SAYING BECAUSE IT IS THE EXPENSIVE HALF:** the topology stands up,
+the three servers attach before the first mount, the operator's windows match through the mount and inside
+every server, the three-way overlap is observed, **all three servers direct-play a real provider's object for
+five minutes simultaneously**, at least one of them transcodes it for five minutes, and the host is left
+exactly as it was found. §11.2 is that, measured.
