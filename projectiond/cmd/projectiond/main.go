@@ -519,7 +519,33 @@ func (c remountCleanup) String() string {
 // FOREIGN SAFETY IS UNCHANGED AND IS THE WHOLE REASON THIS FUNCTION EXISTS. Anything that is not ours, and
 // anything unrecognised, is still left strictly alone: `--auto-remount` once unmounted the operator's own
 // bind and recovered for the daemon and for nobody else, and no case below may ever reopen that.
-func planRemountCleanup(probe fusefs.ProbeResult) remountCleanup {
+// PROJECTION PHASE 7 ADDS EXACTLY ONE ROW, AND IT IS THE ONE PHASE 6 §9.7 NAMED AS NEXT WORK.
+//
+// `probe` is `ProbeMountpoint`, which classifies by the BOTTOM entry of the mount stack — right for the
+// startup question it was written for ("is the thing I am about to stack over one of my own corpses?") and
+// WRONG for this one. In every containerised topology this daemon ships in, the bottom entry at the mount
+// point is the operator's own bind, and on Unraid that bind's file-system type is the host's `fuse.shfs`.
+// So after a serve-loop death the bottom probe sees `statfs`=ENOTCONN over a mount whose type is not ours
+// and answers FOREIGN — the safest possible answer, and the reason the drain below never ran on the real
+// host. Phase 6 measured that and recorded it: "a recovery usually STACKS OVER the corpse rather than
+// removing it", so a mount point that has survived several recoveries carries several dead layers.
+//
+// `observed` is `ObserveMountpoint`, which classifies by the TOP of the stack — the mount a reader actually
+// reaches, and the one a drain would remove. When the top is OUR OWN DEAD MOUNT, draining is exactly the
+// right thing and the drain is already written for it.
+//
+// WHY THIS IS SAFE, AND WHY IT IS A NEW ROW RATHER THAN A REPLACEMENT. Every other case is byte-for-byte the
+// decision it has always been: this clause can only ever ADD a lazy detach, and only when the top of the
+// stack is a `fuse.projectiond` mount whose transport is gone. What it authorises is bounded by the drain
+// itself, which has not changed: the drain removes only mounts whose TOP type is ours, never goes below
+// `mountsAtStartup` — the count taken before this process mounted anything, so the operator's bind is out of
+// reach by construction rather than by inspection — refuses to act at all on an unmeasured floor or an
+// unreadable mount table, and stops at a cap. A foreign mount on top still returns NOTHING here, which is the
+// `--auto-remount` defect's own rule and no case may reopen it.
+func planRemountCleanup(probe, observed fusefs.ProbeResult) remountCleanup {
+	if observed == fusefs.ProbeStaleProjectiond {
+		return remountCleanupLazyDetach
+	}
 	switch probe {
 	case fusefs.ProbeStaleProjectiond:
 		return remountCleanupLazyDetach
@@ -558,7 +584,10 @@ func remountLoop(d *daemon.Daemon, cfg daemon.Config, debug, strictMount bool, m
 		// So the probe decides. It is one statfs and one read of mountinfo, it never waits, and it answers
 		// the only question that matters here: is the thing at this path OURS to unmount?
 		probe := fusefs.ProbeMountpoint(cfg.MountPoint)
-		switch plan := planRemountCleanup(probe); plan {
+		// AND WHAT IS ON TOP OF THE STACK, WHICH IS A DIFFERENT QUESTION AND IS THE ONE A DRAIN ANSWERS TO.
+		// It costs one more statfs and one more read of the mount table, neither of which waits.
+		observed := fusefs.ObserveMountpoint(cfg.MountPoint)
+		switch plan := planRemountCleanup(probe, observed); plan {
 		case remountCleanupUnmount:
 			if err := (*mount).Unmount(); err != nil {
 				logLine("cleanup unmount refused: " + err.Error())
@@ -661,8 +690,8 @@ func remountLoop(d *daemon.Daemon, cfg daemon.Config, debug, strictMount bool, m
 			logLine(fmt.Sprintf("detached %d stale mount(s) of ours at %s before remounting (now on top: %s)",
 				detached, cfg.MountPoint, stoppedAt))
 		default:
-			logLine(fmt.Sprintf("nothing of ours at %s to clean up (%s); leaving it mounted",
-				cfg.MountPoint, probe))
+			logLine(fmt.Sprintf("nothing of ours at %s to clean up (bottom %s, top %s); leaving it mounted",
+				cfg.MountPoint, probe, observed))
 		}
 		// THE MOUNT CALL IS BRACKETED, BECAUSE A REAL RUN SHOWED THIS LOOP PROMISING THREE ATTEMPTS AND
 		// DELIVERING ONE. The daemon logged "remount attempt 1/3" and "remount refused: transport endpoint is

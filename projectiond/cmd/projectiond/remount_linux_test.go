@@ -58,7 +58,7 @@ func TestPlanRemountCleanupOnlyEverTouchesOurOwnMount(t *testing.T) {
 		{fusefs.ProbeEmpty, remountCleanupNone,
 			"there is nothing of ours here; touching it would act on whatever is underneath"},
 	} {
-		if got := planRemountCleanup(tc.probe); got != tc.want {
+		if got := planRemountCleanup(tc.probe, tc.probe); got != tc.want {
 			t.Errorf("planRemountCleanup(%s) = %v, want %v — %s", tc.probe, got, tc.want, tc.why)
 		}
 	}
@@ -71,7 +71,7 @@ func TestPlanRemountCleanupRefusesAnUnknownProbeResult(t *testing.T) {
 	unknown := fusefs.ProbeResult(len([...]fusefs.ProbeResult{
 		fusefs.ProbeEmpty, fusefs.ProbeStaleProjectiond, fusefs.ProbeLiveProjectiond, fusefs.ProbeForeign,
 	}) + 41)
-	if got := planRemountCleanup(unknown); got != remountCleanupNone {
+	if got := planRemountCleanup(unknown, unknown); got != remountCleanupNone {
 		t.Fatalf("an unrecognised probe result (%s) was planned as %v; it must authorise nothing",
 			unknown, got)
 	}
@@ -83,8 +83,8 @@ func TestPlanRemountCleanupRefusesAnUnknownProbeResult(t *testing.T) {
 // and that is the whole defect: the action that is right for a mount we are still serving is the action that
 // cannot remove one that is dead and held. A future edit that unifies them fails here with the reason.
 func TestOurLiveMountAndOurCorpseAreNotCleanedUpTheSameWay(t *testing.T) {
-	stale := planRemountCleanup(fusefs.ProbeStaleProjectiond)
-	live := planRemountCleanup(fusefs.ProbeLiveProjectiond)
+	stale := planRemountCleanup(fusefs.ProbeStaleProjectiond, fusefs.ProbeStaleProjectiond)
+	live := planRemountCleanup(fusefs.ProbeLiveProjectiond, fusefs.ProbeLiveProjectiond)
 	if stale == live {
 		t.Fatalf("a corpse and a live mount are both planned as %v; an ordinary unmount cannot remove a "+
 			"corpse a consumer is holding, which is why --auto-remount could not recover from a connection "+
@@ -112,5 +112,72 @@ func TestRemountCleanupNames(t *testing.T) {
 		if got := plan.String(); got != want {
 			t.Fatalf("remountCleanup(%d).String() = %q, want %q", int(plan), got, want)
 		}
+	}
+}
+
+// PROJECTION PHASE 7 — THE CORPSE THAT WAS NEVER DRAINED, PINNED WITHOUT A KERNEL.
+//
+// PHASE 6 §9.7 MEASURED THIS ON THE REAL HOST AND NAMED IT AS NEXT WORK: "a recovery usually STACKS OVER the
+// corpse rather than removing it", so a mount point that has survived several recoveries carries several of
+// this daemon's dead layers. The cause is not the drain — the drain is careful, floored and capped — it is
+// that the drain was never reached, because the decision in front of it asked the BOTTOM of the stack.
+//
+// In every containerised topology this daemon ships in, the bottom entry at the mount point is the operator's
+// own bind, and on an Unraid host that bind's file-system type is `fuse.shfs`. So the state after a serve-loop
+// death is: `statfs` answers ENOTCONN (it resolves to the TOP mount, which is our dead one), and the bottom
+// mountinfo entry is somebody else's type. `classify` has exactly one answer for that pair, and it is FOREIGN
+// — the safest answer available, and the reason nothing was ever drained.
+//
+// THIS TEST IS THE STATE ITSELF RATHER THAN A DESCRIPTION OF IT, and it fails against the previous signature
+// and the previous body: with only the bottom probe there is no argument that can express "the top of the
+// stack is my own corpse".
+func TestADeadLayerOnTopIsDrainedEvenWhenTheBottomOfTheStackIsNotOurs(t *testing.T) {
+	// The exact pair the real host produces after a connection abort inside a container.
+	got := planRemountCleanup(fusefs.ProbeForeign, fusefs.ProbeStaleProjectiond)
+	if got != remountCleanupLazyDetach {
+		t.Fatalf("bottom=foreign top=stale-projectiond planned as %v; that is the shape Phase 6 §9.7 measured "+
+			"on the real host — the operator's bind underneath and this daemon's own corpse on top — and "+
+			"planning NOTHING for it is what left a dead layer behind on every recovery", got)
+	}
+	// ...and the same for an EMPTY bottom, which is what a mount point with no bind under it looks like.
+	if got := planRemountCleanup(fusefs.ProbeEmpty, fusefs.ProbeStaleProjectiond); got != remountCleanupLazyDetach {
+		t.Fatalf("bottom=empty top=stale-projectiond planned as %v, not a drain", got)
+	}
+}
+
+// AND THE ROW THE WHOLE DESIGN RESTS ON IS UNMOVED: A FOREIGN MOUNT ON TOP IS NEVER TOUCHED.
+//
+// The likeliest foreign mount at a projection mount point is the operator's own bind — the one mount that has
+// to survive for any recovery to be visible to anybody. `--auto-remount` removed it once already, logged
+// success, and recovered for the daemon and for nobody else. Phase 7 widens what may be drained and this is
+// the assertion that says the widening did not reach that.
+func TestAForeignMountOnTopIsStillNeverTouched(t *testing.T) {
+	for _, bottom := range []fusefs.ProbeResult{
+		fusefs.ProbeEmpty, fusefs.ProbeForeign,
+	} {
+		if got := planRemountCleanup(bottom, fusefs.ProbeForeign); got != remountCleanupNone {
+			t.Fatalf("bottom=%s top=foreign planned as %v; a foreign mount on top is the operator's bind and "+
+				"nothing may ever plan an action against it", bottom, got)
+		}
+	}
+	// An unrecognised observation is not a foreign mount and is not ours either: it authorises nothing.
+	unknown := fusefs.ProbeResult(97)
+	if got := planRemountCleanup(fusefs.ProbeEmpty, unknown); got != remountCleanupNone {
+		t.Fatalf("an unrecognised observation (%s) on top planned as %v; it must authorise nothing", unknown, got)
+	}
+}
+
+// A LIVE MOUNT ON TOP KEEPS THE ORDINARY UNMOUNT, AND IT IS NOT PROMOTED TO A DETACH.
+//
+// Lazily detaching a mount that is being served takes it away from every consumer holding it, which is the
+// opposite of what a recovery is for. The new clause fires on `stale-projectiond` and on nothing else, and
+// this is that stated as an assertion rather than as a comment.
+func TestALiveMountOnTopIsNeverLazilyDetached(t *testing.T) {
+	if got := planRemountCleanup(fusefs.ProbeForeign, fusefs.ProbeLiveProjectiond); got == remountCleanupLazyDetach {
+		t.Fatalf("top=live-projectiond planned as a lazy detach; detaching a live mount takes it away from " +
+			"every consumer holding it")
+	}
+	if got := planRemountCleanup(fusefs.ProbeLiveProjectiond, fusefs.ProbeLiveProjectiond); got != remountCleanupUnmount {
+		t.Fatalf("our own live mount, top and bottom, planned as %v", got)
 	}
 }
