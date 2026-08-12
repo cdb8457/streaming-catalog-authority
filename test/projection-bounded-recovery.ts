@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -609,6 +610,150 @@ test('the tranche document restates every bound, and gets them right', () => {
   }
 });
 
+// ---------------------------------------------------------------------------------------------------------
+// The frozen identity, and this block exists because a coordinator audit found the record was FALSE
+// ---------------------------------------------------------------------------------------------------------
+//
+// WHAT WENT WRONG. §11.1 named a frozen commit and said the changes after it were "gate-only". Four commits
+// after it modified `deploy/projection-alpha.sh` — the SHIPPED OPERATOR COMMAND — and two modified the
+// acceptance gate. So the 11/11 install matrix had necessarily measured later source than the record claimed,
+// and the closure did not rest on one frozen source at all. Nothing in the suite could see it, because every
+// pin here read prose and prose is exactly what was wrong.
+//
+// WHAT MAKES IT UNREPEATABLE. A record that merely NAMES a commit can go stale silently; a record that
+// carries a DIGEST OF THE SHIPPED SOURCE ITSELF cannot. These two digests are recomputed from the working
+// tree on every run and compared with what the closure record claims. Edit the operator command after
+// closure and the record stops matching — which is the defect, caught at the moment it is introduced rather
+// than by an audit afterwards.
+const SOURCE_SETS: Readonly<Record<string, readonly string[]>> = {
+  // The shipped operator product: what an operator actually runs.
+  OPERATOR: [
+    'deploy/projection-alpha.sh',
+    'deploy/projection-alpha-status-fields.cjs',
+    'deploy/projection-alpha-status-port.cjs',
+    'deploy/projectiond-alpha.env.example',
+    'docker-compose.projection-alpha.yml',
+  ],
+  // The things that MEASURE it. A gate that changed after the run it certifies is the same defect wearing
+  // different clothes.
+  GATE: [
+    'deploy/projection-alpha-acceptance.sh',
+    'deploy/projection-recovery-gate-optional.sh',
+    'deploy/projection-recovery-gate-three.sh',
+    'deploy/projection-recovery-gate.sh',
+    'docker-compose.projection-recovery.yml',
+    'src/ops/projection-recovery-cli.ts',
+  ],
+};
+
+/**
+ * A digest over a named set of source files.
+ *
+ * NORMALISED TO LF, because `.gitattributes` marks some files `eol=crlf` and a checkout on Windows would
+ * otherwise disagree with the same bytes on the Unraid host they were staged to — which would make this pin
+ * fail for a reason that has nothing to do with drift.
+ *
+ * THE PATH IS IN THE DIGEST, so renaming a file out of the set is a change rather than a silent removal.
+ */
+function sourceDigest(paths: readonly string[]): string {
+  const hash = createHash('sha256');
+  for (const path of [...paths].sort()) {
+    hash.update(path, 'utf8');
+    hash.update('\n', 'utf8');
+    hash.update(read(join(repoRoot, path)).replace(/\r\n/g, '\n'), 'utf8');
+    hash.update('\n', 'utf8');
+  }
+  return hash.digest('hex');
+}
+
+/** Whether the readiness decision currently claims GO. A record that does is a CLOSURE record. */
+const claimsGo = (doc: string): boolean =>
+  /\*\*GO\*\*|^# \*\*GO —/m.test(doc.slice(doc.indexOf('## 12.'), doc.indexOf('## 13.')));
+
+test('the closure record names a frozen COMMIT and a frozen TREE, not just a commit', () => {
+  const doc = read(DOC);
+  const identity = doc.slice(doc.indexOf('### 11.1'), doc.indexOf('### 11.1.1'));
+  assert(identity.length > 100, 'the frozen identity section could not be located');
+
+  // A CANDIDATE MAY HOLD ITS OWN IDENTITY, BECAUSE IT CANNOT KNOW IT YET. The commit that is frozen and
+  // staged to the host is the commit that CONTAINS this document, so its own hash is not knowable while it is
+  // being written; the identity is recorded in the commit that follows the runs. That is the repository's
+  // ordinary sequence and it is not a licence — a record that claims GO while holding its identity is
+  // claiming a closure nobody can check, and that is the exact shape of the defect this block exists for.
+  if (/HELD/.test(identity)) {
+    assert(!claimsGo(doc),
+      'the readiness decision claims GO while the frozen identity is still HELD, so the closure names no '
+      + 'source anybody could verify it against');
+    skipBlock('the frozen identity is HELD in a candidate that does not claim GO');
+  }
+  // A COMMIT WITHOUT A TREE IS AN IDENTITY THAT CANNOT BE CHECKED AGAINST A STAGED COPY. The whole freeze
+  // procedure ends by comparing a host tree against `git archive`, and the tree hash is what that compares.
+  const hashes = identity.match(/\b[0-9a-f]{40}\b/g) ?? [];
+  assert(hashes.length >= 2,
+    'the frozen identity names fewer than two 40-hex objects, so it cannot carry both a commit and a tree');
+  assert(/frozen commit/i.test(identity), 'the frozen identity does not name a frozen commit');
+  assert(/frozen tree/i.test(identity), 'the frozen identity does not name a frozen tree');
+  assert(/sha256:[0-9a-f]{64}/.test(identity), 'the frozen identity names no image digest');
+});
+
+test('the closure record\'s SHIPPED SOURCE digests still describe the working tree', () => {
+  const doc = read(DOC);
+  for (const [name, paths] of Object.entries(SOURCE_SETS)) {
+    const actual = sourceDigest(paths);
+    const claimed = doc.match(new RegExp(`${name} SOURCE DIGEST\\s*\\|\\s*\`([0-9a-f]{64})\``));
+    if (claimed === null) {
+      throw new Error(`the closure record carries no ${name} SOURCE DIGEST, so its frozen identity cannot `
+        + 'be checked');
+    }
+    assertEq(claimed[1] ?? '', actual,
+      `the ${name} source has changed since the closure record was written. THE RECORD IS NOW FALSE: it `
+      + 'certifies a run of source that no longer exists. Re-freeze, re-run the affected acceptance, and '
+      + 'update the digest — do not edit the digest to match');
+  }
+});
+
+test('every source file the digests cover actually exists, so the sets cannot rot into nothing', () => {
+  // A DIGEST OVER A SET THAT LOST A MEMBER IS STILL A DIGEST, and it would pass forever while covering less.
+  for (const [name, paths] of Object.entries(SOURCE_SETS)) {
+    for (const path of paths) {
+      assert(existsSync(join(repoRoot, path)), `${name} names ${path}, which does not exist`);
+    }
+  }
+  assertEq(SOURCE_SETS.OPERATOR?.length, 5, 'the operator source set changed size');
+  assertEq(SOURCE_SETS.GATE?.length, 6, 'the gate source set changed size');
+});
+
+test('no evidence block claims a frozen source without naming one', () => {
+  const doc = read(DOC);
+  const record = doc.slice(doc.indexOf('## 11. Run record'), doc.indexOf('## 12.'));
+  // EVERY BLOCK THAT REPORTS A MEASUREMENT MUST SAY WHICH FROZEN SOURCE IT CAME FROM. The audit's finding was
+  // not one wrong hash — it was that four separate evidence blocks were silently attributed to a source none
+  // of them ran from.
+  for (const heading of ['### 11.2', '### 11.4', '### 11.5', '### 11.6']) {
+    const start = record.indexOf(heading);
+    assert(start > 0, `the run record has no ${heading}`);
+    const end = record.indexOf('### 11.', start + 8);
+    const block = record.slice(start, end === -1 ? undefined : end);
+    assert(/frozen source|frozen commit|frozen tree|frozen image|`[0-9a-f]{7,40}`/.test(block),
+      `${heading} reports a measurement without naming the frozen source it came from`);
+  }
+});
+
+test('the phrase that made the record false cannot come back unmarked', () => {
+  const doc = read(DOC);
+  // "gate-only" WAS THE EXACT WORD THAT WAS WRONG. It is kept where the record explains that it was wrong —
+  // this repository keeps superseded wording rather than deleting it — and it may appear nowhere else.
+  // SCOPED TO THE PARAGRAPH, NOT THE LINE. The correction discusses the phrase across several sentences, and
+  // a line-scoped rule fired on the very sentence explaining that it was false — which would have pushed the
+  // next person to delete the explanation rather than keep it. A paragraph that quotes the phrase must also
+  // say, somewhere in itself, that it is being quoted rather than claimed.
+  for (const paragraph of doc.split(/\n\s*\n/)) {
+    if (!/gate-only|gate only/i.test(paragraph)) continue;
+    assert(/HISTORICALLY|SUPERSEDED|FALSE|was wrong|were NOT/i.test(paragraph),
+      `an unmarked "gate-only" claim is back: ${paragraph.trim().slice(0, 140)}`);
+  }
+});
+
 test('the tranche document holds its run record and its decision until they are measured', () => {
   const doc = read(DOC);
   // A DOCUMENT THAT CLAIMS A RESULT BEFORE THE RUN IS THE FAILURE MODE THE ROADMAP'S ANTI-DETOUR RULE
@@ -647,10 +792,14 @@ test('the roadmap records Phase 5 CLOSED with its exact frozen identity and clai
   // a test failure. What it is actually for is the other case: a CLOSED row that does not name the image its
   // figures came from, the counts, or what it refuses to claim is a row somebody will read as meaning more
   // than it says.
-  if (six.includes('**OPEN**')) {
-    assert(six.includes('holding **nothing**'), 'an OPEN Phase 6 row must say it holds nothing');
+  // ...AND `CLOSED` IS THE ONLY WORD THAT BUYS ANYTHING. A row may be OPEN, or RE-FREEZING after a closure
+  // was withdrawn, or anything else a truthful sequence needs — the rule is that every state except CLOSED
+  // must say in the row itself that it holds nothing. Demanding one of two exact words was a pin that would
+  // have had to be edited to tell the truth, which is the wrong way round.
+  if (!six.includes('**CLOSED**')) {
+    assert(/holds? \*\*nothing\*\*|holding \*\*nothing\*\*/.test(six),
+      'a Phase 6 row that is not CLOSED must say in the row that it holds nothing');
   } else {
-    assert(six.includes('**CLOSED**'), 'the Phase 6 row is neither OPEN nor CLOSED');
     assert(/sha256:[0-9a-f]{64}/.test(six),
       'the CLOSED Phase 6 row names no frozen image, so its figures describe nothing in particular');
     assert(/\d+ arm verdicts, \d+ pass, 0 fail, 0 skip/.test(six),
