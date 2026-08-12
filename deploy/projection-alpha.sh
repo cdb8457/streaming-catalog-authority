@@ -145,6 +145,17 @@ check_dir_ownership() {
   if [ -z "$(ls -A "$value" 2>/dev/null)" ]; then
     return 0
   fi
+  # ...AND A MOUNT POINT WE ARE CURRENTLY MOUNTED ON IS OURS, WHICH THE MARKER CANNOT SAY.
+  #
+  # THE MARKER IS WRITTEN INTO THE DIRECTORY AND THE NAMESPACE IS MOUNTED OVER IT, so from the moment the
+  # appliance starts, its own mount point looks like a non-empty directory carrying nobody's marker — and a
+  # second `start` refused, which is the opposite of idempotent. Measured on the real host: `AA3: a second
+  # start failed`. A live `fuse.projectiond` mount at exactly this path is a stronger statement of ownership
+  # than any file could be, because it is this product's own file system answering.
+  if command -v findmnt >/dev/null 2>&1 \
+     && findmnt -rno TARGET,FSTYPE 2>/dev/null | grep -qxF "$value fuse.projectiond"; then
+    return 0
+  fi
   die "$name exists, is not empty, and carries no marker of this appliance"
 }
 
