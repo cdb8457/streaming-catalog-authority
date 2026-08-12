@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import {
   MEDIA_SERVER_BUDGETS, MEDIA_SERVER_DEADLINES_MS, MEDIA_SERVER_SOAK, SEEK_PLAN_FRACTIONS,
-  TRANSCODE_SOURCE_VIDEO_CODEC, TRANSCODE_TARGET_VIDEO_CODEC, analysePacedPlayback, analyseTranscodeSoak,
+  TRANSCODE_SOURCE_VIDEO_CODEC, TRANSCODE_TARGET_VIDEO_CODEC, transcodeSourceIsWorthTranscoding, analysePacedPlayback, analyseTranscodeSoak,
   analyseSeekSet, atLeast, corpusProblems, corpusSelfProblems, exactly, findRedactionProblems, opaqueRef,
   providerByteResults, seekPlanProblems, seekPositionsFor, withinBudget,
   type CorpusExpectation, type GateResult, type SeekObservation, type SoakProbe, type SoakSegment,
@@ -410,7 +410,7 @@ async function main(): Promise<void> {
       // let the server remux and the transcode claim would be empty. This is asserted rather than assumed.
       record(args, {
         gate: `JD6-transcode-source-codec:${opaqueRef('entry', key).slice(0, 12)}`,
-        verdict: item.videoCodec === TRANSCODE_SOURCE_VIDEO_CODEC ? 'pass' : 'fail',
+        verdict: transcodeSourceIsWorthTranscoding(item.videoCodec) ? 'pass' : 'fail',
         note: `the server identified the source as ${item.videoCodec || '(none)'}; `
           + `the gate asks for ${TRANSCODE_TARGET_VIDEO_CODEC}`,
       });
@@ -732,7 +732,7 @@ async function main(): Promise<void> {
       const sourceCodec = itemFor(readItems(need(args, 'items')), key).videoCodec;
       record(args, {
         gate: `JD20-transcode-soak-source-codec:${ref}`,
-        verdict: sourceCodec === TRANSCODE_SOURCE_VIDEO_CODEC ? 'pass' : 'fail',
+        verdict: transcodeSourceIsWorthTranscoding(sourceCodec) ? 'pass' : 'fail',
         note: `the media server identified the source as ${sourceCodec || '(none)'}; a transcode to `
           + `${TRANSCODE_TARGET_VIDEO_CODEC} from a source that was already ${TRANSCODE_TARGET_VIDEO_CODEC} `
           + 'would prove nothing about an encoder',

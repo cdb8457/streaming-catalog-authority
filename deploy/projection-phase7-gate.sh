@@ -1092,10 +1092,24 @@ try { document = JSON.parse(readFileSync(process.argv[2], 'utf8')); } catch { co
 const rows = Array.isArray(document) ? document
   : Array.isArray(document.seeks) ? document.seeks
   : Array.isArray(document.results) ? document.results : [];
+// THE FIELD IS `requestedSeconds`, AND GUESSING AT IT COST THE FIRST REAL RUN THREE VERDICTS. Every shipped
+// driver writes `{ index, requestedSeconds, serverPositionSeconds, elapsedMs, bytes, sha256 }`; this program
+// asked for `positionSeconds` and found none, so it counted zero DISTINCT POSITIONS beside a verifier that
+// had just passed every one of its own ten assertions — a gate reporting 0/10 over a product that had done
+// the whole thing correctly.
+//
+// ...AND A DOCUMENT THAT CARRIES ROWS BUT NO USABLE POSITION NOW SAYS SO RATHER THAN ANSWERING ZERO, because
+// a zero that means "the field is not there" and a zero that means "no position was reached" are the two
+// readings this repository keeps confusing, and only one of them is about the product.
 const positions = new Set();
 for (const row of rows) {
-  const at = row?.positionSeconds ?? row?.position ?? row?.seconds ?? row?.atSeconds;
+  const at = row?.requestedSeconds ?? row?.serverPositionSeconds ?? row?.positionSeconds ?? row?.seconds;
   if (typeof at === 'number' && Number.isFinite(at)) positions.add(at);
+}
+if (rows.length > 0 && positions.size === 0) {
+  console.error('countseeks: the driver wrote ' + rows.length + ' seek record(s) and none carries a '
+    + 'position field this program knows; that is an unreadable measurement, not a count of zero');
+  process.exit(1);
 }
 console.log(String(positions.size));
 COUNTSEEKS
@@ -2456,7 +2470,13 @@ seeks_for() {
     > "$WORK/out/seek-probe-log-$server.txt" 2>&1 \
     || tail -10 "$WORK/out/seek-probe-log-$server.txt" >&2 || true
   node "$REL/out/probes.cjs" "$REL/out/seek-probes.txt" "$REL/out/seek-probes-$server.json" >/dev/null
-  seeks="$(node "$REL/out/countseeks.cjs" "$REL/out/seeks-$server.json")"
+  # A COUNT THAT COULD NOT BE TAKEN IS NOT A COUNT OF ZERO. `countseeks.cjs` exits non-zero when the driver
+  # wrote records it cannot read a position out of, and the empty string that leaves here is what `record`
+  # fails as "no finite measurement" rather than as ten seeks that did not happen.
+  set +e
+  seeks="$(node "$REL/out/countseeks.cjs" "$REL/out/seeks-$server.json" 2>&1)"
+  if [ $? -ne 0 ]; then echo "  $seeks" >&2; seeks=""; fi
+  set -e
   set +e
   npx tsx "$(cli_for "$server")" seek-verify --key "$REAL_FILE" \
     --seeks "$REL/out/seeks-$server.json" --probes "$REL/out/seek-probes-$server.json" \

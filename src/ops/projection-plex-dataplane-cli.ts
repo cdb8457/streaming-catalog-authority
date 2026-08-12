@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import {
   MEDIA_SERVER_BUDGETS, MEDIA_SERVER_DEADLINES_MS, MEDIA_SERVER_SOAK, SEEK_PLAN_FRACTIONS,
-  TRANSCODE_SOURCE_VIDEO_CODEC, TRANSCODE_TARGET_VIDEO_CODEC, analysePacedPlayback, analyseSeekSet,
+  TRANSCODE_SOURCE_VIDEO_CODEC, TRANSCODE_TARGET_VIDEO_CODEC, transcodeSourceIsWorthTranscoding, analysePacedPlayback, analyseSeekSet,
   analyseTranscodeSoak, atLeast, corpusProblems, corpusSelfProblems, exactly, findRedactionProblems,
   opaqueRef, providerByteResults, seekPlanProblems, seekPositionsFor, withinBudget,
   type GateResult, type SeekDecode, type SoakProbe,
@@ -444,7 +444,7 @@ async function main(): Promise<void> {
       const key = need(args, 'key');
       record(args, {
         gate: `PX6-source-codec:${opaqueRef('entry', key).slice(0, 12)}`,
-        verdict: need(args, 'source-codec') === TRANSCODE_SOURCE_VIDEO_CODEC ? 'pass' : 'fail',
+        verdict: transcodeSourceIsWorthTranscoding(need(args, 'source-codec')) ? 'pass' : 'fail',
         note: `the source is ${need(args, 'source-codec')}; a "transcode to h264" from an h264 source `
           + 'would prove nothing',
       });
@@ -1572,7 +1572,7 @@ async function main(): Promise<void> {
       // nothing, so this is asserted before anything about the output is looked at.
       record(args, {
         gate: `PX20-source-codec:${handle}`,
-        verdict: soak.sourceVideoCodec === TRANSCODE_SOURCE_VIDEO_CODEC ? 'pass' : 'fail',
+        verdict: transcodeSourceIsWorthTranscoding(soak.sourceVideoCodec) ? 'pass' : 'fail',
         note: `the media server identified the source as ${soak.sourceVideoCodec}`,
       });
       record(args, exactly(`PX20-no-credential-in-generated-urls:${handle}`,

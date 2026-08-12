@@ -26,7 +26,9 @@ import {
   PROJECTION_PHASE_1_BUDGETS,
   PROJECTIOND_CONSUMER_ATTACHMENT,
 } from '../src/core/projection/runtime-contract.js';
-import { MEDIA_SERVER_SOAK } from '../src/core/projection/media-server-dataplane.js';
+import {
+  MEDIA_SERVER_SOAK, transcodeSourceIsWorthTranscoding,
+} from '../src/core/projection/media-server-dataplane.js';
 import { RELIABILITY_LOOP_RULES } from '../src/core/projection/reliability-loop.js';
 
 // Projection Phase 7 — the operator-usable alpha, offline.
@@ -390,6 +392,44 @@ test('every required id the module names is an id the GATE actually records', ()
     if (!gate.includes(stemOf(id))) missing.push(id);
   }
   assertEq(missing.length, 0, `the closure rule requires ids the gate never records: ${missing.join(', ')}`);
+});
+
+// ---------------------------------------------------------------------------------------------------------
+console.log('\nthe transcode source-codec decision, which the first real run found wrong in three drivers');
+// ---------------------------------------------------------------------------------------------------------
+
+test('a source that is not already the TARGET codec is worth transcoding, whatever else it is', () => {
+  // THE FIRST REAL PHASE 7 RUN IS WHAT FOUND THIS, AND THE PRODUCT HAD DONE EVERYTHING RIGHT. The operator's
+  // object is hevc; all three servers transcoded it to h264 for five minutes — 108 distinct segments each,
+  // every one decoded, 324 decoded media seconds against a 300-second floor — and then the source-codec row
+  // failed, because `hevc` is not `mpeg4`. Three shipped drivers wrote the sentence "a transcode to h264
+  // from a source that was already h264 would prove nothing about an encoder" and then compared against the
+  // codec THIS REPOSITORY'S OWN SYNTHETIC FIXTURE uses, which is a different and stricter question.
+  assert(transcodeSourceIsWorthTranscoding('hevc'), 'an hevc source is not accepted, which is the defect');
+  assert(transcodeSourceIsWorthTranscoding('mpeg4'),
+    'Phase 1s own corpus must still pass, or a closed result has been retired by this fix');
+  assert(transcodeSourceIsWorthTranscoding('vp9'), 'any non-target codec is worth transcoding away from');
+  assert(!transcodeSourceIsWorthTranscoding('h264'),
+    'a transcode from the target codec to the target codec proves nothing about an encoder');
+  assert(!transcodeSourceIsWorthTranscoding('H264'), 'the comparison must not be fooled by case');
+  // AN ABSENT CODEC IS A FAILURE AND NEVER A PASS. A server that said nothing about what it was transcoding
+  // FROM leaves the assertion unanchored, and an unanchored assertion is one that cannot fail.
+  assert(!transcodeSourceIsWorthTranscoding(''), 'an empty source codec was accepted');
+  assert(!transcodeSourceIsWorthTranscoding(undefined), 'an absent source codec was accepted');
+  assert(!transcodeSourceIsWorthTranscoding('   '), 'a blank source codec was accepted');
+});
+
+test('all three shipped drivers ask the shared question rather than each comparing to the fixture', () => {
+  for (const driver of [
+    'src/ops/projection-emby-dataplane-cli.ts',
+    'src/ops/projection-jellyfin-dataplane-cli.ts',
+    'src/ops/projection-plex-dataplane-cli.ts',
+  ]) {
+    const source = read(driver);
+    assert(!source.includes("=== TRANSCODE_SOURCE_VIDEO_CODEC ? 'pass'"),
+      `${driver} still decides a source codec by comparing against the synthetic fixture's own codec`);
+    assert(source.includes('transcodeSourceIsWorthTranscoding('), `${driver} does not use the shared decision`);
+  }
 });
 
 // ---------------------------------------------------------------------------------------------------------

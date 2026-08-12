@@ -609,10 +609,39 @@ export function stripQueryCredentials(pathAndQuery: string): string {
   return kept.length === 0 ? (path as string) : `${path}?${kept.join('&')}`;
 }
 
-/** What the gate's media is encoded as, and what it asks the server to produce instead. */
+/** What the gate's own synthetic media is encoded as, and what it asks the server to produce instead. */
 export const TRANSCODE_SOURCE_VIDEO_CODEC = 'mpeg4';
 export const TRANSCODE_TARGET_VIDEO_CODEC = 'h264';
 export const TRANSCODE_TARGET_AUDIO_CODEC = 'aac';
+
+/**
+ * IS THIS A TRANSCODE AT ALL, OR A COPY WEARING ONE'S NAME?
+ *
+ * THE PROPERTY EVERY G10 STEP IS ACTUALLY ASSERTING, IN ITS OWN WORDS: *"a transcode to h264 from a source
+ * that was already h264 would prove nothing about an encoder"*. Three shipped drivers wrote that sentence
+ * and then compared the source against `TRANSCODE_SOURCE_VIDEO_CODEC` — the codec THIS REPOSITORY'S OWN
+ * SYNTHETIC FIXTURE happens to use — which is a stricter and different question.
+ *
+ * IT COST PROJECTION PHASE 7's FIRST REAL RUN THREE VERDICTS, AND THE PRODUCT HAD DONE EVERYTHING RIGHT.
+ * The operator's real object is **hevc**. All three servers transcoded it to h264 for five minutes: 108
+ * distinct segments each, every one decoded, 324 decoded media seconds against a 300-second floor, the late
+ * window covered, the longest arrival gap three seconds. Then the source-codec row failed, because `hevc` is
+ * not `mpeg4` — and `hevc` is exactly the case the sentence exists to admit.
+ *
+ * WHY WIDENING THIS RETIRES NO CLOSED RESULT, STATED AS A CHECK RATHER THAN AS A REASSURANCE. Every input
+ * that passed the old comparison passes this one: `mpeg4 !== h264`. What changes is only that inputs which
+ * used to fail for being *some other non-target codec* now pass, which is the set the old comparison was
+ * wrong about. No Phase 1 figure moves, because Phase 1's corpus is `mpeg4` in every run it has ever taken.
+ *
+ * AN ABSENT CODEC IS A FAILURE AND NOT A PASS. A server that told the gate nothing about what it was
+ * transcoding FROM leaves the whole assertion unanchored, and an unanchored assertion is the shape this
+ * repository keeps finding: a check that cannot fail.
+ */
+export function transcodeSourceIsWorthTranscoding(sourceCodec: string | undefined): boolean {
+  const named = (sourceCodec ?? '').trim().toLowerCase();
+  if (named === '') return false;
+  return named !== TRANSCODE_TARGET_VIDEO_CODEC;
+}
 
 // ---------------------------------------------------------------------------------------------------------
 // Redaction
