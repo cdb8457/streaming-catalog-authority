@@ -465,6 +465,28 @@ readings — a daemon that had exited, and a daemon that was alive and no longer
 this run recorded separates them. **That is a gate defect and it is fixed**: R1 now preserves the daemon's own
 log, its container status and exit code, and the host mount survey, on the failing path.
 
+**AND ATTEMPT 4 ANSWERED IT, AND THE ANSWER RETIRES HALF OF THE PARAGRAPH ABOVE.** The arm reproduced
+identically — `P7-R1-action-ms 34,085 / 33,000`, the same five failures, the same two passes — and this time
+the daemon container was inspected while it was still there:
+
+```
+projection-p7-mount-435263   Up 26 minutes (unhealthy)
+```
+
+**THE DAEMON HAD NOT EXITED. IT WAS ALIVE, AND UNHEALTHY, WHICH IS A DAEMON SAYING SOMETHING QUITE SPECIFIC.**
+And the gate could not hear it: `daemon_status` was inherited from Phase 3, where Phase 6 §7 records it as
+**defined and never called**, and it was `wget -q -O -` — which exits non-zero and writes **nothing** for any
+status outside 2xx. **Readiness answers 503 for every fault this tranche injects.** So `reason='none'` was the
+instrument's claim about the product, made with an instrument that could not read the product's answer.
+
+**WHAT STANDS AND WHAT DOES NOT, SEPARATED RATHER THAN BLENDED.** What stands is measured through the mount
+and not through the status surface: the fault landed, **no recovery attempt was spent**, **the generation
+never advanced**, the namespace never came back, and the operator's four windows read **0 of 4** afterwards.
+What does **not** stand is *"and did not report it"* — that sentence was the reader's, it has been withdrawn
+here rather than quietly deleted, and the reader is now the recovery gate's own: a raw HTTP/1.0 request that
+reads a 503 as the answer it is, while still leaving an unreachable daemon distinguishable from a refusing
+one.
+
 **WHY IT MATTERS MORE THAN ANY OTHER ARM.** An external `umount` of the projected path is the single most
 likely operator-side accident on this whole appliance, and it is the fault `recover-mount-empty` exists in
 Phase 6 §3.2's table for. On the evidence of this run, in the topology the alpha actually ships in, **the
@@ -637,12 +659,12 @@ caught only by a real host.
 
 **WHAT IS BLOCKING IT, IN ORDER:**
 
-1. **ARM R1 MEASURED FALSE.** §11.3.1. The mount was removed from beneath a living daemon — the most likely
-   operator-side accident there is, and the fault `recover-mount-empty` exists for — and the appliance
-   **neither repaired it nor reported it**: no attempt spent, no generation advanced, no reason, no
-   remediation, and the operator's windows reading 0 of 4 afterwards. Whether the daemon had exited or was
-   alive and unreachable is not determined by that run, and the gate that could not tell them apart has been
-   fixed rather than argued about.
+1. **ARM R1 MEASURED FALSE, TWICE, IDENTICALLY.** §11.3.1. The mount was removed from beneath a living
+   daemon — the most likely operator-side accident there is, and the fault `recover-mount-empty` exists in
+   Phase 6 §3.2's table for — and **the appliance did not repair it**: no attempt spent, no generation
+   advanced, the namespace never back, and the operator's four windows reading **0 of 4** afterwards. The
+   daemon was alive and unhealthy throughout, so what it was *reporting* is not yet known: the reader that
+   could not hear a 503 has been replaced and the arm is owed one more measurement.
 2. **FIVE OF THE SIX RECOVERY ARMS HAVE STILL NEVER RUN.** R1 is the first arm and it stops the run.
    Everything this document says about R2 to R6 is a contract, not a measurement.
 3. **THE PROVIDER'S EGRESS ALLOWLIST IS PERISHABLE AND IT STOPPED ONE ATTEMPT OUTRIGHT.** §11.3. It is not a
