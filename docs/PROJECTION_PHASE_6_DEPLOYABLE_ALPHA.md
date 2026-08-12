@@ -452,6 +452,14 @@ before any of the runs below — and its identity is recorded here, in the commi
 that claimed a closure while holding its own identity would be a closure nobody could check, which is the
 defect this whole section exists to make impossible.
 
+**WHAT THE COMMITS AFTER THE FREEZE TOUCH, NAMED RATHER THAN CHARACTERISED.** They are the record itself:
+`docs/PROJECTION_PHASE_6_DEPLOYABLE_ALPHA.md`, the roadmap row and `test/projection-bounded-recovery.ts`.
+**No path under `deploy/`, `projectiond/`, `src/` or either compose file moves after `c70ecb0`** — which is
+the same claim the previous record made falsely, so here it is stated as the thing a reader can check:
+`git diff c70ecb0..HEAD -- deploy/ projectiond/ src/ docker-compose.projection-alpha.yml
+docker-compose.projection-recovery.yml` is **empty**, and the two source digests above are recomputed from
+the working tree on every suite run and still match.
+
 **HOW THE TREE WAS STAGED, AND WHAT WAS COMPARED.** `/mnt/user/appdata/catalog-p6` was moved aside and
 recreated **empty**, `git archive c70ecb0` was extracted into it, and a sorted per-file sha256 manifest of
 the host was diffed against the same manifest taken from `git archive` — **1,649 files, empty diff, both
