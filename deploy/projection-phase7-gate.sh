@@ -352,8 +352,11 @@ const [, , out, index, arm] = process.argv;
 const n = Number(index);
 if (!Number.isSafeInteger(n) || n < 1) { console.error('arm: not an arm index'); process.exit(1); }
 if (!/^R[0-9]$/.test(String(arm))) { console.error('arm: not an arm id'); process.exit(1); }
-appendFileSync(out, JSON.stringify({ index: n, arm }) + '
-');
+// THE LINE TERMINATOR IS A CHARACTER CODE AND NOT AN ESCAPE, AND THE FIRST REAL RUN IS WHY. This program is
+// generated, and a generator that renders `backslash-n` into a real newline inside a quoted JavaScript string
+// produces a file that will not parse — which is what happened, at arm 1 of 6, after two hours of playback.
+// `String.fromCharCode(10)` cannot be rendered into anything except itself.
+appendFileSync(out, JSON.stringify({ index: n, arm }) + String.fromCharCode(10));
 ARMLOG
 
 cat > "$WORK/out/corpus.cjs" <<'CORPUS'

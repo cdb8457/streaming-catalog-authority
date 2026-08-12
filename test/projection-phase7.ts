@@ -1,4 +1,6 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -392,6 +394,33 @@ test('every required id the module names is an id the GATE actually records', ()
     if (!gate.includes(stemOf(id))) missing.push(id);
   }
   assertEq(missing.length, 0, `the closure rule requires ids the gate never records: ${missing.join(', ')}`);
+});
+
+// ---------------------------------------------------------------------------------------------------------
+test('every program the gate embeds actually PARSES, extracted and checked rather than grepped', () => {
+  // PHASE 1 SPENT FOUR DISPATCHES ON PROGRAMS WRITTEN INTO GATES AND CHECKED ONLY BY REGEX, and every
+  // dispatch found defects a regex cannot see. This is the same lesson met from a new direction: the Phase 7
+  // gate is GENERATED, and a generator that rendered a backslash-n into a real newline inside a quoted
+  // JavaScript string produced a file that would not parse. The first real run found it at arm 1 of 6, after
+  // two hours of playback had already been measured and thrown away.
+  const pattern = /cat > "\$WORK\/out\/([a-z-]+)\.cjs" <<'([A-Z]+)'\n([\s\S]*?)\n\2\n/g;
+  const programs = [...gate.matchAll(pattern)];
+  assert(programs.length >= 5, `the gate embeds ${programs.length} JavaScript programs; that is too few to `
+    + 'be the set this test was written for, so something has moved and the check is not looking at it');
+  const dir = mkdtempSync(join(tmpdir(), 'p7-programs-'));
+  try {
+    for (const match of programs) {
+      const name = match[1] as string;
+      const source = match[3] as string;
+      const path = join(dir, `${name}.cjs`);
+      writeFileSync(path, source, 'utf8');
+      const checked = spawnSync(process.execPath, ['--check', path], { encoding: 'utf8' });
+      assertEq(checked.status, 0,
+        `${name}.cjs does not parse: ${(checked.stderr || '').split('\n')[1] ?? ''}`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // ---------------------------------------------------------------------------------------------------------
