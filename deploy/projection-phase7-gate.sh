@@ -1061,6 +1061,27 @@ done < "$table"
 echo "  $label rows at the mount point or beneath it: $n"
 MOUNTROWS
 
+cat > "$WORK/out/http.sh" <<'HTTP'
+# ONE HTTP/1.0 REQUEST, WITH THE STATUS LINE AND THE BODY KEPT APART.
+#
+# `wget -q -O -` writes nothing at all for a non-2xx status, and 503 is what readiness answers for every
+# fault this gate injects. An instrument that cannot read the answer reports the product as silent.
+set -eu
+addr="$1"
+path="$2"
+host="${addr%%:*}"
+port="${addr##*:}"
+raw="$(printf 'GET %s HTTP/1.0
+Host: %s
+Connection: close
+
+' "$path" "$addr" | nc "$host" "$port")"
+printf '%s
+' "$raw" | head -1 | awk '{print $2}'
+printf '%s
+' "$raw" | sed -e '1,/^[[:space:]]*$/d'
+HTTP
+
 cat > "$WORK/out/probes.cjs" <<'PROBES'
 // Turn one decoded-segment report per line into the JSON each server's own verifier reads.
 //
@@ -1676,9 +1697,31 @@ resolver_resolutions() {
 # THE DAEMON'S OWN STATUS SURFACE. It binds LOOPBACK ONLY and that is not relaxed for a test, so the request
 # comes from a container sharing the daemon's network namespace. The production image is distroless and has
 # neither a shell nor an HTTP client, which is why the request comes from a separate pinned one.
+# A 503 IS NOT A FAILURE TO READ. IT IS THE ANSWER, AND THE FIRST INSTRUMENT COULD NOT SEE IT.
+#
+# This function was inherited from Phase 3, where — as Phase 6 §7 records in so many words — it was DEFINED
+# AND NEVER CALLED. Its first real use was Projection Phase 7 arm R1, and it used `wget -q -O -`, which exits
+# non-zero and writes NOTHING for any status outside 2xx. Readiness answers 503 for every fault this whole
+# tranche is about, so the arm read `reason='none' observation='none' remediation='absent'` for thirty-four
+# seconds and recorded it as a daemon that had said nothing — while that daemon was `Up (unhealthy)` the
+# entire time, which is a daemon saying something quite specific.
+#
+# IT IS THE RECOVERY GATE'S OWN READER, PORTED. A raw HTTP/1.0 request over `nc`, with the status line and
+# the body kept apart, so a 503 carrying a complete readiness document is READ rather than discarded. An
+# unreachable daemon still returns non-zero and still leaves the caller with nothing, which is the other
+# reading and stays distinguishable.
+DAEMON_STATUS_CODE=""
 daemon_status() {
-  docker run --rm --network "container:$MOUNT_CONTAINER" "$VERIFY_IMAGE" \
-    wget -q -T 15 -O - "http://127.0.0.1:${DAEMON_STATUS_PORT}/readyz" > "$1" 2>/dev/null
+  local raw
+  set +e
+  raw="$(docker run --rm --network "container:$MOUNT_CONTAINER" -v "$WORK/out:/out:ro" "$VERIFY_IMAGE" \
+    sh /out/http.sh "127.0.0.1:${DAEMON_STATUS_PORT}" /readyz 2>/dev/null)"
+  set -e
+  DAEMON_STATUS_CODE="$(printf '%s\n' "$raw" | head -1)"
+  case "$DAEMON_STATUS_CODE" in
+    200|503) printf '%s\n' "$raw" | tail -n +2 > "$1"; [ -s "$1" ] ;;
+    *) : > "$1"; return 1 ;;
+  esac
 }
 
 await_path() {
@@ -1776,7 +1819,7 @@ READY_CODE=""; READY_REASON=""; READY_OBSERVED=""
 REC_STATE=""; REC_REASON=""; REC_ATTEMPTS=""; REC_GENERATION=""; REC_OUTCOME=""; REC_REMEDIATION=""
 sample() {
   if daemon_status "$WORK/out/readyz.json" && [ -s "$WORK/out/readyz.json" ]; then
-    READY_CODE="200-or-503"
+    READY_CODE="$DAEMON_STATUS_CODE"
     READY_REASON="$(node "$REL/out/jq.cjs" readyReason < "$WORK/out/readyz.json" 2>/dev/null || true)"
     READY_OBSERVED="$(node "$REL/out/jq.cjs" mountObserved < "$WORK/out/readyz.json" 2>/dev/null || true)"
     REC_STATE="$(node "$REL/out/jq.cjs" recoveryState < "$WORK/out/readyz.json" 2>/dev/null || true)"

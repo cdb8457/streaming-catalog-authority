@@ -271,6 +271,22 @@ test('the gate has no optional arm: a missing nsenter FAILS rather than skipping
     'a host without nsenter must fail the arm with a reason rather than skip it');
 });
 
+test('the status reader can read a 503, which is the answer every fault in this gate produces', () => {
+  // THE INSTRUMENT THAT COULD NOT SEE THE ANSWER. Phase 3 DEFINED `daemon_status` and never called it, so
+  // its first real use was Phase 7's arm R1 — and it was `wget -q -O -`, which exits non-zero and writes
+  // NOTHING for any status outside 2xx. Readiness answers 503 for every fault this tranche injects, so the
+  // arm recorded `reason='none' observation='none'` about a daemon that was `Up (unhealthy)` throughout.
+  assert(!/wget .*-O - "http:\/\/127\.0\.0\.1:\$\{DAEMON_STATUS_PORT\}\/readyz"/.test(gate),
+    'the status reader is a wget that discards every non-2xx body, so it cannot read a 503');
+  assert(/DAEMON_STATUS_CODE="\$\(printf/.test(gate), 'the reader does not capture the status code');
+  assert(/200\|503\)/.test(gate), 'the reader does not accept a 503 as a reading');
+  assert(gate.includes('cat > "$WORK/out/http.sh"'), 'the raw HTTP reader is not embedded');
+  // ...AND AN UNREACHABLE DAEMON IS STILL AN ABSENT READING, which is the OTHER meaning and must stay
+  // distinguishable from a 503 carrying a complete document.
+  assert(/\*\) : > "\$1"; return 1 ;;/.test(gate),
+    'an unreachable daemon no longer leaves the caller with nothing, so absence and refusal have collapsed');
+});
+
 test('the three-runner counts, refuses to announce a sequence it did not complete, and propagates 77', () => {
   const three = read(THREE);
   assert(three.includes('completed=$((completed + 1))'), 'runs are not counted');
