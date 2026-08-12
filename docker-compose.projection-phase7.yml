@@ -1,0 +1,45 @@
+# Projection Phase 7 - a real, migrated PostgreSQL for the OPERATOR-USABLE ALPHA gate.
+#
+# WHY ANOTHER DATABASE COMPOSE FILE, WHEN THERE ARE ALREADY EIGHT. Every one of them binds a fixed loopback
+# port, and the whole point of three consecutive fresh runs is that no previous run, no other gate and no
+# installation can lend this one state. Sharing a project name with any of them would mean `down -v` in one
+# gate could take another gate's database with it. So this takes its own project name, its own network, its
+# own port and throwaway storage, exactly as the other eight do.
+#
+# 5620 is the port, and it is outside every block `deploy/` already claims —
+# 5432/5460/5470/5480/5490/5500/5510/5515/5570/5573/5576/5580/5590/5611/5612 — which
+# `test/projection-phase7.ts` cross-checks against every other gate rather than trusting this
+# comment.
+#
+# NEITHER THE DAEMON, THE RESOLVER NOR ANY MEDIA SERVER IS HERE, and the omission is the same one
+# `docker-compose.projection-torbox.yml` makes for the same reason. The arrangement this gate builds — a
+# resolver sharing the DAEMON'S network namespace so it stays loopback-only, with three real media servers
+# bound to one propagated mount — is a measurement rig and not a deployment. Written into a Compose file it
+# would read as something to copy, and copying it is exactly wrong.
+
+name: projection-phase7-gate
+
+services:
+  postgres:
+    # PINNED BY DIGEST, like every other external image this gate touches. A moving tag would mean three
+    # consecutive runs were three runs of possibly different things, which is not what the repetition is for.
+    image: postgres:16@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20
+    environment:
+      POSTGRES_DB: catalog
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "${PROJECTION_PHASE7_GATE_PG_PORT:-5620}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d catalog"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    tmpfs:
+      # Throwaway, and it says so in the only way that cannot be forgotten: its storage does not survive the
+      # container. Three consecutive runs mean three runs from nothing, or they mean very little.
+      - /var/lib/postgresql/data
+
+networks:
+  default:
+    name: projection-phase7-gate
