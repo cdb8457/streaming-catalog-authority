@@ -30,10 +30,25 @@
 package main
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/cdb8457/streaming-catalog-authority/projectiond/internal/fusefs"
 )
+
+// readMainSource reads the shipped supervisor. A source assertion is a weaker instrument than a behaviour one
+// and it is used here for exactly one thing: WHERE a decision is called from, which no pure function can say
+// about itself. `go test` runs with the package directory as the working directory, so this is the file the
+// binary under test was built from and not a copy of it.
+func readMainSource(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("the supervisor's own source could not be read: %v", err)
+	}
+	return string(raw)
+}
 
 // THE TABLE IS EXHAUSTIVE ON ProbeResult ON PURPOSE. The original defect was not a wrong branch, it was the
 // ABSENCE of a branch — so the test that prevents its return has to say something about every value the probe
@@ -179,5 +194,80 @@ func TestALiveMountOnTopIsNeverLazilyDetached(t *testing.T) {
 	}
 	if got := planRemountCleanup(fusefs.ProbeLiveProjectiond, fusefs.ProbeLiveProjectiond); got != remountCleanupUnmount {
 		t.Fatalf("our own live mount, top and bottom, planned as %v", got)
+	}
+}
+
+// THE DRAIN-ALONE REPAIR, DRIVEN AS A TABLE — PHASE 7 §8.5.
+//
+// WHAT IT IS FOR, IN THE NUMBERS THAT FOUND IT. Phase 7 §11.4.2 measured the layer count at the mount point
+// going `now 3` → `now 4` across successive faults once the corpse drain became reachable in a container. The
+// dead layers go; a LIVE one accumulates, because when the fault was somebody ELSE'S corpse this daemon's own
+// mount was never broken — the drain removes the corpse, the mount point is serving again, and the remount that
+// follows stacks a second live layer over a first that is still connected. Two live mounts of ours at one mount
+// point is a bound on nothing: only the top is read, and the one underneath is a namespace nobody can reach
+// that this process is still answering requests for. `MOUNT_LAYERS_ABOVE_FLOOR_MAX` is 1 and that would
+// measure 2.
+//
+// EVERY ROW BELOW IS A REFUSAL EXCEPT ONE, which is the shape every safety decision in this daemon has.
+func TestTheDrainAloneRepairIsRefusedUnlessAllFiveConditionsHold(t *testing.T) {
+	// The one state that skips: the drain removed a corpse, our own serve loop never died, the mount point is
+	// serving through our own live mount, and exactly one layer of ours stands above a measured floor.
+	const detached, floor = 1, 1
+	if !drainAloneRepairedIt(detached, false, fusefs.ProbeLiveProjectiond, floor+1, true, floor, true) {
+		t.Fatalf("the one state the fix exists for did not skip the remount")
+	}
+
+	cases := []struct {
+		name          string
+		detached      int
+		serveLoopDied bool
+		observed      fusefs.ProbeResult
+		current       int
+		currentKnown  bool
+		startupKnown  bool
+	}{
+		{"the drain removed nothing", 0, false, fusefs.ProbeLiveProjectiond, floor + 1, true, true},
+		{"a negative detach count is not a detach", -1, false, fusefs.ProbeLiveProjectiond, floor + 1, true, true},
+		{"THE SERVE LOOP DIED, so our own mount is gone and only a mount can repair it",
+			detached, true, fusefs.ProbeLiveProjectiond, floor + 1, true, true},
+		{"the mount point is EMPTY afterwards", detached, false, fusefs.ProbeEmpty, floor, true, true},
+		{"the mount point still holds a CORPSE of ours",
+			detached, false, fusefs.ProbeStaleProjectiond, floor + 1, true, true},
+		{"the mount point holds something FOREIGN", detached, false, fusefs.ProbeForeign, floor + 1, true, true},
+		{"the observation is not one this table recognises",
+			detached, false, fusefs.ProbeResult(97), floor + 1, true, true},
+		{"the row count now could not be read", detached, false, fusefs.ProbeLiveProjectiond, 0, false, true},
+		{"the startup floor was never measured", detached, false, fusefs.ProbeLiveProjectiond, floor + 1, true, false},
+		{"TWO OF OURS ARE STILL ABOVE THE FLOOR, which is the residual and not the repair",
+			detached, false, fusefs.ProbeLiveProjectiond, floor + 2, true, true},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if drainAloneRepairedIt(testCase.detached, testCase.serveLoopDied, testCase.observed,
+				testCase.current, testCase.currentKnown, floor, testCase.startupKnown) {
+				t.Fatalf("the remount was skipped when it should not have been")
+			}
+		})
+	}
+}
+
+// AND THE SKIP IS REACHABLE ONLY FROM THE DRAIN BRANCH, which is a property of where it is called rather than
+// of what it decides — so this is a source assertion and it says so. The alternative to pinning it here is
+// discovering on a host that a supervisor which detached nothing decided it had nothing to mount.
+func TestTheDrainAloneRepairIsOnlyReachedAfterADrain(t *testing.T) {
+	main := readMainSource(t)
+	drain := main[strings.Index(main, "case remountCleanupLazyDetach:"):]
+	call := strings.Index(drain, "drainAloneRepairedIt(")
+	if call < 0 {
+		t.Fatalf("the drain-alone repair is no longer called from the lazy-detach branch")
+	}
+	if next := strings.Index(drain, "\n\t\t\tdefault:"); next >= 0 && call > next {
+		t.Fatalf("the drain-alone repair has moved out of the lazy-detach branch")
+	}
+	if !strings.Contains(main, "remountLoop(d, cfg, *debug, *strictMount, &mount, mountsAtStartup, startupCountKnown, true)") {
+		t.Fatalf("the serve-death caller no longer tells remountLoop that the serve loop died")
+	}
+	if !strings.Contains(main, "remountLoop(d, cfg, *debug, *strictMount, &mount, mountsAtStartup, startupCountKnown, false)") {
+		t.Fatalf("the recovery caller no longer tells remountLoop that the serve loop did not die")
 	}
 }

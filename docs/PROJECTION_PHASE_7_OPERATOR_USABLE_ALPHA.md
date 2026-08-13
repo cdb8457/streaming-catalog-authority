@@ -301,6 +301,156 @@ and §12 carries the limitation with the operator instruction that pays for it �
 the cache rolls back by naming the previous digest in `PROJECTIOND_ALPHA_IMAGE` and running `start`**, which
 is the same action `rollback` performs and needs nothing durable at all.
 
+## 8.4 THE CLASSIFICATION DECISION — TAKEN HERE, AND THIS SECTION IS ITS CONTRACT
+
+**THIS SECTION WAS WRITTEN AND COMMITTED BEFORE THE FIRST RERUN THAT MEASURES IT.** It is a contract in the
+same sense §2 to §10 are: everything below is predeclared, and §11 will say what happened.
+
+**WHAT §11.3.2 FOUND, RESTATED IN ONE PARAGRAPH SO THIS SECTION STANDS ALONE.** When the projectiond mount is
+removed from beneath a living daemon, what remains at the mount point **inside the container** is the
+operator's own bind, whose file-system type on an Unraid host is the host's `fuse.shfs`. `ObserveMountpoint`
+answers **foreign**, Phase 6 §3.2's only row for `mount-observed-not-live` + `foreign` is a **refusal**, and
+`recover-mount-empty` — the row that table has for exactly this fault — **was unreachable in the topology the
+alpha ships in.** The refusal was correct as written. The appliance did not repair the single most likely
+operator-side accident there is, and §12 recorded that as the first blocker.
+
+**§11.3.2 NAMED THIS AS THE DECISION PHASE 8 OWED AND GAVE THREE REASONS FOR NOT TAKING IT THEN**, all three
+of which were about that session rather than about the design: a third edit to the mount lifecycle in one
+sitting, a closed tranche's published table, and no unblocked instrument. **THE DECISION IS TAKEN NOW**, and
+the reasoning §11.3.2 wrote down is the reasoning it is taken on: the recovery action here is a **stack**, not
+an unmount, and stacking over the operator's bind is what this daemon does at startup, over that same bind,
+every single time it starts.
+
+### 8.4.1 The question the daemon now asks, and it is not the one §11.3.2 sketched
+
+§11.3.2 proposed the **count**: if the number of mounts at the mount point is at or below `mountsAtStartup`,
+nothing of ours is there and nothing has been stacked on us. **THAT IS NOT ENOUGH AND THIS TRANCHE'S OWN
+DEFECT #5 IS WHY.** A count cannot tell an attachment from a different attachment of the same shape: an
+operator who detached and reattached their own share leaves the same count of the same type at the same path,
+and a daemon that mounted over it on the strength of a count would be mounting over something nobody had
+identified. Defect #5 was exactly this class — "above the floor and of our type" describing two different
+mounts — and it destroyed the thing it was protecting.
+
+**SO THE QUESTION IS IDENTITY, AND IT IS ASKED OF THE WHOLE STACK:**
+
+> **IS THE MOUNT POINT, RIGHT NOW, IN EXACTLY THE STATE THAT WAS FINGERPRINTED BEFORE THIS PROCESS MOUNTED
+> ANYTHING?**
+
+The fingerprint is the **ordered list of every mount row at that one path**, each row identified by its
+**mount id, parent mount id, device, subtree root, mount point, propagation relationship, file-system type and
+source**. It is taken **once**, at startup, **before the first `Mount()`** — beside the `mountsAtStartup` count
+and from the same mount table — so it is a measurement of what the **operator** attached, taken before this
+daemon could have contributed anything to it.
+
+**IT IS HELD IN MEMORY FOR THE LIFE OF ONE PROCESS AND IS NEVER WRITTEN DOWN.** A durable copy would be wrong
+on its face: mount ids are assigned by the running kernel, so a fingerprint that survived a reboot would
+authorise a comparison against numbers that had stopped meaning anything.
+
+### 8.4.2 The four verdicts, and exactly one of them admits anything
+
+`recoveryUnderlay` is a new closed set on the shipped status surface, predeclared in
+`PROJECTIOND_MOUNT_RECOVERY.UNDERLAY_VERDICTS`:
+
+| Verdict | What it means | What it authorises |
+|---|---|---|
+| **`underlay-exposed`** | the same rows, in the same order, each the same attachment, and **nothing above them** — the projectiond mount that covered them is gone | **THE ONLY ADMITTING VALUE.** The recovery `recover-mount-underlay` |
+| `underlay-covered` | the fingerprinted rows are all still there and unchanged, and **something is on top of them** | **nothing.** It is what a healthy serving daemon reports every second of its life, and equally what a stacked tmpfs, a foreign overlay or a second daemon's corpse reports — the verdict cannot separate those, which is why it authorises nothing |
+| `underlay-changed` | a fingerprinted row was **removed from underneath**, or is a **different attachment** | **nothing.** A re-mounted bind of the same share gets a new mount id, so an operator who detached and reattached their own storage is refused |
+| `underlay-unknown` | the mount table could not be read — at startup, or now — or the two startup measurements disagreed with each other | **nothing.** Failing closed: a supervisor that cannot see what is under it does not mount over it |
+
+**THE SAFETY CONTRACT, CLAUSE BY CLAUSE, AND EACH ONE IS PINNED BY A TEST THAT FAILS AGAINST ITS ABSENCE:**
+
+1. **`fuse.shfs` IS NOT TRUSTED AND NEITHER IS ANY OTHER TYPE.** The file-system type is **not consulted** by
+   this decision at all. A tmpfs is not refused for being a tmpfs and a bind is not admitted for being a bind.
+2. **THE VERDICT IS READ ON EXACTLY ONE ROW OF THE CLASSIFICATION TABLE** —
+   `mount-observed-not-live` + `foreign` — and there it can only ever turn a refusal into an action. No other
+   row reads it, and no value of it can turn an action into a refusal or one refusal into another.
+3. **R5 IS UNTOUCHED AND IS STILL THE MOST IMPORTANT ROW.** A tmpfs stacked above the live mount answers
+   `underlay-covered` on the row count, before any identity is compared, so it still produces
+   `refuse-foreign-mount` / `inspect-mount-owner`, still spends nothing, and is still asserted **mounted and
+   byte-unmodified** afterwards. Phase 6 `AA6` and `RC5` assert the same thing and are re-run.
+4. **NOTHING IS EVER UNMOUNTED ON THIS PATH.** The cleanup plan for a foreign observation is `nothing` and
+   stays `nothing`; the corpse drain is not reached; the operator's bind is never touched, lazily or otherwise.
+   The action is a `Mount()` over it, which is the startup path.
+5. **THE EVIDENCE IS RE-TAKEN AT THE MOMENT THE BUDGET IS SPENT**, not only when the decision is made. If
+   something is stacked on the mount point in between, the re-classification answers `refuse-foreign-mount`,
+   which is not the class the attempt was authorised for, and **nothing is spent and nothing is done**.
+6. **THE VERDICT CANNOT BLOCK.** It is derived from `/proc/self/mountinfo` alone — procfs is not served by a
+   FUSE connection — which is why it is taken **fresh** on the decision path instead of read from a sampler.
+   The `statfs`-bearing observation is sampled on its own cadence exactly as before.
+7. **AN UNWIRED VERIFIER REFUSES.** A daemon with nothing wired answers `underlay-unknown` for ever.
+
+### 8.4.3 What this adds to the published surface, and it is deliberately small
+
+- **ONE additive decision code**, `recover-mount-underlay`. It is additive rather than a reuse of
+  `recover-mount-empty` because the two are **different observations**: `empty` means the mount point had
+  nothing on it, and this means the operator's own bind is there and uncovered. An operator told `empty` about
+  a mount point that is not empty has been told something false.
+- **TWO additive status fields**, `recoveryUnderlay` (the closed-set verdict) and `recoveryUnderlayDigest` (a
+  twelve-character sha256 prefix over the fingerprinted identity). The digest is the **only** field on that
+  surface that is not a code or a number, and it is admitted for one reason: it lets a gate assert **from
+  outside the process** that the attachment the daemon mounted over after a recovery is the one it
+  fingerprinted before the first mount. It is not reversible and cannot match a leak-scan needle.
+- **NOTHING IS RENAMED, REMOVED OR REDEFINED.** Every code, state, remediation and field every closed gate was
+  measured against means what it meant.
+
+### 8.4.4 THE SUPERSEDED R1 CLAUSE IS REINSTATED, WORD FOR WORD, AND THAT IS NOT A THRESHOLD MOVING
+
+§11.3.2 recorded §3.1's R1 clause as **SUPERSEDED** because it asked for a state a daemon obeying Phase 6
+§3.2's table could not produce in a container. **THE CLAUSE IS NOW REINSTATED UNCHANGED**, and the direction
+matters: the clause was not edited to fit a result, the **product** was changed so that the clause is
+answerable. §11.3.2's blockquote stays exactly where it is, as the history of what was measured against the
+daemon that could not distinguish.
+
+**A REINSTATEMENT IS ONLY HONEST IF IT IS HARDER THAN THE ORIGINAL, SO R1 NOW ASSERTS MORE THAN IT DID:** in
+addition to every clause it already had, the arm asserts that before the fault the daemon reports
+`underlay-covered` with a **non-empty** fingerprint, that the action it takes is named
+**`recover-mount-underlay`** and not any other recovery, and that the fingerprint is **identical** before the
+fault and after the recovery.
+
+## 8.5 THE MOUNT-LAYER RESIDUAL — FIXED, AND `MOUNT_LAYERS_ABOVE_FLOOR_MAX` DOES NOT MOVE
+
+§11.4.2 measured the layer count going `now 3` → `now 4` across successive faults once the corpse drain became
+reachable. The dead layers go; what accumulated was a **live** one — when the fault was **somebody else's**
+corpse, this daemon's own mount was never broken, so the drain removed the corpse and the remount then stacked
+a second live layer over a first that was still connected. `MOUNT_LAYERS_ABOVE_FLOOR_MAX` is **1** and that
+would measure **2**.
+
+**THE FIX IS THE ONE §11.4.2 NAMED AND IT IS FIVE CONDITIONS, ALL NECESSARY.** After a drain that removed
+something, the supervisor skips the mount syscall when — and only when — the drain **removed** something, the
+**serve loop did not die** (a fact about which supervisor called, not a claim about the mount), the mount point
+**observes as our own live mount**, the row count is a **measurement**, and that count is at or under **one**
+layer above the measured startup floor.
+
+**SKIPPING A MOUNT CANNOT DESTROY ANYTHING**, which is what makes this the safe direction to be wrong in: if
+the observation were wrong, readiness withholds on the very next sample, the fault has not been cleared, and
+the supervisor comes back for it with its budget intact. **The threshold is unchanged and it is still expected
+to bite.**
+
+## 8.6 `RC8`'S PREMISE, AND WHY REPAIRING THE INJECTOR IS NOT LOOSENING THE ASSERTION
+
+§11.4.1 measured Phase 6's `RC8`/`RC9`/`RC11` failing with `no-action-healthy` from the Phase 7 candidate,
+because the corpse drain now repairs their fault **without any mount syscall succeeding** — the gate asserts a
+state its own injector can no longer produce. §11.4.1 also says what may not be done about it: *"Loosening
+`RC8` to accept the new behaviour would be editing a closed tranche's assertion to fit a result."*
+
+**SO THE ASSERTIONS ARE UNTOUCHED AND THE INJECTOR IS REPAIRED.** `RC8`'s fault becomes the one fault on this
+appliance whose repair genuinely requires a successful mount: the subject's **own** mount lazily detached under
+a masked `/dev/fuse`, leaving the operator's bind and nothing else — no corpse to drain, nothing of ours to
+unmount, and `Mount()` the whole of the repair. §8.4 is what makes that state actionable at all; before it the
+supervisor refused it as foreign.
+
+**THE ONE THING THAT HAD TO BE ARRANGED IS THE SERVE LOOP SURVIVING**, which is why Phase 6 §4 avoided the
+subject's own death in the first place. `umount -l` leaves the FUSE superblock alive for as long as anything
+references it, so the gate's pre-attached consumer holds an **open descriptor** on a file inside the mount
+first — which is what the three media servers do by accident in the Phase 7 topology, where R1 measured this
+fault twice leaving the daemon `Up` throughout. If the connection went down anyway the serve supervisor would
+own the fault, and both arms **say so and fail** rather than reporting a budget nobody spent.
+
+**PHASE 7'S OWN R6 CHANGES THE SAME WAY, AND IN ITS CASE THE CHANGE MAKES THE GATE MATCH THE CONTRACT.** §3.1's
+R6 row has said *"and then R1's fault is injected"* since before the first measured run; the gate stacked a
+corpse instead. The gate now does what §3.1 predeclared.
+
 ## 9. The regression matrix
 
 **Phase 7 changes `projectiond` — one row of `planRemountCleanup` — so every gate whose subject is the
@@ -557,10 +707,18 @@ bind, every single time it starts.** The daemon already has the fact that separa
 that floor, **nothing of ours is there and nothing has been stacked on us** — the mount is simply gone, and
 mounting is the startup path, not a new destructive capability.
 
-**THIS TRANCHE DOES NOT MAKE THAT CHANGE**, and the reason is the same one §11.4.2 gives: it would be a third
-edit to the daemon's mount lifecycle in one sitting, it changes a **closed** tranche's published
-classification table, and the only instrument that could validate it end to end is the matrix that is still
-blocked at this very arm. It is written down here as the next decision rather than taken quietly.
+> **HISTORICALLY — SUPERSEDED.** *"THIS TRANCHE DOES NOT MAKE THAT CHANGE, and the reason is the same one
+> §11.4.2 gives: it would be a third edit to the daemon's mount lifecycle in one sitting, it changes a closed
+> tranche's published classification table, and the only instrument that could validate it end to end is the
+> matrix that is still blocked at this very arm. It is written down here as the next decision rather than taken
+> quietly."*
+
+**THE DECISION HAS SINCE BEEN TAKEN, IN THIS TRANCHE, AND §8.4 IS ITS CONTRACT** — written and committed
+before the rerun that measures it. It is **not** the count §11.3.2 sketched above: a count cannot tell an
+attachment from a different attachment of the same shape, which is this tranche's own defect #5 exactly. It is
+the **identity of the whole stack**, fingerprinted before the first `Mount()`, and `underlay-exposed` is the
+only one of four verdicts that admits anything. §8.4.2 is the safety contract clause by clause and §8.4.4 is
+why reinstating the R1 clause word for word is not a threshold moving.
 
 **WHY IT MATTERS MORE THAN ANY OTHER ARM.** An external `umount` of the projected path is the single most
 likely operator-side accident on this whole appliance, and it is the fault `recover-mount-empty` exists in
@@ -575,7 +733,7 @@ product-fix rows and fails if this document's headline or the roadmap row states
 **FIVE, TWO IN THE PRODUCT** for the interval between the run that found #5 and the run that found #7, which
 is exactly the class of stale summary that pin now exists to catch.
 
-**SEVEN DEFECTS. THREE ARE IN SHIPPED PRODUCT CODE, AND ONE OF THOSE THREE WAS INTRODUCED BY THIS TRANCHE
+**TEN DEFECTS. FIVE ARE IN SHIPPED PRODUCT CODE, AND ONE OF THOSE FIVE WAS INTRODUCED BY THIS TRANCHE
 AND CAUGHT BY ITS OWN REGRESSION MATRIX** — which is the most useful thing in this section.
 
 **WHAT COUNTS AS A ROW HERE, STATED SO THE NUMBER IS CHECKABLE RATHER THAN A JUDGEMENT.** A row is a defect a
@@ -597,6 +755,9 @@ time somebody re-derived it:
 
 | 6 | attempt 3, arm R1 | **THE ARM FAILED HOLDING ITS OWN DIAGNOSIS AND THE CLEANUP WAS ABOUT TO DELETE IT.** R1 recorded `reason='none' observation='none'` for its whole budget, and nothing else the run kept separated *"the daemon exited"* from *"the daemon is alive and unreachable"*. Two readings, one measurement | the gate — R1 now keeps the daemon's own log, the container's status and exit code, and the host mount survey, on the failing path only, which is exactly what Phase 3's `A3` does |
 | 7 | attempts 3 and 4, arm R1 | **THE GATE COULD NOT READ A 503, WHICH IS THE ANSWER EVERY FAULT IT INJECTS PRODUCES.** `daemon_status` came from Phase 3, where Phase 6 §7 records it as **defined and never called**; its first real use was this arm and it was `wget -q -O -`, which exits non-zero and writes **nothing** for any status outside 2xx. So the instrument reported the product as silent about the one question it was built to ask, while the daemon was `Up (unhealthy)` throughout | the gate — the recovery gate's own reader, ported: a raw HTTP/1.0 request with the status line and the body kept apart, 200 and 503 both read, and anything else still leaving the caller with nothing so an unreachable daemon stays distinguishable from a refusing one |
+| 8 | attempts 3 and 4, arm R1 | **THE APPLIANCE COULD NOT REPAIR AN EXTERNAL `umount` OF THE PROJECTED PATH, IN THE TOPOLOGY IT SHIPS IN.** With the projectiond mount gone, what remains at the mount point inside a container is the operator's own bind — `fuse.shfs` on Unraid — so the observation reads FOREIGN and Phase 6 §3.2's only row for that is a refusal. The refusal is correct as written and `recover-mount-empty`, the row that table has for exactly this fault, was **unreachable**. Measured twice, identically: no attempt spent, no generation advanced, the namespace never back, the operator's four windows **0 of 4** afterwards | **the product** — §8.4. The daemon now fingerprints the whole ordered stack at its mount point BEFORE its first `Mount()` and admits exactly one further state: that same stack, unchanged, uncovered. Three other verdicts refuse, the file-system type is never consulted, nothing is ever unmounted on the path, and the evidence is re-taken when the budget is spent |
+| 9 | the regression matrix, on the fix for #4 | **AND THEN THE LAYER COUNT GREW A LIVE LAYER PER FAULT.** `now 3` → `now 4` across successive faults: the dead layers were drained, but when the fault was somebody ELSE'S corpse this daemon's own mount was never broken, so the drain removed the corpse and the remount stacked a **second live** layer over a first that was still connected. `MOUNT_LAYERS_ABOVE_FLOOR_MAX` is 1 and that measures 2 | **the product** — §8.5. After a drain that removed something, the supervisor re-observes and skips the mount syscall when the mount point is already serving through our own live mount at or under one layer above the measured floor. Five conditions, all necessary; skipping a mount can destroy nothing |
+| 10 | the regression matrix | **`RC8`/`RC9`/`RC11` ASSERTED A STATE THEIR OWN INJECTOR COULD NO LONGER PRODUCE.** Phase 6 §4's premise — that the mount syscall is the only thing that can repair a stacked corpse — stopped being true when the fix for #4 made the drain reachable: the corpse is drained, readiness confirms, the budget is refunded, and `no-action-healthy` is what the arm reads. Identically on all three runs | the gate — §8.6. The **assertions are untouched**; the injector becomes the one fault whose repair genuinely requires a mount, which is the subject's own mount detached under a masked `/dev/fuse`. The consumer holds an open descriptor first so the connection survives, and both arms fail loudly if it does not |
 
 **#5 IS THE ARGUMENT FOR THE WHOLE REGRESSION MATRIX, STATED PLAINLY.** The fix for #4 passed every offline
 test, including three new ones written specifically for it, and was byte-identical in both directions on the
@@ -608,9 +769,18 @@ this document to publish, for one revision, the sentence *"the appliance did not
 report it**"* about an appliance that was reporting a precise closed-set refusal the whole time. §11.3.2
 withdraws that half in place rather than deleting it, and §11.4 #7 is why it was ever written.
 
-**FOUR OF THE SEVEN ARE IN THE INSTRUMENT AND THREE ARE IN THE PRODUCT**, and the split is worth stating
+**FIVE OF THE TEN ARE IN THE INSTRUMENT AND FIVE ARE IN THE PRODUCT**, and the split is worth stating
 because it is the same split every closed tranche here has reported: the gates find product defects by being
 wrong first.
+
+**#8, #9 AND #10 ARE THE THREE THIS TRANCHE'S SECOND SITTING FIXED, AND THEY ARE ONE CHAIN RATHER THAN THREE
+COINCIDENCES.** #8 is the appliance not repairing an external `umount` — the finding the whole tranche paid for,
+recorded at §11.3.2 and named there as a decision somebody would have to take. Taking it (§8.4) is what made
+#10's repair possible, because `RC8` needs a fault whose repair requires a mount and #8's fault is the only one
+there is. And #9 is the residual the same drain fix produced, which had to go before
+`MOUNT_LAYERS_ABOVE_FLOOR_MAX` could be met without moving it. **All three were found by measured runs on the
+real host and none of them by an offline test**, which is the fifth time in this document that sentence is
+true.
 
 ### 11.4.1 And then the fix worked, and PHASE 6's OWN GATE STOPPED BEING ABLE TO ASSERT ITS ARM
 

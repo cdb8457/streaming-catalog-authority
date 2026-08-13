@@ -1817,6 +1817,11 @@ record() { node "$REL_GATE_ROOT/record-$$.cjs" "$RESULTS_REL" "$@"; }
 # counter would pass over a daemon that had published something else entirely.
 READY_CODE=""; READY_REASON=""; READY_OBSERVED=""
 REC_STATE=""; REC_REASON=""; REC_ATTEMPTS=""; REC_GENERATION=""; REC_OUTCOME=""; REC_REMEDIATION=""
+# PROJECTION PHASE 7 §8.4 ADDS TWO FIELDS TO THAT DOCUMENT AND THIS GATE READS BOTH. recoveryUnderlay is the
+# closed-set verdict the supervisor takes its licence to act from, and recoveryUnderlayDigest fingerprints the
+# attachment it was taken against — which is what lets this gate assert, from OUTSIDE the process, that the
+# bind the daemon mounted over after a recovery is the one it measured before the very first mount.
+REC_UNDERLAY=""; REC_UNDERLAY_DIGEST=""
 sample() {
   if daemon_status "$WORK/out/readyz.json" && [ -s "$WORK/out/readyz.json" ]; then
     READY_CODE="$DAEMON_STATUS_CODE"
@@ -1828,12 +1833,15 @@ sample() {
     REC_GENERATION="$(node "$REL/out/jq.cjs" recoveryGeneration < "$WORK/out/readyz.json" 2>/dev/null || true)"
     REC_OUTCOME="$(node "$REL/out/jq.cjs" recoveryLastOutcome < "$WORK/out/readyz.json" 2>/dev/null || true)"
     REC_REMEDIATION="$(node "$REL/out/jq.cjs" recoveryRemediation < "$WORK/out/readyz.json" 2>/dev/null || true)"
+    REC_UNDERLAY="$(node "$REL/out/jq.cjs" recoveryUnderlay < "$WORK/out/readyz.json" 2>/dev/null || true)"
+    REC_UNDERLAY_DIGEST="$(node "$REL/out/jq.cjs" recoveryUnderlayDigest < "$WORK/out/readyz.json" 2>/dev/null || true)"
   else
     # AN UNREACHABLE STATUS SURFACE IS AN ABSENT MEASUREMENT AND NEVER A ZERO. Every consumer of these
     # variables compares them, and a silent "" would compare as "not what was expected" rather than as
     # "nothing was read" — which is the difference this repository keeps finding in its own gates.
     READY_CODE=""; READY_REASON=""; READY_OBSERVED=""
     REC_STATE=""; REC_REASON=""; REC_ATTEMPTS=""; REC_GENERATION=""; REC_OUTCOME=""; REC_REMEDIATION=""
+    REC_UNDERLAY=""; REC_UNDERLAY_DIGEST=""
   fi
 }
 
@@ -2740,6 +2748,22 @@ arm_R1() {
   started="$(date +%s%3N)"
   local layers_before
   layers_before="$(count_our_layers)"
+  # THE UNDERLAY THE DAEMON FINGERPRINTED BEFORE ITS FIRST MOUNT, READ BEFORE THE FAULT — PHASE 7 §8.4.
+  #
+  # WHY IT IS TAKEN HERE AND NOT AFTER. The whole claim of the recovery this arm measures is that the daemon
+  # mounted over THE SAME ATTACHMENT the operator had already made, and a digest read only afterwards could not
+  # tell that from the daemon having quietly accepted a different one. On a healthy appliance the verdict is
+  # `underlay-covered` — this daemon's own live mount is on top of the bind — and that is asserted, because a
+  # gate that only ever saw the admitting verdict would not know the difference.
+  local underlay_before verdict_before
+  sample
+  underlay_before="${REC_UNDERLAY_DIGEST:-}"
+  verdict_before="${REC_UNDERLAY:-}"
+  record "P7-R1-underlay-covered-before" bool \
+    "$( [ "$verdict_before" = "underlay-covered" ] && echo 1 || echo 0 )" "" \
+    "before the fault the daemon reports its own mount COVERING the operator's bind: '${verdict_before:-absent}'" || true
+  record "P7-R1-underlay-fingerprinted" bool "$( [ -n "$underlay_before" ] && echo 1 || echo 0 )" "" \
+    "the daemon holds a fingerprint of what it mounted over, taken before its first mount: '${underlay_before:-absent}'" || true
   umount -l "$WORK/mnt" 2>/dev/null || true
   local gone=0 n=0
   while [ "$n" -lt 40 ]; do
@@ -2758,6 +2782,22 @@ arm_R1() {
     "from the fault to the recovery supervisor having spent an attempt on it" || true
   record "P7-R1-reason" bool "$( [ "$(recovery_last_action)" != "" ] && echo 1 || echo 0 )" "" \
     "the daemon named its decision on its own status surface and in its own log: reason='${REC_REASON:-none}' observation='${READY_OBSERVED:-none}' lastAction='$(recovery_last_action)'" || true
+  # AND THE DECISION IS THE ONE PHASE 7 §8.4 PREDECLARED, BY NAME, FROM THE DAEMON'S OWN LOG.
+  #
+  # `recover-mount-underlay` and nothing else. `recover-mount-empty` here would mean the mount point was empty,
+  # which on this host it is not — the operator's bind is still there — and `recover-stale-mount` would mean the
+  # daemon had found a corpse of its own to clear. Naming the action is what separates "it recovered" from "it
+  # recovered for the reason the contract says this fault has".
+  record "P7-R1-action-is-the-underlay-row" bool \
+    "$( [ "$(recovery_last_action)" = "recover-mount-underlay" ] && echo 1 || echo 0 )" "" \
+    "the recovery the daemon took for a mount removed beneath it: '$(recovery_last_action)'" || true
+  # ...AND IT MOUNTED OVER THE SAME ATTACHMENT IT FINGERPRINTED BEFORE ITS FIRST MOUNT, WHICH IS THE WHOLE
+  # SAFETY CLAIM OF THE ROW. An equal digest with the operator's bind still carrying its own mount id is the
+  # product's own evidence that nothing was swapped underneath it while it was not serving.
+  sample
+  record "P7-R1-underlay-digest-unchanged" bool \
+    "$( [ -n "$underlay_before" ] && [ "${REC_UNDERLAY_DIGEST:-}" = "$underlay_before" ] && echo 1 || echo 0 )" "" \
+    "the underlay fingerprint across the fault and the recovery: '${underlay_before:-absent}' then '${REC_UNDERLAY_DIGEST:-absent}'" || true
   record "P7-R1-remediation" bool \
     "$( [ "${REC_REMEDIATION:-}" = "none" ] || [ "${REC_REMEDIATION:-}" = "reset-recovery-ledger" ] && echo 1 || echo 0 )" "" \
     "the remediation an operator is told to perform is a closed-set code: '${REC_REMEDIATION:-absent}'" || true
@@ -3043,6 +3083,16 @@ arm_R5() {
     "a refusal spends NOTHING: recoveryAttempts is still $attempts_before" || true
   record "P7-R5-generation" bool "$( [ "${REC_GENERATION:-x}" = "$generation_before" ] && [ "$(recovery_actions)" = "$actions_before" ] && echo 1 || echo 0 )" "" \
     "recoveryGeneration is still $generation_before and no recovery action was logged" || true
+  # AND THE REFUSAL CAME FROM THE RIGHT EVIDENCE, WHICH IS WHAT PHASE 7 §8.4 MADE ASSERTABLE.
+  #
+  # Phase 7 gave the foreign row ONE admitting verdict, so this arm's whole value now depends on the tmpfs
+  # producing a REFUSING one. `underlay-covered` is that: the operator's own rows are all still there and
+  # something is stacked above them — which is exactly what the gate just did, and is indistinguishable from
+  # the healthy state by that question alone, which is why it authorises nothing. A run in which this said
+  # `underlay-exposed` would be a run in which the widening had reopened the `--auto-remount` defect.
+  record "P7-R5-underlay-refuses" bool \
+    "$( [ "${REC_UNDERLAY:-}" = "underlay-covered" ] && echo 1 || echo 0 )" "" \
+    "the verdict the supervisor refused on, with a foreign overlay stacked: '${REC_UNDERLAY:-absent}'" || true
 
   # AND THE OVERLAY IS ASSERTED STILL MOUNTED AND UNMODIFIED, which is the assertion this whole arm exists for.
   local still=0 top
@@ -3086,20 +3136,43 @@ arm_R6() {
     || die "R6: /dev/fuse could not be masked in this run's own daemon namespace"
   echo "  every mount syscall in the subject's namespace will now be refused"
 
-  # THE FAULT IS A CORPSE OF SOMEBODY ELSE'S MAKING AND MUST NOT BE THE SUBJECT'S OWN DEATH. Aborting the
-  # SUBJECT's connection here would kill its serve loop, and with `/dev/fuse` masked the SERVE supervisor's
-  # own three remounts would all fail and the process would exit — leaving nothing alive to spend a budget.
+  # THE FAULT IS R1'S FAULT, WHICH IS WHAT §3.1 PREDECLARED FOR THIS ARM, AND UNTIL PHASE 7 §8.4 IT COULD NOT BE
+  # USED HERE.
+  #
+  # WHAT IT WAS AND WHY IT CHANGED. This arm used to stack a SECOND daemon's corpse, exactly as `RC4` does, on
+  # the premise Phase 6 §4 states: that the mount syscall is the only thing that can repair such a fault, so a
+  # mount that cannot succeed drives the budget to exhaustion. **THAT PREMISE STOPPED BEING TRUE BECAUSE THE
+  # PRODUCT GOT BETTER.** Phase 7 §8.1 made the corpse drain reachable in a container, so the drain removes the
+  # corpse, readiness confirms the mount point, and the budget is refunded WITHOUT ANY MOUNT SYSCALL SUCCEEDING.
+  # Phase 7 §11.4.1 measured that as `RC8`/`RC9`/`RC11` failing with `no-action-healthy` — a gate asserting a
+  # state its own injector could no longer produce. The assertion is unchanged and it is the INJECTOR that was
+  # wrong.
+  #
+  # WHAT REPLACES IT IS THE ONE FAULT WHOSE REPAIR GENUINELY REQUIRES A MOUNT. With this daemon's own mount
+  # lazily detached, the mount point holds exactly the operator's predeclared bind: there is no corpse to drain,
+  # nothing to unmount, and the only repair in the product is `Mount()` — which `/dev/fuse` masked refuses every
+  # time. That is the definition of an unrecoverable fault on this appliance, and it is also the most likely one.
+  #
+  # AND THE SERVE LOOP MUST SURVIVE IT, WHICH IS A PROPERTY OF THIS TOPOLOGY AND IS ASSERTED RATHER THAN
+  # ASSUMED. A lazy detach with three media servers holding the mount leaves the FUSE connection alive — R1
+  # measured exactly that twice, with the daemon `Up` throughout — so the RECOVERY supervisor owns the fault and
+  # spends the budget. If the connection did go down, the serve supervisor would own it instead, its own three
+  # remounts would fail under the mask, and the process would exit with nothing left to measure. The arm says so
+  # in that case instead of reporting a budget nobody spent.
   layers_before="$(count_our_layers)"
-  start_blocker "$layers_before" || die "R6: the second projectiond mount never landed above this run's own"
-  local abort_out
-  set +e
-  abort_out="$(bash "$WORK/out/fuse-abort.sh" "$WORK/mnt" 2>&1)"
-  set -e
-  case "$(echo "$abort_out" | tail -1)" in
-    abort:done*) : ;;
-    *) stop_blocker; die "R6: the fault could not be injected ($(echo "$abort_out" | tail -1))" ;;
-  esac
-  stop_blocker
+  umount -l "$WORK/mnt" 2>/dev/null || true
+  local gone=0 n6=0
+  while [ "$n6" -lt 40 ]; do
+    if [ "$(count_our_layers)" -lt "$layers_before" ]; then gone=1; break; fi
+    n6=$((n6 + 1)); sleep 0.5
+  done
+  [ "$gone" -eq 1 ] || die "R6: the projectiond mount is still at the mount point, so the fault never landed"
+  record "P7-R6-fault-took-the-mount" bool "$gone" "" \
+    "the projectiond mount is gone and every Mount() in the subject's namespace is refused" || true
+  if ! docker inspect -f '{{.State.Running}}' "$MOUNT_CONTAINER" 2>/dev/null | grep -q true; then
+    docker logs "$MOUNT_CONTAINER" 2>&1 | tail -20 | sed 's/^/  daemon: /' >&2 || true
+    die "R6: the daemon exited on the fault, so the recovery budget could not be measured at all"
+  fi
 
   # THE BUDGET IS DRIVEN TO EXHAUSTION. The COUNT comes from the status surface; the SPACING comes from the
   # stamps the cooldown is ACTUALLY compared against — `lastAttemptUnixNano` in the durable ledger, written

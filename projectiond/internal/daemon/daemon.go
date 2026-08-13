@@ -109,6 +109,11 @@ type Daemon struct {
 	// lets the sampler below be driven deterministically by a test, including the states a real FUSE mount
 	// can only be pushed into on a host with /dev/fuse.
 	mountObserver func() string
+	// underlayVerifier answers whether the mount point is in exactly the state that was fingerprinted before
+	// this process mounted anything, or nil when nothing has been wired — which refuses. See
+	// SetUnderlayVerifier for why it is a second injected function and not a second return value on the one
+	// above.
+	underlayVerifier func() (string, string)
 	// mountSample is the last COMPLETED observation and when it was taken. /readyz answers from this and
 	// never from a probe of its own; see the sampler for why that is the whole design.
 	mountSample atomic.Pointer[mountObservation]

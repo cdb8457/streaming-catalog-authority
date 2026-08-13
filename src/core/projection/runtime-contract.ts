@@ -960,6 +960,29 @@ export const PROJECTIOND_MOUNT_RECOVERY = Object.freeze({
     'recover-stale-mount',
     /** Acting: the mount point is observed EMPTY — the namespace was removed out from under the daemon. */
     'recover-mount-empty',
+    /**
+     * Acting: the mount point observes FOREIGN and is PROVED to be, right now, exactly the attachment that was
+     * fingerprinted before this daemon first mounted anything — so the projectiond mount above it is simply
+     * gone. PROJECTION PHASE 7 §8.4, AND IT IS THE ONE CODE THAT TRANCHE ADDS.
+     *
+     * WHY IT IS ADDITIVE AND NOT A REUSE OF `recover-mount-empty`. The action is identical — mount, over the
+     * operator's own bind, in the same order as startup — but the OBSERVATION is not: `empty` means nothing was
+     * there, and this means the operator's own bind is there and uncovered. An operator told `empty` about a
+     * mount point that is not empty has been told something false, and this surface's whole value is that its
+     * codes mean what they say.
+     *
+     * WHY THE ROW EXISTS AT ALL. Phase 7 measured, twice, that an external `umount` of the projected path —
+     * the single most likely operator-side accident on this appliance — leaves the operator's `fuse.shfs` bind
+     * at the mount point inside the container, so the observation reads FOREIGN and `refuse-foreign-mount` is
+     * the only row Phase 6 §3.2 had for it. `recover-mount-empty` was unreachable in the topology the alpha
+     * ships in, and the appliance did not repair the one fault that row exists for.
+     *
+     * WHAT IT DOES NOT DO. It makes no file-system type trusted: the type is not consulted. It admits ONLY the
+     * `underlay-exposed` verdict below, which requires the same rows in the same order each with the same
+     * mount id, parent, device, subtree root, source, type and propagation. It never unmounts anything — the
+     * cleanup plan for a foreign observation is still `nothing` — and every other verdict refuses.
+     */
+    'recover-mount-underlay',
     /** Acting: the observation says live and has STOPPED ADVANCING. The wedged-mount signature. */
     'recover-observation-stale',
     /** Acting: no observation has ever completed and the grace and the hold are both spent. */
@@ -1017,6 +1040,55 @@ export const PROJECTIOND_MOUNT_RECOVERY = Object.freeze({
     'reset-recovery-ledger',
     /** The ledger is unreadable or unwritable. The cache directory is the first suspect. */
     'check-cache-directory',
+  ] as const),
+  /**
+   * The closed set of UNDERLAY VERDICTS — PROJECTION PHASE 7 §8.4 — published as `recoveryUnderlay`.
+   *
+   * WHAT THE VERDICT ANSWERS, AND IT IS ONE QUESTION. Is the mount point, right now, in exactly the state that
+   * was fingerprinted BEFORE this process mounted anything? The fingerprint is the whole ordered stack of mount
+   * rows at that one path, each row's identity being its mount id, parent mount id, device, subtree root, mount
+   * point, propagation relationship, file-system type and source. It is taken once, at startup, before the first
+   * `Mount()`, and held in memory for the life of that process only — mount ids belong to the running kernel, so
+   * a durable copy would authorise a comparison against numbers that stopped meaning anything at the last boot.
+   *
+   * WHY IT EXISTS. Phase 6 §3.2 refuses every FOREIGN observation, because the likeliest foreign mount at a
+   * projection mount point is the operator's own bind and unmounting it is the exact defect `--auto-remount`
+   * shipped once already. Phase 7 measured the cost of that being the ONLY row: an external `umount` of the
+   * projected path leaves the operator's `fuse.shfs` bind at the mount point inside the container, the
+   * observation reads FOREIGN, and the appliance refuses to repair the single most likely operator-side accident
+   * there is. The verdict is the narrowest evidence that can separate the two safely, and `underlay-exposed` is
+   * the only value that admits anything.
+   *
+   * WHAT IT IS NOT. It is not a trusted file-system type — the type is never consulted — and it is not a
+   * heuristic about what a bind looks like. Three of its four values refuse.
+   */
+  UNDERLAY_VERDICTS: Object.freeze([
+    /**
+     * The mount point holds EXACTLY the fingerprinted rows, in order, each the same attachment, and NOTHING
+     * above them. The predeclared underlay is exposed because the projectiond mount that covered it is gone.
+     * THE ONLY VERDICT THAT ADMITS AN ACTION, and the action it admits is the startup path: mount over the
+     * operator's own bind, in the same order, exactly as every start of this daemon already does.
+     */
+    'underlay-exposed',
+    /**
+     * The fingerprinted rows are all still there and unchanged, and SOMETHING IS ON TOP OF THEM. It is what a
+     * healthy serving daemon reports every second of its life; it is equally what a stacked tmpfs, a foreign
+     * overlay and a second daemon's corpse report. The verdict cannot separate those, which is precisely why it
+     * authorises nothing.
+     */
+    'underlay-covered',
+    /**
+     * The fingerprinted rows THEMSELVES are not what they were: one was removed from underneath, or one is a
+     * different attachment. A re-mounted bind of the same share gets a NEW mount id, so an operator who
+     * detached and reattached their own storage lands here and is refused.
+     */
+    'underlay-changed',
+    /**
+     * IT COULD NOT BE PROVED. The mount table could not be read — at startup, or now — or the startup
+     * measurement disagreed with itself. Failing closed is the whole point: a supervisor that cannot see what
+     * is under it does not mount over it.
+     */
+    'underlay-unknown',
   ] as const),
   /**
    * How often the recovery decision is evaluated, in milliseconds. **DERIVED:** `SAMPLE_INTERVAL_MS`.

@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -181,6 +182,36 @@ func main() {
 			"remount WITHOUT clearing anything, because a floor that is not measured authorises nothing")
 	}
 
+	// AND WHAT THE MOUNT POINT ACTUALLY *IS*, FINGERPRINTED, BEFORE THIS PROCESS MOUNTS ANYTHING — PHASE 7 §8.4.
+	//
+	// The count above says HOW MANY mounts are not ours to remove. It cannot say whether the ones that are
+	// there later are the SAME ones, and that is the question the whole tranche turns on: when an external
+	// `umount` takes this daemon's mount out from under it, what is left at the mount point inside a container
+	// is the operator's own bind, `ObserveMountpoint` answers FOREIGN, and the supervisor refuses — correctly,
+	// because a supervisor that acts on a foreign mount is `--auto-remount` all over again. The ONLY thing that
+	// can safely separate "the operator's own pre-existing bind, untouched" from "something new on my mount
+	// point" is an identity measured BEFORE this daemon could have contributed anything to it. That is here,
+	// beside the count, taken from the same mount table at the same moment, and it is held in memory for the
+	// life of this process only — mount ids are the running kernel's, so a durable copy would be a comparison
+	// against numbers that stopped meaning anything at the last reboot.
+	startupStack, startupStackKnown := fusefs.MountStackAt(cfg.MountPoint)
+	if startupStackKnown && startupCountKnown && len(startupStack) != mountsAtStartup {
+		// TWO READS OF THE MOUNT TABLE THAT DISAGREE ARE ONE MEASUREMENT NEITHER OF THEM MADE. Nothing should
+		// be changing this mount point at startup, so this cannot happen — and if it does, the honest answer is
+		// that there is no fingerprint, which refuses every recovery that would have needed one.
+		startupStackKnown = false
+	}
+	if !startupStackKnown {
+		logLine("the mount table at " + cfg.MountPoint + " could not be fingerprinted; automatic recovery " +
+			"will REFUSE any fault whose repair depends on proving the underlying mount is unchanged")
+	} else {
+		logLine(fmt.Sprintf("the mount point %s was fingerprinted before mounting: %d row(s), underlay %s",
+			cfg.MountPoint, len(startupStack), underlayDigestOrNone(fusefs.UnderlayDigest(startupStack))))
+	}
+	// THE VERIFIER IS WIRED BEFORE THE FIRST MOUNT, AND IT CLOSES OVER THE FINGERPRINT RATHER THAN RE-TAKING
+	// IT. A verifier that re-measured its own baseline would agree with itself for ever.
+	d.SetUnderlayVerifier(newUnderlayVerifier(cfg.MountPoint, startupStack, startupStackKnown))
+
 	// Mount returns a mount whose request loop is already running and whose INIT handshake has completed.
 	mount, err := fusefs.Mount(d, cfg.MountPoint, fusefs.MountSettings{
 		Debug: *debug, StrictDirectMount: *strictMount,
@@ -296,7 +327,7 @@ func main() {
 			if !*autoRemount {
 				os.Exit(*serveExitCode)
 			}
-			if !remountLoop(d, cfg, *debug, *strictMount, &mount, mountsAtStartup, startupCountKnown) {
+			if !remountLoop(d, cfg, *debug, *strictMount, &mount, mountsAtStartup, startupCountKnown, true) {
 				logLine("serve loop died and no remount succeeded; exiting")
 				os.Exit(*serveExitCode)
 			}
@@ -322,13 +353,17 @@ func main() {
 			// contributes a second REASON to call this and no new behaviour inside it: `planRemountCleanup`
 			// still only ever touches our own mount, and the drain still never goes below the floor counted
 			// before this process mounted anything.
-			ok := remountLoop(d, cfg, *debug, *strictMount, &mount, mountsAtStartup, startupCountKnown)
+			ok := remountLoop(d, cfg, *debug, *strictMount, &mount, mountsAtStartup, startupCountKnown, false)
 			if ok {
 				// A REMOUNT IS NOT YET A RECOVERY, WHICH IS WHY NOTHING IS CLEARED HERE BUT THE FLAG. The
 				// serve-death branch above clears a death because it recorded one; this branch recorded
 				// nothing, and `mounted` was never set false — the fault it is repairing is one the daemon's
 				// own belief could not see. The budget is refunded only by observed, confirmed readiness.
-				logLine("recovery: remount returned a mount; readiness must still confirm it")
+				// THE WORDING IS "SERVING AGAIN" AND NOT "REMOUNTED", because since Phase 7 §8.5 the repair may
+				// have been the drain alone with no mount syscall taken at all — and a log line that named an
+				// action the supervisor deliberately did not perform is the instrument defect this tranche spent
+				// two attempts on, written into the product instead.
+				logLine("recovery: the mount point is serving again; readiness must still confirm it")
 			} else {
 				logLine("recovery: no remount succeeded")
 			}
@@ -501,6 +536,57 @@ func (c remountCleanup) String() string {
 	}
 }
 
+// underlayDigestOrNone renders a fingerprint for a log line, and says `none` rather than printing nothing when
+// there was no stack to fingerprint. A blank in a log line is indistinguishable from a field somebody forgot.
+func underlayDigestOrNone(digest string) string {
+	if digest == "" {
+		return "none"
+	}
+	return digest
+}
+
+// newUnderlayVerifier builds the thing the recovery supervisor asks "is the mount point in exactly the state
+// you measured before I mounted anything?" — PHASE 7 §8.4.
+//
+// IT CLOSES OVER THE STARTUP FINGERPRINT AND RE-READS ONLY THE PRESENT. The baseline is the one taken before
+// the first `Mount()`; nothing here can refresh it, which is the property that makes the answer mean anything.
+//
+// IT READS `/proc/self/mountinfo` AND NOTHING ELSE, so it cannot block: procfs is not served by a FUSE
+// connection, and the whole reason the mount OBSERVATION is sampled on its own cadence is the `statfs` that
+// this deliberately does not take. That is what allows the verdict to be taken fresh at the instant of the
+// decision instead of read from a store that may be a second old.
+//
+// AND IT LOGS THE CHANGES ONLY, WITH FIELD NAMES AND NEVER VALUES. The first measured run of this decision is
+// the thing that matters, and a run that REFUSES is only useful if it says which evidence failed. A field name
+// is a closed-set word; the values behind it are mount sources and subtree roots, which this daemon's log is
+// forbidden to carry.
+func newUnderlayVerifier(mountPoint string, startup []fusefs.MountIdentity,
+	startupKnown bool) func() (string, string) {
+	var mu sync.Mutex
+	lastLogged := ""
+	baseline := fusefs.UnderlayDigest(startup)
+	return func() (string, string) {
+		current, currentKnown := fusefs.MountStackAt(mountPoint)
+		verdict, changedField := fusefs.CompareUnderlay(startup, startupKnown, current, currentKnown)
+		// THE DIGEST PUBLISHED IS ALWAYS THE ONE THE VERDICT IS ABOUT: the predeclared underlay. It does not
+		// move — that is the point of it — so a gate can assert that the attachment the daemon mounted over
+		// after a recovery is the one it fingerprinted before the first mount, from outside the process.
+		digest := baseline
+		mu.Lock()
+		defer mu.Unlock()
+		line := verdict
+		if changedField != "" {
+			line = verdict + " (" + changedField + ")"
+		}
+		if line != lastLogged {
+			lastLogged = line
+			logLine("the mount point " + mountPoint + " is " + line + "; underlay " +
+				underlayDigestOrNone(digest))
+		}
+		return verdict, digest
+	}
+}
+
 // planRemountCleanup decides what the supervisor may do to the mount point before remounting over it.
 //
 // WHY A STALE MOUNT OF OURS NEEDS THE LAZY FORM, AND A REAL RUN IS WHY. An ordinary unmount cannot remove a
@@ -559,8 +645,44 @@ func planRemountCleanup(probe, observed fusefs.ProbeResult) remountCleanup {
 	}
 }
 
+// drainAloneRepairedIt reports whether the corpse drain has already put the mount point back into service, so
+// that no mount syscall is needed — PHASE 7 §8.5, and the residual §11.4.2 measured in the daemon's own
+// numbers as the layer count going `now 3` → `now 4` across successive faults.
+//
+// ALL FIVE CONDITIONS ARE NECESSARY AND THE FUNCTION IS EXHAUSTIVE ON THEM RATHER THAN A CHAIN SOMEBODY CAN
+// EXTEND:
+//
+//   - the drain removed something, so this can never fire on a path that changed nothing;
+//   - the serve loop did NOT die — a fact about which supervisor called, not a claim about the mount. After a
+//     death our own mount is gone by definition and a remount is the only repair there is;
+//   - the mount point observes as OUR OWN LIVE MOUNT. `ObserveMountpoint` reads the TOP of the stack and its
+//     `statfs` is answered by this daemon's own serve loop, so this is the one condition that is evidence of
+//     service rather than of shape;
+//   - the row count is a MEASUREMENT, and an unmeasured one authorises nothing here exactly as it authorises
+//     no detach;
+//   - and that count is at or under one layer above the measured startup floor, which is
+//     `MOUNT_LAYERS_ABOVE_FLOOR_MAX`. If more than one of ours is still up there, a remount is not what would
+//     fix it and skipping would hide it.
+func drainAloneRepairedIt(detached int, serveLoopDied bool, observed fusefs.ProbeResult,
+	current int, currentKnown bool, mountsAtStartup int, startupCountKnown bool) bool {
+	if detached <= 0 || serveLoopDied {
+		return false
+	}
+	if observed != fusefs.ProbeLiveProjectiond {
+		return false
+	}
+	if !currentKnown || !startupCountKnown {
+		return false
+	}
+	return current <= mountsAtStartup+1
+}
+
+// `serveLoopDied` IS A FACT ABOUT WHICH SUPERVISOR IS CALLING AND NOT A CLAIM ABOUT THE MOUNT. The serve-death
+// branch of main's select passes true — its own mount is gone, that is what woke it — and the recovery branch
+// passes false, because a recovery request is only ever serviced when no death has been observed. It is read in
+// exactly one place: the drain-alone repair above, where "our own mount was never broken" is the whole premise.
 func remountLoop(d *daemon.Daemon, cfg daemon.Config, debug, strictMount bool, mount **fusefs.Mounted,
-	mountsAtStartup int, startupCountKnown bool) bool {
+	mountsAtStartup int, startupCountKnown, serveLoopDied bool) bool {
 	const attempts = 3
 	for attempt := 1; attempt <= attempts; attempt++ {
 		time.Sleep(time.Duration(attempt) * time.Second)
@@ -715,6 +837,46 @@ func remountLoop(d *daemon.Daemon, cfg daemon.Config, debug, strictMount bool, m
 			}
 			logLine(fmt.Sprintf("detached %d stale mount(s) of ours at %s before remounting (now on top: %s)",
 				detached, cfg.MountPoint, stoppedAt))
+			// AND IF THE DRAIN ALONE FIXED IT, THERE IS NOTHING LEFT TO MOUNT — PHASE 7 §8.5.
+			//
+			// THIS IS THE SECOND RESIDUAL PHASE 7 §11.4.2 MEASURED, IN THE DAEMON'S OWN NUMBERS: the layer count
+			// at the mount point went `now 3` → `now 4` across successive faults once the drain was reachable.
+			// The dead layers go; what accumulated was a LIVE one. When the fault was SOMEBODY ELSE'S corpse
+			// stacked above us, this daemon's own mount was never broken — the drain removes the corpse, the
+			// mount point is serving again, and a remount then stacks a second live layer over a first that is
+			// still connected. Two live mounts of ours at one mount point is a bound on nothing: only the top
+			// one is read, and the one underneath is a namespace nobody can reach that this process is still
+			// answering requests for.
+			//
+			// THE CONDITIONS ARE ALL FOUR NECESSARY AND THE ORDER IS THE CHEAPEST FIRST:
+			//
+			//   - the drain actually removed something, so this cannot fire on a path that changed nothing;
+			//   - THE SERVE LOOP DID NOT DIE. That is a fact about which supervisor called this, not a claim
+			//     about the mount: after a death our own mount is gone by definition and a remount is the only
+			//     repair there is;
+			//   - the mount point observes as OUR OWN LIVE MOUNT — the same `ObserveMountpoint` the drain just
+			//     stopped on, which reads the TOP of the stack and answers from this daemon's own serve loop;
+			//   - and the count is at or under one layer above the measured startup floor, which is the
+			//     `MOUNT_LAYERS_ABOVE_FLOOR_MAX` this tranche predeclared. If there is still more than one of
+			//     ours up there, the remount is not what would fix it and skipping would hide it.
+			//
+			// SKIPPING A MOUNT CANNOT DESTROY ANYTHING, which is what makes this the safe direction to be wrong
+			// in. If the observation is wrong and the mount point is not really serving, readiness withholds on
+			// the very next sample, the fault has not been cleared, and the supervisor comes back for it with
+			// its budget intact.
+			//
+			// THE DECISION IS A NAMED FUNCTION AND NOT THESE FOUR CONDITIONS INLINE, for the same reason
+			// `planRemountCleanup` is one: a table can then drive the SHIPPED decision instead of an imitation
+			// of it, and the conditions cannot be widened later by somebody who only reads the `if`.
+			observedAfterDrain := fusefs.ObserveMountpoint(cfg.MountPoint)
+			currentAfterDrain, currentKnown := fusefs.CountMountsAt(cfg.MountPoint)
+			if drainAloneRepairedIt(detached, serveLoopDied, observedAfterDrain, currentAfterDrain,
+				currentKnown, mountsAtStartup, startupCountKnown) {
+				logLine(fmt.Sprintf("the drain alone repaired %s: %d row(s) against a floor of %d, and the "+
+					"one on top is this daemon's own live mount; NOT stacking another over it",
+					cfg.MountPoint, currentAfterDrain, mountsAtStartup))
+				return true
+			}
 		default:
 			logLine(fmt.Sprintf("nothing of ours at %s to clean up (bottom %s, top %s); leaving it mounted",
 				cfg.MountPoint, probe, observed))

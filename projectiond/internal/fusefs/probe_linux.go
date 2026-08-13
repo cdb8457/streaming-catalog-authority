@@ -53,12 +53,23 @@ func (p ProbeResult) String() string {
 	}
 }
 
-// mountInfoEntry is the slice of a /proc/self/mountinfo line that the probe cares about. mountPoint is the
+// mountInfoEntry is the slice of a /proc/self/mountinfo line that this package cares about. mountPoint is the
 // mount's escape-unescaped path; fsType and source identify the file system sitting on it.
+//
+// THE FIVE IDENTITY FIELDS BELOW WERE ADDED BY PHASE 7 AND NOTHING THAT WAS HERE BEFORE MOVED. The probe
+// classifies on `fsType` alone and still does; what the extra fields serve is `underlay_linux.go`, which has
+// to decide whether a mount is the SAME ATTACHMENT it measured at startup rather than merely one of the same
+// type — a question the type cannot answer, because a re-mounted bind of the same share has the same type and
+// is a different mount.
 type mountInfoEntry struct {
-	mountPoint string
-	fsType     string
-	source     string
+	mountID     string
+	parentID    string
+	device      string
+	root        string
+	mountPoint  string
+	propagation string
+	fsType      string
+	source      string
 }
 
 // mountInfoEntryAt finds the mount whose mount point is path, or nil. path is normalized to an absolute
@@ -85,6 +96,11 @@ func mountInfoEntryAt(path string) *mountInfoEntry {
 // spaces, the optional fields separated from the file-system identity by " - ". A line that does not carry at
 // least the mount point and the file-system type is not a mount the probe can say anything about, so it is
 // skipped rather than half-read.
+//
+// THE OPTIONAL FIELDS ARE EVERYTHING FROM THE SEVENTH TO THE SEPARATOR, and mountinfo(5) is explicit that
+// there may be none, one or several of them. They are kept JOINED IN THEIR OWN ORDER rather than sorted or
+// parsed into flags: what the underlay comparison needs is whether the propagation relationship is the same
+// one, and the kernel's own rendering of it is the least interpreted form available.
 func parseMountInfo(raw []byte) []mountInfoEntry {
 	var entries []mountInfoEntry
 	for _, line := range strings.Split(string(raw), "\n") {
@@ -101,9 +117,14 @@ func parseMountInfo(raw []byte) []mountInfoEntry {
 			continue
 		}
 		entries = append(entries, mountInfoEntry{
-			mountPoint: unescapeMountInfo(before[4]),
-			fsType:     after[0],
-			source:     after[1],
+			mountID:     before[0],
+			parentID:    before[1],
+			device:      before[2],
+			root:        unescapeMountInfo(before[3]),
+			mountPoint:  unescapeMountInfo(before[4]),
+			propagation: strings.Join(before[6:], " "),
+			fsType:      after[0],
+			source:      unescapeMountInfo(after[1]),
 		})
 	}
 	return entries

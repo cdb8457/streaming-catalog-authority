@@ -184,6 +184,10 @@ test('every decision code, state and remediation in the contract exists in the G
     assert(go.includes(`"${remediation}"`),
       `the remediation ${remediation} is in the contract and not in recovery.go`);
   }
+  for (const verdict of PROJECTIOND_MOUNT_RECOVERY.UNDERLAY_VERDICTS) {
+    assert(go.includes(`"${verdict}"`),
+      `the underlay verdict ${verdict} is in the contract and not in recovery.go`);
+  }
 });
 
 test('...and in the OTHER direction: the Go source publishes no code the contract does not name', () => {
@@ -202,6 +206,109 @@ test('...and in the OTHER direction: the Go source publishes no code the contrac
     const value = match[1] ?? '';
     assert(known.has(value),
       `recovery.go declares "${value}", which is in no closed set the contract publishes`);
+  }
+  // ...AND THE SAME SWEEP OVER THE UNDERLAY VERDICTS, WHICH ARE DECLARED UNDER THEIR OWN PREFIX. A verdict
+  // added to Go and forgotten in the contract is a verdict an operator's monitoring rule cannot know about,
+  // and — far worse here — a fourth value nobody has decided whether to trust.
+  const verdicts = go.matchAll(/^\tUnderlay[A-Za-z]+\s+=\s+"([a-z][a-z0-9-]*)"/gm);
+  const namedVerdicts = new Set<string>(PROJECTIOND_MOUNT_RECOVERY.UNDERLAY_VERDICTS);
+  let verdictCount = 0;
+  for (const match of verdicts) {
+    verdictCount += 1;
+    const value = match[1] ?? '';
+    assert(namedVerdicts.has(value),
+      `recovery.go declares the underlay verdict "${value}", which the contract does not name`);
+  }
+  assertEq(verdictCount, PROJECTIOND_MOUNT_RECOVERY.UNDERLAY_VERDICTS.length,
+    'recovery.go declares a different number of underlay verdicts than the contract names');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// PROJECTION PHASE 7 §8.4 — the expected underlay, and the containment that keeps it from being a licence
+// ---------------------------------------------------------------------------------------------------------
+
+test('EXACTLY ONE underlay verdict is actionable, and the foreign row is the only place it is read', () => {
+  const go = read(RECOVERY_GO);
+  const classify = go.slice(go.indexOf('func classifyRecovery'), go.indexOf('func decideRecovery'));
+  assert(classify.length > 200, 'classifyRecovery could not be located in recovery.go');
+  // THE ARGUMENT IS THERE AT ALL. Without it the whole decision is the Phase 6 table again.
+  assert(/func classifyRecovery\(readyReason, observed, underlay string\)/.test(go),
+    'classifyRecovery no longer takes the underlay verdict, so the foreign row cannot tell the operator\'s '
+    + 'own pre-existing bind from anything else');
+  // AND IT IS READ EXACTLY ONCE, INSIDE THE FOREIGN CASE. A second reader is a second licence, so the count of
+  // places the argument is USED — as opposed to declared in the signature — is itself the pin.
+  const uses = (classify.match(/\bunderlay ==/g) ?? []).length + (classify.match(/\bunderlay !=/g) ?? []).length;
+  assertEq(uses, 1, 'the underlay verdict is read in more than one place in classifyRecovery');
+  const foreign = classify.slice(classify.indexOf('case "foreign":'));
+  const foreignEnd = foreign.indexOf('default:');
+  const foreignBody = foreignEnd > 0 ? foreign.slice(0, foreignEnd) : foreign;
+  assert(/if underlay == UnderlayExposed \{[\s\S]*?return RecoverActMountUnderlay, true, false/.test(foreignBody),
+    'the foreign row no longer admits the proved expected underlay, so an external umount of the projected '
+    + 'path is unrepairable again');
+  assert(/return RecoveryRefuseForeignMount, false, true/.test(foreignBody),
+    'the foreign row no longer refuses everything else — this is the defect --auto-remount shipped once');
+  // THE OTHER THREE VERDICTS APPEAR NOWHERE IN THE CLASSIFICATION AT ALL, which is the strongest form this
+  // containment can take in a source pin: they cannot be conditions if they are not mentioned.
+  for (const forbidden of ['UnderlayCovered', 'UnderlayChanged', 'UnderlayUnknown']) {
+    assert(!classify.includes(forbidden),
+      `classifyRecovery mentions ${forbidden}; only the one admitting verdict may ever be a condition`);
+  }
+  // ...AND THE ADMITTING COMPARISON IS AN EQUALITY AGAINST THE ONE CONSTANT, not an inequality that widens as
+  // the closed set grows. `underlay != UnderlayUnknown` would admit two verdicts the day a fifth is added.
+  assert(!/if underlay != /.test(classify),
+    'the underlay condition is written as an inequality, which admits every verdict but one rather than one');
+});
+
+test('the underlay fingerprint is taken BEFORE the first mount and is never re-taken', () => {
+  const main = read(MAIN_GO);
+  const capture = main.indexOf('fusefs.MountStackAt(cfg.MountPoint)');
+  const firstMount = main.indexOf('mount, err := fusefs.Mount(d, cfg.MountPoint');
+  assert(capture > 0, 'the mount point is no longer fingerprinted at startup');
+  assert(firstMount > 0, 'the first mount could not be located in main');
+  assert(capture < firstMount,
+    'THE FINGERPRINT IS TAKEN AFTER THE FIRST MOUNT, so it would record this daemon\'s own mount as part of '
+    + 'the operator\'s pre-existing underlay — which is the whole property inverted');
+  // The verifier closes over the baseline; nothing in it may refresh the baseline.
+  const verifier = main.slice(main.indexOf('func newUnderlayVerifier'));
+  const verifierBody = verifier.slice(0, verifier.indexOf('\n// planRemountCleanup'));
+  assertEq((verifierBody.match(/MountStackAt/g) ?? []).length, 1,
+    'the underlay verifier reads the mount stack more than once, so it may be refreshing its own baseline — '
+    + 'a verifier that re-measures its baseline agrees with itself for ever');
+  assert(!verifierBody.includes('startupKnown = ') && !verifierBody.includes('startup = '),
+    'the underlay verifier reassigns its own baseline');
+});
+
+test('a fingerprint that disagrees with the startup count is discarded rather than trusted', () => {
+  const main = read(MAIN_GO);
+  assert(/len\(startupStack\) != mountsAtStartup/.test(main),
+    'the two startup measurements are no longer cross-checked, so two reads that disagreed would both be '
+    + 'spent as one measurement neither of them made');
+  assert(/startupStackKnown = false/.test(main),
+    'a disagreement between the two startup measurements no longer discards the fingerprint');
+});
+
+test('the underlay verifier reads the mount table and takes no statfs, so it cannot be made to block', () => {
+  const main = read(MAIN_GO);
+  const verifier = main.slice(main.indexOf('func newUnderlayVerifier'));
+  const body = verifier.slice(0, verifier.indexOf('\n// planRemountCleanup'));
+  for (const blocking of ['ObserveMountpoint', 'ProbeMountpoint', 'Statfs', 'statfs(']) {
+    assert(!body.includes(blocking),
+      `the underlay verifier calls ${blocking}, which reaches the FUSE connection — the verdict is taken on `
+      + 'the recovery loop\'s own tick and on the mount owner\'s path, and neither may park in an '
+      + 'uninterruptible syscall');
+  }
+});
+
+test('the verifier logs the FIELD that changed and never the value', () => {
+  const main = read(MAIN_GO);
+  const verifier = main.slice(main.indexOf('func newUnderlayVerifier'));
+  const body = verifier.slice(0, verifier.indexOf('\n// planRemountCleanup'));
+  assert(body.includes('changedField'), 'the verifier no longer says which evidence failed');
+  // A LOG LINE MAY CARRY THE OPERATOR'S OWN MOUNT POINT AND THE DIGEST, AND NOTHING ELSE. Sources and subtree
+  // roots are paths into the operator's storage and are exactly what this daemon's log may not print.
+  for (const leak of ['.Source', '.Root', '.Device', '%+v', 'current[', 'startup[']) {
+    assert(!body.includes(leak),
+      `the underlay verifier's log line reaches for ${leak}, which puts a mount identity value in the log`);
   }
 });
 
@@ -333,10 +440,19 @@ test('the recovery surface carries no free-text field, and serveError is named a
   const go = read(RECOVERY_GO);
   const snapshot = go.slice(go.indexOf('type RecoverySnapshot struct'), go.indexOf('type recoveryState struct'));
   assert(snapshot.length > 100, 'RecoverySnapshot could not be located');
-  // Six fields, and every one of them is a closed-set code or an int.
+  // EIGHT fields, and every one of them is a closed-set code, an int, or — in exactly one case — a digest.
+  //
+  // IT WAS SIX UNTIL PROJECTION PHASE 7 §8.4, which added `recoveryUnderlay` (a closed-set verdict) and
+  // `recoveryUnderlayDigest` (a truncated sha256 over mountinfo identity fields). THE DIGEST IS THE ONLY FIELD
+  // ON THIS SURFACE THAT IS NOT A CODE OR A NUMBER, and it is admitted for one reason: it lets a gate assert
+  // from OUTSIDE the process that the attachment the daemon proved identical across a recovery really was the
+  // one it fingerprinted before the first mount. It is not reversible, it cannot match a leak-scan needle, and
+  // the assertion below is what keeps it from becoming a place to put a path.
   const fields = snapshot.match(/`json:"[a-zA-Z]+"`/g) ?? [];
-  assertEq(fields.length, 6, 'the recovery snapshot no longer has exactly six published fields');
+  assertEq(fields.length, 8, 'the recovery snapshot no longer has exactly eight published fields');
   assert(!/error|Error|err\b/.test(snapshot), 'the recovery snapshot has acquired an error field');
+  assert(snapshot.includes('`json:"recoveryUnderlay"`') && snapshot.includes('`json:"recoveryUnderlayDigest"`'),
+    'the recovery snapshot no longer publishes the underlay verdict it takes its licence to act from');
   const doc = read(DOC);
   assert(doc.includes('`serveError` remains the one free-text field'),
     'the tranche document no longer names serveError as the one free-text field it does not touch');

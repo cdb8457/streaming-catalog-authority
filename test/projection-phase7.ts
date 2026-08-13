@@ -504,6 +504,187 @@ test('the server ids are the repositorys own three, in the repositorys own order
 });
 
 // ---------------------------------------------------------------------------------------------------------
+// PROJECTION PHASE 7 §8.4 — THE EXPECTED UNDERLAY, PINNED OFFLINE
+//
+// WHAT THESE ADD THAT THE GO TESTS DO NOT. The Go tables drive the shipped DECISION: which verdict admits, what
+// every topology fingerprints to, and that an unreadable mount table authorises nothing. What they cannot say
+// is whether the CONTRACT still says the same thing, whether the GATE asserts it, and whether the safety
+// clauses that make the decision narrow are still in the shipped source at all. That is this block.
+// ---------------------------------------------------------------------------------------------------------
+
+const UNDERLAY_GO = 'projectiond/internal/fusefs/underlay_linux.go';
+const UNDERLAY_GO_TEST = 'projectiond/internal/fusefs/underlay_linux_test.go';
+const RECOVERY_GO_SRC = 'projectiond/internal/daemon/recovery.go';
+const RECOVERY_GO_TEST = 'projectiond/internal/daemon/recovery_test.go';
+const MAIN_GO_SRC = 'projectiond/cmd/projectiond/main.go';
+const REMOUNT_GO_TEST = 'projectiond/cmd/projectiond/remount_linux_test.go';
+
+test('the contract predeclares the classification decision, its four verdicts and its safety clauses', () => {
+  const document = read(CONTRACT);
+  const section = document.slice(document.indexOf('## 8.4 THE CLASSIFICATION DECISION'),
+    document.indexOf('## 9. The regression matrix'));
+  assert(section.length > 2_000, '§8.4 is missing or is too short to be a contract');
+  assert(section.includes('BEFORE THE FIRST RERUN THAT MEASURES IT'),
+    '§8.4 does not say that it was written before the run that measures it, which is the whole discipline');
+  for (const verdict of PROJECTIOND_MOUNT_RECOVERY.UNDERLAY_VERDICTS) {
+    assert(section.includes(`\`${verdict}\``), `§8.4 does not name the verdict ${verdict}`);
+  }
+  // EXACTLY ONE VERDICT MAY BE DESCRIBED AS ADMITTING ANYTHING, and the document has to say which.
+  assert(/\*\*THE ONLY ADMITTING VALUE\.\*\*/.test(section),
+    '§8.4 does not name exactly one admitting verdict');
+  assert(section.includes('recover-mount-underlay'), '§8.4 does not name the code the decision publishes');
+  // The clauses that make it narrow, each of which a later reader could quietly drop.
+  for (const clause of [
+    'IS NOT TRUSTED AND NEITHER IS ANY OTHER TYPE',
+    'EXACTLY ONE ROW OF THE CLASSIFICATION TABLE',
+    'R5 IS UNTOUCHED',
+    'NOTHING IS EVER UNMOUNTED ON THIS PATH',
+    'RE-TAKEN AT THE MOMENT THE BUDGET IS SPENT',
+    'CANNOT BLOCK',
+    'AN UNWIRED VERIFIER REFUSES',
+  ]) {
+    assert(section.includes(clause), `§8.4's safety contract no longer carries the clause "${clause}"`);
+  }
+});
+
+test('the reinstated R1 clause is reinstated WORD FOR WORD, and the history of it being false is kept', () => {
+  const document = read(CONTRACT);
+  // The superseded quotation is still there, still inside a blockquote, still marked as history.
+  assert(/> \*\*HISTORICALLY — SUPERSEDED\.\*\* §3\.1's R1 row/.test(document),
+    'the record no longer keeps the R1 clause it once measured FALSE');
+  // ...AND THE CLAUSE ITSELF IS STILL IN §3.1, UNEDITED. A reinstatement that quietly softened the clause
+  // would be the threshold move this document forbids, wearing a correction's clothes.
+  const arms = document.slice(document.indexOf('### 3.1 The six arms'), document.indexOf('### 3.2'));
+  assert(arms.includes('classifies it as **its own to repair**'),
+    "§3.1's R1 row no longer asks the daemon to classify the fault as its own to repair");
+  assert(arms.includes('spends **exactly one** attempt inside `RECOVERY_ACTION_BUDGET_MS`'),
+    "§3.1's R1 row no longer asks for exactly one attempt inside the action budget");
+  assert(document.includes('REINSTATED, WORD FOR WORD'),
+    '§8.4.4 no longer states that the clause is reinstated rather than rewritten');
+});
+
+test('the gate reads the two new surface fields and asserts them on BOTH sides of the decision', () => {
+  // R1 IS THE ADMITTING SIDE AND R5 IS THE REFUSING ONE. A gate that only ever saw the admitting verdict
+  // would not be able to tell a working distinction from a daemon that had started trusting everything.
+  assert(gate.includes('recoveryUnderlay'), 'the gate does not read the underlay verdict at all');
+  assert(gate.includes('recoveryUnderlayDigest'), 'the gate does not read the underlay fingerprint at all');
+  for (const id of ['P7-R1-underlay-covered-before', 'P7-R1-underlay-fingerprinted',
+    'P7-R1-action-is-the-underlay-row', 'P7-R1-underlay-digest-unchanged', 'P7-R5-underlay-refuses']) {
+    assert(gate.includes(`"${id}"`), `the gate no longer records ${id}`);
+  }
+  // AND THE REFUSING SIDE ASSERTS THE REFUSING VERDICT BY NAME. `underlay-exposed` there would be the
+  // --auto-remount defect reopened, and this is the assertion that would catch it on a real host.
+  const r5 = gate.slice(gate.indexOf('arm_R5()'), gate.indexOf('arm_R6()'));
+  // AND IT COMPARES AGAINST THE REFUSING VERDICT IN THE ASSERTION ITSELF, not merely somewhere in the arm.
+  // The arm now also EXPLAINS in prose why `underlay-exposed` there would be the `--auto-remount` defect
+  // reopened, so a search of the whole arm for that word would find the explanation and prove nothing.
+  assert(/REC_UNDERLAY:-\}" = "underlay-covered"/.test(r5),
+    'R5 does not COMPARE the published verdict against the refusing one, so a widened decision would pass it');
+});
+
+test('R6 injects R1s fault, which is what §3.1 predeclared for it before the first measured run', () => {
+  const r6 = gate.slice(gate.indexOf('arm_R6()'));
+  const body = r6.slice(0, r6.indexOf('\n# ---'));
+  assert(body.includes('umount -l "$WORK/mnt"'),
+    'R6 no longer removes the subject\'s own mount, so its fault is one the drain can repair without a mount '
+    + 'syscall — which is exactly the state §11.4.1 measured RC8 failing on');
+  assert(!body.includes('start_blocker'),
+    'R6 still stacks a second daemon\'s corpse, which the corpse drain now repairs without any mount '
+    + 'succeeding, so the arm asserts a state its own injector cannot produce');
+  assert(body.includes('/dev/null /dev/fuse'), 'R6 no longer masks /dev/fuse, so a mount could succeed');
+  assert(body.includes('P7-R6-fault-took-the-mount'), 'R6 does not assert that its fault landed');
+  assert(body.includes('the daemon exited on the fault'),
+    'R6 does not fail loudly when the serve loop dies, so it could report a budget nobody spent');
+});
+
+test('Phase 6s RC8 injector is repaired the same way, and its assertions are untouched', () => {
+  const recoveryGate = read('deploy/projection-recovery-gate.sh');
+  const rc8 = recoveryGate.slice(recoveryGate.indexOf('step "RC8, RC9 and RC11'));
+  assert(rc8.includes('umount -l "$WORK/mnt"'), 'RC8 no longer removes the subject\'s own mount');
+  assert(rc8.includes('rc8-holder.pid'),
+    'RC8 does not hold a descriptor inside the mount, so the lazy detach would abort the connection and the '
+    + 'serve supervisor would own the fault instead of the recovery loop');
+  assert(rc8.includes('the daemon exited on the fault'),
+    'RC8 does not fail loudly when the serve loop dies');
+  // THE ASSERTIONS. Every one of these is Phase 6's own and none of them may be weakened by the repair.
+  assert(rc8.includes('$RC8_MIN_GAP" -ge "$RC_RECOVERY_COOLDOWN_MS'),
+    'RC8 no longer compares the closest pair of attempt starts against the whole cooldown');
+  assert(rc8.includes('RC8_ATTEMPTS" = "$RC_RECOVERY_MAX_ATTEMPTS'),
+    'RC8 no longer requires exactly the whole budget to be spent');
+  assert(rc8.includes('RC8_CORROBORATED'), 'RC8 no longer corroborates the ledger against Docker\'s own clock');
+  assert(rc8.includes('$RC9_REMEDIATION" = "$RC_REMEDIATION_RESET_RECOVERY_LEDGER'),
+    'RC9 no longer requires the lockout to name the reset as its remediation');
+  assert(rc8.includes('RC11_AFTER_RESET'), 'RC11 no longer measures the state after the operator reset');
+});
+
+test('the underlay decision is shipped, table-driven, and its refusing branches are EXECUTED', () => {
+  const source = read(UNDERLAY_GO);
+  const table = read(UNDERLAY_GO_TEST);
+  // The seam that makes the unreadable-mount-table branch reachable from a test at all.
+  assert(source.includes('func mountStackAtFrom(path, mountInfoPath string)'),
+    'the mount-table read has no seam, so the fail-closed branch cannot be executed by any test');
+  assert(table.includes('mountStackAtFrom('), 'the Go table does not drive the seam');
+  // Every topology this tranche's arms produce has a row, by the name the case is given.
+  for (const topology of [
+    'the projectiond mount is gone and the operator\'s own bind is exposed',
+    'our own live mount is on top of it, which is the healthy steady state',
+    'a tmpfs is stacked above the live mount',
+    'a second daemon\'s corpse is above our live mount',
+    'our own corpse is the only thing above the bind',
+    'the operator detached and reattached their own share',
+    'the bind\'s propagation relationship changed',
+    'the same two rows in the other order',
+  ]) {
+    assert(table.includes(topology), `the Go table has no row for: ${topology}`);
+  }
+  assert(table.includes('TestAnUnreadableMountTableAuthorisesNothing'),
+    'the unreadable-mount-table branch has no test, so the one branch nothing has run is the safety one');
+  // AND THE FINGERPRINT COVERS THE FIELDS THE CONTRACT NAMES. A field dropped from the identity is a
+  // distinction silently stopped being made.
+  for (const field of ['MountID', 'ParentID', 'Device', 'Root', 'MountPoint', 'Propagation', 'FsType',
+    'Source']) {
+    assert(new RegExp(`${field}\\s`).test(source), `the mount identity no longer carries ${field}`);
+  }
+});
+
+test('the licence to act is contained: one row, one verdict, and a table that proves it', () => {
+  const recovery = read(RECOVERY_GO_SRC);
+  const table = read(RECOVERY_GO_TEST);
+  assert(recovery.includes('func classifyRecovery(readyReason, observed, underlay string)'),
+    'classifyRecovery no longer takes the underlay verdict');
+  const classify = recovery.slice(recovery.indexOf('func classifyRecovery'),
+    recovery.indexOf('func decideRecovery'));
+  assertEq((classify.match(/\bunderlay ==/g) ?? []).length, 1,
+    'the underlay verdict is compared in more than one place in the classification');
+  assertEq((classify.match(/\bunderlay !=/g) ?? []).length, 0,
+    'the underlay verdict is compared with an inequality, which admits every value but one rather than one');
+  assert(table.includes('TestTheUnderlayVerdictIsReadOnlyOnTheForeignRow'),
+    'nothing drives every readiness reason and every observation against every verdict, so "we only read it '
+    + 'in one place" is an argument about the code rather than a measurement of it');
+  assert(table.includes('TestAnUnwiredUnderlayVerifierRefuses'),
+    'the unwired-verifier branch has no test');
+  assert(table.includes('TestAVerdictOutsideTheClosedSetIsNotAVerdict'),
+    'the guard against a verdict from outside the closed set has no test');
+});
+
+test('the layer residual fix is a named decision with a table, not five conditions inside an if', () => {
+  const main = read(MAIN_GO_SRC);
+  const table = read(REMOUNT_GO_TEST);
+  assert(main.includes('func drainAloneRepairedIt('),
+    'the drain-alone repair is not a named function, so no table can drive the shipped decision');
+  assert(table.includes('TestTheDrainAloneRepairIsRefusedUnlessAllFiveConditionsHold'),
+    'the drain-alone repair has no table');
+  assert(table.includes('TestTheDrainAloneRepairIsOnlyReachedAfterADrain'),
+    'nothing pins WHERE the drain-alone repair is called from, which no pure function can say about itself');
+  // AND THE THRESHOLD IT IS MEASURED AGAINST DID NOT MOVE.
+  assertEq(THE_LAYER_FLOOR_IS_A_FLOOR_THE_PRODUCT_PROMISES, true,
+    'the product no longer promises never to detach the anchor, so counting layers above it counts nothing');
+  const document = read(CONTRACT);
+  assert(document.includes('The threshold is unchanged and it is still expected'),
+    '§8.5 no longer states that the predeclared layer threshold did not move');
+});
+
+// ---------------------------------------------------------------------------------------------------------
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failures.length > 0) {
   for (const [name, error] of failures) {

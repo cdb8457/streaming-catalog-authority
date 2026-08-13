@@ -234,29 +234,140 @@ func TestClassificationIsExhaustiveOnEveryReadinessReason(t *testing.T) {
 	cases := []struct {
 		reason     string
 		observed   string
+		underlay   string
 		class      string
 		actionable bool
 		refusal    bool
 	}{
-		{ReadyReasonOK, MountStateLive, RecoveryNoActionHealthy, false, false},
-		{ReadyReasonMountRecovering, MountStateLive, RecoveryNoActionConfirming, false, false},
-		{ReadyReasonNoGeneration, MountStateUnchecked, RecoveryNoActionNothingToServe, false, false},
-		{ReadyReasonNotMounted, MountStateUnchecked, RecoveryNoActionNotMounted, false, false},
-		{ReadyReasonServeLoopDead, MountStateLive, RecoveryNoActionServeOwns, false, false},
-		{ReadyReasonMountNotLive, "stale-projectiond", RecoverActStaleMount, true, false},
-		{ReadyReasonMountNotLive, "empty", RecoverActMountEmpty, true, false},
-		{ReadyReasonMountNotLive, "foreign", RecoveryRefuseForeignMount, false, true},
-		{ReadyReasonMountNotLive, "something-new", RecoveryRefuseUnknownState, false, true},
-		{ReadyReasonObservationStale, MountStateLive, RecoverActObservationStale, true, false},
-		{ReadyReasonObservationUnavailable, MountStateTimeout, RecoverActObservationUnavailable, true, false},
-		{"a-reason-nobody-has-written-yet", MountStateLive, RecoveryRefuseUnknownState, false, true},
+		{ReadyReasonOK, MountStateLive, UnderlayCovered, RecoveryNoActionHealthy, false, false},
+		{ReadyReasonMountRecovering, MountStateLive, UnderlayCovered, RecoveryNoActionConfirming, false, false},
+		{ReadyReasonNoGeneration, MountStateUnchecked, UnderlayCovered, RecoveryNoActionNothingToServe, false, false},
+		{ReadyReasonNotMounted, MountStateUnchecked, UnderlayExposed, RecoveryNoActionNotMounted, false, false},
+		{ReadyReasonServeLoopDead, MountStateLive, UnderlayExposed, RecoveryNoActionServeOwns, false, false},
+		{ReadyReasonMountNotLive, "stale-projectiond", UnderlayCovered, RecoverActStaleMount, true, false},
+		{ReadyReasonMountNotLive, "empty", UnderlayExposed, RecoverActMountEmpty, true, false},
+		{ReadyReasonMountNotLive, "foreign", UnderlayCovered, RecoveryRefuseForeignMount, false, true},
+		{ReadyReasonMountNotLive, "foreign", UnderlayChanged, RecoveryRefuseForeignMount, false, true},
+		{ReadyReasonMountNotLive, "foreign", UnderlayUnknown, RecoveryRefuseForeignMount, false, true},
+		{ReadyReasonMountNotLive, "foreign", UnderlayExposed, RecoverActMountUnderlay, true, false},
+		{ReadyReasonMountNotLive, "something-new", UnderlayExposed, RecoveryRefuseUnknownState, false, true},
+		{ReadyReasonObservationStale, MountStateLive, UnderlayCovered, RecoverActObservationStale, true, false},
+		{ReadyReasonObservationUnavailable, MountStateTimeout, UnderlayCovered,
+			RecoverActObservationUnavailable, true, false},
+		{"a-reason-nobody-has-written-yet", MountStateLive, UnderlayExposed, RecoveryRefuseUnknownState, false, true},
 	}
 	for _, testCase := range cases {
-		class, actionable, refusal := classifyRecovery(testCase.reason, testCase.observed)
+		class, actionable, refusal := classifyRecovery(testCase.reason, testCase.observed, testCase.underlay)
 		if class != testCase.class || actionable != testCase.actionable || refusal != testCase.refusal {
-			t.Fatalf("%s/%s: want (%s,%v,%v), got (%s,%v,%v)", testCase.reason, testCase.observed,
-				testCase.class, testCase.actionable, testCase.refusal, class, actionable, refusal)
+			t.Fatalf("%s/%s/%s: want (%s,%v,%v), got (%s,%v,%v)", testCase.reason, testCase.observed,
+				testCase.underlay, testCase.class, testCase.actionable, testCase.refusal,
+				class, actionable, refusal)
 		}
+	}
+}
+
+// TestTheUnderlayVerdictIsREADONLYONTHEFOREIGNROW is Phase 7 §8.4's containment, asserted rather than
+// described. The new argument is a licence to act, so the thing that has to be proved is not that it works —
+// the row above proves that — but that it CANNOT REACH ANY OTHER ROW. Every readiness reason and every
+// observation is driven against all four verdicts, and only the foreign row is allowed to move.
+//
+// WITHOUT THIS THE ARGUMENT WOULD BE "we only read it in one place, look at the code". That is the same
+// argument every widened condition in this repository's history was shipped on.
+func TestTheUnderlayVerdictIsReadOnlyOnTheForeignRow(t *testing.T) {
+	reasons := []string{
+		ReadyReasonOK, ReadyReasonMountRecovering, ReadyReasonNoGeneration, ReadyReasonNotMounted,
+		ReadyReasonServeLoopDead, ReadyReasonMountNotLive, ReadyReasonObservationStale,
+		ReadyReasonObservationUnavailable, "a-reason-nobody-has-written-yet",
+	}
+	observations := []string{MountStateLive, MountStateTimeout, MountStateUnchecked,
+		"stale-projectiond", "empty", "foreign", "something-new"}
+	verdicts := []string{UnderlayExposed, UnderlayCovered, UnderlayChanged, UnderlayUnknown, "a-verdict-from-nowhere"}
+	for _, reason := range reasons {
+		for _, observed := range observations {
+			baseClass, baseActionable, baseRefusal := classifyRecovery(reason, observed, UnderlayUnknown)
+			for _, verdict := range verdicts {
+				class, actionable, refusal := classifyRecovery(reason, observed, verdict)
+				foreignRow := reason == ReadyReasonMountNotLive && observed == "foreign"
+				if foreignRow {
+					// THE FOREIGN ROW IS ASSERTED ABSOLUTELY AND NOT AGAINST A BASELINE, and a tamper is why.
+					// Widening the condition to `underlay != ""` moved the BASELINE too — every verdict admitted,
+					// including the one this loop was using as its reference — so an invariance check alone
+					// passed a change that had made every foreign mount actionable. Both halves are now stated as
+					// what they must be rather than as what they must equal.
+					if verdict == UnderlayExposed {
+						if class != RecoverActMountUnderlay || !actionable || refusal {
+							t.Fatalf("the foreign row with a PROVED underlay is not actionable: (%s,%v,%v)",
+								class, actionable, refusal)
+						}
+					} else if class != RecoveryRefuseForeignMount || actionable || !refusal {
+						t.Fatalf("the foreign row with verdict %s is not a refusal: (%s,%v,%v)",
+							verdict, class, actionable, refusal)
+					}
+					continue
+				}
+				if class != baseClass || actionable != baseActionable || refusal != baseRefusal {
+					t.Fatalf("%s/%s moved when the underlay verdict became %s: (%s,%v,%v) not (%s,%v,%v)",
+						reason, observed, verdict, class, actionable, refusal,
+						baseClass, baseActionable, baseRefusal)
+				}
+			}
+		}
+	}
+}
+
+// TestAnUnwiredUnderlayVerifierRefuses is the fail-closed branch, EXECUTED. A daemon whose verifier was never
+// wired — an older `main`, a test, a future caller who forgot — must answer the verdict that refuses, not the
+// one that admits, and it must not answer the empty string either: the status surface publishes this.
+func TestAnUnwiredUnderlayVerifierRefuses(t *testing.T) {
+	d := &Daemon{}
+	verdict, digest := d.underlayEvidence()
+	if verdict != UnderlayUnknown {
+		t.Fatalf("an unwired verifier answered %q, not %q", verdict, UnderlayUnknown)
+	}
+	if digest != "" {
+		t.Fatalf("an unwired verifier produced a digest %q out of nothing", digest)
+	}
+	class, actionable, refusal := classifyRecovery(ReadyReasonMountNotLive, "foreign", verdict)
+	if class != RecoveryRefuseForeignMount || actionable || refusal != true {
+		t.Fatalf("an unwired verifier admitted a foreign mount: (%s,%v,%v)", class, actionable, refusal)
+	}
+}
+
+// TestAVerdictOutsideTheClosedSetIsNotAVerdict drives the guard in `underlayEvidence` that exists precisely
+// because nothing can currently reach it.
+func TestAVerdictOutsideTheClosedSetIsNotAVerdict(t *testing.T) {
+	for _, answer := range []string{"", "underlay", "expected", "underlay-exposed-ish", "UNDERLAY-EXPOSED"} {
+		d := &Daemon{}
+		d.SetUnderlayVerifier(func() (string, string) { return answer, "abcdef123456" })
+		verdict, digest := d.underlayEvidence()
+		if verdict != UnderlayUnknown {
+			t.Fatalf("the verifier answered %q and the daemon published %q", answer, verdict)
+		}
+		// THE DIGEST SURVIVES AND THE VERDICT DOES NOT, deliberately: the digest is evidence for a human and
+		// authorises nothing, so throwing it away would remove the only clue about what went wrong.
+		if digest != "abcdef123456" {
+			t.Fatalf("the digest was discarded: %q", digest)
+		}
+	}
+	for _, answer := range []string{UnderlayExposed, UnderlayCovered, UnderlayChanged, UnderlayUnknown} {
+		d := &Daemon{}
+		d.SetUnderlayVerifier(func() (string, string) { return answer, "" })
+		if verdict, _ := d.underlayEvidence(); verdict != answer {
+			t.Fatalf("the closed-set verdict %q was rewritten to %q", answer, verdict)
+		}
+	}
+}
+
+// TestTheStatusSurfaceNeverPublishesABlankUnderlayVerdict — a surface field that is sometimes absent is a
+// field every consumer has to guess about, and the guess that matters here is the unsafe one.
+func TestTheStatusSurfaceNeverPublishesABlankUnderlayVerdict(t *testing.T) {
+	d := &Daemon{}
+	if got := d.RecoveryStatus().Underlay; got != UnderlayUnknown {
+		t.Fatalf("a daemon that has taken no decision publishes %q", got)
+	}
+	d.EnableRecovery(false)
+	if got := d.RecoveryStatus().Underlay; got != UnderlayUnknown {
+		t.Fatalf("a disabled daemon publishes %q", got)
 	}
 }
 
@@ -273,9 +384,11 @@ func TestNoActionableClassIsEverAlsoARefusal(t *testing.T) {
 		"stale-projectiond", "empty", "foreign"}
 	for _, reason := range reasons {
 		for _, observed := range observations {
-			_, actionable, refusal := classifyRecovery(reason, observed)
-			if actionable && refusal {
-				t.Fatalf("%s/%s is both actionable and a refusal", reason, observed)
+			for _, underlay := range []string{UnderlayExposed, UnderlayCovered, UnderlayChanged, UnderlayUnknown} {
+				_, actionable, refusal := classifyRecovery(reason, observed, underlay)
+				if actionable && refusal {
+					t.Fatalf("%s/%s/%s is both actionable and a refusal", reason, observed, underlay)
+				}
 			}
 		}
 	}

@@ -847,63 +847,74 @@ else
   RC8_ATTEMPT_STAMPS=""
   RC8_LAST_ATTEMPTS="$REC_ATTEMPTS"
 
-  # THE FAULT IS A CORPSE OF SOMEBODY ELSE'S MAKING, AND IT MUST NOT BE THE SUBJECT'S OWN DEATH.
+  # THE FAULT IS THE SUBJECT'S OWN MOUNT BEING REMOVED FROM UNDERNEATH IT, AND THE INJECTOR CHANGED BECAUSE THE
+  # PRODUCT GOT BETTER. THE ASSERTIONS BELOW ARE UNTOUCHED.
   #
-  # Aborting the SUBJECT's connection here would kill its serve loop, and with `/dev/fuse` masked the
-  # SERVE supervisor's own three remounts would all fail and the process would exit — leaving nothing alive
-  # to measure a recovery budget on. So the fault is produced exactly as RC4 produces it: a second projectiond
-  # is stacked above and ITS connection is torn down, which the subject observes as `stale-projectiond` while
-  # its own serve loop never notices. That is the fault the recovery loop exists for, and it is the only one
-  # that leaves a living daemon to spend a budget.
-  # THE BASELINE IS TAKEN BEFORE THE BLOCKER STARTS, WHICH IS THE ONLY ORDER THAT IS NOT A RACE. Reading it
-  # afterwards means a blocker that mounted quickly is already counted, and "it never landed" is then a
-  # statement about how fast the container started.
+  # WHAT IT WAS. A second projectiond was stacked above the subject and ITS connection was torn down — RC4's own
+  # fault — on the premise this tranche's §4 states and which was true when it was written: that the mount
+  # syscall is the ONLY thing that can repair such a fault, so a mount that cannot succeed drives the budget to
+  # exhaustion and locks out. The subject's own death was deliberately avoided, because with `/dev/fuse` masked
+  # the SERVE supervisor's three remounts would all fail and the process would exit with nothing left to measure.
+  #
+  # WHY THAT PREMISE IS GONE. Projection Phase 7 §8.1 made the corpse drain REACHABLE inside a container — Phase
+  # 6 §9.7 named it as next work — so the drain now removes the corpse, readiness confirms the mount point, and
+  # the budget is refunded WITHOUT ANY MOUNT SYSCALL SUCCEEDING. Phase 7 §11.4.1 measured this arm failing with
+  # `no-action-healthy` on all three runs of the three-runner: a gate asserting a state its own injector could no
+  # longer produce. Loosening the assertion to accept the new behaviour would be editing a closed tranche's
+  # claim to fit a result, so the assertion stands and the injector is what is repaired.
+  #
+  # WHAT REPLACES IT IS THE ONLY FAULT ON THIS APPLIANCE WHOSE REPAIR GENUINELY REQUIRES A MOUNT. With the
+  # subject's own mount lazily detached, the mount point holds exactly the operator's bind: there is no corpse to
+  # drain, nothing of ours to unmount, and `Mount()` is the whole of the repair — which the mask refuses every
+  # time. Phase 7 §8.4 is what makes the state actionable at all; before it the supervisor refused this fault as
+  # foreign, which is the defect that tranche exists to fix.
+  #
+  # AND THE SERVE LOOP HAS TO SURVIVE THE DETACH, WHICH IS ARRANGED RATHER THAN HOPED FOR. `umount -l` removes
+  # the mount from the namespace and the FUSE superblock lives on for as long as anything still references it, so
+  # the pre-attached consumer is asked to hold an OPEN DESCRIPTOR on a file inside the mount first. That is
+  # exactly what the three media servers do by accident in the Phase 7 topology, where this fault was measured
+  # twice leaving the daemon `Up` throughout. If the connection went down anyway the serve supervisor would own
+  # the fault instead, and the arm says so rather than reporting a budget nobody spent.
   RC8_MOUNTS_BEFORE="$(daemon_mounts)"
   RC8_TOP_BEFORE="$(daemon_top | awk '{print $1}')"
-  echo "  before the blocker: $RC8_MOUNTS_BEFORE of ours at the mount point, top id $RC8_TOP_BEFORE"
+  echo "  before the fault: $RC8_MOUNTS_BEFORE of ours at the mount point, top id $RC8_TOP_BEFORE"
+  test "$RC8_MOUNTS_BEFORE" -ge 1 || die "RC8: there is no mount of ours to remove, so the fault cannot land"
 
-  docker run -d --name "$BLOCKER_CONTAINER" \
-    --network "$NETWORK" --user 0:0 \
-    --cap-drop ALL --cap-add SYS_ADMIN --security-opt apparmor:unconfined \
-    --device /dev/fuse:/dev/fuse \
-    -v "$WORK/manifest:/var/lib/projectiond/manifest:ro" \
-    -v "$WORK/media:/var/lib/projectiond/media:ro" \
-    -v "$WORK/blocker-cache:/var/lib/projectiond/cache" \
-    -v "$WORK/blocker-config.json:/etc/projectiond/config.json:ro" \
-    -v "$WORK/mnt:/mnt/projection:rshared" \
-    "$IMAGE" --config /etc/projectiond/config.json --poll 60s >/dev/null
-
-  # BOTH GUARDS, THE SAME TWO RC4 USES: the count of ours goes up AND the top of the chain is a different
-  # mount id. Either alone can be satisfied by something that is not the blocker landing.
-  RC8_LANDED=0
+  # THE HOLDER. `exec 9<` opens and keeps open; the shell then sleeps, so the descriptor outlives this command.
+  # It runs as the consumer's own uid through the consumer's own bind, and it is removed at the end of the arm.
+  # IT RECORDS ITS OWN PID SO THE ARM CAN END IT BY NUMBER. A pattern-matching kill would match the killer's own
+  # command line — the trap that has cost this repository real time on this very host — and leaving the holder
+  # running would leave a reference to a dead mount for RC11's cleanup to trip over.
+  docker exec -d -u 1000:1000 "$VERIFIER_CONTAINER" \
+    sh -c "exec 9< '/media/projection/$ENTRY_PATH'; echo \$\$ > /tmp/rc8-holder.pid; sleep 900" \
+    || die "RC8: the consumer could not hold a descriptor inside the mount, so the detach would abort it"
   n=0
-  while [ "$n" -lt 120 ]; do
-    if [ "$(daemon_mounts)" -gt "$RC8_MOUNTS_BEFORE" ] \
-       && [ "$(daemon_top | awk '{print $1}')" != "$RC8_TOP_BEFORE" ]; then
-      RC8_LANDED=1; break
+  RC8_HELD=0
+  while [ "$n" -lt 20 ]; do
+    if docker exec -u 1000:1000 "$VERIFIER_CONTAINER" sh -c 'test -s /tmp/rc8-holder.pid' 2>/dev/null; then
+      RC8_HELD=1; break
     fi
     n=$((n + 1)); sleep 0.5
   done
-  if [ "$RC8_LANDED" -ne 1 ]; then
-    # THE EVIDENCE A DIAGNOSIS NEEDS, PRINTED WHERE THE FAILURE IS. Counts, mount ids and the blocker's own
-    # closed-set log lines — no path beyond this run's own directory and nothing a provider ever said.
-    echo "  after waiting: $(daemon_mounts) of ours, top $(daemon_top)" >&2
-    docker logs "$BLOCKER_CONTAINER" 2>&1 | tail -10 | sed 's/^/  blocker: /' >&2 || true
-    docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}}' "$BLOCKER_CONTAINER" 2>/dev/null \
-      | sed 's/^/  blocker container: /' >&2 || true
-    die "RC8: the second mount never landed above this run's own mount"
-  fi
+  test "$RC8_HELD" -eq 1 \
+    || die "RC8: the consumer's descriptor holder never started, so the detach would abort the connection"
 
-  RC8_TOP="$(daemon_top | awk '{print $2}')"
-  test "$RC8_TOP" = "fuse.projectiond" || die "RC8: the top of the stack is '$RC8_TOP', not ours"
-  set +e
-  RC8_ABORT="$(bash "$WORK/out/fuse-abort.sh" "$WORK/mnt" 2>&1)"
-  set -e
-  case "$(echo "$RC8_ABORT" | tail -1)" in
-    abort:done*) : ;;
-    *) die "RC8: the fault could not be injected ($(echo "$RC8_ABORT" | tail -1))" ;;
-  esac
-  docker rm -f "$BLOCKER_CONTAINER" >/dev/null 2>&1 || true
+  RC8_LANDED=0
+  umount -l "$WORK/mnt" 2>/dev/null || true
+  n=0
+  while [ "$n" -lt 120 ]; do
+    if [ "$(daemon_mounts)" -lt "$RC8_MOUNTS_BEFORE" ]; then RC8_LANDED=1; break; fi
+    n=$((n + 1)); sleep 0.5
+  done
+  if [ "$RC8_LANDED" -ne 1 ]; then
+    echo "  after waiting: $(daemon_mounts) of ours, top $(daemon_top)" >&2
+    die "RC8: the subject's own mount is still at the mount point, so the fault never landed"
+  fi
+  if ! docker inspect -f '{{.State.Running}}' "$DAEMON_CONTAINER" 2>/dev/null | grep -q true; then
+    docker logs "$DAEMON_CONTAINER" 2>&1 | tail -20 | sed 's/^/  daemon: /' >&2 || true
+    die "RC8: the daemon exited on the fault, so no recovery budget could be measured"
+  fi
+  echo "  the subject's own mount is gone, the process is alive, and every Mount() in its namespace is refused"
 
   # THE BUDGET IS DRIVEN TO EXHAUSTION. The COUNT is read from the status surface; the SPACING is not.
   #
@@ -1044,6 +1055,11 @@ else
   # respect except its inherited ledger — a daemon that came back locked out because it was still broken
   # would prove nothing about persistence.
   nsenter -t "$DAEMON_PID" -m -- /busybox umount /dev/fuse >/dev/null 2>&1 || true
+  # THE DESCRIPTOR HOLDER GOES FIRST, BY PID. It exists only to keep the FUSE connection alive across the lazy
+  # detach; leaving it would leave a reference to a mount this arm is about to clear.
+  docker exec -u 1000:1000 "$VERIFIER_CONTAINER" \
+    sh -c 'kill "$(cat /tmp/rc8-holder.pid 2>/dev/null)" 2>/dev/null; rm -f /tmp/rc8-holder.pid' \
+    >/dev/null 2>&1 || true
   docker rm -f "$DAEMON_CONTAINER" >/dev/null 2>&1 || true
 
   # THE DEAD LAYERS THIS ARM PRODUCED HAVE TO GO BEFORE ANYTHING CAN BIND THE PATH AGAIN, AND FINDING THAT OUT

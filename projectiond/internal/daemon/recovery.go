@@ -99,8 +99,15 @@ const (
 	RecoveryRefuseForeignMount = "refuse-foreign-mount"
 	RecoveryRefuseUnknownState = "refuse-unknown-state"
 
-	RecoverActStaleMount             = "recover-stale-mount"
-	RecoverActMountEmpty             = "recover-mount-empty"
+	RecoverActStaleMount = "recover-stale-mount"
+	RecoverActMountEmpty = "recover-mount-empty"
+	// RecoverActMountUnderlay is PHASE 7'S ONE ADDITIVE CODE, and it is additive rather than a reuse of
+	// `recover-mount-empty` because the two are not the same observation and an operator must not be told they
+	// are. `recover-mount-empty` means the mount point had NOTHING on it. This one means the mount point has
+	// exactly what the operator attached before this daemon first mounted, and nothing else — the projectiond
+	// mount above it is gone. The ACTION is identical (mount, over the same bind, in the same order as
+	// startup); the FAULT is a different one and the surface names the fault.
+	RecoverActMountUnderlay          = "recover-mount-underlay"
 	RecoverActObservationStale       = "recover-observation-stale"
 	RecoverActObservationUnavailable = "recover-observation-unavailable"
 
@@ -131,6 +138,34 @@ const (
 	RecoveryRemediationInspectOwner = "inspect-mount-owner"
 	RecoveryRemediationResetLedger  = "reset-recovery-ledger"
 	RecoveryRemediationCheckCache   = "check-cache-directory"
+)
+
+// The closed set of UNDERLAY VERDICTS — Phase 7 §8.4 — and it is three values of which exactly ONE admits an
+// action. The verdict answers one question and only one: is the mount point, right now, in exactly the state
+// that was fingerprinted BEFORE this process mounted anything?
+//
+// THEY LIVE IN THIS PACKAGE AND ARE COMPUTED IN `fusefs` BECAUSE THAT IS THE ONLY DIRECTION THE IMPORTS ALLOW,
+// and it also puts the closed set where every other closed set this daemon publishes lives — beside the
+// decision codes, under the same rule, checked by the same pin in both directions.
+const (
+	// UnderlayUnknown is "this could not be proved": the mount table could not be read, at startup or now, or
+	// the startup measurement disagreed with itself. It refuses, which is the whole of failing closed here.
+	UnderlayUnknown = "underlay-unknown"
+	// UnderlayExposed IS THE ONE ADMITTING VERDICT: the mount point holds exactly the rows that were
+	// fingerprinted before this process mounted anything, in the same order, each the same attachment — and
+	// nothing above them. The predeclared underlay is EXPOSED because the projectiond mount that was covering
+	// it is gone, which is precisely the state an external `umount` leaves behind.
+	UnderlayExposed = "underlay-exposed"
+	// UnderlayCovered is the NORMAL, HEALTHY, OVERWHELMINGLY COMMON answer, and it refuses. The predeclared
+	// rows are all still there and unchanged, and something is mounted above them — this daemon's own live
+	// mount, every second that it is serving. It is also what a stacked tmpfs, a foreign overlay and a second
+	// daemon's corpse produce, and none of those is separable from the healthy case by this question, which is
+	// exactly why this verdict authorises nothing.
+	UnderlayCovered = "underlay-covered"
+	// UnderlayChanged is "the predeclared rows themselves are not what they were": one was removed from
+	// beneath us, or one is a different attachment — a re-mounted bind gets a new mount id, so an operator who
+	// detached and reattached their own share lands here and is refused.
+	UnderlayChanged = "underlay-changed"
 )
 
 // The closed set of attempt outcomes published beside the state.
@@ -167,7 +202,8 @@ type RecoveryLedger struct {
 	LastOutcome string `json:"lastOutcome,omitempty"`
 }
 
-// RecoverySnapshot is what the status surface publishes. Every field is a closed-set code or a number.
+// RecoverySnapshot is what the status surface publishes. Every field is a closed-set code, a number, or —
+// in exactly one case — a short digest that is not reversible into anything.
 type RecoverySnapshot struct {
 	State       string `json:"recoveryState"`
 	Reason      string `json:"recoveryReason"`
@@ -175,6 +211,17 @@ type RecoverySnapshot struct {
 	Generation  int    `json:"recoveryGeneration"`
 	LastOutcome string `json:"recoveryLastOutcome"`
 	Remediation string `json:"recoveryRemediation"`
+	// Underlay is the closed-set verdict on the mount point's pre-mount state, from the last decision.
+	//
+	// IT IS PUBLISHED BECAUSE A REFUSAL THAT DOES NOT SAY WHAT IT COULD NOT PROVE SENDS PEOPLE TO THE LOGS.
+	// `refuse-foreign-mount` beside `underlay-mismatch` tells an operator that something is stacked on their
+	// mount point; the same refusal beside `underlay-unknown` tells them the daemon could not read the mount
+	// table at all, which is a completely different afternoon.
+	Underlay string `json:"recoveryUnderlay"`
+	// UnderlayDigest fingerprints the attachment the verdict was taken against, or is empty when there was
+	// none. A gate can assert from outside the process that the thing the daemon proved identical across a
+	// recovery really was identical; a sha256 prefix carries no path back out.
+	UnderlayDigest string `json:"recoveryUnderlayDigest"`
 }
 
 // recoveryState is the daemon's live recovery bookkeeping. It is guarded by its own mutex rather than folded
@@ -205,6 +252,10 @@ type recoveryState struct {
 	reason      string
 	state       string
 	remediation string
+	// underlay and underlayDigest are the evidence the last decision was taken against, stored here for the
+	// same reason and published from here for the same reason.
+	underlay       string
+	underlayDigest string
 }
 
 // recoveryInputs is everything the decision reads, gathered ONCE, for the same reason `readinessInputs` is:
@@ -262,7 +313,12 @@ func (r recoveryDecision) IsRefusal() bool { return r.refusal }
 // Every code below that is actionable is a code readiness is being WITHHELD for: inside the fault hold, and
 // inside the bootstrap grace, Phase 5's policy publishes `ok`. So "never act on a fault readiness did not
 // already believe" is not a check this file performs — it is a property of reading this field.
-func classifyRecovery(readyReason, observed string) (class string, actionable bool, refusal bool) {
+// THE THIRD ARGUMENT IS PHASE 7'S WHOLE CHANGE AND IT IS READ ON EXACTLY ONE ROW. `underlay` is the closed-set
+// verdict from `fusefs.CompareUnderlay` — whether the mount point is, right now, in exactly the state it was
+// measured in BEFORE this process mounted anything. It is consulted only inside `mount-observed-not-live` +
+// `foreign`, and there it can only ever turn a refusal into an action; no other row reads it, and no value of
+// it can turn an action into a refusal or a refusal into a different refusal.
+func classifyRecovery(readyReason, observed, underlay string) (class string, actionable bool, refusal bool) {
 	switch readyReason {
 	case ReadyReasonOK:
 		return RecoveryNoActionHealthy, false, false
@@ -294,6 +350,26 @@ func classifyRecovery(readyReason, observed string) (class string, actionable bo
 			// bind — the one mount that must survive for any recovery to be visible to anybody. Unmounting it
 			// is the exact defect `--auto-remount` shipped once already. A supervisor that cannot tell those
 			// apart does nothing, and says which.
+			//
+			// AND THERE IS EXACTLY ONE FOREIGN MOUNT IT CAN TELL APART, WHICH IS PHASE 7 §8.4. If the mount
+			// point is in EXACTLY the state that was fingerprinted before this process mounted anything — the
+			// same rows, in the same order, each the same attachment by mount id, parent, device, subtree
+			// root, source, type and propagation — then nothing of ours is there, nothing has been stacked on
+			// us, nothing has been swapped underneath us, and the projectiond mount that used to be on top is
+			// simply GONE. That is the state an external `umount` leaves, it is the single most likely
+			// operator-side accident on this appliance, and the repair is not a new capability: it is the
+			// startup path, mounting over the operator's own bind exactly as this daemon does every time it
+			// starts.
+			//
+			// NOTHING HERE MAKES A FILE-SYSTEM TYPE TRUSTED. `fuse.shfs` is not admitted, `tmpfs` is not
+			// refused: the type is not consulted at all. What is consulted is whether the mount point is the
+			// exact attachment measured at startup with NOTHING on top of it, and a tmpfs stacked above a live
+			// mount answers `underlay-covered` on the row count before any identity is compared. All three
+			// refusing verdicts land on the line below, unchanged, which is Phase 6's own rule doing its own
+			// job on every case but the one narrow state that is provably the startup state.
+			if underlay == UnderlayExposed {
+				return RecoverActMountUnderlay, true, false
+			}
 			return RecoveryRefuseForeignMount, false, true
 		default:
 			return RecoveryRefuseUnknownState, false, true
@@ -376,6 +452,39 @@ func decideRecovery(in recoveryInputs) recoveryDecision {
 	//    "recovering". An operator reading `recover-observation-stale` knows which failure they had.
 	return recoveryDecision{act: true, code: in.class, state: RecoveryStateActing,
 		remediation: RecoveryRemediationNone}
+}
+
+// SetUnderlayVerifier wires the thing that answers whether the mount point is in exactly its pre-mount state,
+// and the digest of the attachment it compared against. Wiring is optional and its ABSENCE IS A REFUSAL: an
+// unwired daemon answers `underlay-unknown` for ever, which is the state a supervisor may not act in.
+//
+// IT IS INJECTED FOR THE SAME REASON `SetMountObserver` IS — the mount table reader is linux-only and this
+// package is not — and it is a SECOND function rather than a second return value on the observer because the
+// two answers are not alike. The observation costs a `statfs`, which is uninterruptible and can park for as
+// long as a wedged connection stays wedged, and that is the whole reason it is sampled on its own cadence and
+// read from a store. This one reads `/proc/self/mountinfo` and nothing else: procfs cannot be blocked by a
+// FUSE connection, so it is taken FRESH at the instant of the decision, which is the only instant at which
+// evidence that authorises an action is worth anything.
+func (d *Daemon) SetUnderlayVerifier(verify func() (verdict string, digest string)) {
+	d.underlayVerifier = verify
+}
+
+// underlayEvidence is the verdict and the digest, taken now, with an unwired verifier failing closed.
+func (d *Daemon) underlayEvidence() (string, string) {
+	verify := d.underlayVerifier
+	if verify == nil {
+		return UnderlayUnknown, ""
+	}
+	verdict, digest := verify()
+	switch verdict {
+	case UnderlayExposed, UnderlayCovered, UnderlayChanged, UnderlayUnknown:
+		return verdict, digest
+	default:
+		// A VERDICT FROM OUTSIDE THE CLOSED SET IS NOT ONE. Nothing in this repository can construct one — the
+		// verifier is wired from `cmd/projectiond` and returns `fusefs.CompareUnderlay` — and that is exactly
+		// why the branch is here: the one guard that has never been needed is the one a later caller removes.
+		return UnderlayUnknown, digest
+	}
 }
 
 // EnableRecovery turns the loop on and loads the durable budget. It is called once, before the loop starts.
@@ -514,10 +623,17 @@ func ResetRecoveryLedger(probeCacheDir string) error {
 // request the caller carries to the one goroutine that owns the mount.
 func (d *Daemon) RecoveryDecide(now time.Time) recoveryDecision {
 	status := d.Status()
-	class, actionable, refusal := classifyRecovery(status.ReadyReason, status.MountObserved)
+	// THE UNDERLAY EVIDENCE IS TAKEN OUTSIDE THE MUTEX AND BEFORE THE DECISION, for the same reason
+	// `recoveryInputs` is gathered once: a verdict assembled from two different instants is a verdict about an
+	// instant that never existed. It reads procfs and cannot block, so taking it on this path costs a tick
+	// nothing and never holds the ledger's lock across a syscall.
+	underlay, underlayDigest := d.underlayEvidence()
+	class, actionable, refusal := classifyRecovery(status.ReadyReason, status.MountObserved, underlay)
 
 	d.recovery.mu.Lock()
 	defer d.recovery.mu.Unlock()
+	d.recovery.underlay = underlay
+	d.recovery.underlayDigest = underlayDigest
 
 	// THE SUSTAIN WINDOW RESTARTS ON ANY CHANGE OF CLASS. "Something has been wrong for six seconds" is not
 	// the same fact as "THIS has been wrong for six seconds", and only the second one authorises an action:
@@ -588,10 +704,18 @@ func (d *Daemon) RecoveryDecide(now time.Time) recoveryDecision {
 // attempts become one real attempt and two accidents.
 func (d *Daemon) RecoveryBeginAttempt(class string, now time.Time) (bool, string) {
 	status := d.Status()
-	current, actionable, _ := classifyRecovery(status.ReadyReason, status.MountObserved)
+	// AND THE UNDERLAY EVIDENCE IS RE-TAKEN HERE, WHICH IS THE POINT OF THIS FUNCTION APPLIED TO PHASE 7'S OWN
+	// ROW. Between the decision and this call somebody may have stacked something on the mount point; the
+	// re-classification below then answers `refuse-foreign-mount`, which is not the class this was sent for,
+	// and nothing is spent and nothing is done. A recovery authorised by evidence taken a tick ago is a
+	// recovery authorised by evidence.
+	underlay, underlayDigest := d.underlayEvidence()
+	current, actionable, _ := classifyRecovery(status.ReadyReason, status.MountObserved, underlay)
 
 	d.recovery.mu.Lock()
 	defer d.recovery.mu.Unlock()
+	d.recovery.underlay = underlay
+	d.recovery.underlayDigest = underlayDigest
 
 	if !d.recovery.enabled {
 		return false, RecoveryNoActionDisabled
@@ -704,12 +828,19 @@ func (d *Daemon) RecoveryStatus() RecoverySnapshot {
 	d.recovery.mu.Lock()
 	defer d.recovery.mu.Unlock()
 	snapshot := RecoverySnapshot{
-		State:       d.recovery.state,
-		Reason:      d.recovery.reason,
-		Attempts:    d.recovery.ledger.Attempts,
-		Generation:  d.recovery.ledger.Generation,
-		LastOutcome: d.recovery.ledger.LastOutcome,
-		Remediation: d.recovery.remediation,
+		State:          d.recovery.state,
+		Reason:         d.recovery.reason,
+		Attempts:       d.recovery.ledger.Attempts,
+		Generation:     d.recovery.ledger.Generation,
+		LastOutcome:    d.recovery.ledger.LastOutcome,
+		Remediation:    d.recovery.remediation,
+		Underlay:       d.recovery.underlay,
+		UnderlayDigest: d.recovery.underlayDigest,
+	}
+	if snapshot.Underlay == "" {
+		// NO DECISION HAS BEEN TAKEN YET, and the honest word for that is the one that refuses. A surface that
+		// answered `underlay-expected` before anything had looked would be a green light wired to nothing.
+		snapshot.Underlay = UnderlayUnknown
 	}
 	if snapshot.State == "" {
 		snapshot.State = RecoveryStateDisabled
