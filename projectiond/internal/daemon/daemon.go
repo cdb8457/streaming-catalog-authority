@@ -154,6 +154,24 @@ type Daemon struct {
 type mountObservation struct {
 	state string
 	at    time.Time
+	// underlay and underlayDigest are the expected-underlay verdict TAKEN AT THE SAME INSTANT as `state`, and
+	// the pairing is the whole reason they live here rather than being read separately — PHASE 7 §8.4.5.
+	//
+	// A FIRST VERSION READ THE VERDICT FRESH ON THE DECISION PATH AND THE STATE FROM THIS STORE, AND A REAL RUN
+	// SHOWED WHAT THAT COSTS. The instant a recovery's remount lands, the fresh verdict becomes
+	// `underlay-covered` — our own new mount is on top of the bind — while the last COMPLETED observation is
+	// still the `foreign` one that authorised the recovery. The classification then paired a stale observation
+	// with a fresh verdict, answered `refuse-foreign-mount`, and published `inspect-mount-owner` about a mount
+	// point it had just repaired. Nothing was spent and nothing was done, so it was a REPORTING defect — and
+	// this surface's whole value is that it can be read at any instant, so a transient false refusal is exactly
+	// the kind of thing it may not do. Measured by `P7-R1-remediation` on the first run of the arm that had
+	// never previously got far enough to reach it.
+	//
+	// SO THE VERDICT AND THE OBSERVATION ARE ONE MEASUREMENT OF ONE MOMENT, exactly as `readinessInputs` and
+	// `recoveryInputs` are. Freshness is not lost where it matters: `RecoveryBeginAttempt` re-verifies the
+	// verdict LIVE before it spends anything, so the pair authorises a class and a fresh read authorises the act.
+	underlay       string
+	underlayDigest string
 	// liveSince is when the CURRENT uninterrupted run of live observations began, zero when this observation
 	// is not live. It is what the recovery confirmation measures.
 	liveSince time.Time
@@ -476,16 +494,23 @@ func (d *Daemon) SampleMount(timeout time.Duration) {
 		d.noteProbeUnfinished()
 		return
 	}
-	done := make(chan string, 1)
+	done := make(chan mountObservation, 1)
 	go func() {
 		// Released when the syscall finally returns, which for a wedged mount is when the connection is torn
 		// down. Until then every later call takes the branch above.
 		defer d.probeInFlight.Store(false)
-		done <- observe()
+		// THE UNDERLAY VERDICT IS TAKEN HERE, BESIDE THE OBSERVATION, AND THAT PAIRING IS PHASE 7 §8.4.5. It
+		// reads `/proc/self/mountinfo` and takes no `statfs`, so it adds nothing that can block — the whole
+		// reason this function is bounded is the `statfs` inside `observe`, and this contributes none.
+		//
+		// IT IS TAKEN FIRST, DELIBERATELY. `observe` is the call that can park for as long as a wedged
+		// connection stays wedged, and a verdict read after it would be a verdict about a much later moment.
+		verdict, digest := d.underlayEvidence()
+		done <- mountObservation{state: observe(), underlay: verdict, underlayDigest: digest}
 	}()
 	select {
-	case state := <-done:
-		d.storeObservation(state, time.Now())
+	case sample := <-done:
+		d.storeObservation(sample.state, sample.underlay, sample.underlayDigest, time.Now())
 	case <-time.After(timeout):
 		d.noteProbeUnfinished()
 	}
@@ -496,8 +521,8 @@ func (d *Daemon) SampleMount(timeout time.Duration) {
 // THE SAMPLER IS THE ONLY WRITER, which is what makes this safe without a lock: it is called from
 // `SampleMount`, and `SampleMount`'s single-flight flag means at most one probe is ever outstanding. The
 // record it stores is immutable, so a reader on the request path sees one whole consistent moment.
-func (d *Daemon) storeObservation(state string, at time.Time) {
-	next := &mountObservation{state: state, at: at}
+func (d *Daemon) storeObservation(state, underlay, underlayDigest string, at time.Time) {
+	next := &mountObservation{state: state, underlay: underlay, underlayDigest: underlayDigest, at: at}
 	previous := d.mountSample.Load()
 	if state == MountStateLive {
 		next.lastLiveAt = at
@@ -542,8 +567,22 @@ func (d *Daemon) storeObservation(state string, at time.Time) {
 // still not the same word as a negative result.
 func (d *Daemon) noteProbeUnfinished() {
 	if d.mountSample.Load() == nil {
-		d.mountSample.Store(&mountObservation{state: MountStateTimeout, at: time.Now()})
+		// AND THE UNDERLAY VERDICT IS THE ONE THAT REFUSES, because no verdict has ever been taken. A sample
+		// that said anything else here would be a licence granted by a probe that never completed.
+		d.mountSample.Store(&mountObservation{state: MountStateTimeout, at: time.Now(),
+			underlay: UnderlayUnknown})
 	}
+}
+
+// sampledUnderlay is the verdict and digest from the LAST COMPLETED observation, which is the pair
+// `classifyRecovery` is entitled to reason about. An absent sample, and a sample from before this field
+// existed, both answer the verdict that refuses.
+func (d *Daemon) sampledUnderlay() (string, string) {
+	sample := d.mountSample.Load()
+	if sample == nil || sample.underlay == "" {
+		return UnderlayUnknown, ""
+	}
+	return sample.underlay, sample.underlayDigest
 }
 
 // MountSampleLoop samples the mount point on its own cadence until the context is done.

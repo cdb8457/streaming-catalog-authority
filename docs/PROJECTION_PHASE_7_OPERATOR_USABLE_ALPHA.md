@@ -408,6 +408,33 @@ addition to every clause it already had, the arm asserts that before the fault t
 **`recover-mount-underlay`** and not any other recovery, and that the fingerprint is **identical** before the
 fault and after the recovery.
 
+### 8.4.5 THE VERDICT IS PAIRED WITH THE OBSERVATION IT IS CLASSIFIED AGAINST — CORRECTED AFTER A MEASURED RUN
+
+**THIS CLAUSE REPLACES A SENTENCE §8.4.2 GOT WRONG, AND THE RUN THAT FOUND IT IS §11.12.** §8.4.2 clause 6
+said the verdict is taken **fresh** on the decision path, and gave a good reason: it reads
+`/proc/self/mountinfo` and cannot block. What it did not consider is what the verdict is paired **with**.
+
+**WHAT A FRESH VERDICT PAIRED WITH A SAMPLED OBSERVATION PRODUCED.** The instant a recovery's remount lands,
+the fresh verdict becomes `underlay-covered` — this daemon's own new mount is on top of the operator's bind —
+while the last **completed** observation is still the `foreign` one that authorised the recovery a moment
+earlier. That pair is a refusal, so the surface published `refuse-foreign-mount` with remediation
+`inspect-mount-owner` **about a mount point the daemon had just repaired**. Nothing was spent and nothing was
+done, so it is a **reporting** defect — and this surface's whole value is that an operator can read it at any
+instant, which a transient false refusal destroys. `P7-R1-remediation` measured it on the first run of the arm
+that had never previously got far enough to reach it.
+
+**THE CORRECTION IS THE ONE THE REST OF THIS DAEMON ALREADY MAKES.** `readinessInputs` and `recoveryInputs` are
+both gathered once, because a verdict assembled from three instants is a verdict about an instant that never
+existed. So the underlay verdict is now taken **by the sampler, beside the observation, in the same call** —
+it adds nothing that can block, because the `statfs` was always the only thing that could — and the
+classification reads the pair.
+
+**AND THE FRESHNESS IS NOT LOST, IT MOVED TO WHERE IT PAYS FOR SOMETHING.** The sampled pair may name a class
+and publish a state; a **live** read is what may authorise an **act**. `RecoveryBeginAttempt` re-verifies the
+verdict live, in the same place it re-checks the class, and refuses with `refuse-foreign-mount` if the mount
+point has changed under it — so nothing is ever mounted over on evidence up to a tick old. **The safety
+property is strictly stronger than §8.4.2 clause 6 described and the reporting defect is gone.**
+
 ## 8.5 THE MOUNT-LAYER RESIDUAL — FIXED, AND `MOUNT_LAYERS_ABOVE_FLOOR_MAX` DOES NOT MOVE
 
 §11.4.2 measured the layer count going `now 3` → `now 4` across successive faults once the corpse drain became
@@ -725,6 +752,53 @@ likely operator-side accident on this whole appliance, and it is the fault `reco
 Phase 6 §3.2's table for. On the evidence of this run, in the topology the alpha actually ships in, **the
 appliance did not repair it and did not report it**. §12 is a NO-GO and this is the first reason.
 
+### 11.3.3 ATTEMPT 5 — THE FIRST RUN THAT REACHED ALL SIX ARMS, AND R1 RECOVERED
+
+**FROM CANDIDATE 5**, commit `d38e45a22b699c9f64d33dfc7fa3fbe2c26d957a`, tree
+`7a33dd191c8e47b149101426a3995159d32c00fa`, staged into an emptied
+`/mnt/user/appdata/catalog-p7` from `git archive` and proved byte-identical **in both directions** — two sorted
+per-file sha256 manifests computed independently on each side over **1,660** files, both hashing to
+`504a6c2667369453313307168adc1585bec5522791f1ee4311a62e9c4fe2b181`. Image
+`sha256:0ccb21304d5fb8338ce79bc96e6493d2b26e10b794e7d8cf5a65bdf6ed262037`, rebuilt by the gate from the frozen
+tree to the same digest. The §7 recheck answered `allowed` on `b16331429dc1` immediately before the sequence.
+
+**IT FAILED, AND IT IS THE MOST INFORMATIVE RUN THIS TRANCHE HAS HAD: 347 verdicts pass, 13 fail, all six arms
+executed.**
+
+**THE ARM THIS WHOLE TRANCHE WAS BLOCKED ON RECOVERED, AND EVERY PART OF §3.2 HELD FOR IT:**
+
+```
+before R1: 1 mount(s) of ours and 1 row(s) of any kind at the mount point, against a floor of 0
+PASS  P7-R1-underlay-covered-before        PASS  P7-R1-underlay-fingerprinted
+PASS  P7-R1-fault-took-the-mount           PASS  P7-R1-action-ms 14603/33000
+PASS  P7-R1-reason                         PASS  P7-R1-action-is-the-underlay-row
+PASS  P7-R1-underlay-digest-unchanged      PASS  P7-R1-attempts 1/1
+PASS  P7-R1-single-flight 1/1              PASS  P7-R1-generation
+PASS  P7-R1-ready-ms 17153/59000           PASS  P7-R1
+PASS  P7-arm-windows:R1 4/4                PASS  P7-arm-stat:R1     PASS  P7-arm-seed:R1
+PASS  P7-arm-inread:emby:R1  PASS  P7-arm-inread:jellyfin:R1  PASS  P7-arm-inread:plex:R1
+PASS  P7-arm-layers:R1 1/1
+```
+
+**WHAT THAT SAYS, AS A MEASUREMENT.** The projectiond mount was removed from beneath a living daemon. The daemon
+proved the mount point was the exact attachment it had fingerprinted before its first mount, took **one**
+bounded action named `recover-mount-underlay`, and the namespace was readable by a sibling again **17.2 s** after
+the fault against a 59 s budget — with **all four** operator windows digest-matching, **all three** media
+servers reading them inside their own containers as their own uid, and **one** layer above the floor. The same
+run's R2 recovered the same way from a second daemon's corpse: `action-ms 11,510/33,000`, `ready-ms
+13,811/59,000`, one action, one layer. **R3, R4 and R5 each passed every assertion of their own arm** —
+including R5's refusal, with `recoveryUnderlay=underlay-covered` beside it, the tmpfs still mounted and
+byte-unmodified and nothing spent.
+
+**AND FOUR DEFECTS STOPPED IT, ALL FOUR NEW, AND THREE OF THE FOUR ARE IN THE INSTRUMENT.** They are §11.4 #11
+to #14 and each is recorded there with its fix: the transient false refusal the pairing produced (**the
+product**, §8.4.5); a bind-fingerprint baseline that had **never** been able to pass; a dead layer accumulating
+in the **host** namespace that the daemon's own namespace did not have, still undiagnosed; and R6's injector
+relying on a superblock reference it did not hold, which killed the serve loop, exited the daemon, and left a
+dead mount that made Docker refuse the restart with status 125.
+
+**NO CLAIM IS MADE HERE ABOUT A SEQUENCE.** One run of three, and it failed. §11.9 is the arm ledger.
+
 ### 11.4 The defects the runs found, in the order the runs found them
 
 **THIS TABLE IS THE CANONICAL LEDGER. EVERY DEFECT COUNT ANYWHERE ELSE IN THIS REPOSITORY IS DERIVED FROM
@@ -733,7 +807,7 @@ product-fix rows and fails if this document's headline or the roadmap row states
 **FIVE, TWO IN THE PRODUCT** for the interval between the run that found #5 and the run that found #7, which
 is exactly the class of stale summary that pin now exists to catch.
 
-**TEN DEFECTS. FIVE ARE IN SHIPPED PRODUCT CODE, AND ONE OF THOSE FIVE WAS INTRODUCED BY THIS TRANCHE
+**14 DEFECTS. SIX ARE IN SHIPPED PRODUCT CODE, AND ONE OF THOSE FIVE WAS INTRODUCED BY THIS TRANCHE
 AND CAUGHT BY ITS OWN REGRESSION MATRIX** — which is the most useful thing in this section.
 
 **WHAT COUNTS AS A ROW HERE, STATED SO THE NUMBER IS CHECKABLE RATHER THAN A JUDGEMENT.** A row is a defect a
@@ -758,6 +832,10 @@ time somebody re-derived it:
 | 8 | attempts 3 and 4, arm R1 | **THE APPLIANCE COULD NOT REPAIR AN EXTERNAL `umount` OF THE PROJECTED PATH, IN THE TOPOLOGY IT SHIPS IN.** With the projectiond mount gone, what remains at the mount point inside a container is the operator's own bind — `fuse.shfs` on Unraid — so the observation reads FOREIGN and Phase 6 §3.2's only row for that is a refusal. The refusal is correct as written and `recover-mount-empty`, the row that table has for exactly this fault, was **unreachable**. Measured twice, identically: no attempt spent, no generation advanced, the namespace never back, the operator's four windows **0 of 4** afterwards | **the product** — §8.4. The daemon now fingerprints the whole ordered stack at its mount point BEFORE its first `Mount()` and admits exactly one further state: that same stack, unchanged, uncovered. Three other verdicts refuse, the file-system type is never consulted, nothing is ever unmounted on the path, and the evidence is re-taken when the budget is spent |
 | 9 | the regression matrix, on the fix for #4 | **AND THEN THE LAYER COUNT GREW A LIVE LAYER PER FAULT.** `now 3` → `now 4` across successive faults: the dead layers were drained, but when the fault was somebody ELSE'S corpse this daemon's own mount was never broken, so the drain removed the corpse and the remount stacked a **second live** layer over a first that was still connected. `MOUNT_LAYERS_ABOVE_FLOOR_MAX` is 1 and that measures 2 | **the product** — §8.5. After a drain that removed something, the supervisor re-observes and skips the mount syscall when the mount point is already serving through our own live mount at or under one layer above the measured floor. Five conditions, all necessary; skipping a mount can destroy nothing |
 | 10 | the regression matrix | **`RC8`/`RC9`/`RC11` ASSERTED A STATE THEIR OWN INJECTOR COULD NO LONGER PRODUCE.** Phase 6 §4's premise — that the mount syscall is the only thing that can repair a stacked corpse — stopped being true when the fix for #4 made the drain reachable: the corpse is drained, readiness confirms, the budget is refunded, and `no-action-healthy` is what the arm reads. Identically on all three runs | the gate — §8.6. The **assertions are untouched**; the injector becomes the one fault whose repair genuinely requires a mount, which is the subject's own mount detached under a masked `/dev/fuse`. The consumer holds an open descriptor first so the connection survives, and both arms fail loudly if it does not |
+| 11 | **attempt 5, arm R1** | **A FRESH VERDICT PAIRED WITH A SAMPLED OBSERVATION PUBLISHED A REFUSAL ABOUT A MOUNT POINT THE DAEMON HAD JUST REPAIRED.** The instant the recovery's remount landed the live verdict became `underlay-covered` while the last completed observation was still the `foreign` one that authorised it — and that pair is a refusal. `refuse-foreign-mount` / `inspect-mount-owner`, on a healthy appliance, for about a second. Nothing was spent and nothing was done: a REPORTING defect on the one surface whose value is that it can be read at any instant | **the product** — §8.4.5. The verdict is now taken by the sampler beside the observation, so the classification reads one measurement of one moment; and the freshness moved to `RecoveryBeginAttempt`, which re-verifies live before it spends anything. Strictly stronger, and the transient is gone |
+| 12 | **attempt 5, arms R1–R5** | **`P7-arm-binds-unchanged` COULD NOT PASS AND HAD NEVER PASSED.** The baseline bind fingerprint is taken before the first mount, and `container_for` — the helper that turns a server id into a container name — was defined **two hundred lines below that call site**. A shell function does not exist until its definition has run, so the baseline ran `docker inspect ""` three times and wrote `UNREADABLE` three times; every arm then compared against a baseline that had recorded nothing. This is the assertion that pays for *"no consumer was restarted or re-bound to make a recovery visible"* — Phase 2's worst defect wearing a workaround — and it had never once been in a position to say so | the gate — the helper moved to its only early caller, and an unreadable container is now **fatal** rather than a placeholder written into a file that is then compared |
+| 13 | **attempt 5, arms R3–R5** | **A DEAD LAYER ACCUMULATED IN THE HOST NAMESPACE THAT THE DAEMON'S OWN NAMESPACE DID NOT HAVE.** `P7-arm-layers` measured **2/1** from R3 onward while the daemon's own drain log said `floor 1, now 2` — one of ours in its namespace, two in the host's — and the run kept nothing that could say which row the host had, or where it came from. It also broke R6 (#14). **NOT YET DIAGNOSED, AND THAT IS THE POINT OF THE FIX** | the gate — a layer count outside the bound now prints the mount-id-and-type survey in **both** namespaces, which is exactly what defect #6 bought for R1 and what this arm did not have |
+| 14 | **attempt 5, arm R6** | **THE INJECTOR RELIED ON A REFERENCE IT DID NOT HOLD, AND THE RUN DIED ON DOCKER'S OWN BIND REFUSAL.** `umount -l` leaves the FUSE superblock alive only while something references it. R1 measured the connection surviving after twenty minutes of playback; R6, with nothing reading, measured the opposite — the serve loop died, the SERVE supervisor took the fault, its three remounts failed under the masked `/dev/fuse`, and the process exited with the recovery loop having spent nothing. The dead mount it left made `restart_daemon` fail with `error while creating mount source path … file exists`, status 125 | the gate — R6 now holds an **open descriptor** on the projected entry from a sibling first (what a media server holds while playing), asserts it, asserts that **none** of our mounts remain after the detach, and clears its own dead layers with the shared helper before the restart |
 
 **#5 IS THE ARGUMENT FOR THE WHOLE REGRESSION MATRIX, STATED PLAINLY.** The fix for #4 passed every offline
 test, including three new ones written specifically for it, and was byte-identical in both directions on the
@@ -769,7 +847,7 @@ this document to publish, for one revision, the sentence *"the appliance did not
 report it**"* about an appliance that was reporting a precise closed-set refusal the whole time. §11.3.2
 withdraws that half in place rather than deleting it, and §11.4 #7 is why it was ever written.
 
-**FIVE OF THE TEN ARE IN THE INSTRUMENT AND FIVE ARE IN THE PRODUCT**, and the split is worth stating
+**EIGHT OF THE FOURTEEN ARE IN THE INSTRUMENT AND SIX ARE IN THE PRODUCT**, and the split is worth stating
 because it is the same split every closed tranche here has reported: the gates find product defects by being
 wrong first.
 
@@ -946,19 +1024,25 @@ live one in either — the marker has to be a quotation of something that is no 
 
 | Arm | Times executed | Outcome | Where |
 |---|---|---|---|
-| **R1** | **2** — attempts 3 and 4 | **FAILED, identically both times.** `P7-R1-action-ms` 34,304 and 34,085 against 33,000; no attempt spent; the generation never advanced; the namespace never came back; the operator's four windows read **0 of 4** afterwards | §11.3.1, §11.3.2 |
-| **R2** | **0** | never reached — R1 stops the run | — |
-| **R3** | **0** | never reached | — |
-| **R4** | **0** | never reached | — |
-| **R5** | **0** | never reached | — |
-| **R6** | **0** | never reached | — |
+| **R1** | **3** — attempts 3, 4 and 5 | **FAILED twice, identically, then RECOVERED.** Attempts 3 and 4: `P7-R1-action-ms` 34,304 and 34,085 against 33,000, no attempt spent, the generation never advanced, the namespace never came back, the operator’s four windows **0 of 4**. Attempt 5, from the candidate that carries §8.4: **every assertion of the arm passed** — 14,603 ms to one bounded `recover-mount-underlay`, 17,153 ms to a sibling reading a byte again, **4 of 4** windows, all three servers reading inside their own containers, one layer above the floor | §11.3.1, §11.3.2, §11.3.3 |
+| **R2** | **1** — attempt 5 | **PASSED every assertion of the arm.** The corpse was verified stale, `action-ms` 11,510/33,000, `ready-ms` 13,811/59,000, one action, one layer, 4 of 4 windows, all three servers reading | §11.3.3 |
+| **R3** | **1** — attempt 5 | **PASSED.** The control: reads failed inside the deadline, the breaker held, nothing reached the live resolver during the hold, the first read after release digest-matched, and `recoveryGeneration` did not advance | §11.3.3 |
+| **R4** | **1** — attempt 5 | **PASSED its own assertions.** The serve-death supervisor remounted in place, draining one corpse of its own first, and the entry was unchanged | §11.3.3 |
+| **R5** | **1** — attempt 5 | **PASSED.** `refuse-foreign-mount` / `inspect-mount-owner` beside `recoveryUnderlay=underlay-covered`, nothing spent, and the tmpfs asserted still mounted and byte-unmodified afterwards | §11.3.3 |
+| **R6** | **1** — attempt 5 | **FAILED, AND THE INJECTOR IS WHY.** `umount -l` with nothing holding the connection killed the serve loop, so the SERVE supervisor took the fault, its three remounts failed under the masked `/dev/fuse`, and the daemon exited with the recovery loop having spent nothing — §11.4 #14 | §11.3.3 |
 
-**SO: ONE ARM OF SIX HAS RUN, IT RAN TWICE, AND IT FAILED BOTH TIMES. NO COMPLETE SIX-ARM SEQUENCE HAS EVER
-RUN, AND THEREFORE NO SEQUENCE HAS EVER BEEN REPEATED** — the three-consecutive-fresh-runs rule of §4.1 was
-never reached, let alone attempted three times.
+**THE PER-ARM VERIFICATION OF §3.2 IS NOT THE SAME THING AS AN ARM PASSING, AND ATTEMPT 5 IS WHERE THAT
+DISTINCTION HAS TO BE MADE.** R1 to R5 each passed their own arm’s assertions, and R1 to R5 each **failed**
+`P7-arm-binds-unchanged` — because the baseline that comparison is made against had never once been readable
+(§11.4 #12) — while R3 to R5 also failed `P7-arm-layers` at 2/1 (§11.4 #13). **SO NO ARM IN THAT RUN IS
+RECORDED AS HAVING PASSED THE WHOLE OF §3.2**, and the table above says what each arm’s own assertions did and
+deliberately nothing more.
+**SO: ALL SIX ARMS HAVE NOW RUN, ONCE, IN ONE SEQUENCE THAT FAILED. NO SEQUENCE HAS EVER PASSED, AND THEREFORE
+NO SEQUENCE HAS EVER BEEN REPEATED** — the three-consecutive-fresh-runs rule of §4.1 has now been reached and
+has not been satisfied even once.
 
-**AND EVERYTHING §3.1 SAYS ABOUT R2 TO R6 IS A CONTRACT RATHER THAN A MEASUREMENT.** Their injectors are
-written, pinned offline and unexecuted on a host.
+**AND EVERYTHING §3.1 SAYS ABOUT R2 TO R6 HAS NOW BEEN EXECUTED ONCE.** R2 to R5 met their own assertions; R6
+did not, for the injector reason §11.4 #14 gives. What none of the six has is a REPEAT.
 
 ### 11.10 THE CURRENT `HEAD` IS NOT A MEASURED CANDIDATE, AND THIS SECTION IS WHERE THAT IS SAID
 

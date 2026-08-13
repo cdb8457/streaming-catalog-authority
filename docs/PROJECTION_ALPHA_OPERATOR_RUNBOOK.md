@@ -83,9 +83,12 @@ and **whether anything is being done about it**.
 | `recoveryGeneration` | every attempt ever, **never refunded** — so "recovered once, an hour ago" and "recovering right now" are different |
 | `recoveryLastOutcome` | `none`, `succeeded`, `failed`, `refused` |
 | `recoveryRemediation` | `none`, `inspect-mount-owner`, `reset-recovery-ledger`, `check-cache-directory` |
+| `recoveryUnderlay` | whether the mount point is still the **exact attachment you made before the appliance first mounted**: `underlay-covered`, `underlay-exposed`, `underlay-changed`, `underlay-unknown`. §4.2 |
+| `recoveryUnderlayDigest` | a twelve-character fingerprint of that attachment. It does not change while your bind does not |
 
 **No field on this surface is free text, a path, a URL, an origin or a media identity.** You can paste a
-`status` output into a bug report without redacting it.
+`status` output into a bug report without redacting it — the digest above is a truncated sha256 and cannot be
+read back into a path.
 
 ### 4.1 The three remediations, and what each one means you should do
 
@@ -94,6 +97,25 @@ and **whether anything is being done about it**.
 | `inspect-mount-owner` | **Something that is not the appliance's is mounted at its mount point, and the appliance will not touch it.** In a container topology the likeliest candidate is your own bind — which is exactly the mount that must survive. Look at `mount \| grep <your mount point>` and decide yourself |
 | `reset-recovery-ledger` | The appliance spent its whole recovery budget and **stopped for good**. Fix the underlying fault, then run `reset-recovery`. It will not resume on its own, and §6.1 is why |
 | `check-cache-directory` | The durable ledger could not be read or written. The cache directory is the one thing in the environment contract that has to be durable and writable |
+
+### 4.2 `recoveryUnderlay`, which is the one field that says something about **your** mount rather than the appliance's
+
+**WHAT IT ANSWERS.** Before the appliance mounts anything, it takes a fingerprint of every mount row at its
+mount point — which on a container install is **your bind, and nothing else**. This field says how what is
+there now compares with that.
+
+| Value | What it means | What you should do |
+|---|---|---|
+| `underlay-covered` | your bind is intact and something is mounted on top of it. **This is the normal answer and you will see it for the whole life of a healthy appliance** — the thing on top is the appliance's own mount | nothing |
+| `underlay-exposed` | your bind is intact and **nothing is on top of it**: the appliance's mount is gone. Somebody or something unmounted the projected path | nothing, if `--auto-recover` is on: this is the one fault the supervisor repairs by mounting over your bind again, exactly as it does at startup. Watch `recoveryReason` go to `recover-mount-underlay` and `ready` come back |
+| `underlay-changed` | **your bind is not the one the appliance measured.** It was unmounted and remounted, or replaced, or something under it moved. A remount of the same share counts: the kernel gives it a new mount id | **the appliance will not act, deliberately.** Restart it once the mount point is the way you want it — it re-fingerprints at every start |
+| `underlay-unknown` | the appliance could not read the mount table, at startup or now | look at the container's own health first; this is not a state a healthy container reports |
+
+**WHY IT REFUSES SO OFTEN, STATED PLAINLY.** Three of those four values authorise nothing. The appliance will
+mount over your bind **only** when it can prove the mount point is in exactly the state it was in before it
+ever mounted — same rows, same order, same mount ids, same propagation. It will never unmount your bind, and it
+does not trust a file-system type: a `tmpfs` you stack there and a bind that looks like yours are both refused,
+with `refuse-foreign-mount` / `inspect-mount-owner`, and nothing is spent.
 
 ## 5. THE PROVIDER'S CDN ORIGINS ARE PERISHABLE, AND THIS IS THE FAILURE YOU WILL MEET FIRST
 

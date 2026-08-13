@@ -1900,13 +1900,38 @@ layers_above_floor() {
 # media server to make a recovery visible to it would be demonstrating the workaround rather than the
 # product — which is Phase 2's worst defect wearing a hat. The fingerprint is the container's own id and its
 # mount table, taken once before the first mount and compared after every arm.
+# WHICH CONTAINER IS WHICH, AND IT IS DEFINED HERE RATHER THAN 200 LINES LOWER BECAUSE THE FIRST REAL SIX-ARM
+# RUN IS WHAT THAT COST.
+#
+# `bind_fingerprint` below is CALLED before the first mount. `container_for` used to be defined after that call
+# site, and a shell function does not exist until its definition has been executed — so the baseline snapshot
+# ran `docker inspect ""` three times, wrote `UNREADABLE` three times, and every arm's comparison then failed
+# against a baseline that had recorded nothing. **THE ASSERTION COULD NOT PASS AND HAD NEVER PASSED**, which is
+# worse than a wrong answer: `P7-arm-binds-unchanged` is the assertion that pays for "no consumer was restarted
+# or re-bound to make a recovery visible", and it had never once been in a position to say so.
+container_for() {
+  case "$1" in
+    jellyfin) echo "$JF_CONTAINER" ;;
+    plex)     echo "$PLEX_CONTAINER" ;;
+    emby)     echo "$EMBY_CONTAINER" ;;
+    *) die "unknown server $1" ;;
+  esac
+}
+
 bind_fingerprint() {
-  local out="$1" server
+  local out="$1" server line
   : > "$out"
   for server in $P7_SERVERS; do
-    docker inspect "$(container_for "$server")" \
+    # A SNAPSHOT THAT COULD NOT BE TAKEN IS NOT A SNAPSHOT, AND IT MAY NOT BE WRITTEN INTO A FILE THAT IS THEN
+    # COMPARED. The old fallback wrote a placeholder and let the comparison proceed, so an instrument that had
+    # failed produced a verdict about the product. An unreadable container is fatal here instead.
+    line="$(docker inspect "$(container_for "$server")" \
       --format "$server {{.Id}} {{.State.StartedAt}} {{range .Mounts}}{{.Source}}=>{{.Destination}}:{{.Mode}};{{end}}" \
-      >> "$out" 2>/dev/null || echo "$server UNREADABLE" >> "$out"
+      2>/dev/null)"
+    case "$line" in
+      "$server "*) printf '%s\n' "$line" >> "$out" ;;
+      *) die "the bind fingerprint for $server could not be read, so no verdict about its binds is possible" ;;
+    esac
   done
 }
 
@@ -2095,14 +2120,7 @@ plex()     { npx tsx src/ops/projection-plex-dataplane-cli.ts "$@"; }
 emby()     { npx tsx src/ops/projection-emby-dataplane-cli.ts "$@"; }
 drive()    { npx tsx src/ops/projection-three-server-concurrency-cli.ts "$@"; }
 
-container_for() {
-  case "$1" in
-    jellyfin) echo "$JF_CONTAINER" ;;
-    plex)     echo "$PLEX_CONTAINER" ;;
-    emby)     echo "$EMBY_CONTAINER" ;;
-    *) die "unknown server $1" ;;
-  esac
-}
+# `container_for` IS DEFINED WITH `bind_fingerprint`, WHICH IS THE ONLY CALLER THAT NEEDS IT BEFORE THIS POINT.
 # THE LOOPBACK BASE IS THE GATE'S OWN CONTROL PLANE ADDRESS AND IT IS NOT THE STREAM ADDRESS. The gate's
 # drivers reach each server from the HOST over its published port; a CONSUMER container reaches it from
 # inside the gate network, where 127.0.0.1 is the consumer. `stream_base_for` is the other one, and a helper
@@ -2637,6 +2655,22 @@ verify_after_arm() {
   # THE MOUNT TOPOLOGY. Phase 6 §9.7's rough edge, measured rather than described.
   layers="$(layers_above_floor)"
   rows="$(count_rows_at_mountpoint)"
+  # A COUNT OUTSIDE THE BOUND IS ONLY USEFUL IF IT SAYS WHICH LAYER IS EXTRA, AND THE FIRST SIX-ARM RUN IS WHY.
+  #
+  # It measured `2/1` from arm R3 onward while the daemon's own log said `floor 1, now 2` — one of ours in ITS
+  # namespace and two in the HOST's — and nothing the run kept could say which row the host had that the daemon
+  # did not, or where it came from. That is defect #6 all over again: an arm failing while holding no diagnosis.
+  # The survey below is the one Phase 3's A3 already ships, it prints mount ids and file-system types and never a
+  # path beyond the fixed `<mountpoint>` token, and it runs in BOTH namespaces on the failing path.
+  if [ -n "$layers" ] && [ "$layers" -gt "$P7_MOUNT_LAYERS_ABOVE_FLOOR_MAX" ]; then
+    echo "  --- mount survey: $layers of ours above a floor of $MOUNT_LAYER_FLOOR after arm $arm ---" >&2
+    bash "$WORK/out/mountrows.sh" "$WORK/mnt" "host" >&2 || true
+    local _daemon_pid
+    _daemon_pid="$(docker inspect -f '{{.State.Pid}}' "$MOUNT_CONTAINER" 2>/dev/null || true)"
+    if [ -n "$_daemon_pid" ] && [ -r "/proc/$_daemon_pid/mountinfo" ]; then
+      MOUNTINFO="/proc/$_daemon_pid/mountinfo" bash "$WORK/out/mountrows.sh" "/mnt/projection" "daemon" >&2 || true
+    fi
+  fi
   record "P7-arm-layers:$arm" le "$layers" "$P7_MOUNT_LAYERS_ABOVE_FLOOR_MAX" \
     "mounts of OURS stacked at the projected mount point above the floor of $MOUNT_LAYER_FLOOR taken before the daemon ever mounted; $rows row(s) of any kind are there" || true
   # THE CONSUMERS' OWN BINDS. Same containers, same mounts, never rebuilt by this gate.
@@ -3159,6 +3193,33 @@ arm_R6() {
   # spends the budget. If the connection did go down, the serve supervisor would own it instead, its own three
   # remounts would fail under the mask, and the process would exit with nothing left to measure. The arm says so
   # in that case instead of reporting a budget nobody spent.
+  # THE CONNECTION IS HELD OPEN BEFORE THE DETACH, DELIBERATELY, AND THE FIRST SIX-ARM RUN IS WHY.
+  #
+  # `umount -l` removes the mount from the namespace and the FUSE superblock survives only while something
+  # still references it. R1 measured the connection surviving — three media servers had been reading through it
+  # for twenty minutes — and R6, twenty minutes later with nothing reading, measured the opposite: the serve
+  # loop died, the SERVE supervisor took the fault, its three remounts all failed under the mask, and the process
+  # exited with no budget spent by the recovery loop at all. **THE INJECTOR WAS RELYING ON A REFERENCE IT DID
+  # NOT HOLD.** So it holds one: an open descriptor on the projected entry, from a sibling container, exactly
+  # what a media server holds while it is playing. It is closed at the end of this arm.
+  local hold="p7-hold-$$"
+  docker rm -f "$hold" >/dev/null 2>&1 || true
+  docker run -d --name "$hold" -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" \
+    sh -c "exec 9< '/mnt/$SEED_PATH'; sleep 900" >/dev/null \
+    || die "R6: the descriptor holder could not be started, so the detach would abort the connection"
+  local held=0 nh=0
+  while [ "$nh" -lt 20 ]; do
+    if [ "$(docker inspect -f '{{.State.Running}}' "$hold" 2>/dev/null)" = "true" ]; then held=1; break; fi
+    nh=$((nh + 1)); sleep 0.5
+  done
+  if [ "$held" -ne 1 ]; then
+    docker logs "$hold" 2>&1 | tail -5 | sed 's/^/  holder: /' >&2 || true
+    docker rm -f "$hold" >/dev/null 2>&1 || true
+    die "R6: the descriptor holder did not stay up, so the fault cannot be injected without killing the daemon"
+  fi
+  record "P7-R6-connection-held" bool "$held" "" \
+    "a sibling holds an open descriptor inside the mount, so the lazy detach removes the mount and not the connection" || true
+
   layers_before="$(count_our_layers)"
   umount -l "$WORK/mnt" 2>/dev/null || true
   local gone=0 n6=0
@@ -3166,7 +3227,21 @@ arm_R6() {
     if [ "$(count_our_layers)" -lt "$layers_before" ]; then gone=1; break; fi
     n6=$((n6 + 1)); sleep 0.5
   done
-  [ "$gone" -eq 1 ] || die "R6: the projectiond mount is still at the mount point, so the fault never landed"
+  if [ "$gone" -ne 1 ]; then
+    docker rm -f "$hold" >/dev/null 2>&1 || true
+    die "R6: the projectiond mount is still at the mount point, so the fault never landed"
+  fi
+  # AND THE MOUNT POINT MUST NOW HOLD NONE OF OURS. A detach that removed the TOP of a stack and left another of
+  # our mounts underneath leaves a mount point that is still SERVING, so nothing needs repairing and the budget
+  # is never spent — which is exactly what the first six-arm run measured, from a residual layer it inherited.
+  local ours_now
+  ours_now="$(count_our_layers)"
+  if [ "$ours_now" -gt "$MOUNT_LAYER_FLOOR" ]; then
+    echo "  --- mount survey: $ours_now of ours still at the mount point after the detach ---" >&2
+    bash "$WORK/out/mountrows.sh" "$WORK/mnt" "host" >&2 || true
+    docker rm -f "$hold" >/dev/null 2>&1 || true
+    die "R6: $ours_now mount(s) of ours remain at the mount point, so this fault does not need a mount to repair"
+  fi
   record "P7-R6-fault-took-the-mount" bool "$gone" "" \
     "the projectiond mount is gone and every Mount() in the subject's namespace is refused" || true
   if ! docker inspect -f '{{.State.Running}}' "$MOUNT_CONTAINER" 2>/dev/null | grep -q true; then
@@ -3239,6 +3314,15 @@ arm_R6() {
   # THE CAUSE IS REPAIRED FIRST, BY RESTARTING THE CONTAINER — which destroys the mount namespace the mask
   # lived in. So what is being measured after this is a daemon that COULD act and does not, because a human
   # has not cleared the budget.
+  #
+  # THE HOLDER GOES FIRST, AND THE DEAD LAYERS THIS ARM PRODUCED GO WITH IT. A mount point carrying a dead FUSE
+  # mount answers `stat` with ENOTCONN, and Docker reads that as "file exists" and refuses to bind it — which is
+  # how the first six-arm run died: `error while creating mount source path ... file exists`, status 125, with
+  # every arm already measured and the run scored as a failure of the gate rather than of anything it asserts.
+  # The shared helper unmounts only beneath this run's own root and verifies rather than assuming.
+  docker rm -f "$hold" >/dev/null 2>&1 || true
+  projection_gate_unmount_run "$GATE_ROOT" "$WORK" "$VERIFY_IMAGE" \
+    || die "R6: this run's own dead mount layers could not be cleared before the restart"
   restart_daemon
   local restart_state="" restart_attempts="" m=0
   while [ "$m" -lt 60 ]; do

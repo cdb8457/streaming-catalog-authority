@@ -603,3 +603,89 @@ func TestTheLedgerIsWrittenAtomically(t *testing.T) {
 		t.Fatalf("the ledger did not round-trip, got %+v", back)
 	}
 }
+
+// TestAFreshVerdictIsNEVERPAIREDWithAStaleObservation — PROJECTION PHASE 7 §8.4.5, and it is a regression test
+// for a defect a REAL HOST found on the first run of the arm it was written for.
+//
+// WHAT HAPPENED. The classification took the observation from the sampler's store and the underlay verdict from
+// a FRESH read. The instant a recovery's remount landed, the fresh verdict became `underlay-covered` — this
+// daemon's own new mount was now on top of the operator's bind — while the last COMPLETED observation was still
+// the `foreign` one that had authorised the recovery. The pair `mount-observed-not-live` + `foreign` +
+// `underlay-covered` is a refusal, so the surface published `refuse-foreign-mount` with remediation
+// `inspect-mount-owner` about a mount point the daemon had just repaired. Nothing was spent and nothing was
+// done — it was a REPORTING defect — and this surface's whole value is that it can be read at any instant.
+// `P7-R1-remediation` caught it: `'inspect-mount-owner'` where the contract allows only `none` or
+// `reset-recovery-ledger`.
+//
+// THE TEST DRIVES THE STORE, NOT THE CLOCK. It stores exactly the sample the sampler stores at that moment and
+// asserts what the decision does with it, so it fails against a decision that reaches past the sample.
+func TestAFreshVerdictIsNeverPairedWithAStaleObservation(t *testing.T) {
+	d := &Daemon{}
+	// The verifier answers what the mount point looks like NOW: our own recovery mount is back on top.
+	d.SetUnderlayVerifier(func() (string, string) { return UnderlayCovered, "cccccccccccc" })
+	// ...and the last COMPLETED observation is the one that authorised the recovery, taken while the mount was
+	// gone: `foreign`, with the underlay EXPOSED at that same instant.
+	d.storeObservation("foreign", UnderlayExposed, "eeeeeeeeeeee", time.Now())
+
+	underlay, digest := d.sampledUnderlay()
+	if underlay != UnderlayExposed {
+		t.Fatalf("the sampled verdict is %q; the decision would be reasoning about a different instant",
+			underlay)
+	}
+	if digest != "eeeeeeeeeeee" {
+		t.Fatalf("the sampled digest is %q, not the one taken with the observation", digest)
+	}
+	class, actionable, refusal := classifyRecovery(ReadyReasonMountNotLive, "foreign", underlay)
+	if class == RecoveryRefuseForeignMount {
+		t.Fatalf("the class is a refusal on a mount point the daemon has just repaired — this is the "+
+			"transient P7-R1-remediation measured, with remediation %q", RecoveryRemediationInspectOwner)
+	}
+	if class != RecoverActMountUnderlay || !actionable || refusal {
+		t.Fatalf("the sampled pair no longer names the recovery it authorised: (%s,%v,%v)",
+			class, actionable, refusal)
+	}
+	// AND THE FRESHNESS IS NOT LOST, IT MOVED: the ACT is refused because the LIVE verdict has changed. The
+	// decision that does that is its own function so a table can drive the shipped one, and every class that is
+	// not this one passes through it untouched.
+	for _, notThisClass := range []string{RecoverActStaleMount, RecoverActMountEmpty, RecoverActObservationStale,
+		RecoverActObservationUnavailable} {
+		for _, live := range []string{UnderlayExposed, UnderlayCovered, UnderlayChanged, UnderlayUnknown} {
+			if !underlayStillAdmitsTheAct(notThisClass, live) {
+				t.Fatalf("%s was blocked by a live verdict of %s, which is not evidence about it", notThisClass, live)
+			}
+		}
+	}
+	if !underlayStillAdmitsTheAct(RecoverActMountUnderlay, UnderlayExposed) {
+		t.Fatalf("a live verdict of %s no longer authorises the act it names", UnderlayExposed)
+	}
+	for _, live := range []string{UnderlayCovered, UnderlayChanged, UnderlayUnknown, "", "underlay-exposed-ish"} {
+		if underlayStillAdmitsTheAct(RecoverActMountUnderlay, live) {
+			t.Fatalf("a live verdict of %q authorised mounting over a mount point that is not the measured one", live)
+		}
+	}
+}
+
+// TestTheSampledVerdictFailsClosedBeforeAnythingHasBeenSampled — the store starts empty, and an empty store
+// must not be readable as a licence. It also covers a sample written by an older shape, whose verdict field is
+// the zero string.
+func TestTheSampledVerdictFailsClosedBeforeAnythingHasBeenSampled(t *testing.T) {
+	d := &Daemon{}
+	if verdict, digest := d.sampledUnderlay(); verdict != UnderlayUnknown || digest != "" {
+		t.Fatalf("an unsampled daemon answers %q/%q", verdict, digest)
+	}
+	d.storeObservation("foreign", "", "", time.Now())
+	if verdict, _ := d.sampledUnderlay(); verdict != UnderlayUnknown {
+		t.Fatalf("a sample with no verdict answers %q, not the one that refuses", verdict)
+	}
+	class, actionable, _ := classifyRecovery(ReadyReasonMountNotLive, "foreign", UnderlayUnknown)
+	if class != RecoveryRefuseForeignMount || actionable {
+		t.Fatalf("a sample with no verdict authorised %s", class)
+	}
+	// AND A PROBE THAT NEVER COMPLETED IS THE SAME ANSWER. `noteProbeUnfinished` writes the only sample a
+	// daemon that has never observed anything has, and it may not carry a licence either.
+	fresh := &Daemon{}
+	fresh.noteProbeUnfinished()
+	if verdict, _ := fresh.sampledUnderlay(); verdict != UnderlayUnknown {
+		t.Fatalf("the first-ever unfinished probe stored the verdict %q", verdict)
+	}
+}

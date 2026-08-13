@@ -950,6 +950,97 @@ test('the recovery CLI publishes every code and refuses to publish a broken deri
 });
 
 // ---------------------------------------------------------------------------------------------------------
+// PROJECTION PHASE 7 §8.4.5 — the verdict is PAIRED with the observation it is classified against
+// ---------------------------------------------------------------------------------------------------------
+
+test('the underlay verdict is sampled BESIDE the observation, not read fresh on the decision path', () => {
+  const daemonGo = read(DAEMON_GO);
+  const recovery = read(RECOVERY_GO);
+  // THE PAIR IS ONE STORED RECORD. A defect a real host found: a fresh verdict paired with the last completed
+  // observation invents an instant, and the instant it invented was the one right after a successful recovery.
+  assert(/type mountObservation struct \{[\s\S]*?underlay\s+string[\s\S]*?underlayDigest string/.test(daemonGo),
+    'the mount observation no longer carries the underlay verdict, so the two can be read from two instants');
+  assert(daemonGo.includes('done <- mountObservation{state: observe(), underlay: verdict, underlayDigest: digest}'),
+    'the sampler no longer takes the verdict beside the observation in one call');
+  // ...AND THE CLASSIFICATION READS THE STORE. `underlayEvidence` is the LIVE read and must not be what the
+  // decision classifies on.
+  const decide = recovery.slice(recovery.indexOf('func (d *Daemon) RecoveryDecide'),
+    recovery.indexOf('func (d *Daemon) RecoveryBeginAttempt'));
+  assert(decide.includes('d.sampledUnderlay()'),
+    'RecoveryDecide no longer classifies on the SAMPLED verdict — this is the transient P7-R1-remediation found');
+  assert(!decide.includes('d.underlayEvidence()'),
+    'RecoveryDecide takes a LIVE verdict again, which is the pairing defect §8.4.5 corrected');
+  // AND AN UNSAMPLED OR OLD-SHAPED SAMPLE FAILS CLOSED.
+  assert(/func \(d \*Daemon\) sampledUnderlay\(\) \(string, string\) \{[\s\S]*?sample\.underlay == ""[\s\S]*?UnderlayUnknown/
+    .test(daemonGo), 'a sample with no verdict no longer answers the verdict that refuses');
+  assert(/noteProbeUnfinished\(\) \{[\s\S]*?underlay: UnderlayUnknown/.test(daemonGo),
+    'a probe that never completed stores a sample without the refusing verdict');
+});
+
+test('the FRESHNESS moved to the spend, and it is its own named decision with a table', () => {
+  const recovery = read(RECOVERY_GO);
+  const goTable = read(join(repoRoot, 'projectiond', 'internal', 'daemon', 'recovery_test.go'));
+  assert(recovery.includes('func underlayStillAdmitsTheAct(class, liveUnderlay string) bool'),
+    'the live re-verification is not a named decision, so no table can drive the shipped one');
+  const begin = recovery.slice(recovery.indexOf('func (d *Daemon) RecoveryBeginAttempt'));
+  assert(begin.includes('d.underlayEvidence()'),
+    'RecoveryBeginAttempt no longer re-reads the verdict LIVE, so an act could be authorised on stale evidence');
+  assert(begin.includes('underlayStillAdmitsTheAct('),
+    'RecoveryBeginAttempt no longer consults the live-verdict decision');
+  // THE ORDER IS LOAD-BEARING: the live check comes AFTER the class re-check, so "not the fault you were sent
+  // for" and "the mount point changed under you" keep a decided precedence rather than an accidental one.
+  const classCheck = begin.indexOf('if !actionable || current != class {');
+  const liveCheck = begin.indexOf('if !underlayStillAdmitsTheAct(');
+  assert(classCheck > 0 && liveCheck > classCheck,
+    'the live-verdict check no longer follows the class re-check, so their precedence is an accident');
+  assert(goTable.includes('TestAFreshVerdictIsNeverPairedWithAStaleObservation'),
+    'the regression test for the transient a real host found is gone');
+});
+
+test('the gate can no longer compare an arm against a baseline it never read', () => {
+  const gate = read(join(repoRoot, 'deploy', 'projection-phase7-gate.sh'));
+  const survey = gate.indexOf('bind_fingerprint() {');
+  const helper = gate.indexOf('container_for() {');
+  assert(helper > 0 && survey > 0 && helper < survey,
+    'container_for is defined after bind_fingerprint again — a shell function does not exist until its '
+    + 'definition has run, so the baseline snapshot would inspect an empty container name and record nothing');
+  const call = gate.indexOf('bind_fingerprint "$WORK/out/binds-before.txt"');
+  assert(call > helper, 'the baseline snapshot is taken before container_for exists');
+  assert(!gate.includes('UNREADABLE" >> "$out"'),
+    'an unreadable container is written into the file that is then compared, so a failed instrument produces '
+    + 'a verdict about the product');
+  assert(gate.includes('die "the bind fingerprint for $server could not be read'),
+    'an unreadable bind fingerprint is no longer fatal');
+});
+
+test('a layer count outside the bound prints the survey that says WHICH layer is extra', () => {
+  const gate = read(join(repoRoot, 'deploy', 'projection-phase7-gate.sh'));
+  const at = gate.indexOf('record "P7-arm-layers:$arm"');
+  assert(at > 0, 'the per-arm layer assertion could not be located');
+  const armVerify = gate.slice(Math.max(0, at - 2_000), at + 200);
+  assert(armVerify.includes('mountrows.sh'),
+    'a layer count outside the bound no longer surveys the mount table, so the arm fails holding no diagnosis');
+  assert(armVerify.includes('MOUNTINFO="/proc/$_daemon_pid/mountinfo"'),
+    'the survey no longer reads the DAEMON namespace as well as the host — which is the exact difference the '
+    + 'first six-arm run could not explain');
+});
+
+test('R6 holds a reference before it detaches, and refuses a mount point that is still serving', () => {
+  const gate = read(join(repoRoot, 'deploy', 'projection-phase7-gate.sh'));
+  const r6 = gate.slice(gate.indexOf('arm_R6()'));
+  const body = r6.slice(0, r6.indexOf('\n# ---'));
+  assert(body.includes('exec 9< '),
+    'R6 no longer holds an open descriptor inside the mount, so the lazy detach can abort the connection and '
+    + 'the SERVE supervisor takes a fault the RECOVERY loop was supposed to spend a budget on');
+  assert(body.includes('P7-R6-connection-held'), 'R6 does not assert that it holds the connection open');
+  assert(body.includes('mount(s) of ours remain at the mount point'),
+    'R6 no longer refuses to proceed when one of our mounts is still at the mount point after the detach');
+  assert(body.includes('projection_gate_unmount_run'),
+    'R6 no longer clears its own dead layers before the restart, so Docker refuses the bind and the run dies '
+    + 'on status 125 with every arm already measured');
+});
+
+// ---------------------------------------------------------------------------------------------------------
 console.log(`\n${passed} passed, ${failed} failed${skippedBlocks.length ? `, ${skippedBlocks.length} SKIPPED` : ''}\n`);
 for (const [name, error] of failures) {
   console.log(`FAILED: ${name}`);

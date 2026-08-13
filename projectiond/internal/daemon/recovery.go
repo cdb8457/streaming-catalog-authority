@@ -387,6 +387,20 @@ func classifyRecovery(readyReason, observed, underlay string) (class string, act
 	}
 }
 
+// underlayStillAdmitsTheAct reports whether a LIVE underlay verdict still authorises the class an attempt was
+// granted for — PHASE 7 §8.4.5, and it is a named function for the same reason `planRemountCleanup` is one: a
+// table can then drive the shipped decision instead of an imitation of it.
+//
+// IT IS THE ONLY CLASS THIS QUESTION APPLIES TO. Every other actionable class was authorised by evidence that
+// does not go stale in this particular way — a corpse of ours does not stop being a corpse of ours — so they
+// pass through untouched, and the function says so rather than leaving it to the caller's `if`.
+func underlayStillAdmitsTheAct(class, liveUnderlay string) bool {
+	if class != RecoverActMountUnderlay {
+		return true
+	}
+	return liveUnderlay == UnderlayExposed
+}
+
 // decideRecovery is the whole state machine, and the order of its clauses IS the precedence. It contacts
 // nothing, takes no probe, writes nothing and blocks on nothing — every effect it authorises is performed by
 // the caller, which is what lets a table test drive the shipped decision across every boundary.
@@ -623,11 +637,12 @@ func ResetRecoveryLedger(probeCacheDir string) error {
 // request the caller carries to the one goroutine that owns the mount.
 func (d *Daemon) RecoveryDecide(now time.Time) recoveryDecision {
 	status := d.Status()
-	// THE UNDERLAY EVIDENCE IS TAKEN OUTSIDE THE MUTEX AND BEFORE THE DECISION, for the same reason
-	// `recoveryInputs` is gathered once: a verdict assembled from two different instants is a verdict about an
-	// instant that never existed. It reads procfs and cannot block, so taking it on this path costs a tick
-	// nothing and never holds the ledger's lock across a syscall.
-	underlay, underlayDigest := d.underlayEvidence()
+	// THE UNDERLAY EVIDENCE COMES FROM THE SAMPLE THAT PRODUCED `MountObserved`, NOT FROM A FRESH READ, AND A
+	// REAL RUN IS WHY — PHASE 7 §8.4.5. Pairing a fresh verdict with the last completed observation is a verdict
+	// about an instant that never existed, and the instant it invented was the one immediately after a
+	// successful recovery: observation still `foreign`, verdict already `underlay-covered`, and the surface
+	// published `refuse-foreign-mount` / `inspect-mount-owner` about a mount point the daemon had just repaired.
+	underlay, underlayDigest := d.sampledUnderlay()
 	class, actionable, refusal := classifyRecovery(status.ReadyReason, status.MountObserved, underlay)
 
 	d.recovery.mu.Lock()
@@ -704,13 +719,24 @@ func (d *Daemon) RecoveryDecide(now time.Time) recoveryDecision {
 // attempts become one real attempt and two accidents.
 func (d *Daemon) RecoveryBeginAttempt(class string, now time.Time) (bool, string) {
 	status := d.Status()
-	// AND THE UNDERLAY EVIDENCE IS RE-TAKEN HERE, WHICH IS THE POINT OF THIS FUNCTION APPLIED TO PHASE 7'S OWN
-	// ROW. Between the decision and this call somebody may have stacked something on the mount point; the
-	// re-classification below then answers `refuse-foreign-mount`, which is not the class this was sent for,
-	// and nothing is spent and nothing is done. A recovery authorised by evidence taken a tick ago is a
-	// recovery authorised by evidence.
-	underlay, underlayDigest := d.underlayEvidence()
+	// THE CLASS IS RE-DERIVED FROM THE SAMPLED PAIR, exactly as the decision was, so that the two agree about
+	// what they are talking about.
+	underlay, underlayDigest := d.sampledUnderlay()
 	current, actionable, _ := classifyRecovery(status.ReadyReason, status.MountObserved, underlay)
+	// ...AND THE EXPECTED-UNDERLAY ROW ALONE IS RE-VERIFIED **LIVE**, BEFORE ANYTHING IS SPENT.
+	//
+	// THIS IS WHERE THE FRESHNESS §8.4.5 TOOK OUT OF THE CLASSIFICATION GOES. The sampled pair is what may name
+	// a class and publish a state; a LIVE read is what may authorise an ACT. Between the decision and this call —
+	// up to one tick, plus however long the owner took to accept the request — somebody may have stacked
+	// something on the mount point, and mounting over it would be acting on a foreign mount, which is the one
+	// thing Phase 6 §3.2 exists to forbid.
+	//
+	// IT IS TAKEN BEFORE THE LOCK AND SPENT AFTER IT. The read is a procfs read and cannot block, but the
+	// recovery mutex guards the durable ledger and nothing that holds it should be doing I/O of any kind.
+	freshUnderlay, freshDigest := underlay, underlayDigest
+	if current == RecoverActMountUnderlay {
+		freshUnderlay, freshDigest = d.underlayEvidence()
+	}
 
 	d.recovery.mu.Lock()
 	defer d.recovery.mu.Unlock()
@@ -729,6 +755,18 @@ func (d *Daemon) RecoveryBeginAttempt(class string, now time.Time) (bool, string
 	if !actionable || current != class {
 		// Not the fault we were sent for any more. Nothing spent, nothing published as an attempt.
 		return false, RecoveryNoActionSupervisorBusy
+	}
+	// THE LIVE VERDICT IS CHECKED IN THE SAME PLACE THE CLASS IS, AND AFTER IT, because "this is no longer the
+	// fault you were sent for" and "the mount point has changed under you" are the same kind of refusal and the
+	// precedence between them should not be an accident. What it publishes is what it FOUND: an operator whose
+	// recovery did not happen is owed the verdict that stopped it.
+	if !underlayStillAdmitsTheAct(current, freshUnderlay) {
+		d.recovery.underlay = freshUnderlay
+		d.recovery.underlayDigest = freshDigest
+		d.recovery.reason = RecoveryRefuseForeignMount
+		d.recovery.state = RecoveryStateIdle
+		d.recovery.remediation = RecoveryRemediationInspectOwner
+		return false, RecoveryRefuseForeignMount
 	}
 	if d.recovery.ledger.Attempts >= RecoveryMaxAttempts {
 		d.recovery.ledger.LockedOut = true
