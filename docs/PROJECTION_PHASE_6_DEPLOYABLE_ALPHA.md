@@ -443,7 +443,7 @@ alpha-candidate checkpoint with every remaining blocker precisely named. It does
 | image | `sha256:a5f12b92d80464a6e3e280498f22a3bd86e732718cee554b549c6ef58e53aef9` |
 | host | Unraid `tower` |
 | OPERATOR SOURCE DIGEST | `6dbb238d51f6415f0b323b95ddee7cc642b1690bcad147524eec4f5710791f73` |
-| GATE SOURCE DIGEST | `afc38f3da63ad2edb45eae0ee5c3f82c0f640a0f96793b8f95e9c094bb7cbfab` |
+| GATE SOURCE DIGEST | `8a48b77c2cd65384dcc8dd3b7013ca355571b400ea3ef0ab184c8e69fff83362` — **MOVED ONCE, AFTER CLOSURE, AND RE-RUN. §11.9** |
 
 **THE COMMIT AND TREE WERE HELD WHILE THIS WAS A CANDIDATE, BECAUSE A DOCUMENT CANNOT NAME THE COMMIT THAT
 CONTAINS IT.** The source frozen and staged to the host is `c70ecb0` — the commit this file was committed as
@@ -454,7 +454,7 @@ defect this whole section exists to make impossible.
 
 **WHAT THE COMMITS AFTER THE FREEZE TOUCH, NAMED RATHER THAN CHARACTERISED.** They are the record itself:
 `docs/PROJECTION_PHASE_6_DEPLOYABLE_ALPHA.md`, the roadmap row and `test/projection-bounded-recovery.ts`.
-**No path under `deploy/`, `projectiond/`, `src/` or either compose file moves after `c70ecb0`** — which is
+**HISTORICALLY — SUPERSEDED.** *"No path under `deploy/`, `projectiond/`, `src/` or either compose file moves after `c70ecb0`"* — true when written, and **§11.9 is where it stopped being true and what was done about it.** `deploy/projection-recovery-gate.sh` moved once, for a reason Projection Phase 7 measured, and the acceptance it certifies was **re-run in full** rather than re-worded. What follows is
 the same claim the previous record made falsely, so here it is stated as the thing a reader can check:
 `git diff c70ecb0..HEAD -- deploy/ projectiond/ src/ docker-compose.projection-alpha.yml
 docker-compose.projection-recovery.yml` is **empty**, and the two source digests above are recomputed from
@@ -744,6 +744,48 @@ carried across, and neither is in the manifest §11.1 compares.
 **NOTHING OUTSIDE THIS TASK'S OWN ROOTS WAS TOUCHED.** No production mount, no existing media library, no
 user share, no unrelated container, network or volume, and no operator secret was modified. The TorBox
 corpus was read and never written.
+
+### 11.9 THE ONE GATE CHANGE AFTER CLOSURE, AND THE RE-RUN THAT PAYS FOR IT
+
+**THIS SECTION EXISTS BECAUSE A CLOSED TRANCHE’S GATE MOVED, AND THE RULE FOR THAT IS RE-RUN, NOT RE-WORD.**
+`test/projection-bounded-recovery.ts` recomputes the two source digests from the working tree on every run and
+fails with exactly that instruction: *"Re-freeze, re-run the affected acceptance, and update the digest — do
+not edit the digest to match."* It failed. This is what happened.
+
+**WHAT MOVED AND WHY.** `RC8`, `RC9` and `RC11` share one injector: `/dev/null` bound over `/dev/fuse` in the
+subject’s own namespace, plus a second daemon’s corpse stacked above the subject. §4 of this document states
+the premise plainly, and it was true when it was written — that the mount syscall is the only thing that can
+repair such a fault, so a mount that cannot succeed drives the budget to exhaustion. **PROJECTION PHASE 7 MADE
+THAT PREMISE FALSE BY MAKING THE PRODUCT BETTER**: it made the corpse drain reachable inside a container, which
+§9.7 of this document named as next work. The drain now removes the corpse, readiness confirms the mount point,
+and the budget is refunded **without any mount syscall succeeding**. Phase 7 §11.4.1 measured these three arms
+failing with `no-action-healthy`, identically, on all three runs of the three-runner.
+
+**WHAT WAS NOT DONE ABOUT IT.** Loosening the arms to accept the new behaviour, which Phase 7 §11.4.1 names as
+the one thing that must not happen: *"editing a closed tranche’s assertion to fit a result."* **EVERY ASSERTION
+OF ALL THREE ARMS IS BYTE-FOR-BYTE THE ONE THAT CLOSED THIS TRANCHE** — exactly `RECOVERY_MAX_ATTEMPTS`
+attempts, the closest consecutive pair at or beyond the whole cooldown, corroborated against Docker’s own
+timestamps to within one tick, `locked-out` with `reset-recovery-ledger`, held for two further cooldowns,
+surviving a container restart on the first reading, and cleared by `--reset-recovery` and nothing else.
+
+**WHAT CHANGED IS THE INJECTOR, TO THE ONE FAULT ON THIS APPLIANCE WHOSE REPAIR GENUINELY REQUIRES A MOUNT:**
+the subject’s **own** mount lazily detached under the masked `/dev/fuse`, leaving the operator’s bind and
+nothing else — no corpse to drain, nothing of ours to unmount, and `Mount()` the whole of the repair. Phase 7
+§8.4 is what makes that state actionable at all; before it the supervisor refused it as foreign. And because
+`umount -l` leaves the FUSE superblock alive only while something references it, the pre-attached consumer is
+asked to hold an **open descriptor** on a file inside the mount first — which is what a media server holds
+while it is playing — and the arm **fails loudly** if the daemon exits instead.
+
+**THE RE-RUN, FROM THE PHASE 7 CANDIDATE THAT CARRIES BOTH DAEMON CHANGES:** `npm run go:recovery-gate:three`
+with `PROJECTIOND_IMAGE=projectiond:phase7-frozen`
+(`sha256:b7f80288aa882503754bc665cfa3bd51a288de21d951016fa7a9bcbf05c6f30f`), from commit
+`eafe1720a29aa4ea3f88344eb88dbc8e7a2dfeb8` staged byte-identically in both directions over 1,660 files —
+**exit 0, 3 pass / 0 fail, three consecutive cold-start runs of 264.9 s, 267.9 s and 265.9 s.** All thirteen
+arms passed in every run, including the three this section is about and including `RC5`, the foreign-overlay
+refusal, which is the arm an operator’s own bind depends on and the one most exposed to Phase 7 §8.4.
+
+**SO THE DIGEST IN §11.1 IS UPDATED TO THE SOURCE THAT WAS ACTUALLY RE-RUN**, which is the only circumstance
+in which it may be touched at all.
 
 ## 12. The alpha readiness decision
 

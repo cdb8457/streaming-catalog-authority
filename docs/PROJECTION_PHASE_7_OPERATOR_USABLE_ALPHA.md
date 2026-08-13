@@ -986,24 +986,34 @@ would be a **third** change to the daemon's mount lifecycle in one sitting, and 
 validate it end to end is the Phase 7 matrix, which is blocked on §11.3. Shipping an unvalidated third change
 to Phase 3's hardest-won code is the churn this repository's discipline exists to prevent.
 
-### 11.5 Offline
+### 11.5 Offline, at candidate 7
 
-Taken on the Windows development host **at the current `HEAD`**, which §11.10 distinguishes from the last
-candidate that was frozen and run. **They are not gate evidence**; they are what makes a run worth attempting,
-and running them at `HEAD` proves nothing about a host.
+Taken on the Windows development host at candidate 7, which §11.12 distinguishes from what has run on a host.
+**They are not gate evidence**; they are what makes a run worth attempting, and running them here proves
+nothing about Unraid.
 
 | What | Result |
 |---|---|
 | `npx tsc --noEmit` | clean |
-| `npm run go:fmt` / `go:vet` / `go test ./...` | clean / clean / every package `ok` |
-| `npx tsx test/projection-phase7.ts` | **35 passed, 0 failed**, and **four** of them failed first and were real |
-| `npx tsx test/projection-mount-hardening.ts` | 32/0 — Phase 2's pins, with the two new drain conditions added |
+| `npm run go:fmt` / `go:vet` / `go test ./...` | clean / clean / **every package `ok`**, through the Docker toolchain |
+| `npx tsx test/projection-phase7.ts` | **43 passed, 0 failed** — 35 before this tranche’s second sitting, with eight added for §8.4, §8.4.5, §8.5 and §8.6 |
+| `npx tsx test/projection-bounded-recovery.ts` | **52 passed, 0 failed** — Phase 6’s pins, plus ten for the expected underlay and the pairing, and both source digests |
+| `npx tsx test/projection-mount-hardening.ts` | 32/0 — Phase 2’s pins, with the drain conditions |
 | `npx tsx test/projection-reliability-loop.ts` | 69/0, 1 block skipped and named (`win32` carries no POSIX mode) |
-| `npx tsx test/projection-bounded-recovery.ts` | 42/0 — Phase 6's pins, including both source digests |
+| `npx tsx test/projection-mount-truth.ts` | 13/0 — Phase 4 |
+| `npx tsx test/projection-operational-mount-health.ts` | 29/0 — Phase 5 |
 | `npx tsx test/custody-runtime-closure.ts` | 39/0 — every shipped `.sh` parses under LF and CRLF |
-| `npx tsx test/projection-evidence-consistency.ts` | **8/0** — with the four Phase 7 assertions §11.11 describes |
-| full `npm run test:offline` | **314 selected, 314 passed, 0 failed, 0 required-but-skipped**, last measured at candidate 3 in 698 s. It was **312/2** at candidate 1 and both failures were real and are §11.6 |
+| `npx tsx test/projection-evidence-consistency.ts` | **8/0** |
+| **full `npm run test:offline`** | **314 selected, 314 passed, 0 failed, 0 required-but-skipped, 673 s.** It was **313/1** at candidates 5 and 6, and the one failure was the Phase 6 gate-source digest pin refusing to certify a run of source that no longer existed — cleared by the re-run Phase 6 §11.9 records, which is the only thing that may clear it |
 
+**THE GO TESTS ADDED FOR THIS TRANCHE ARE TABLES AND THEY WERE PROVED TO BITE**, not merely written: §11.11.1
+is the ten-tamper record, and the Go half of it failed three tests by name against a one-character widening of
+the admitting condition.
+
+**THE FIGURES ABOVE WERE TAKEN BEFORE THIS SECTION WAS WRITTEN, WHICH IS THE ONLY ORDER AVAILABLE**, so the
+three suites that READ this document — `projection-phase7`, `projection-bounded-recovery` and
+`projection-evidence-consistency` — were re-run after every edit to it and are green at the commit this record
+ends with.
 ### 11.6 The two closed suites that went red, and why both were right to
 
 **NEITHER IS A THRESHOLD AND NEITHER PRODUCT BEHAVIOUR CHANGED.**
@@ -1017,7 +1027,7 @@ and running them at `HEAD` proves nothing about a host.
   scanners at. The allowed set is now **two, named**, and the test additionally requires that **both** allowed
   callers use the flag, so an exemption cannot outlive the caller it was made for.
 
-### 11.7 The §9 regression matrix — EIGHT OF NINE GREEN, from candidate 3
+### 11.7 HISTORICALLY — the §9 matrix from candidate 3, EIGHT OF NINE GREEN. §11.7.1 supersedes it
 
 Every gate below ran on the real Unraid host from **candidate 3** — tree manifest `0930f951…`, commit
 `7cb02d5` — with `PROJECTIOND_IMAGE=projectiond:phase7-frozen`
@@ -1053,22 +1063,69 @@ those three arms need a fault the product can no longer be prevented from repair
 gate which is about **repairing** a fault passed in all three runs — `RC1` through `RC7`, `RC10`, `RC12` and
 `RC13`.
 
-### 11.8 Host cleanliness
+### 11.7.1 THE §9 MATRIX RE-RUN FROM CANDIDATE 7 — NINE OF NINE, AND `RC8`/`RC9`/`RC11` ASSERT THEIR ARM AGAIN
 
-Asserted after every attempt, against the baseline captured before any Phase 7 container existed:
+**§11.7 IS SUPERSEDED AS A DESCRIPTION OF THIS DAEMON AND KEPT AS HISTORY.** It ran from candidate 3, whose
+`projectiond/` tree is not the one at `HEAD`: §8.4 and §8.4.5 both changed the daemon after it. This is the
+matrix re-run against the daemon this record ends with.
 
-| What | Result |
+**EVERY GATE BELOW RAN ON THE REAL UNRAID HOST FROM CANDIDATE 7** — commit
+`eafe1720a29aa4ea3f88344eb88dbc8e7a2dfeb8`, tree `887cbf91be54b81e15b14d399db71983593dd4e5`, staged into an
+emptied `/mnt/user/appdata/catalog-p7` and proved byte-identical **in both directions** by two independently
+computed sorted manifests over **1,660** files, both hashing to
+`fdce811c60148ae279cd72369eb3ef6e494e9131c5e7c2b75b2df583aeeb7f7c` — with
+`PROJECTIOND_IMAGE=projectiond:phase7-frozen`
+(`sha256:b7f80288aa882503754bc665cfa3bd51a288de21d951016fa7a9bcbf05c6f30f`), **serialised one after another**,
+because two gates on this host bind the same loopback ports and the second dies on an allocated port.
+
+**THE IMAGE DIGEST IS ITSELF THE CHECK THAT THE DAEMON DID NOT MOVE BETWEEN CANDIDATES 6 AND 7.** Both rebuild
+to `sha256:b7f80288…` from their own frozen trees, and `git rev-parse HEAD:projectiond` is `08d9e9af01203b34`
+at both — so candidate 7 differs from candidate 6 in the Phase 7 gate and this record, and in nothing the
+matrix below has as a subject.
+
+| Gate | Runs | Result |
+|---|---|---|
+| `go:recovery-gate:three` | 3 | **exit 0 — 3 pass / 0 fail**, cold starts of 264.9 s, 267.9 s, 265.9 s. **All thirteen arms in every run**, including `RC8` (exactly 3 attempts, closest pair **20,999 ms** against a 20,000 ms cooldown, corroborated against Docker’s own timestamps to within one tick), `RC9` (locked out, held for two further cooldowns), `RC11` (survived a container restart on the first reading, cleared only by `--reset-recovery`) and `RC5` (the foreign overlay refused, still mounted, nothing spent) |
+| `go:stale-mount-gate:three` | 3 | **exit 0 — 3 pass / 0 fail**, 91.2 s, 90.9 s, 90.8 s |
+| `go:serve-death-gate:three` | 3 | **exit 0 — 3 pass / 0 fail**, 17.9 s, 17.8 s, 19.5 s |
+| `go:mount-truth-gate:three` | 3 | **exit 0 — 3 pass / 0 fail**, 20.7 s, 20.7 s, 20.8 s |
+| `go:mount-health-gate:three` | 3 | **exit 0 — 3 pass / 0 fail**, 89.6 s, 91.3 s, 91.6 s |
+| `go:sustained-outage-gate:three` | 3 | **exit 0 — 3 pass / 0 fail**, 90.0 s, 89.5 s, 88.8 s |
+| `go:publisher-mount-gate` | 1 | **exit 0** |
+| `go:rclone-comparison-gate` | 1 | **exit 0** |
+| `deploy/projection-alpha-acceptance.sh` | 1 | **exit 0 — 11 of 11 arms**, driving the shipped operator command |
+
+**NINE OF NINE, WHERE §11.7 MANAGED EIGHT.** The one that could not pass then is the one this tranche repaired
+the injector for, and Phase 6 §11.9 is the record of that change with every assertion of the three arms
+unchanged. **`RC5` PASSING IS THE MOST LOAD-BEARING ROW HERE**: Phase 7 §8.4 gives the foreign row its first
+admitting case in this product’s history, and `RC5` is the arm that proves the admitting case did not become
+the general case. It refused, spent nothing, and left the overlay exactly where it was, three times.
+
+**AND `RC12` PASSING MATTERS FOR THE SAME REASON PHASE 2 EXISTS**: the same pre-attached unprivileged consumer
+read the same digest after the recovery, in all three runs, without being restarted or re-bound.
+
+### 11.8 Host cleanliness, asserted against a baseline captured before any Phase 7 container existed
+
+**THE BASELINE IS THIS SESSION’S OWN, TAKEN BEFORE ANYTHING WAS STAGED**, because the one §11.1.1 records was
+taken on a host that has since gained containers of its own: **44** containers, **28** running, **18** networks,
+**46** volumes, **0** `fuse.projectiond` mounts. It is preserved beside the run transcripts.
+
+| What | Result after everything above |
 |---|---|
-| container set | **identical** after every attempt and after every regression gate |
-| network set | **identical** |
-| volume set | **identical** |
-| running-container set | **identical** |
+| container set | **IDENTICAL** — 44 entries, compared as a SET and not a count |
+| running-container set | **IDENTICAL** — 28 entries |
+| network set | **IDENTICAL** — 18 entries |
+| volume set | **IDENTICAL** — 46 entries |
 | `fuse.projectiond` mounts on the host | **0** |
-| run directories under the gate root | **0** |
-| empty gate roots left by the regression matrix | removed with `rmdir`, which refuses a non-empty directory and therefore could not have taken anything with it |
-| kept evidence | the six run transcripts, at 0600 in a 0700 directory under `.projection-phase7-gate/evidence/`, searched and carrying no credential, bearer token or query-string secret. The frozen tree at `/mnt/user/appdata/catalog-p7` and the image `projectiond:phase7-frozen` are kept for the same reason Phase 6 kept its own |
-| operator data | **untouched.** No production mount, no existing media library, no user share, no unrelated container, network or volume, and no operator secret was modified. `endpoint.json` was read and never written |
+| run directories anywhere under the frozen tree | **0** |
+| empty gate roots left by the matrix | removed with `rmdir`, which refuses a non-empty directory and therefore could not have taken anything with it |
+| gate roots remaining | **one** — `.projection-reliability-loop-gate`, holding the redaction-safe origin-recheck observations §7 requires to be recorded |
+| kept evidence | every run transcript and arm log from attempts 1–6, the nine matrix logs, the matrix summary and the host baseline, at 0600 in a 0700 directory OUTSIDE the frozen tree — moved there deliberately, because a freeze empties the tree and the evidence of previous attempts may not be what a re-freeze deletes |
+| operator data | **untouched.** No production mount, no existing media library, no user share, no unrelated container, network or volume, and no operator secret was modified. `endpoint.json` was **read and never written**, which §7 requires and which is what makes the blocker in §12 an operator decision rather than this tranche’s |
 
+**AND THE UNRELATED PRODUCTION CONTAINERS WERE NEVER TOUCHED, WHICH THE SET COMPARISON IS WHAT PROVES.** 28
+containers were running before and the same 28 by name are running after; a count would have allowed one to be
+replaced by another.
 ### 11.9 THE ARM LEDGER — exactly which of the six ran, and how often
 
 **THIS TABLE IS THE ONLY PLACE AN ARM COUNT MAY BE READ FROM**, and it exists because the roadmap row denied
@@ -1171,40 +1228,125 @@ because a table cell is an assertion. The cell now points at §11.9's blockquote
 is the pin working on the writer who wrote it, within a minute of it existing, which is the most that can
 honestly be said for any check of this kind.
 
+### 11.11.1 THE TEN TAMPERS THAT PROVE THE NEW PINS BITE, AND THE TREE THEY WERE REVERTED INTO
+
+**A PIN NOBODY HAS SEEN FAIL IS A PIN NOBODY HAS TESTED**, which is the rule §11.11 already applies to the
+four evidence-consistency axes. Every assertion §8.4, §8.4.5, §8.5 and §8.6 rest on was driven the same way:
+edit ONE shipped or documented fact, run the suite that is supposed to notice, record what it said, revert with
+`git checkout --`. **All ten failed the intended assertion and the working tree was clean after every revert**,
+which is the second half of the claim: a tamper that was not reverted is a tamper that shipped.
+
+| Tamper | What was changed | What failed |
+|---|---|---|
+| 1 | a safety clause removed from §8.4 | *the contract predeclares the classification decision, its four verdicts and its safety clauses* |
+| 2 | §3.1’s R1 clause SOFTENED rather than reinstated | *the reinstated R1 clause is reinstated WORD FOR WORD, and the history of it being false is kept* |
+| 3 | R6 put back to stacking a corpse | *R6 injects R1’s fault, which is what §3.1 predeclared for it* |
+| 4 | `RC8` loses the descriptor holder | *Phase 6’s RC8 injector is repaired the same way, and its assertions are untouched* |
+| 5 | R1 stops asserting the fingerprint is unchanged | *the gate reads the two new surface fields and asserts them on BOTH sides* |
+| 6 | R5 stops comparing the published verdict | *the gate reads the two new surface fields and asserts them on BOTH sides* |
+| 7 | the drain-alone repair stops being a named decision | *the layer residual fix is a named decision with a table* |
+| 8 | a FIFTH underlay verdict declared in Go only | *the Go source publishes no code the contract does not name* |
+| 9 | the two startup measurements stop being cross-checked | *a fingerprint that disagrees with the startup count is discarded rather than trusted* |
+| 10 | the fingerprint moved to AFTER the first mount | *the underlay fingerprint is taken BEFORE the first mount and is never re-taken* |
+
+**AND FIVE MORE PINS WERE PROVED IN THE GO PACKAGE THE SAME WAY.** Widening the admitting condition from
+`underlay == UnderlayExposed` to `underlay != ""` failed three tests by name — the classification table, the
+read-only-on-the-foreign-row table and the unwired-verifier branch. **The read-only table failed only after it
+was strengthened**, and that is worth recording: as first written it compared every verdict against a BASELINE
+computed from `underlay-unknown`, and the tamper moved the baseline too, so an invariance check alone passed a
+change that had made every foreign mount actionable. The foreign row is now asserted absolutely on both sides.
+
+### 11.12 WHAT CANDIDATE 7 HAS RUN, AND WHAT IT HAS NOT
+
+**CANDIDATE 7 IS `eafe1720a29aa4ea3f88344eb88dbc8e7a2dfeb8`**, tree `887cbf91be54b81e15b14d399db71983593dd4e5`,
+`projectiond/` tree `08d9e9af01203b348d99d9020754ede038808487`, Phase 7 gate source `96c12f0c1d116288` plus the
+§11.4 #15 fix, operator source `6dbb238d51f6415f`, staged byte-identically in both directions over **1,660**
+files (`fdce811c60148ae279cd72369eb3ef6e494e9131c5e7c2b75b2df583aeeb7f7c` on each side independently), image
+`sha256:b7f80288aa882503754bc665cfa3bd51a288de21d951016fa7a9bcbf05c6f30f`.
+
+| | From candidate 7? |
+|---|---|
+| the whole §9 regression matrix, nine of nine | **YES** — §11.7.1 |
+| Phase 6 `go:recovery-gate:three`, three cold starts, thirteen arms each | **YES** — §11.7.1, and Phase 6 §11.9 |
+| the alpha install matrix, 11 of 11 arms, shipped operator command | **YES** — §11.7.1 |
+| TypeScript, `gofmt`, `go vet`, every Go package | **YES** — §11.5 |
+| the focused Phase 2–7, evidence-consistency and custody suites | **YES** — §11.5 |
+| the full offline inventory | **YES** — §11.5 |
+| the ten-tamper proof that the new pins bite | **YES** — §11.11.1 |
+| **`npm run go:phase7-gate:three` — the sequence this tranche closes on** | **NO. NOT ONCE.** |
+
+**THAT LAST ROW IS THE TRANCHE.** Candidate 7 exists because candidate 6 exposed §11.4 #15, and the Phase 7
+gate source therefore moved after the last sequence attempt. **NO FIGURE IN §11.3.3 OR §11.3.4 WAS TAKEN WITH
+THE GATE AS IT STANDS**, and the two arms those attempts each passed — R1 and R2 — are attributed to candidates
+5 and 6 in §11.9 and nowhere else.
+
+**WHY THE SEQUENCE HAS NOT RUN FROM IT, STATED AS A FACT RATHER THAN AS A PLAN.** From the moment candidate 7
+was frozen the provider has been serving a CDN origin the operator has not allowlisted — `4fea5e1bdeaa`,
+against an `allowedOriginCount` of 5, verdict `disallowed`, re-observed after the whole matrix had run. §7
+predeclares that a run into that is **BLOCKED rather than failed** and that **this tranche does not write
+`endpoint.json`**, so the sequence was not launched into a state in which every read fails at the egress
+allowlist. The blocker was escalated with a **digest and a count and nothing else**, and every
+provider-free obligation in §4.1 was completed while it stood — which is the whole of §11.7.1.
+
+**WHAT WOULD CLOSE IT, EXACTLY.** One operator action or one rotation back to an allowlisted pool member, and
+then `npm run go:phase7-gate:three` from candidate 7 with nothing else touched. Everything else §4.1 asks for
+is done and recorded above.
+
 ## 12. The readiness decision
 
 # **NO-GO.**
 
-**§4.2 forbids a GO here and every one of its clauses is unsatisfied.** Three consecutive fresh complete
-sequences have not been run; **no complete six-arm sequence has ever run at all**; **one arm of six has
-executed, twice, and failed both times** (§11.9); and the tranche has spent **three of its seven** known
-defects on shipped product code, one of them introduced by this tranche and caught only by a real host
-(§11.4).
+**§4.1 CLAUSE 1 IS UNSATISFIED AND NOTHING ELSE MATTERS UNTIL IT IS.** `npm run go:phase7-gate:three` has
+**never completed one run**, let alone three consecutive fresh ones, from any candidate. §4.2 forbids a GO on
+fewer than three complete passing sequences and this document does not manufacture one.
 
-**WHAT IS BLOCKING IT, IN ORDER:**
+**WHAT IS BLOCKING IT, IN ORDER, AND EACH ONE IS A DIFFERENT KIND OF THING:**
 
-1. **ARM R1 MEASURED FALSE, TWICE, IDENTICALLY.** §11.3.1. The mount was removed from beneath a living
-   daemon — the most likely operator-side accident there is, and the fault `recover-mount-empty` exists in
-   Phase 6 §3.2's table for — and **the appliance did not repair it**: no attempt spent, no generation
-   advanced, the namespace never back, and the operator's four windows reading **0 of 4** afterwards. The
-   daemon was alive, and its own log says exactly what it did: `recovery refused: refuse-foreign-mount
-   (inspect-mount-owner)`. **The refusal is correct against Phase 6 §3.2 as written**, which is why §11.3.2
-   records the R1 clause as SUPERSEDED and names the classification decision that Phase 8 owes.
-2. **FIVE OF THE SIX RECOVERY ARMS HAVE STILL NEVER RUN.** R1 is the first arm and it stops the run.
-   Everything this document says about R2 to R6 is a contract, not a measurement.
-3. **THE PROVIDER'S EGRESS ALLOWLIST IS PERISHABLE AND IT STOPPED ONE ATTEMPT OUTRIGHT.** §11.3. It is not a
-   product defect, it needs an operator action, and it makes the three-consecutive-fresh-run rule expensive
-   in a way §7 predeclared.
-4. **`RC8`/`RC9`/`RC11` cannot assert their arm against this candidate.** §11.4.1. Not a regression, and not
-   something to be fixed by loosening the assertion.
-5. **The mount-layer residual of §11.4.2 is unfixed**, and `MOUNT_LAYERS_ABOVE_FLOOR_MAX` would measure 2.
-6. **THE GATE AT `HEAD` HAS NEVER RUN.** §11.10. One commit — the §11.4 #7 status-reader fix — changed gate
-   source after the last measured candidate, so the next attempt owes a re-freeze before it owes anything
-   else.
+1. **NO SEQUENCE HAS PASSED.** Attempt 5 reached all six arms and failed on four defects; attempt 6 fixed the
+   product one and was BLOCKED at arm R3 by the provider. §11.9 is the arm ledger and §11.12 is what candidate
+   7 has and has not run.
+2. **THE PROVIDER IS SERVING AN ORIGIN OUTSIDE THE OPERATOR’S ALLOWLIST RIGHT NOW.** `4fea5e1bdeaa`, against a
+   count of 5, verdict `disallowed`. **THIS IS NOT A PRODUCT DEFECT AND THE ALLOWLIST DID EXACTLY ITS JOB.** It
+   needs one operator action or one rotation back, §7 predeclared both the failure and the response, and this
+   tranche does not write `endpoint.json`.
+3. **R6 HAS NEVER PASSED, AND ITS REPAIRED INJECTOR HAS NEVER RUN.** §11.4 #14. The repair is the one §8.6
+   argues for and it is unmeasured, which is the same thing this document says about every unrun claim.
+4. **THE PHASE 7 GATE AT CANDIDATE 7 HAS NEVER RUN.** §11.12. One instrument fix moved it after the last
+   attempt, so the next attempt owes a sequence before it owes anything else.
 
-**WHAT IS NOT BLOCKING IT, AND IS WORTH SAYING BECAUSE IT IS THE EXPENSIVE HALF:** the topology stands up,
-the three servers attach before the first mount, the operator's windows match through the mount and inside
-every server, the three-way overlap is observed, **all three servers direct-play a real provider's object for
-five minutes simultaneously**, **all three seek ten verified media-time positions**, **all three transcode it
-for five minutes**, and the host is left exactly as it was found. **§11.3.1 is that, measured** — §11.2 is the
-same stages one candidate earlier, with two of them failed by instruments that were wrong.
+**WHAT IS NO LONGER BLOCKING IT, AND THIS IS THE EXPENSIVE HALF THAT WAS BOUGHT:**
+
+- **ARM R1 RECOVERS.** The mount removed from beneath a living daemon — the most likely operator-side accident
+  on this appliance, and the fault Phase 6 §3.2 had a row for and could not reach — is repaired, twice, from two
+  candidates: one bounded `recover-mount-underlay` at **14,603 ms** and **13,109 ms** against a 33,000 ms budget,
+  a sibling reading a byte again at **17,153 ms** and **15,615 ms** against 59,000, **4 of 4** operator windows,
+  **all three** media servers reading them inside their own containers as their own uid, **one** layer above the
+  floor, and the underlay fingerprint identical before the fault and after the recovery. §8.4 is the contract
+  for it, written before the run, and §8.4.4 is why reinstating the predeclared clause word for word is not a
+  threshold moving.
+- **ARM R2 RECOVERS**, twice, the same way, from a second daemon’s corpse: 11,510 ms and 13,096 ms.
+- **R3, R4 AND R5 EACH PASSED EVERY ASSERTION OF THEIR OWN ARM**, once, in attempt 5 — including R5, the
+  refusal, with `underlay-covered` beside it and the tmpfs asserted still mounted and byte-unmodified.
+- **THE §9 MATRIX IS NINE OF NINE FROM CANDIDATE 7**, where §11.7 managed eight, and `RC8`/`RC9`/`RC11` assert
+  their arm again **with every assertion unchanged** — Phase 6 §11.9 is the record of the injector repair.
+- **THE SAFETY CONTRACT HELD EVERYWHERE IT WAS MEASURED.** No file-system type became trusted; the verdict is
+  read on one row of one table; nothing was ever unmounted on the new path; a re-mounted bind of the same share
+  is refused; an unreadable mount table refuses; an unwired verifier refuses; and the act is re-verified live
+  before a budget is spent.
+- **THE MOUNT-LAYER THRESHOLD DID NOT MOVE AND STOPPED BITING**: `1/1` after every arm attempt 6 reached.
+- **AND THE STAGES THAT MAKE THIS TRANCHE WHAT IT IS PASSED IN BOTH ATTEMPTS**: three real digest-pinned media
+  servers attached before the first mount, catalogued a real TorBox object through their own predicates, read
+  four approved windows inside their own containers, were observed scanning on one clock, seeked ten verified
+  media-time positions each, **direct-played five minutes each simultaneously** and **transcoded five minutes
+  each**.
+
+**SO THE HONEST SUMMARY IS ONE SENTENCE.** The defect this tranche was blocked on is fixed, contracted, pinned,
+tamper-proved and **measured on a real host with three real media servers attached**; the regression matrix is
+green for the first time; and the tranche is still a NO-GO because the sequence that closes it has not run once,
+and cannot run today, on a provider rotation nobody controls.
+
+**WHAT THIS IS NOT, RESTATED BECAUSE IT IS EASY TO READ THE PARAGRAPH ABOVE AS MORE THAN IT SAYS.** This is a
+rough-edged **one-host TorBox alpha**. It is not a beta, not a release, not a marketplace package, not a second
+host and not a second provider: **there is no Real-Debrid support and no Usenet support** — Phase 6 §13 has
+contracts for them and a contract is not a feature. §10 is the full list of what is not claimed, it is longer
+than this section, and every line of it still stands.
