@@ -1264,6 +1264,12 @@ change that had made every foreign mount actionable. The foreign row is now asse
 files (`fdce811c60148ae279cd72369eb3ef6e494e9131c5e7c2b75b2df583aeeb7f7c` on each side independently), image
 `sha256:b7f80288aa882503754bc665cfa3bd51a288de21d951016fa7a9bcbf05c6f30f`.
 
+**AND THE COMMITS AFTER THE FREEZE MOVE `docs/` AND NOTHING ELSE, WHICH IS A CHECK RATHER THAN A REASSURANCE.**
+`git diff eafe172..HEAD -- deploy/ projectiond/ src/ docker-compose.projection-phase7.yml
+docker-compose.projection-recovery.yml docker-compose.projection-alpha.yml` is **empty**, so every subject the
+matrix in §11.7.1 measured is byte-identical at the commit this record ends with. That is the claim Phase 6’s
+first closure row made falsely, stated here as something a reader can run.
+
 | | From candidate 7? |
 |---|---|
 | the whole §9 regression matrix, nine of nine | **YES** — §11.7.1 |
