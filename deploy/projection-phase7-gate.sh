@@ -1918,18 +1918,27 @@ container_for() {
   esac
 }
 
+# THE MOUNT LIST IS SORTED, AND THE FIRST RUN THAT COULD COMPARE IT AT ALL IS WHY.
+#
+# `docker inspect` returns `.Mounts` as a JSON ARRAY and its order is not a property of the container. Measured
+# on this host, within one run: `mnt=>/media/projection` came back FIRST in the baseline and LAST after arm R1,
+# with the same container id, the same start instant and the same four mounts with the same modes. Comparing an
+# unordered collection as a string reported the operator's own bind as having changed when nothing had.
+#
+# WHAT IS ASSERTED IS THEREFORE THE SET AND NOT THE ORDER, and that is the whole of the claim this pays for:
+# same container, started at the same instant, holding the same sources at the same destinations with the same
+# modes. A mount ADDED, REMOVED, RE-POINTED or RE-MODED still fails, which is what "never re-bound" means.
 bind_fingerprint() {
-  local out="$1" server line
+  local out="$1" server identity mounts
   : > "$out"
   for server in $P7_SERVERS; do
     # A SNAPSHOT THAT COULD NOT BE TAKEN IS NOT A SNAPSHOT, AND IT MAY NOT BE WRITTEN INTO A FILE THAT IS THEN
     # COMPARED. The old fallback wrote a placeholder and let the comparison proceed, so an instrument that had
     # failed produced a verdict about the product. An unreadable container is fatal here instead.
-    line="$(docker inspect "$(container_for "$server")" \
-      --format "$server {{.Id}} {{.State.StartedAt}} {{range .Mounts}}{{.Source}}=>{{.Destination}}:{{.Mode}};{{end}}" \
-      2>/dev/null)"
-    case "$line" in
-      "$server "*) printf '%s\n' "$line" >> "$out" ;;
+    identity="$(docker inspect "$(container_for "$server")" --format '{{.Id}} {{.State.StartedAt}}' 2>/dev/null)"
+    mounts="$(docker inspect "$(container_for "$server")" --format '{{range .Mounts}}{{printf "%s=>%s:%s\n" .Source .Destination .Mode}}{{end}}' 2>/dev/null | grep -v '^$' | LC_ALL=C sort | tr '\n' ';')"
+    case "$identity" in
+      ?*) printf '%s %s %s\n' "$server" "$identity" "$mounts" >> "$out" ;;
       *) die "the bind fingerprint for $server could not be read, so no verdict about its binds is possible" ;;
     esac
   done

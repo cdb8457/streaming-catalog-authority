@@ -1011,6 +1011,14 @@ test('the gate can no longer compare an arm against a baseline it never read', (
     + 'a verdict about the product');
   assert(gate.includes('die "the bind fingerprint for $server could not be read'),
     'an unreadable bind fingerprint is no longer fatal');
+  // AND THE MOUNT LIST IS COMPARED AS A SET. Docker returns `.Mounts` as an array whose order is not a property
+  // of the container, and a run measured the operator's own bind moving from first to last INSIDE ONE RUN with
+  // nothing changed. A string comparison of an unordered collection is a verdict about JSON ordering.
+  assert(gate.includes('LC_ALL=C sort'),
+    'the bind fingerprint no longer sorts the mount list, so an arbitrary docker inspect ordering reports the '
+    + 'operator bind as changed when nothing has');
+  assert(gate.includes('{{range .Mounts}}{{printf'),
+    'the mount list is no longer emitted one entry at a time, so it cannot be sorted');
 });
 
 test('a layer count outside the bound prints the survey that says WHICH layer is extra', () => {

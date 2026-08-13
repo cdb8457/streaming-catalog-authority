@@ -523,9 +523,9 @@ which frozen source, and what stopped each attempt. Every figure names the tree 
 
 ### 11.1 The frozen candidates, and which measurement came from which
 
-**THE CANDIDATE MOVED FOUR TIMES AND EACH MOVE IS RECORDED RATHER THAN GLOSSED**, because Phase 6's whole
-correction was about a record that named one commit and published figures from three trees. **THREE OF THE
-FOUR PRODUCED MEASUREMENTS, AND NO FIGURE IN §11 IS ATTRIBUTED TO A CANDIDATE THAT DID NOT PRODUCE IT.**
+**THE CANDIDATE HAS MOVED SIX TIMES AND EACH MOVE IS RECORDED RATHER THAN GLOSSED**, because Phase 6's whole
+correction was about a record that named one commit and published figures from three trees. **FIVE OF THE
+SIX PRODUCED MEASUREMENTS, AND NO FIGURE IN §11 IS ATTRIBUTED TO A CANDIDATE THAT DID NOT PRODUCE IT.**
 
 | # | Commit | Staged manifest | Image | What ran from it |
 |---|---|---|---|---|
@@ -533,6 +533,8 @@ FOUR PRODUCED MEASUREMENTS, AND NO FIGURE IN §11 IS ATTRIBUTED TO A CANDIDATE T
 | 2 | `79fc79d2db89737f4f79a18b75ce927895c28a79` | `d86db06c…` over **1,658** files, byte-identical in **both** directions | **the same** `sha256:83b529f0…`, rebuilt from the re-frozen tree | **attempt 1** (§11.2), **attempt 2** (§11.3, BLOCKED), and the **first** `go:recovery-gate:three`, which is where §11.4 #5 was found |
 | 3 | `7cb02d5a3909a283ea2851275933ace2160184c7` | `0930f951…` over **1,658** files, byte-identical in **both** directions | `sha256:911df075be6fd8ce72f6a81d003645e019217a4893d3515ea04a728fb9c003e2` | the **second** `go:recovery-gate:three`, the **whole §11.7 regression matrix including the alpha install matrix**, and **attempt 3** (§11.3.1) |
 | 4 | `2697ddeddb7eae51f8021714039bf49165200009` | `fe2e606c…`, byte-identical in **both** directions | **the same** `sha256:911df075…`, rebuilt from the re-frozen tree | **attempt 4** only (§11.3.2) |
+| 5 | `d38e45a22b699c9f64d33dfc7fa3fbe2c26d957a` | `504a6c26…` over **1,660** files, byte-identical in **both** directions | `sha256:0ccb21304d5fb8338ce79bc96e6493d2b26e10b794e7d8cf5a65bdf6ed262037` | **attempt 5** (§11.3.3) — the first run that reached all six arms |
+| 6 | `566d2afbd599f8b3c1f619be15614a6b343dc5dc` | `db1709d4…` over **1,660** files, byte-identical in **both** directions | `sha256:b7f80288aa882503754bc665cfa3bd51a288de21d951016fa7a9bcbf05c6f30f` | **attempt 6** (§11.3.4) |
 
 **THE STAGING PROOF IS THE ONE PHASE 6 DID NOT HAVE, AND IT IS SYMMETRIC.** `/mnt/user/appdata/catalog-p7`
 was removed and recreated **empty**, `git archive <commit>` was extracted into it, and a sorted per-file
@@ -540,11 +542,13 @@ sha256 manifest was computed **independently on each side** — from the archive
 from the extracted tree on Tower. The two manifests hash to the same value, which is a stronger statement
 than an empty diff in one direction.
 
-**THE IMAGE MOVED EXACTLY ONCE, AND THAT IS A MEASUREMENT RATHER THAN AN ASSUMPTION.** Candidates 1 and 2
+**THE IMAGE HAS MOVED THREE TIMES, AND EACH MOVE IS A MEASUREMENT RATHER THAN AN ASSUMPTION.** Candidates 1 and 2
 both rebuilt to `sha256:83b529f0…` and candidates 3 and 4 both rebuilt to `sha256:911df075…`. The single move
 is between candidate 2 and candidate 3, which is the drain-liveness fix of §11.4 #5 — the only commit in this
-tranche after the first freeze that touches `projectiond/`. Both digests differ from Phase 6's
-`sha256:a5f12b92…`, and they are supposed to: this tranche changes the daemon.
+tranche after the first freeze that touches `projectiond/`. Candidates 5 and 6 move it twice more —
+`sha256:0ccb2130…` and `sha256:b7f80288…` — because each of them changes `projectiond/`, which is what §8.4, §8.4.5
+and §8.5 are. Every one of the four digests differs from Phase 6's `sha256:a5f12b92…`, and they are supposed
+to: this tranche changes the daemon.
 
 ### 11.1.1 The source digests, per candidate, because two of the three moved
 
@@ -556,6 +560,16 @@ source moved twice and the daemon source once, so each is given against the cand
 | 2 — `79fc79d` | `33005b52c9896455` | `87b7238355d25e89` | `4e4771110608b037` | `sha256:83b529f0…` |
 | 3 — `7cb02d5` | `33005b52c9896455` | `87b7238355d25e89` | **`6a8a371f04ff113d`** | `sha256:911df075…` |
 | 4 — `2697dde` | `33005b52c9896455` | **`23cb90f0b1d0f193`** | `6a8a371f04ff113d` | `sha256:911df075…` |
+| 5 — `d38e45a` | **`6dbb238d51f6415f`** | **`98a7491602c200ca`** | **`0d7c371dc059c1cb`** | `sha256:0ccb2130…` |
+| 6 — `566d2af` | `6dbb238d51f6415f` | **`96c12f0c1d116288`** | **`08d9e9af01203b34`** | `sha256:b7f80288…` |
+
+**THE OPERATOR DIGEST COLUMN CHANGES SPELLING AT CANDIDATE 5 AND THE SOURCE IT COVERS DOES NOT.** Candidates 2
+to 4 quote `33005b52c9896455`, computed by hand in the session that produced them and not reproducible from
+anything committed. Candidates 5 and 6 quote `6dbb238d51f6415f`, which is the **same five files** under the
+recipe `sourceDigest` in `test/projection-bounded-recovery.ts` implements — path, then LF-normalised content,
+sorted, one sha256 — so a reader can re-derive it rather than take it. The two numbers are not comparable and
+saying so is the point; what is checkable is that the operator source has not moved between candidates 5 and 6
+and that the offline pin agrees with the number printed here.
 
 **THE OPERATOR SOURCE DIGEST IS THE SAME AT EVERY CANDIDATE**, which is what makes §11.7's alpha install
 matrix attributable: the shipped operator command an operator runs did not move at any point in this tranche.
@@ -799,6 +813,59 @@ dead mount that made Docker refuse the restart with status 125.
 
 **NO CLAIM IS MADE HERE ABOUT A SEQUENCE.** One run of three, and it failed. §11.9 is the arm ledger.
 
+### 11.3.4 ATTEMPT 6 — THE PRODUCT FIX HELD, AND THE PROVIDER BLOCKED IT AT ARM R3
+
+**FROM CANDIDATE 6**, commit `566d2afbd599f8b3c1f619be15614a6b343dc5dc`, tree
+`776296343429948d71d935a1ac4a46f07a9856f4`, staged into an emptied `/mnt/user/appdata/catalog-p7` from
+`git archive` and proved byte-identical **in both directions** — two sorted per-file sha256 manifests computed
+independently on each side over **1,660** files, both hashing to
+`db1709d4eca06793b2e8dcb24907d9661d4db29d0de899f2c7dced17771c270f`. Image
+`sha256:b7f80288aa882503754bc665cfa3bd51a288de21d951016fa7a9bcbf05c6f30f`. The §7 recheck answered `allowed`
+on `b16331429dc1` fourteen minutes before the sequence started.
+
+**RECORDED AS BLOCKED, NOT FAILED, PER §7, AND IT COUNTS TOWARD NOTHING IN EITHER DIRECTION.**
+
+**WHAT IT PROVED FIRST, AND IT IS THE POINT OF THE CANDIDATE.** §8.4.5’s pairing correction held on the real
+host: `P7-R1-remediation` — the assertion attempt 5 failed — **passed**, and with it every other assertion of
+both recovering arms:
+
+```
+before R1: 1 mount(s) of ours and 1 row(s) of any kind at the mount point, against a floor of 0
+PASS  P7-R1-action-ms 13109/33000     PASS  P7-R1-ready-ms 15615/59000
+PASS  P7-R1-remediation               PASS  P7-R1-action-is-the-underlay-row
+PASS  P7-R1-underlay-digest-unchanged PASS  P7-R1-attempts 1/1   PASS  P7-R1-single-flight 1/1
+PASS  P7-arm-layers:R1 1/1
+before R2: 1 mount(s) of ours and 1 row(s) of any kind at the mount point, against a floor of 0
+PASS  P7-R2-action-ms 13096/33000     PASS  P7-R2-ready-ms 15367/59000
+PASS  P7-arm-layers:R2 1/1
+before R3: 1 mount(s) of ours and 1 row(s) of any kind at the mount point, against a floor of 0
+```
+
+**AND THE LAYER RESIDUAL OF §11.4 #13 DID NOT RECUR, WHICH IS WHY IT IS RESOLVED RATHER THAN STILL OPEN.**
+Attempt 5 measured 2/1 from R3 onward; attempt 6 measured **1/1 after every arm it reached, with `before Rn`
+reading 1 every time.** The only thing that changed between the two candidates on that path is #11 — and #11 is
+exactly the mechanism: a transient refusal changes the sustained class, and a class that changes and comes back
+is a second actionable window, so the supervisor took a **second** action for one fault and the second one
+stacked a live layer. The count was a symptom of the pairing defect and not a second defect of its own.
+
+**WHAT BLOCKED IT IS §7, AT THE WORST POSSIBLE MOMENT IN THE RUN.** Arm R3 restores the provider mid-cooldown
+and measures the first read after release. The recheck run immediately after the failure:
+
+```
+allowedOriginCount=5    resolvedOriginDigest=4fea5e1bdeaa
+resolvedOriginInAllowlist=NO    verdict=disallowed    resolverStatus=200
+```
+
+So the reads after release were refused by the daemon’s **egress allowlist**, which is the one job it exists
+for: `P7-R3-recovery-ms` measured **122,922 ms against 80,000**, `P7-R3-half-open-probes` **4 against 1**, and
+`P7-arm-windows:R3` **1 of 4**. Every other R3 assertion passed — the read failed inside the deadline (610 ms
+against 20,000), the breaker opened, the refusal was 3 ms against 5,000, **zero** requests reached a live
+resolver during the hold, no recovery action was taken and the mount was untouched.
+
+**THE BLOCKER WAS ESCALATED WITH A DIGEST AND A COUNT AND NOTHING ELSE, AND `endpoint.json` WAS NOT WRITTEN.**
+§7. The one remaining instrument defect the run exposed is §11.4 #15, and every provider-free obligation
+continued while the allowlist was blocked.
+
 ### 11.4 The defects the runs found, in the order the runs found them
 
 **THIS TABLE IS THE CANONICAL LEDGER. EVERY DEFECT COUNT ANYWHERE ELSE IN THIS REPOSITORY IS DERIVED FROM
@@ -807,7 +874,7 @@ product-fix rows and fails if this document's headline or the roadmap row states
 **FIVE, TWO IN THE PRODUCT** for the interval between the run that found #5 and the run that found #7, which
 is exactly the class of stale summary that pin now exists to catch.
 
-**14 DEFECTS. SIX ARE IN SHIPPED PRODUCT CODE, AND ONE OF THOSE FIVE WAS INTRODUCED BY THIS TRANCHE
+**15 DEFECTS. SIX ARE IN SHIPPED PRODUCT CODE, AND ONE OF THOSE FIVE WAS INTRODUCED BY THIS TRANCHE
 AND CAUGHT BY ITS OWN REGRESSION MATRIX** — which is the most useful thing in this section.
 
 **WHAT COUNTS AS A ROW HERE, STATED SO THE NUMBER IS CHECKABLE RATHER THAN A JUDGEMENT.** A row is a defect a
@@ -834,8 +901,9 @@ time somebody re-derived it:
 | 10 | the regression matrix | **`RC8`/`RC9`/`RC11` ASSERTED A STATE THEIR OWN INJECTOR COULD NO LONGER PRODUCE.** Phase 6 §4's premise — that the mount syscall is the only thing that can repair a stacked corpse — stopped being true when the fix for #4 made the drain reachable: the corpse is drained, readiness confirms, the budget is refunded, and `no-action-healthy` is what the arm reads. Identically on all three runs | the gate — §8.6. The **assertions are untouched**; the injector becomes the one fault whose repair genuinely requires a mount, which is the subject's own mount detached under a masked `/dev/fuse`. The consumer holds an open descriptor first so the connection survives, and both arms fail loudly if it does not |
 | 11 | **attempt 5, arm R1** | **A FRESH VERDICT PAIRED WITH A SAMPLED OBSERVATION PUBLISHED A REFUSAL ABOUT A MOUNT POINT THE DAEMON HAD JUST REPAIRED.** The instant the recovery's remount landed the live verdict became `underlay-covered` while the last completed observation was still the `foreign` one that authorised it — and that pair is a refusal. `refuse-foreign-mount` / `inspect-mount-owner`, on a healthy appliance, for about a second. Nothing was spent and nothing was done: a REPORTING defect on the one surface whose value is that it can be read at any instant | **the product** — §8.4.5. The verdict is now taken by the sampler beside the observation, so the classification reads one measurement of one moment; and the freshness moved to `RecoveryBeginAttempt`, which re-verifies live before it spends anything. Strictly stronger, and the transient is gone |
 | 12 | **attempt 5, arms R1–R5** | **`P7-arm-binds-unchanged` COULD NOT PASS AND HAD NEVER PASSED.** The baseline bind fingerprint is taken before the first mount, and `container_for` — the helper that turns a server id into a container name — was defined **two hundred lines below that call site**. A shell function does not exist until its definition has run, so the baseline ran `docker inspect ""` three times and wrote `UNREADABLE` three times; every arm then compared against a baseline that had recorded nothing. This is the assertion that pays for *"no consumer was restarted or re-bound to make a recovery visible"* — Phase 2's worst defect wearing a workaround — and it had never once been in a position to say so | the gate — the helper moved to its only early caller, and an unreadable container is now **fatal** rather than a placeholder written into a file that is then compared |
-| 13 | **attempt 5, arms R3–R5** | **A DEAD LAYER ACCUMULATED IN THE HOST NAMESPACE THAT THE DAEMON'S OWN NAMESPACE DID NOT HAVE.** `P7-arm-layers` measured **2/1** from R3 onward while the daemon's own drain log said `floor 1, now 2` — one of ours in its namespace, two in the host's — and the run kept nothing that could say which row the host had, or where it came from. It also broke R6 (#14). **NOT YET DIAGNOSED, AND THAT IS THE POINT OF THE FIX** | the gate — a layer count outside the bound now prints the mount-id-and-type survey in **both** namespaces, which is exactly what defect #6 bought for R1 and what this arm did not have |
+| 13 | **attempt 5, arms R3–R5** | **A DEAD LAYER ACCUMULATED IN THE HOST NAMESPACE THAT THE DAEMON'S OWN NAMESPACE DID NOT HAVE.** `P7-arm-layers` measured **2/1** from R3 onward while the daemon's own drain log said `floor 1, now 2` — one of ours in its namespace, two in the host's — and the run kept nothing that could say which row the host had, or where it came from. It also broke R6 (#14). **DIAGNOSED BY THE NEXT RUN AND RESOLVED BY #11’S FIX**: attempt 6 measured 1/1 after every arm it reached. A transient refusal changes the sustained class, and a class that changes and comes back is a second actionable window — so the supervisor took a SECOND action for one fault and that one stacked a live layer. The count was a symptom of #11 | the gate — a layer count outside the bound now prints the mount-id-and-type survey in **both** namespaces, which is exactly what defect #6 bought for R1 and what this arm did not have |
 | 14 | **attempt 5, arm R6** | **THE INJECTOR RELIED ON A REFERENCE IT DID NOT HOLD, AND THE RUN DIED ON DOCKER'S OWN BIND REFUSAL.** `umount -l` leaves the FUSE superblock alive only while something references it. R1 measured the connection surviving after twenty minutes of playback; R6, with nothing reading, measured the opposite — the serve loop died, the SERVE supervisor took the fault, its three remounts failed under the masked `/dev/fuse`, and the process exited with the recovery loop having spent nothing. The dead mount it left made `restart_daemon` fail with `error while creating mount source path … file exists`, status 125 | the gate — R6 now holds an **open descriptor** on the projected entry from a sibling first (what a media server holds while playing), asserts it, asserts that **none** of our mounts remain after the detach, and clears its own dead layers with the shared helper before the restart |
+| 15 | **attempt 6, arms R1 and R2** | **`P7-arm-binds-unchanged` COMPARED AN UNORDERED COLLECTION AS A STRING.** With #12 fixed the baseline was readable for the first time, and the comparison still failed — on the ORDER of `docker inspect`’s `.Mounts` array. Measured inside one run: `mnt=>/media/projection:rslave` came back FIRST in the baseline and LAST after arm R1, with the same container id, the same start instant and the same four mounts with the same modes. Docker does not promise that order and it is not a property of the container | the gate — the mount list is emitted one entry per line and sorted with `LC_ALL=C sort` before comparison, so what is asserted is the SET: same container, same start instant, same sources at the same destinations with the same modes. A mount added, removed, re-pointed or re-moded still fails, which is what *never re-bound* means |
 
 **#5 IS THE ARGUMENT FOR THE WHOLE REGRESSION MATRIX, STATED PLAINLY.** The fix for #4 passed every offline
 test, including three new ones written specifically for it, and was byte-identical in both directions on the
@@ -847,7 +915,7 @@ this document to publish, for one revision, the sentence *"the appliance did not
 report it**"* about an appliance that was reporting a precise closed-set refusal the whole time. §11.3.2
 withdraws that half in place rather than deleting it, and §11.4 #7 is why it was ever written.
 
-**EIGHT OF THE FOURTEEN ARE IN THE INSTRUMENT AND SIX ARE IN THE PRODUCT**, and the split is worth stating
+**NINE OF THE FIFTEEN ARE IN THE INSTRUMENT AND SIX ARE IN THE PRODUCT**, and the split is worth stating
 because it is the same split every closed tranche here has reported: the gates find product defects by being
 wrong first.
 
@@ -1024,9 +1092,9 @@ live one in either — the marker has to be a quotation of something that is no 
 
 | Arm | Times executed | Outcome | Where |
 |---|---|---|---|
-| **R1** | **3** — attempts 3, 4 and 5 | **FAILED twice, identically, then RECOVERED.** Attempts 3 and 4: `P7-R1-action-ms` 34,304 and 34,085 against 33,000, no attempt spent, the generation never advanced, the namespace never came back, the operator’s four windows **0 of 4**. Attempt 5, from the candidate that carries §8.4: **every assertion of the arm passed** — 14,603 ms to one bounded `recover-mount-underlay`, 17,153 ms to a sibling reading a byte again, **4 of 4** windows, all three servers reading inside their own containers, one layer above the floor | §11.3.1, §11.3.2, §11.3.3 |
-| **R2** | **1** — attempt 5 | **PASSED every assertion of the arm.** The corpse was verified stale, `action-ms` 11,510/33,000, `ready-ms` 13,811/59,000, one action, one layer, 4 of 4 windows, all three servers reading | §11.3.3 |
-| **R3** | **1** — attempt 5 | **PASSED.** The control: reads failed inside the deadline, the breaker held, nothing reached the live resolver during the hold, the first read after release digest-matched, and `recoveryGeneration` did not advance | §11.3.3 |
+| **R1** | **4** — attempts 3, 4, 5 and 6 | **FAILED twice, identically, then RECOVERED.** Attempts 3 and 4: `P7-R1-action-ms` 34,304 and 34,085 against 33,000, no attempt spent, the generation never advanced, the namespace never came back, the operator’s four windows **0 of 4**. Attempt 5, from the candidate that carries §8.4: **every assertion of the arm passed** — 14,603 ms to one bounded `recover-mount-underlay`, 17,153 ms to a sibling reading a byte again, **4 of 4** windows, all three servers reading inside their own containers, one layer above the floor. Attempt 6 reproduced all of that from the candidate that carries §8.4.5 — 13,109 ms and 15,615 ms — and additionally passed `P7-R1-remediation`, the one assertion attempt 5 failed | §11.3.1, §11.3.2, §11.3.3, §11.3.4 |
+| **R2** | **2** — attempts 5 and 6 | **PASSED every assertion of the arm.** The corpse was verified stale, `action-ms` 11,510/33,000, `ready-ms` 13,811/59,000, one action, one layer, 4 of 4 windows, all three servers reading. Attempt 6 reproduced it: 13,096 ms and 15,367 ms, one layer | §11.3.3, §11.3.4 |
+| **R3** | **2** — attempts 5 and 6 | **PASSED in attempt 5; BLOCKED in attempt 6** by the provider rotating to an origin the operator has not allowlisted, which §7 predeclares as BLOCKED rather than failed. In attempt 5: reads failed inside the deadline, the breaker held, nothing reached the live resolver during the hold, the first read after release digest-matched, and `recoveryGeneration` did not advance | §11.3.3 |
 | **R4** | **1** — attempt 5 | **PASSED its own assertions.** The serve-death supervisor remounted in place, draining one corpse of its own first, and the entry was unchanged | §11.3.3 |
 | **R5** | **1** — attempt 5 | **PASSED.** `refuse-foreign-mount` / `inspect-mount-owner` beside `recoveryUnderlay=underlay-covered`, nothing spent, and the tmpfs asserted still mounted and byte-unmodified afterwards | §11.3.3 |
 | **R6** | **1** — attempt 5 | **FAILED, AND THE INJECTOR IS WHY.** `umount -l` with nothing holding the connection killed the serve loop, so the SERVE supervisor took the fault, its three remounts failed under the masked `/dev/fuse`, and the daemon exited with the recovery loop having spent nothing — §11.4 #14 | §11.3.3 |
@@ -1044,36 +1112,32 @@ has not been satisfied even once.
 **AND EVERYTHING §3.1 SAYS ABOUT R2 TO R6 HAS NOW BEEN EXECUTED ONCE.** R2 to R5 met their own assertions; R6
 did not, for the injector reason §11.4 #14 gives. What none of the six has is a REPEAT.
 
-### 11.10 THE CURRENT `HEAD` IS NOT A MEASURED CANDIDATE, AND THIS SECTION IS WHERE THAT IS SAID
+### 11.10 WHICH CANDIDATE EVERY FIGURE CAME FROM, AND WHERE `HEAD` STANDS
 
 **DOCUMENTATION-ONLY CLOSURE COMMITS MAY NOT PRETEND TO BE MEASURED SOURCE**, which is the Phase 6 defect in
-its most tempting form: a record that ends at a commit nothing was run from.
+its most tempting form: a record that ends at a commit nothing was run from. This section is where that is
+said, and it is rewritten rather than appended to every time the candidate moves.
 
-| | Commit | Gate source | `projectiond/` | Ran on a host? |
+| | Commit | Phase 7 gate source | `projectiond/` | Ran on a host? |
 |---|---|---|---|---|
-| last candidate **frozen, staged and run** | `2697ddeddb7eae51f8021714039bf49165200009` | `23cb90f0b1d0f193` | `6a8a371f04ff113d` | **yes** — attempt 4 |
-| the candidate everything else ran from | `7cb02d5a3909a283ea2851275933ace2160184c7` | `87b7238355d25e89` | `6a8a371f04ff113d` | **yes** — §11.7's matrix, the second recovery-gate sequence, attempt 3 |
-| **current `HEAD`** | this commit | **`99bd5fe30f004185` and later** | `6a8a371f04ff113d`, **unmoved** | **NO** |
+| the candidate §11.3.3 measured | `d38e45a22b699c9f64d33dfc7fa3fbe2c26d957a` | `98a7491602c200ca` | `0d7c371dc059c1cb` | **yes** — attempt 5, all six arms |
+| the candidate §11.3.4 measured | `566d2afbd599f8b3c1f619be15614a6b343dc5dc` | `96c12f0c1d116288` | `08d9e9af01203b34` | **yes** — attempt 6 |
+| the candidate §11.7's matrix ran from | `7cb02d5a3909a283ea2851275933ace2160184c7` | `87b7238355d25e89` | `6a8a371f04ff113d` | **yes** |
+| **current `HEAD`** | this commit | see §11.12 | see §11.12 | **see §11.12** |
 
-**WHAT MOVED AFTER THE LAST MEASURED RUN, NAMED RATHER THAN CHARACTERISED.** Exactly one commit changed
-gate source after candidate 4 and before this correction: `ac2cf4a`, the §11.4 #7 status-reader fix. It
-touches `deploy/projection-phase7-gate.sh` and nothing else, and **it has never been executed on a host.**
-Everything since is this document, the roadmap row and `test/`.
+**WHAT THIS COSTS, STATED AS A DEPENDENCY RATHER THAN A DISCLAIMER:**
 
-**WHAT THAT COSTS, STATED AS A DEPENDENCY RATHER THAN A DISCLAIMER:**
-
-- **§11.7's regression matrix and §11.3.1's attempt 3 depend on candidate 3**, whose `projectiond/` tree is
-  the one still at `HEAD` — so the *daemon* those figures describe is the daemon this record ends with. That
-  is checkable: `git rev-parse HEAD:projectiond` is `6a8a371f04ff113d`.
-- **§11.3.2's attempt 4 depends on candidate 4**, which differs from candidate 3 only in what the gate KEEPS
-  on a failing path.
-- **NO FIGURE IN §11 WAS TAKEN WITH THE GATE AS IT STANDS AT `HEAD`.** The status-reader fix is the reason
-  §11.3.2 could be written at all, and it is itself unrun. **The first thing the next Phase 7 attempt owes is
-  a re-freeze**, and every arm figure it produces will be the first taken with an instrument that can read a
-  refusal.
-- **The operator source never moved** — `33005b52c9896455` at every candidate and at `HEAD` — so §11.7's
-  alpha install matrix describes the command that ships today.
-
+- **§11.7's regression matrix ran from candidate 3, whose `projectiond/` tree is NOT the one at `HEAD`.** The
+  daemon changed twice after it — §8.4 and §8.4.5 — so **that matrix does not describe the daemon this record
+  ends with**, and §11.12 says what has and has not been re-run against the current one. That is the strongest
+statement this section has ever had to make, and it is the honest one.
+- **§11.3.1's attempt 3 and §11.3.2's attempt 4 describe a daemon that could not tell the operator's own bind
+  from a stranger.** Their R1 results stand as history and are superseded as behaviour: §8.4 is the change and
+  §11.3.3 is the measurement.
+- **The operator source has not moved since candidate 5** — `6dbb238d51f6415f` at candidate 5, at candidate 6
+  and at `HEAD` — so anything §11.7 says about the shipped operator command still describes the command that
+ships today.
+- **Anything the current `HEAD` has not run is named in §11.12 and is claimed nowhere else in this document.**
 ### 11.11 The pins that make this record check itself, and the tamper that proves they bite
 
 **A COORDINATOR AUDIT FOUND TWO CONTRADICTIONS IN THIS RECORD AND NO TEST HAD NOTICED EITHER.** The roadmap
