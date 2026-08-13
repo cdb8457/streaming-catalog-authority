@@ -1185,6 +1185,14 @@ on Unraid touches `projectiond`, the Phase 7 gate, or the operator command; the 
 checker and all 11 Go packages are clean on **both** hosts; and the nine are identical between candidates 7
 and 8.
 
+**ON THE DEVELOPMENT HOST, AT THE TREE THIS RECORD ENDS WITH: `314 selected, 314 passed, 0 failed, 0
+required-but-skipped, 653 s`.** That includes `test/projection-evidence-consistency.ts`, which reads the two
+documents this commit rewrites, and `test/projection-phase7.ts` at **43/0** and
+`test/projection-bounded-recovery.ts` at **52/0**, which read this record's own claims about the shipped
+source. **It also failed twice on the way there and both failures were real**: once because the roadmap still
+carried the old defect count while §11.4 had grown a row, and once because §11.11.2 reproduced a retired
+universal denial in a table cell. §11.11.2 records the second one against itself.
+
 ### 11.6 The two closed suites that went red, and why both were right to
 
 **NEITHER IS A THRESHOLD AND NEITHER PRODUCT BEHAVIOUR CHANGED.**
@@ -1444,6 +1452,36 @@ read-only-on-the-foreign-row table and the unwired-verifier branch. **The read-o
 was strengthened**, and that is worth recording: as first written it compared every verdict against a BASELINE
 computed from `underlay-unknown`, and the tamper moved the baseline too, so an invariance check alone passed a
 change that had made every foreign mount actionable. The foreign row is now asserted absolutely on both sides.
+
+### 11.11.2 THE FIVE TAMPERS THAT PROVE THE PINS STILL BITE AFTER ATTEMPT 7, AND THE TREE THEY WERE REVERTED INTO
+
+**THIS TRANCHE'S RECORD GREW A DEFECT ROW, A COUNT, A RETIRED HEADING AND A NEW SECTION, AND EVERY ONE OF
+THOSE IS A PLACE A STALE SUMMARY CAN HIDE.** So the same discipline §11.11.1 applied to the product pins was
+applied to the record's own: edit ONE fact, run the suite that is supposed to notice, record what it said,
+revert with `git checkout --`. **All five failed the intended assertion and `git status` was empty after every
+revert**, which is the second half of the claim.
+
+| Tamper | What was changed | What failed, in its own words |
+|---|---|---|
+| 1 | the roadmap keeps the **old** defect count while §11.4 holds sixteen rows | *"the Phase 7 roadmap row does not state '16 defects', which is what §11.4's table holds"* |
+| 2 | defect row **#16 deleted** from the §11.4 ledger, leaving the headline claiming sixteen | *"§11.4 lists 15 defect row(s), 6 of them fixed in the product, but no headline in the document states…"* |
+| 3 | §8.5 stops stating that the predeclared layer threshold did not move | *"§8.5 no longer states that the predeclared layer threshold did not move"* — `test/projection-phase7.ts`, 42 passed, 1 failed |
+| 4 | the universal denial §11.9 keeps in a blockquote re-asserted, **unquoted**, in the roadmap | *"PHASE7-RECOVERY-ARM-RUN-EXISTENCE: docs/PROJECTION_ROADMAP.md deny that it ever happened while docs/…PHASE_7… records that it did"* |
+| 5 | one line appended to the **shipped** operator command `deploy/projection-alpha.sh` | *"the closure record's SHIPPED SOURCE digests still describe the working tree"* — the Phase 6 pin refusing to certify a run of source that no longer exists |
+
+**AND TAMPER 4 CAUGHT THE WRITER OF THIS SECTION, WITHIN A MINUTE, EXACTLY AS §11.11 SAYS IT CAUGHT THE
+WRITER OF THAT ONE.** The row above originally described the tamper by **reproducing** the retired sentence in
+the table cell, and the axis failed the document immediately — a table cell is an assertion, and italics do
+not exempt it; only a `>` quotation does. The cell now points at §11.9's blockquote. **This is the second time
+in this document that this specific pin has failed the person adding a section about it**, which is the most
+that can honestly be said for any check of this kind, and it is worth twice the paragraph it costs.
+
+**TAMPER 2 IS THE ONE WORTH DWELLING ON, BECAUSE IT IS THE DEFECT THIS SECTION EXISTS FOR IN MINIATURE.**
+Deleting the row for #16 does not make the document say something false about #16 — it makes the document say
+nothing about it, while a headline three paragraphs up still counts it. **That is exactly the shape of what
+#16 itself is**: a claim about a defect, supported by a run that could not have observed it, with no check
+that knew the difference. The count pin catches the arithmetic version. **Nothing yet catches the reasoning
+version**, and §11.4's closing paragraph says so rather than implying the pins are complete.
 
 ### 11.12 HISTORICALLY — WHAT CANDIDATE 7 HAD RUN, AND WHAT IT HAD NOT. §11.14 SUPERSEDES IT
 
