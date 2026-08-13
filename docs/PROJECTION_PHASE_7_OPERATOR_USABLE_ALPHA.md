@@ -246,9 +246,29 @@ observed stretches ran from about forty minutes to at least eighty-four.
   is recorded, digests only, in the run record;
 - a run that dies on the allowlist is recorded as **BLOCKED, not failed**, with the recheck's own verdict
   beside it, and **does not count** toward the three consecutive fresh runs in either direction;
-- **this tranche does not write `endpoint.json`.** Refreshing the allowlist is the operator's decision and
-  Phase 3 §11.2's reasoning is unchanged. If the current origin is disallowed the gate emits a **digest and a
-  count only** and asks.
+- **no automated part of this tranche writes `endpoint.json` on its own initiative.** Refreshing the allowlist
+  is the operator's decision and Phase 3 §11.2's reasoning is unchanged. If the current origin is disallowed
+  the gate emits a **digest and a count only** and asks. **It asked, and §11.13 is the answer it got** — the
+  operator authorised one origin to be added, and the paragraph below is what that changes about this rule and
+  what it deliberately does not.
+
+**THE UNCONDITIONAL FORM OF THAT BULLET IS RETIRED, AND IT IS QUOTED HERE RATHER THAN DELETED**, because a
+record that edits away the sentence it turned out to overreach on is a record nobody can audit. As written
+before any run, this document said:
+
+> **this tranche does not write `endpoint.json`.** Refreshing the allowlist is the operator's decision and
+> Phase 3 §11.2's reasoning is unchanged. If the current origin is disallowed the gate emits a **digest and a
+> count only** and asks.
+
+**TWO OF ITS THREE CLAUSES ARE UNTOUCHED AND ONE IS NOW FALSE AS PHRASED.** Refreshing the allowlist is still
+the operator's decision — that is precisely why §11.13 records an operator authorisation and not a gate
+deciding for itself — and the gate still emits a digest and a count and asks. What is false is the flat
+denial: on 2026-08-13 the file *was* written, once, **on explicit operator instruction naming this exact
+change**, by a purpose-built operator action that is not part of any gate and that no gate can invoke. **The
+distinction being kept here is the one that matters: a tranche that widens its own allowlist to make its own
+gate pass has marked its own homework.** §11.13 is written so that a reader can tell which of the two
+happened, and the allowlist was **widened by exactly one origin and nothing else was relaxed** — no
+`allowInsecureHttp`, no `allowPrivateAddresses`, no origin removed, no assertion softened anywhere.
 
 ## 8. The two rough edges Phase 6 named, and what Phase 7 does about each
 
@@ -636,9 +656,10 @@ resolvedOriginInAllowlist=NO    verdict=disallowed    observedAt 2026-08-12T16:3
 The same recheck had answered `allowed` on `3cfc7340a785` twenty-eight minutes earlier, which is the provider
 moving between pool members inside a single working session — the arithmetic §11.7 measured.
 
-**PER §7 THIS RUN IS RECORDED AS BLOCKED AND COUNTS TOWARD NOTHING IN EITHER DIRECTION**, and this tranche
-does not write `endpoint.json`. The blocker was escalated to the operator with a digest and a count and
-nothing else.
+**PER §7 THIS RUN IS RECORDED AS BLOCKED AND COUNTS TOWARD NOTHING IN EITHER DIRECTION**, and nothing here
+wrote `endpoint.json`. The blocker was escalated to the operator with a digest and a count and nothing else.
+**It stayed unwritten through every attempt this document records** — §11.13 is the single later operator
+action, on a different origin digest, and it does not reach back and un-BLOCK this run.
 
 ### 11.3.1 Attempt 3 — the provider rotated BACK, stages A, B and C went fully green, and arm R1 measured FALSE
 
@@ -1289,14 +1310,83 @@ THE GATE AS IT STANDS**, and the two arms those attempts each passed — R1 and 
 **WHY THE SEQUENCE HAS NOT RUN FROM IT, STATED AS A FACT RATHER THAN AS A PLAN.** From the moment candidate 7
 was frozen the provider has been serving a CDN origin the operator has not allowlisted — `4fea5e1bdeaa`,
 against an `allowedOriginCount` of 5, verdict `disallowed`, re-observed after the whole matrix had run. §7
-predeclares that a run into that is **BLOCKED rather than failed** and that **this tranche does not write
-`endpoint.json`**, so the sequence was not launched into a state in which every read fails at the egress
-allowlist. The blocker was escalated with a **digest and a count and nothing else**, and every
-provider-free obligation in §4.1 was completed while it stood — which is the whole of §11.7.1.
+predeclares that a run into that is **BLOCKED rather than failed** and that **no automated part of this
+tranche writes `endpoint.json` on its own initiative**, so the sequence was not launched into a state in which
+every read fails at the egress allowlist. The blocker was escalated with a **digest and a count and nothing
+else**, and every provider-free obligation in §4.1 was completed while it stood — which is the whole of
+§11.7.1. **The operator then answered that escalation; §11.13 is the answer and what it changed.**
 
 **WHAT WOULD CLOSE IT, EXACTLY.** One operator action or one rotation back to an allowlisted pool member, and
 then `npm run go:phase7-gate:three` from candidate 7 with nothing else touched. Everything else §4.1 asks for
 is done and recorded above.
+
+### 11.13 THE OPERATOR ACTION THAT CLEARED THE BLOCKER, AND EVERY NUMBER IT IS ALLOWED TO STATE
+
+**THIS IS THE ONE THING IN THIS DOCUMENT THAT CHANGED SOMETHING OUTSIDE THE REPOSITORY**, so it is recorded
+with more care than anything else here and less detail than anything else here — the two are the same
+requirement. On **2026-08-13** the operator, having been given §11.12's digest and count and nothing else,
+**explicitly instructed that the currently served TorBox CDN origin be added to the existing
+`allowedOrigins`, preserving every existing entry.** That instruction is the whole authority for what
+follows; §7 now says what it does and does not license.
+
+**HOW IT WAS DONE, AND WHY EACH CHOICE IS THE NARROW ONE.** A single-purpose program ran inside the same
+pinned `node:22-alpine` container, against the same official resolver started the same loopback-only,
+unpublished way `deploy/projection-provider-origin-recheck.sh` starts it, from the staged candidate-7 tree.
+It resolved **one** reference — one resolution, no ranged GET, no byte of media — took `URL.origin`, and
+appended it. **The plaintext origin never left that process except into `endpoint.json` itself**, which is the
+only place it belongs; nothing was printed, logged, echoed, committed or messaged but digests, counts and
+verdicts. **It is not a gate step and no gate can call it.**
+
+- **The normal form written is `URL.origin` verbatim**, which is already the daemon's own: `ParseOrigin` in
+  `projectiond/internal/source/egress.go` lower-cases the host and fills the default port, and `OriginOf`
+  derives the same tuple from a URL about to be dialled. An explicit `:443` or a trailing slash would have
+  been accepted by the daemon and **rejected by the recheck's string compare** — two instruments disagreeing
+  about the same file is the confusion this had to avoid, not a formatting preference.
+- **Existing entries were carried through byte-for-byte and in order.** "Deduplicate" was read as *do not add
+  a second copy*, never as *tidy the operator's list*; rewriting an origin authorised at some other time is
+  not what was authorised now.
+- **A plaintext origin would have been refused outright** rather than bought with `allowInsecureHttp`, because
+  `endpointProblems` in `src/core/projection/real-provider.ts` refuses a non-`https` allowlist entry for a
+  real endpoint and this action will not write a file the product's own validator would reject.
+- **Restrictive backup first, then an atomic same-directory rename.** The temporary file was created `0600` by
+  an explicit mode at `open` — not chmodded after the fact, so no instant existed at which a wider mode did —
+  `fsync`ed before the rename so a crash could not leave a truncated allowlist behind a valid name, and
+  `chown`ed and `chmod`ed to the original's own uid, gid and mode. The backup is the operator's recovery path
+  and it is the third one this directory holds.
+- **The result was re-read from disk before anything was claimed about it.** What was intended is not
+  evidence; the table below is what the file said afterwards.
+
+| | Before | After |
+|---|---|---|
+| `allowedOriginCount` | **5** | **6** |
+| allowlisted origin digests | `256c61b89300`, `b16331429dc1`, `09e2a517af25`, `3cfc7340a785`, `768788145621` | the same five, **in the same order**, plus `4fea5e1bdeaa` |
+| top-level fields | `allowInsecureHttp`, `allowPrivateAddresses`, `allowedOrigins`, `id` | **identical set, and identical values outside `allowedOrigins`** |
+| mode / ownership | `0600`, `root:root` | **`0600`, `root:root` — preserved, and asserted preserved** |
+
+**THE MEASUREMENT ON EITHER SIDE, TAKEN BY THE INSTRUMENT THAT IS NOT THE ONE THAT WROTE THE FILE.**
+
+| Observation | `allowedOriginCount` | resolved origin digest | verdict |
+|---|---|---|---|
+| recheck, immediately **before** (`origin-recheck-20260813T210000Z`) | 5 | `4fea5e1bdeaa`, scheme `https` | **`disallowed`**, exit 70 |
+| the write itself | 5 → 6, `alreadyPresent=no`, `action=appended` | `4fea5e1bdeaa` — **matched the escalated digest §11.12 named** | `written` |
+| recheck, immediately **after** (`origin-recheck-20260813T210019Z`) | 6 | `4fea5e1bdeaa`, scheme `https` | **`allowed`**, exit 0 |
+
+**THE ORIGIN THAT WAS ADDED IS THE ONE THAT WAS ESCALATED.** The digest the operator was given in §11.12 and
+the digest of the origin written are the same twelve hex characters, checked by the program before it wrote
+anything and re-checked by the recheck afterwards. The provider had **not** rotated again in the interval, so
+no substitution question arises.
+
+**THE BACKUP, WHICH IS THE ONLY PATH THIS SECTION PRINTS:**
+`/mnt/user/appdata/catalog/secrets/real-provider/torbox/endpoint.json.backup-20260813T210006Z`, `0600`,
+`root:root`, 316 bytes — the pre-write file exactly.
+
+**WHAT THIS DOES NOT DO, BECAUSE THE TEMPTATION IS OBVIOUS AND IT IS THE WHOLE RISK OF THE SECTION.** It does
+not weaken allowlisting: the allowlist is one entry wider and every other lever is where it was. It does not
+make any arm easier to pass, does not touch a threshold, a budget, an assertion or a digest check, and it
+does not retroactively un-BLOCK attempt 2 or attempt 6 — **those remain BLOCKED and count toward nothing**,
+exactly as §7 predeclared. And it does not promise the blocker is gone for good: the pool rotates on nobody's
+schedule, the recheck is still run immediately before every sequence, and a rotation mid-run is still
+**BLOCKED rather than failed**.
 
 ## 12. The readiness decision
 
@@ -1311,10 +1401,11 @@ fewer than three complete passing sequences and this document does not manufactu
 1. **NO SEQUENCE HAS PASSED.** Attempt 5 reached all six arms and failed on four defects; attempt 6 fixed the
    product one and was BLOCKED at arm R3 by the provider. §11.9 is the arm ledger and §11.12 is what candidate
    7 has and has not run.
-2. **THE PROVIDER IS SERVING AN ORIGIN OUTSIDE THE OPERATOR’S ALLOWLIST RIGHT NOW.** `4fea5e1bdeaa`, against a
-   count of 5, verdict `disallowed`. **THIS IS NOT A PRODUCT DEFECT AND THE ALLOWLIST DID EXACTLY ITS JOB.** It
-   needs one operator action or one rotation back, §7 predeclared both the failure and the response, and this
-   tranche does not write `endpoint.json`.
+2. ~~**THE PROVIDER IS SERVING AN ORIGIN OUTSIDE THE OPERATOR’S ALLOWLIST RIGHT NOW.**~~ **CLEARED BY AN
+   OPERATOR ACTION, AND §11.13 IS THE RECORD OF IT.** `4fea5e1bdeaa` was `disallowed` against a count of 5;
+   the operator explicitly authorised that one origin to be added, it was added and nothing else was, and the
+   recheck answered `allowed` against a count of 6. **THIS WAS NEVER A PRODUCT DEFECT AND THE ALLOWLIST DID
+   EXACTLY ITS JOB.** The pool still rotates on nobody's schedule, so this is cleared rather than solved.
 3. **R6 HAS NEVER PASSED, AND ITS REPAIRED INJECTOR HAS NEVER RUN.** §11.4 #14. The repair is the one §8.6
    argues for and it is unmeasured, which is the same thing this document says about every unrun claim.
 4. **THE PHASE 7 GATE AT CANDIDATE 7 HAS NEVER RUN.** §11.12. One instrument fix moved it after the last
