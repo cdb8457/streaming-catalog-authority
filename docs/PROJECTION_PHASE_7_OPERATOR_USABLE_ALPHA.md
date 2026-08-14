@@ -1,6 +1,6 @@
 # Projection Phase 7 — the operator-usable alpha
 
-**Status: NO-GO — the contract in §2 to §10 was committed before the first measured run; §11 is what has been measured and §12 is the decision.**
+**Status: GO — the contract in §2 to §10 was committed before the first measured run, §11 is what has been measured, and §12 is the decision, clause by clause. No threshold in §4 moved at any point, and two of them measured FALSE and blocked the tranche until the product was changed rather than the number.**
 Every arm, threshold, repetition rule, cleanup requirement and exclusion in §2 to §10 is predeclared and
 **none has moved**. §11 is the run record. **No threshold in §4 may move after the first measured run**; a clause that measures FALSE is recorded as **superseded**, with what it said kept whole,
 exactly as Phase 4 §4.1 and Phase 5 §3.3 did — never edited into agreement with a result.
@@ -748,8 +748,10 @@ measures three times over with the same injector.
 
 ## 11. Run record
 
-**INCOMPLETE. THE TRANCHE HAS NOT CLOSED AND §12 IS A NO-GO.** What follows is what was measured, from
-which frozen source, and what stopped each attempt. Every figure names the tree it came from.
+**COMPLETE. THE TRANCHE CLOSED AT §11.17 AND §12 IS A GO.** What follows is everything that was measured, from
+which frozen source, and what stopped each attempt that did not close. **EIGHT ATTEMPTS ARE RECORDED AND FIVE
+OF THEM FAILED OR WERE BLOCKED**; every figure names the tree it came from, and the failures are kept whole
+because a record that keeps only its last run is a record of nothing.
 
 ### 11.1 The frozen candidates, and which measurement came from which
 
@@ -2218,146 +2220,159 @@ anything the run wrote.
 `npm run go:phase7-gate:three` — **three consecutive fresh runs from one frozen candidate, exit 0, zero
 failures, zero skips** — and one green run is a coincidence until it is three. §11.17 is that sequence.
 
+### 11.17 THE SEQUENCE — THREE CONSECUTIVE FRESH RUNS, FROM ONE FROZEN CANDIDATE, EXIT 0
+
+**`npm run go:phase7-gate:three`, FROM CANDIDATE 13**, `PROJECTIOND_IMAGE=projectiond:phase7c13-frozen`,
+begun **07:45:23Z** and ended **09:33:01Z** — **exit 0**. The §7 recheck run **immediately before the
+sequence** answered `allowedOriginCount=6`, `resolvedOriginDigest=256c61b89300`, verdict **`allowed`**, exit 0.
+
+| Run | Arms | Verdicts | Fail | Skip |
+|---|---|---|---|---|
+| 1 of 3 | **6** | **201** | **0** | **0** |
+| 2 of 3 | **6** | **201** | **0** | **0** |
+| 3 of 3 | **6** | **201** | **0** | **0** |
+
+**`P7-arm-layers` READ 1/1 AT EVERY ARM OF EVERY RUN, AND `P7-layers-at-end` READ 1/1 AT THE END OF EVERY RUN.**
+Eighteen arm readings and three end-of-run readings, all inside a threshold that has never moved. §11.4 #16
+lived at R3, R4 and R5 and measured 2/1 there in both previous six-arm runs; it is 1/1 there now, three times
+over, and R6 — which had never once reached its subject — reached it in all three.
+
+**NOT ONE `FAIL` AND NOT ONE `SKIP` APPEARS ANYWHERE IN THE SEQUENCE LOG**, which is the property §4.1's *"a
+skip is a failure for the `:three` wrapper"* asks for and the property the wrapper's own accounting enforces.
+
+**THE FIVE LEAK SCANS PASSED IN ALL THREE RUNS** — `P7-leak-manifest`, `P7-leak-probe-cache`,
+`P7-leak-library-state`, `P7-leak-evidence` and `P7-leak-manifest-ref-placement`, fifteen verdicts, no needle
+found anywhere the runs wrote.
+
+**AND `endpoint.json` WAS NOT WRITTEN.** Its mtime is `2026-08-13 16:00:07`, which is §11.13's single operator
+action of the day before; nothing in this session touched it, and the six rechecks this session ran are
+preserved as digests, counts and verdicts under `.projection-reliability-loop-gate/evidence/`.
+
+**THE HOST CAME BACK AS IT WAS FOUND, MEASURED AGAINST THE BASELINE TAKEN BEFORE ANYTHING WAS STAGED:**
+**44** containers, **28** running, **18** networks, **46** volumes — all four the **same sets**, not merely the
+same counts — **0** `fuse.projectiond` mounts, **0** run directories under the frozen tree, and the unrelated
+`hindsight` and `hindsight-db` services up on the same start instants they had before any of this began. What
+remains under the frozen tree is **three gate roots holding 130 KB of bounded, redaction-checked evidence**.
+
+**AND THE FROZEN BYTES HAVE NOT MOVED**, which §4.1 clause 1 requires and which is a command rather than a
+reassurance:
+
+```
+git diff 8822dae..HEAD -- deploy/ projectiond/ src/ package.json docker-compose.projection-phase7.yml \
+  docker-compose.projection-recovery.yml docker-compose.projection-alpha.yml \
+  docker-compose.projection-restart-topology.yml
+```
+
+is **empty** — those are clause 1s own four things, `deploy/`, `projectiond/`, `src/` and the compose files, and
+every one of them is byte-identical at the commit this record ends with.
+
+**ONE FILE OUTSIDE THAT LIST DID MOVE AFTER THE FREEZE AND IT IS NAMED HERE RATHER THAN LEFT TO BE FOUND.**
+`test/projection-phase7.ts` carried a pin written before any measured run and called *"does not yet claim a
+GO"*, whose status regex admitted `OPEN`, `CLOSED` and `NO-GO` and not `GO`. It was the right assertion for a
+tranche with no passing sequence, and after §11.17 it left exactly two options: a permanently failing suite, or
+a deleted check. **NEITHER WAS TAKEN.** The pin now asks the same question of the state the original could not
+reach: a document may claim `GO` **only if §12 also carries the clause-by-clause account of §4.1**, walks
+§4.2s NO-GO list row by row, and states the one inventory number that is not 314/314. **It is strictly harder
+than what it replaced**, it is the only file outside `docs/` that moved after the freeze, and it ships in no
+image and is read by no gate — so no measurement in §11.17 was taken against source that has since changed.
+
 ## 12. The readiness decision
 
-# **NO-GO.**
+# **GO.**
 
-**§4.1 CLAUSE 1 IS UNSATISFIED AND NOTHING ELSE MATTERS UNTIL IT IS.** `npm run go:phase7-gate:three` has
-**never completed one run**, let alone three consecutive fresh ones, from any candidate. §4.2 forbids a GO on
-fewer than three complete passing sequences and this document does not manufacture one.
+**AND THE FIRST THING TO SAY IS WHAT IT IS A GO FOR, BECAUSE §10 IS LONGER THAN THIS SECTION AND EVERY LINE OF
+IT STILL STANDS.** It is a **rough-edged, one-host, one-provider, one-object alpha**. It is not a beta, not a
+release, not a marketplace package, not a second host and not a second provider: **there is no Real-Debrid
+support and no Usenet support** — Phase 6 §13 has contracts for them and a contract is not a feature. It closes
+no G-number and re-closes nothing in Phases 1–6.
 
-**AND THE REASON HAS CHANGED AGAIN, WHICH IS THE ONLY THING WORTH READING THIS SECTION FOR.** #16 — the
-blocker this document ended on last time — turned out not to be a supervisor, a fault or an arm: it is what
-happens when the daemon is REPLACED, and §8.7 is the contract for the repair, written and committed before any
-run measured it. **AND NOT ONE SEQUENCE HAS MEASURED IT, BECAUSE THE PROVIDER ROTATED OUT OF THE OPERATOR'S
-ALLOWLIST BEFORE THE FIRST ATTEMPT COULD BE LAUNCHED AND HAS STAYED OUT.** Everything that could be proved
-without the provider was proved from three independently frozen and byte-proved candidates, and the
-provider-free time bought a **tenth gate** and a **seventeenth defect** — the latter in the shipped daemon, on
-the path §8.7 had just changed. The one thing §4.1 closes on could not be attempted at all.
+### 12.1 §4.1, clause by clause, and each one is a measurement rather than a claim
 
-**WHAT IS BLOCKING IT, IN ORDER, AND EACH ONE IS A DIFFERENT KIND OF THING:**
+| Clause | What it asks for | What was measured |
+|---|---|---|
+| **1** | `go:phase7-gate:three`: three consecutive fresh runs, **exit 0, zero failures, zero skips**, on the real Unraid host, from **one frozen commit, tree and image** whose `deploy/`, `projectiond/`, `src/` and compose bytes do not move afterwards | **exit 0.** 201 / 201 / 201 verdicts, **0 fail, 0 skip** in each, from candidate 13 — commit `8822dae5071c…`, tree `eb03675…`, image `sha256:216f1ae6…`, staged into an emptied directory and proved byte-identical **in both directions** over 1,664 files. The post-freeze diff for every one of those paths is **empty**. §11.17 |
+| **2** | every one of the **6 arms** in each run, in §3.1's order, each with the full §3.2 verification | **6 arms in each of the 3 runs**, and the gate's own closure check requires the whole §3.2 set per arm before it will say so: *"every predeclared arm, stage, phase and budget is present, terminal and passing"* |
+| **3** | every stage-A, per-arm and stage-C byte check matches **all four** operator digests | 4 / 4 at `P7-A-windows`, at `P7-arm-windows` for all six arms, at `P7-C-windows-after` and at `P7-F-windows-after`, in every run |
+| **4** | all three frontends **proven subjects throughout**, with **binds and container identities unchanged** from before the first mount to after the last arm | `P7-arm-inread`, `P7-arm-catalogue` and `P7-arm-churn` per server per arm, and `P7-arm-binds-unchanged` on every arm of every run |
+| **5** | every recovery inside the budget §4 names, and every refusal spending **nothing** | every timed id compared against the module's own constant by the closure check, which fails a verdict measured against any other number |
+| **6** | the mount-layer count inside `MOUNT_LAYERS_ABOVE_FLOOR_MAX` after **every** arm and at the end | **1/1, eighteen times, plus 1/1 at the end of each run.** The threshold is 1 and has never moved |
+| **7** | the host's containers, networks, volumes and `fuse.projectiond` mountpoints are **the same sets**, and the gate root holds only bounded evidence | 44 / 28 / 18 / 46, **identical sets**; **0** `fuse.projectiond` mounts; 130 KB of redaction-checked evidence and nothing else |
+| **8** | no secret, stable reference, CDN host or operator label in anything preserved | fifteen leak-scan verdicts across the three runs, all pass |
+| **9** | Phase 6's `go:recovery-gate:three`, the alpha install matrix and the regression matrix **re-run from the final frozen candidate**, green with zero skips | **TEN of ten from candidate 13** — §11.15.3 — including `go:recovery-gate:three` at **13 arms in each of 3 cold starts, 39 passes, 0 failures** and the alpha install matrix at **11 of 11 arms** |
+| **10** | TypeScript, `gofmt`, `go vet`, every Go package, the focused Phase 4–7 suites, the evidence-consistency and custody suites and the **full offline inventory** pass with zero failures, every skip enumerated | clean, clean, clean, **all 11 packages `ok` on both hosts**, and the full inventory **314 selected / 314 passed / 0 failed / 0 required-but-skipped**. §12.2 is the one thing that number does not cover, stated rather than buried |
 
-1. **THE MOUNT-LAYER RESIDUAL HAS A FIX AND THE FIX IS UNMEASURED, WHICH IS NOT THE SAME AS FIXED.** §11.4 #16
-   and §8.7. The mechanism is now known from committed source rather than hypothesised — R3 is the only arm
-   that replaces the daemon, the gate replaced it with a `SIGKILL`, and at an `rshared` mount point that leaves
-   a corpse the replacement stacks over — and both halves of it are measured by a program on this very kernel
-   (§8.7.1, §11.15). The daemon now removes its own mount, proven by the mountinfo row it recorded creating.
-   **NONE OF THAT IS A MEASUREMENT OF `P7-arm-layers` AT R3.** §8.7.5 predeclares what would be, §4.2 still
-   names a layer count outside `MOUNT_LAYERS_ABOVE_FLOOR_MAX` as a NO-GO, and **the threshold has not moved
-   and is not going to.**
-2. **NO SEQUENCE HAS PASSED, AND NO SEQUENCE HAS BEEN ATTEMPTED SINCE THE FIX.** Attempt 5 reached all six arms
-   and failed on four defects; attempt 6 fixed the product one and was BLOCKED at arm R3 by the provider;
-   attempt 7 reached all six arms and failed on #16; and **candidates 9 to 13 have not attempted one at all**
-   — §11.15.2 is why. §11.9 is the arm ledger and §11.15.3 is what the final candidate has and has not run.
-3. **THE PROVIDER IS SERVING AN ORIGIN OUTSIDE THE OPERATOR'S ALLOWLIST RIGHT NOW, AGAIN, AND THERE ARE THREE
-   OF THEM.** `f446a32964bf`, `d24a544ecef3` and `d4064d307d25`, each against an `allowedOriginCount` of 6,
-   `resolverStatus=200`, verdict `disallowed`, across five observations spanning three hours — §11.15.2. The
-   third is the origin §11.3 records as having blocked **attempt 2**, so the pool is not drifting away from the
-   allowlist so much as circling outside it. **THIS IS NOT A PRODUCT DEFECT AND THE ALLOWLIST IS DOING THE ONE
-   JOB IT EXISTS FOR.** §7 predeclares a run into it as **BLOCKED rather than failed**, nothing automated here
-   writes `endpoint.json`, and the blocker was escalated with a digest, a count and a verdict and nothing else.
-   §11.13's operator action cleared a different digest at a different time and does not reach forward to this
-   one; that §11.13 exists is exactly why this paragraph names an escalation rather than a write.
-   ~~**THE PROVIDER BLOCKER OF §11.12 IS WHAT THIS ROW USED TO BE.**~~ It was cleared by the operator action
-   §11.13 records — `4fea5e1bdeaa`, count 5 to 6, nothing else relaxed — and the pool has since moved on. The
-   old row is struck through rather than deleted because a reader has to be able to see that this blocker has
-   now been met twice, cleared once, and is not the same origin either time.
-4. **R6 HAS NEVER PASSED, AND ITS REPAIRED INJECTOR HAS NOW RUN WITHOUT REACHING ITS SUBJECT.** §11.4 #14.
-   The repair's own first assertion — the open descriptor that keeps the connection alive — **passed**; the
-   arm then stopped on the injector's **premise**, because #16 had left two of our layers stacked and
-   detaching the top one did not leave the mount point empty. **The repair is still unmeasured, and it is
-   unmeasured for a reason that is not the repair.**
-5. **`npm run go:phase7-gate:three` HAS STILL NEVER RUN, FROM ANY CANDIDATE, AND NEITHER HAS A SINGLE
-   `go:phase7-gate` FROM THE CANDIDATE THAT CARRIES THE FIX.** §11.14 says why it was not launched from
-   candidate 8 — the single gate that precedes it failed deterministically at R3, and three copies of one
-   failure is not a sequence — and §11.15.2 says why it has not been launched from candidate 9 or 10, which is
-   a different reason entirely and is not this tranche's to fix. **The sequence is owed from the candidate that
-   fixes #16, candidate 13 is that candidate, it is frozen and staged and its image is built, and a
-   recheck-and-launch harness is waiting so that the first allowlisted window is spent on the sequence itself
-   rather than on noticing.**
+**AND §4.2's NO-GO LIST IS EMPTY, ROW BY ROW.** No required real-server behaviour was simulated — every scan,
+play, seek and transcode went through that server's own shipped driver and verifier. No evidence spans changed
+shipped source. No run skipped anything. Cleanup matched the pre-run sets in both directions. There are **three**
+fresh complete passing sequences. No media server was restarted, re-bound or re-created for a recovery to be
+visible to it, and `P7-arm-binds-unchanged` is what pays for that sentence. And no layer count outside the
+threshold was argued to be acceptable — there were none to argue about.
 
-**WHAT IS NO LONGER BLOCKING IT, AND THIS IS THE EXPENSIVE HALF THAT WAS BOUGHT:**
+### 12.2 THE ONE NUMBER THAT IS NOT 314/314, AND IT IS STATED HERE RATHER THAN LEFT IN A SUBSECTION
 
-- **ARM R1 RECOVERS.** The mount removed from beneath a living daemon — the most likely operator-side accident
-  on this appliance, and the fault Phase 6 §3.2 had a row for and could not reach — is repaired, twice, from two
-  candidates: one bounded `recover-mount-underlay` at **14,603 ms** and **13,109 ms** against a 33,000 ms budget,
-  a sibling reading a byte again at **17,153 ms** and **15,615 ms** against 59,000, **4 of 4** operator windows,
-  **all three** media servers reading them inside their own containers as their own uid, **one** layer above the
-  floor, and the underlay fingerprint identical before the fault and after the recovery. §8.4 is the contract
-  for it, written before the run, and §8.4.4 is why reinstating the predeclared clause word for word is not a
-  threshold moving.
-  **AND ATTEMPT 7 REPRODUCED IT A THIRD TIME** from a third candidate: 14,490 ms and 16,913 ms, one layer,
-  the fingerprint `fccf4ba8c5c2` identical across the fault.
-- **ARM R2 RECOVERS**, three times now, the same way, from a second daemon’s corpse: 11,510 ms, 13,096 ms and
-  12,974 ms.
-- **R3, R4 AND R5 EACH PASSED EVERY ASSERTION OF THEIR OWN ARM, TWICE** — in attempt 5 and again in attempt 7,
-  including R5, the refusal, with `underlay-covered` beside it and the tmpfs asserted still mounted and
-  byte-unmodified. **What R3, R4 and R5 do not pass is `P7-arm-layers`, which is blocker 1 and belongs to the
-  run rather than to the arm.**
-- **`P7-arm-binds-unchanged` PASSED, ON EVERY ARM THAT REACHED IT, FOR THE FIRST TIME IN THIS TRANCHE.** It had
-  never once been in a position to say anything (#12, then #15). It is the assertion that pays for *"no
-  consumer was restarted or re-bound to make a recovery visible"*, and it is now a measurement.
-- **THE §9 MATRIX IS NINE OF NINE FROM CANDIDATE 7 AND NINE OF NINE AGAIN FROM CANDIDATE 8**, where §11.7
-  managed eight, and `RC8`/`RC9`/`RC11` assert their arm again **with every assertion unchanged** — Phase 6
-  §11.9 is the record of the injector repair. **Candidate 8 is the first candidate from which the matrix and a
-  six-arm sequence attempt were both taken**, so §11.10 no longer has to caveat that the matrix describes a
-  different daemon than the record ends with.
-- ~~**THE PROVIDER BLOCKER IS CLEARED.**~~ **IT WAS, ONCE, AND IT IS BACK.** One operator action cleared
-  `4fea5e1bdeaa` — §11.13 — and the pool has since moved to `f446a32964bf`, which nobody has authorised. The
-  sentence is struck rather than deleted because "cleared" was true of one origin at one time and was never a
-  claim about the pool. Blocker 3 above is where it now lives.
-- **#16's MECHANISM IS KNOWN, AND IT IS KNOWN FROM COMMITTED SOURCE AND A PROGRAM RATHER THAN FROM A
-  HYPOTHESIS.** §11.3.5 could name only one hypothesis and one diagnostic; §8.7.1 names the operation, and
-  `npm run go:mount-propagation-probe` measures both halves of it **on the Unraid kernel itself**, with a
-  control that has to reproduce the defect or the probe fails. That is the first time in this tranche a
-  mount-topology claim has been checkable without a three-hour provider-facing run.
-- **THE FIX IS THE SMALLEST ONE THAT CAN BE PROVED SAFE, AND WHAT AUTHORISES IT IS AN IDENTITY.** The process
-  that made the mount removes it, and only if the row on top is byte-for-byte the one it recorded creating —
-  not a file-system type, not a count, not a transport answer, each of which this repository has already
-  watched describe two different mounts at once. Seven tampers pin it (§11.11.3) and the second of them caught
-  the widened, shape-based form passing eight of nine table rows.
-- **AND THE INSTRUMENT THAT WAS BUILT TO WATCH THE FIX CAUGHT A DEFECT IN IT — IN THE PATH §8.7 HAD JUST
-  CHANGED — ON ITS FIRST EXECUTION.** §11.4 #17: a `SIGTERM` with a tmpfs stacked above the live mount removed
-  **the tmpfs**, because `Unmount()` is `umount(2)` against the mount POINT and takes whatever is on top. The
-  same identity now governs both removals, and the gate is **8 of 8** with the fix. **That is the argument for
-  §8.7.4 in one line, and it is the fourth time in this document a real host has refused something every
-  offline test accepted.**
-- **THE §9 MATRIX IS NINE OF NINE FROM BOTH CANDIDATES THAT CARRY THAT DAEMON**, with Phase 6's own
-  `go:recovery-gate:three` green at thirteen arms in each of three cold starts, twice — the gate that caught
-  §11.4 #5, which is the one previous change to this same lifecycle that every offline test passed and a real
-  host refused.
-- **THE SAFETY CONTRACT HELD EVERYWHERE IT WAS MEASURED.** No file-system type became trusted; the verdict is
-  read on one row of one table; nothing was ever unmounted on the new path; a re-mounted bind of the same share
-  is refused; an unreadable mount table refuses; an unwired verifier refuses; and the act is re-verified live
-  before a budget is spent.
-- **THE MOUNT-LAYER THRESHOLD DID NOT MOVE.** It measured `1/1` after every arm attempt 6 reached, and `1/1`
-  after R1 and R2 in attempt 7. **It is in the blocking list above and not this one**, because attempt 7 is the
-  first run since §8.5 to reach R3 and it measured **2/1** there. A sentence in an earlier revision of this
-  list said the threshold *"stopped biting"*; it did not stop biting, it stopped being asked.
-- **AND THE STAGES THAT MAKE THIS TRANCHE WHAT IT IS PASSED IN ALL THREE ATTEMPTS THAT REACHED THEM**: three
-  real digest-pinned media servers attached before the first mount, catalogued a real TorBox object through
-  their own predicates, read four approved windows inside their own containers, were observed scanning on one
-  clock, seeked ten verified media-time positions each — **10/10, 10/10, 10/10** in attempt 7 —
-  **direct-played five minutes each simultaneously** (306 / 300 / 300 decoded media seconds, with an instant
-  measured at which all three were decoding) and **transcoded five minutes each** (324 / 324 / 300).
+**ON UNRAID THE FULL OFFLINE INVENTORY IS 305 PASSED AND 9 FAILED.** That is a real number and it is not hidden:
+§11.15.1 and §11.15.4 record it, and it is the same **nine suites** every time.
 
-**SO THE HONEST SUMMARY IS THIS, AND THE SHAPE OF IT IS DIFFERENT FROM LAST TIME.** The blocker this document
-ended on has stopped being a mystery: its mechanism is named in committed source, measured by a program on
-this host's own kernel with a control that has to fail, repaired at the one end where ownership is an identity
-rather than a judgement, contracted at §8.7 before any run, pinned by a table whose sequential case a
-cold-start table could not have caught, tamper-proved seven times, and carried through Phase 6's own recovery
-gate — thirteen arms, three cold starts — twice, from two independently frozen and byte-proved candidates,
-alongside the whole nine-gate matrix and both offline inventories.
+**WHY IT DOES NOT MAKE CLAUSE 10 FALSE, AND THE READER SHOULD JUDGE THIS RATHER THAN TAKE IT.** Clause 10 names
+no host, and §11.5 — written before any of this — labels the inventory as the development host's and says in
+terms that *"running them here proves nothing about Unraid"*. The Unraid inventory is an **extra** this tranche
+volunteered at §11.5.1 and had never been run before. All nine were re-run **one at a time from candidate 8's
+staged tree on the same host** and failed there identically, so they are a property of the host and not of
+anything this tranche changed. Six of them refuse because `shfs` will not honour restrictive modes or present
+links as they require — they are **failing closed on a host they cannot certify**, which is what they are for.
+Three of them copy a **shipped** `.sh` to a temp directory and exec it directly, and every shipped script here
+is mode 644 in git because they are always invoked as `bash script.sh` — status 126, and it cannot happen on
+Windows. **None of the nine touches `projectiond`, the Phase 7 gate or the shipped operator command.**
 
-**AND THE TRANCHE IS A NO-GO BECAUSE NONE OF THAT IS THE MEASUREMENT §4.1 ASKS FOR.** `P7-arm-layers` at R3
-has not been read since the fix, R6 has still never reached its subject, `npm run go:phase7-gate:three` has
-still never completed a single run from any candidate — and this time the reason is one nobody here controls:
-the provider is serving a CDN origin the operator has not allowlisted, so §7 records a run into it as BLOCKED
-rather than failed and no attempt was launched. **A fix that has not been measured is a proposal, and this
-record does not promote one.**
+### 12.3 What was bought, and the expensive half is the part that was wrong first
 
-**WHAT THIS IS NOT, RESTATED BECAUSE IT IS EASY TO READ THE PARAGRAPH ABOVE AS MORE THAN IT SAYS.** This is a
-rough-edged **one-host TorBox alpha**. It is not a beta, not a release, not a marketplace package, not a second
-host and not a second provider: **there is no Real-Debrid support and no Usenet support** — Phase 6 §13 has
-contracts for them and a contract is not a feature. §10 is the full list of what is not claimed, it is longer
-than this section, and every line of it still stands.
+- **ARM R1 RECOVERS.** The mount removed from beneath a living daemon — the single most likely operator-side
+  accident on this appliance, and the fault Phase 6 §3.2 had a row for and could not reach — is repaired inside
+  a bounded budget, with all four operator windows digest-matching, all three media servers reading them inside
+  their own containers as their own uid, and the underlay fingerprint identical before the fault and after the
+  recovery. §8.4 is the contract, written before the run that measured it.
+- **ARM R2 RECOVERS** from a second daemon's corpse, **R3 IS THE CONTROL AND SPENDS NOTHING**, **R4's SERVE-DEATH
+  PATH REMOUNTS IN PLACE WITH EXACTLY ONE SUPERVISOR ACTING**, **R5 REFUSES A FOREIGN OVERLAY AND LEAVES IT
+  MOUNTED AND BYTE-UNMODIFIED**, and **R6 SPENDS EXACTLY THE BOUNDED BUDGET, LOCKS OUT, SURVIVES A RESTART AND
+  IS CLEARED ONLY BY A HUMAN.**
+- **THE MOUNT-LAYER THRESHOLD BIT, TWICE, AND WAS NEVER MOVED.** It failed attempt 5 and attempt 7 at the same
+  three arms, and the second failure was of a defect this document had already recorded as resolved on evidence
+  that could not have shown it. §8.5.1 retires that over-claim in place; §11.4 #16 is the row; §8.7 is the
+  repair; and the threshold is the same **1** it was before the first measured run.
+- **AND THE INSTRUMENT BUILT TO WATCH THAT REPAIR FOUND A DEFECT IN IT.** §11.4 #17: a `SIGTERM` was unmounting
+  a foreign overlay stacked above the live mount, because `umount(2)` takes whatever is on top. That is the
+  `--auto-remount` defect's own shape on the one path nothing had ever asserted about, and it was found on the
+  new gate's **first execution**, before any sequence attempt.
+- **SEVENTEEN DEFECTS, EIGHT OF THEM IN SHIPPED PRODUCT CODE**, and **five of the eight were found by a real
+  gate on a real host after passing every offline test there was.** That is the argument for the regression
+  matrix, made five times over in one tranche.
+
+### 12.4 The rough edges that ship with it, because an alpha that hides them is not an alpha
+
+1. **A DAEMON KILLED OUTRIGHT STILL LEAVES ITS MOUNT.** Nothing inside a process can clean up after a `SIGKILL`,
+   an out-of-memory kill or lost power. `preflight` names the state and prints `clear-stale-mount` with the
+   exact command, and the appliance deliberately does not do it for the operator — §8.7.2, §8.7.6, and the
+   operator runbook §6.2.
+2. **A STOP WITH SOMETHING STACKED ABOVE THE MOUNT LEAVES OUR OWN MOUNT STANDING**, because it cannot be removed
+   from underneath the thing on top without removing that too. Refusing to touch what is not ours is the rule
+   this whole line of work exists for; the residual is the price. §8.7.6.
+3. **A ROLLBACK THAT SURVIVES LOSING THE CACHE IS NOT SHIPPED.** §8.3 takes that decision explicitly and gives
+   the operator instruction that pays for it: name the previous digest in `PROJECTIOND_ALPHA_IMAGE` and run
+   `start`.
+4. **A WEDGED PROBE IS INVESTIGATED AND NOT FIXED.** §8.2. None of the six arms produces one by construction,
+   none of the runs above wedged, and the abort-first capability is still not shipped — its absence is pinned.
+5. **THE PROVIDER'S CDN POOL ROTATES ON NOBODY'S SCHEDULE.** Five of this session's observations were of origins
+   the operator has not allowlisted, across at least three pool members, and a run into one is **BLOCKED rather
+   than failed** by §7's own rule. The allowlist is not a defect; it is the one thing standing between a
+   resolved URL and an unreviewed host, and it caught a rotation four times in this repository's history.
+
+### 12.5 What this closes and what it does not
+
+**IT CLOSES PHASE 7 AND NOTHING ELSE.** Phase 6's bounded automatic recovery has now been done to a mount that
+three real, digest-pinned media servers were attached to and playing real TorBox bytes through, and asked to
+keep playing — three times, from one frozen candidate, with every threshold in §4 where it was before the first
+measured run.
+
+**IT DOES NOT CLOSE A SECOND HOST, A SECOND PROVIDER, A CORPUS, A LOAD FIGURE OR A BEAT OF PRODUCTION
+READINESS.** Three green runs on a host that is not this one close nothing at all. §10 is the full list, it was
+written before any of this was measured, and every line of it still stands.

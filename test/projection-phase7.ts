@@ -481,13 +481,36 @@ test('all three shipped drivers ask the shared question rather than each compari
 console.log('\nthe contract document says what the module says');
 // ---------------------------------------------------------------------------------------------------------
 
-test('the contract exists, predeclares a NO-GO list, and does not yet claim a GO', () => {
+// THE STATUS PIN, AND IT CHANGED SHAPE WHEN THE TRANCHE CLOSED RATHER THAN BEING DELETED.
+//
+// AS WRITTEN BEFORE ANY MEASURED RUN it said `Status: OPEN|CLOSED|NO-GO` and was named *"does not yet claim a
+// GO"* — a pin against a record that announced closure before it had one. That was the right assertion for a
+// tranche with no passing sequence, and keeping it unchanged after §11.17 would have meant either a permanent
+// failure or a deleted check.
+//
+// SO IT IS THE SAME QUESTION ASKED OF THE NEW STATE: a document may claim GO only if it also carries, in §12,
+// the clause-by-clause account of §4.1 that a GO is made of. A record that says GO and cannot show the ten
+// clauses is exactly what the original pin existed to refuse, and this refuses it in the one state the
+// original could not reach.
+test('the contract exists, predeclares a NO-GO list, and only claims a GO beside §4.1 clause by clause', () => {
   const document = read(CONTRACT);
   assert(document.includes('What makes this tranche a NO-GO'), 'the NO-GO conditions are not predeclared');
-  assert(/Status: OPEN|Status: CLOSED|Status: NO-GO/.test(document), 'the document carries no status');
+  assert(/Status: OPEN|Status: CLOSED|Status: NO-GO|Status: GO/.test(document), 'the document carries no status');
   assert(document.includes('MOUNT_LAYERS_ABOVE_FLOOR_MAX'), 'the new threshold is not in the document');
   for (const arm of PHASE7_ARMS) {
     assert(document.includes(`**${arm}**`), `the contract does not name arm ${arm}`);
+  }
+  const decision = document.slice(document.indexOf('## 12. The readiness decision'));
+  if (/^# \*\*GO\.\*\*$/m.test(decision)) {
+    assert(/§4\.1, clause by clause/.test(decision),
+      'the document claims a GO without the clause-by-clause account of §4.1 that a GO is made of');
+    for (const clause of ['| **1** |', '| **9** |', '| **10** |']) {
+      assert(decision.includes(clause), `§12's clause table is missing ${clause.replace(/\|/g, '').trim()}`);
+    }
+    assert(/§4\.2's NO-GO LIST IS EMPTY, ROW BY ROW/.test(decision),
+      'the document claims a GO without walking §4.2s NO-GO list');
+    assert(/305 PASSED AND 9 FAILED/.test(decision),
+      'the document claims a GO without stating, in §12, the one inventory number that is not 314/314');
   }
 });
 
