@@ -1689,13 +1689,14 @@ nothing about it, while a headline three paragraphs up still counts it. **That i
 that knew the difference. The count pin catches the arithmetic version. **Nothing yet catches the reasoning
 version**, and §11.4's closing paragraph says so rather than implying the pins are complete.
 
-### 11.11.3 THE SIX TAMPERS THAT PROVE §8.7's PINS BITE, AND THE TREE THEY WERE REVERTED INTO
+### 11.11.3 THE NINE TAMPERS ON §8.7's PINS, AND THE ONE THAT DID NOT BITE
 
 **A PIN NOBODY HAS SEEN FAIL IS A PIN NOBODY HAS TESTED**, which is the rule §11.11.1 and §11.11.2 already
-apply. §8.7 adds a product decision, an ownership proof, a gate change and three required assertions, and every
-one of them was driven the same way: edit ONE shipped or documented fact, run the suite that is supposed to
-notice, record what it said, revert with `git checkout --`. **All six failed the intended assertion and
-`git status` was empty after every revert.**
+apply. §8.7 adds a product decision, an ownership proof, two gate changes, a new provider-free gate and three
+required assertions, and every one of them was driven the same way: edit ONE shipped or documented fact, run the suite that is supposed to
+notice, record what it said, revert with `git checkout --`. **Eight of the nine failed the intended assertion and `git status` was empty after every revert. The ninth
+is the important one: it did NOT fail, the pin it walked through has been replaced, and the paragraph under the
+table is what that cost and bought.**
 
 | Tamper | What was changed | What failed, in its own words |
 |---|---|---|
@@ -1705,6 +1706,19 @@ notice, record what it said, revert with `git checkout --`. **All six failed the
 | 4 | `P7-R3-restart-left-no-layer` removed from the contract module's required set, leaving the gate still recording it | *"P7-R3-restart-left-no-layer is not required by the contract module, so a run that omitted it would still be a passing run"* |
 | 5 | the sequential regression collapsed to ONE generation — a cold start, which is what every previous table was | *"the sequential regression is no longer a loop over generations"* |
 | 6 | the roadmap keeps the old product-fix count while the §11.4 ledger has moved | *"the Phase 7 roadmap row does not state that seven of them are in shipped product code"* |
+| 7 | the propagation probe stops requiring its control to fail | *"the probe no longer FAILS when the control leaves nothing behind"* |
+| 8 | the shutdown's identity guard neutered to `if false && !mayRemove`, leaving every call exactly where it was | **NOTHING FAILED — AND THAT IS THE MOST USEFUL RESULT IN THIS TABLE.** See below |
+| 9 | the restart-topology gate's `RT4` control turned into a pass | *"the gate no longer FAILS when a SIGKILLed daemon leaves nothing behind, so RT1 could pass for a reason that is not the repair"* |
+
+**TAMPER 8 IS THE ONE THAT MATTERED AND IT DID NOT BITE, WHICH IS WHY IT IS RECORDED AS A FAILURE OF THE PINS
+RATHER THAN QUIETLY REPAIRED.** The check as written asserted that the identity is computed BEFORE the ordinary
+unmount — an ORDER — and the tamper left the order untouched while making the verdict authorise nothing. Every
+assertion passed over a daemon whose stop had gone back to removing whatever was on top, which is #17 exactly.
+**An ordering check cannot pin a guard**, and the pin now asserts the SHAPE: the unmount lives in the `else` of
+`if !mayRemove`, and there is exactly one of it. Re-run against the same tamper it failed by name —
+*"the shutdown no longer branches on the identity verdict, so the ordinary unmount is not guarded by it however
+early it is computed"*. **This is the second time in this tranche that a tamper has caught a CHECK rather than a
+change** — §11.11's own first catch was the other — and it is worth more than the eight that behaved.
 
 **TAMPER 2 IS THE ONE WORTH DWELLING ON AND IT IS THE WHOLE ARGUMENT OF §8.7.2 IN ONE FAILURE.** The widened
 condition is the one every previous version of this decision in this repository has used, and it passes eight of
