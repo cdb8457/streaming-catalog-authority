@@ -389,6 +389,25 @@ func TestTheShutdownPathTriesThePoliteFormFirstAndNeverAbortsAConnection(t *test
 	if unmountAt > detachAt {
 		t.Fatal("the ordinary unmount must be attempted BEFORE anything is detached")
 	}
+	// ...AND THE ORDER IS NOT THE PROPERTY. THE WIRING IS.
+	//
+	// AN EARLIER VERSION OF THIS TEST CHECKED ONLY THAT THE IDENTITY WAS ASKED FIRST, AND A TAMPER WALKED
+	// STRAIGHT THROUGH IT: neutering the guard to `if false && !mayRemove` leaves the call exactly where it
+	// was, so every ordering assertion above still passed while the ordinary unmount had gone back to removing
+	// whatever was on top. That is the ninth tamper in this tranche and the second one to catch a check rather
+	// than a change. So what is pinned now is the SHAPE: the unmount lives in the `else` of the guard, and
+	// there is exactly one of it.
+	if !strings.Contains(signalBranch, "if !mayRemove {") {
+		t.Fatal("the shutdown no longer branches on the identity verdict, so the ordinary unmount is not " +
+			"guarded by it however early it is computed")
+	}
+	if !strings.Contains(signalBranch, "} else if err := mount.Unmount(); err != nil {") {
+		t.Fatal("the ordinary unmount is no longer in the ELSE of the identity guard, so it can run when the " +
+			"row on top is not the one this process made")
+	}
+	if got := strings.Count(signalBranch, "mount.Unmount()"); got != 1 {
+		t.Fatalf("the shutdown calls mount.Unmount() %d times; one guarded call is the whole contract", got)
+	}
 	if !strings.Contains(signalBranch, "unix.MNT_DETACH") {
 		t.Fatal("the shutdown detach must be the lazy form, which is what removes a mount somebody is holding")
 	}
