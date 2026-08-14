@@ -196,9 +196,14 @@ chmod 700 "$WORK/inputs" "$WORK/daemon-inputs"
 # artifact of a real-provider run that every user on the host could read.
 mkdir -p "$EVIDENCE_DIR"
 chmod 700 "$EVIDENCE_DIR"
+# THE TWO LOGS THIS SOAK PRESERVES, CREATED AT 0600 BEFORE ANYTHING CAN APPEND TO THEM. The second is the
+# CYCLE log — `$CYCLES_REL` — and it was created here under Phase 7's name for an arms log. That left an empty
+# `arms-<pid>.jsonl` in the preserved evidence of every soak, for a tranche that has no arms, and it left the
+# cycle log to be created by the first `appendFileSync` at whatever the operator's umask allowed rather than
+# at the 0600 §6 requires of everything in this directory.
 : > "$GATE_ROOT/evidence/verdicts-$$.jsonl"
-: > "$GATE_ROOT/evidence/arms-$$.jsonl"
-chmod 600 "$GATE_ROOT/evidence/verdicts-$$.jsonl" "$GATE_ROOT/evidence/arms-$$.jsonl"
+: > "$GATE_ROOT/evidence/cycles-$$.jsonl"
+chmod 600 "$GATE_ROOT/evidence/verdicts-$$.jsonl" "$GATE_ROOT/evidence/cycles-$$.jsonl"
 
 # THE SECRETS ARE COPIED AT 0600 INTO A 0700 DIRECTORY, never moved and never widened.
 #
@@ -1968,6 +1973,18 @@ container_for() {
   esac
 }
 
+# WHERE EACH SERVER'S LIBRARY STATE ACTUALLY LIVES, in ONE place, because it is not derivable from the server
+# id and the run that assumed it was is the reason this function exists. These are the directories the three
+# `docker run` invocations bind to `/config`, and the same three the leak scan walks.
+config_dir_for() {
+  case "$1" in
+    jellyfin) echo "$WORK/jf-config" ;;
+    plex)     echo "$WORK/plex-config" ;;
+    emby)     echo "$WORK/emby-config" ;;
+    *) die "unknown server $1" ;;
+  esac
+}
+
 # THE MOUNT LIST IS SORTED, AND THE FIRST RUN THAT COULD COMPARE IT AT ALL IS WHY.
 #
 # `docker inspect` returns `.Mounts` as a JSON ARRAY and its order is not a property of the container. Measured
@@ -2436,16 +2453,24 @@ phase_bytes() {
         docker exec -u 1000:1000 "$(container_for "$server")" \
         sh /gate/inread.sh "/media/projection/$REAL_PATH" /gate/windows.txt 2>&1 | tail -1)"
       set -e
+      # HOW MANY OF THE OPERATOR'S WINDOWS THIS SERVER MATCHED, AS A NUMBER, because the closure rule measures
+      # this id against `OPERATOR_WINDOWS_REQUIRED` and a boolean carries neither a measurement nor a budget.
+      # `inread.sh` already prints `matched/total`; recording the boolean threw that away and left the closure
+      # check judging a verdict about nothing. A verdict with no `matched` count at all is recorded with an
+      # EMPTY measurement rather than a zero, which `record.cjs` fails as an unmeasured step — never as a
+      # server that matched no windows.
+      local matched_windows
       case "$verdict" in
-        inread:ok*)
-          record "$inread_prefix:$server$inread_suffix" bool 1 "" \
-            "this server's own container read the operator's windows and every digest matched" ;;
-        inread:*)
-          record "$inread_prefix:$server$inread_suffix" bool 0 "" \
-            "this server's own container could not read the operator's windows correctly" || true ;;
+        inread:ok*|inread:mismatch*)
+          matched_windows="${verdict#* }"
+          matched_windows="${matched_windows%%/*}"
+          record "$inread_prefix:$server$inread_suffix" ge "$matched_windows" \
+            "$P8_OPERATOR_WINDOWS_REQUIRED" \
+            "windows this server's own container read through the mount, as its own uid, and matched against \
+digests recorded outside the mount" || true ;;
         *)
-          record "$inread_prefix:$server$inread_suffix" bool 0 "" \
-            "the in-container read produced neither verdict, so nothing was measured" || true ;;
+          record "$inread_prefix:$server$inread_suffix" ge "" "$P8_OPERATOR_WINDOWS_REQUIRED" \
+            "the in-container read produced neither verdict ('$verdict'), so nothing was measured" || true ;;
       esac
     done
   fi
@@ -2835,6 +2860,22 @@ step_S5_recovery() {
   # somebody is holding — measured on this host in Phase 3, where it returned having removed nothing. The
   # detach is guarded to this run's own mount point and nothing else.
   local generation_before attempts_before actions_before started action_ms ready_ms recovered_ok=0
+  # THE BASELINE IS SAMPLED HERE RATHER THAN INHERITED, AND IN A SOAK THAT IS THE DIFFERENCE BETWEEN A
+  # MEASUREMENT AND A COINCIDENCE.
+  #
+  # `await_recovery_action` waits for `recoveryGeneration` to become DIFFERENT from the value handed to it, so
+  # that value has to be the daemon's generation AT THE INSTANT OF THE FAULT. Phase 7's arms inherited it from
+  # whatever the previous arm's last `sample` had left in the variable, which in a six-arm run was always a
+  # reading of the same daemon taken moments earlier. A CYCLE IS NOT AN ARM: S9 restarts the daemon through
+  # `upgrade` and `rollback`, so the value left over from the previous cycle's S8 describes a daemon that no
+  # longer exists, and on cycle 1 nothing has sampled at all and the variable is empty.
+  #
+  # BOTH OF THOSE FAIL THE SAME WAY AND IT IS THE WAY THAT PASSES. An empty or stale baseline is unequal to the
+  # first reading the wait takes, so the wait returns on its FIRST poll having observed no recovery at all —
+  # and `P8-S5-action-ms` records a couple of hundred milliseconds against a 33-second budget, green, for a
+  # supervisor that had not yet done anything. A step whose success does not depend on the thing it measures is
+  # the defect this repository keeps finding, and this is one line of it.
+  sample
   generation_before="$REC_GENERATION"
   attempts_before="${REC_ATTEMPTS:-0}"
   actions_before="$(recovery_actions)"
@@ -2852,10 +2893,10 @@ step_S5_recovery() {
   sample
   underlay_before="${REC_UNDERLAY_DIGEST:-}"
   verdict_before="${REC_UNDERLAY:-}"
-  record "P8-S5-underlay-covered-before" bool \
+  record "P8-S5-underlay-covered-before:$CYCLE_ID" bool \
     "$( [ "$verdict_before" = "underlay-covered" ] && echo 1 || echo 0 )" "" \
     "before the fault the daemon reports its own mount COVERING the operator's bind: '${verdict_before:-absent}'" || true
-  record "P8-S5-underlay-fingerprinted" bool "$( [ -n "$underlay_before" ] && echo 1 || echo 0 )" "" \
+  record "P8-S5-underlay-fingerprinted:$CYCLE_ID" bool "$( [ -n "$underlay_before" ] && echo 1 || echo 0 )" "" \
     "the daemon holds a fingerprint of what it mounted over, taken before its first mount: '${underlay_before:-absent}'" || true
   umount -l "$WORK/mnt" 2>/dev/null || true
   local gone=0 n=0
@@ -2863,7 +2904,7 @@ step_S5_recovery() {
     if [ "$(count_our_layers)" -lt "$layers_before" ]; then gone=1; break; fi
     n=$((n + 1)); sleep 0.5
   done
-  record "P8-S5-fault-took-the-mount" bool "$gone" "" \
+  record "P8-S5-fault-took-the-mount:$CYCLE_ID" bool "$gone" "" \
     "the projectiond mount is no longer at the mount point, and the daemon process is still running" || true
 
   set +e
@@ -2871,9 +2912,9 @@ step_S5_recovery() {
   local acted=$?
   set -e
   sample
-  record "P8-S5-action-ms" le "${action_ms:-}" "$P8_RECOVERY_ACTION_BUDGET_MS" \
+  record "P8-S5-action-ms:$CYCLE_ID" le "${action_ms:-}" "$P8_RECOVERY_ACTION_BUDGET_MS" \
     "from the fault to the recovery supervisor having spent an attempt on it" || true
-  record "P8-S5-reason" bool "$( [ "$(recovery_last_action)" != "" ] && echo 1 || echo 0 )" "" \
+  record "P8-S5-reason:$CYCLE_ID" bool "$( [ "$(recovery_last_action)" != "" ] && echo 1 || echo 0 )" "" \
     "the daemon named its decision on its own status surface and in its own log: reason='${REC_REASON:-none}' observation='${READY_OBSERVED:-none}' lastAction='$(recovery_last_action)'" || true
   # AND THE DECISION IS THE ONE PHASE 7 §8.4 PREDECLARED, BY NAME, FROM THE DAEMON'S OWN LOG.
   #
@@ -2881,29 +2922,29 @@ step_S5_recovery() {
   # which on this host it is not — the operator's bind is still there — and `recover-stale-mount` would mean the
   # daemon had found a corpse of its own to clear. Naming the action is what separates "it recovered" from "it
   # recovered for the reason the contract says this fault has".
-  record "P8-S5-action-is-the-underlay-row" bool \
+  record "P8-S5-action-is-the-underlay-row:$CYCLE_ID" bool \
     "$( [ "$(recovery_last_action)" = "recover-mount-underlay" ] && echo 1 || echo 0 )" "" \
     "the recovery the daemon took for a mount removed beneath it: '$(recovery_last_action)'" || true
   # ...AND IT MOUNTED OVER THE SAME ATTACHMENT IT FINGERPRINTED BEFORE ITS FIRST MOUNT, WHICH IS THE WHOLE
   # SAFETY CLAIM OF THE ROW. An equal digest with the operator's bind still carrying its own mount id is the
   # product's own evidence that nothing was swapped underneath it while it was not serving.
   sample
-  record "P8-S5-underlay-digest-unchanged" bool \
+  record "P8-S5-underlay-digest-unchanged:$CYCLE_ID" bool \
     "$( [ -n "$underlay_before" ] && [ "${REC_UNDERLAY_DIGEST:-}" = "$underlay_before" ] && echo 1 || echo 0 )" "" \
     "the underlay fingerprint across the fault and the recovery: '${underlay_before:-absent}' then '${REC_UNDERLAY_DIGEST:-absent}'" || true
-  record "P8-S5-remediation" bool \
+  record "P8-S5-remediation:$CYCLE_ID" bool \
     "$( [ "${REC_REMEDIATION:-}" = "none" ] || [ "${REC_REMEDIATION:-}" = "reset-recovery-ledger" ] && echo 1 || echo 0 )" "" \
     "the remediation an operator is told to perform is a closed-set code: '${REC_REMEDIATION:-absent}'" || true
-  record "P8-S5-attempts" le "$(( $(recovery_actions) - actions_before ))" "$P8_SINGLE_FLIGHT_ACTIONS_MAX" \
+  record "P8-S5-attempts:$CYCLE_ID" le "$(( $(recovery_actions) - actions_before ))" "$P8_SINGLE_FLIGHT_ACTIONS_MAX" \
     "recovery actions the daemon started for ONE fault" || true
-  record "P8-S5-single-flight" le "$(( $(recovery_actions) - actions_before ))" \
+  record "P8-S5-single-flight:$CYCLE_ID" le "$(( $(recovery_actions) - actions_before ))" \
     "$P8_SINGLE_FLIGHT_ACTIONS_MAX" \
     "exactly one supervisor acted: the recovery loop REQUESTS and the goroutine that owns the mount performs" || true
-  record "P8-S5-generation" bool "$( [ "$acted" -eq 0 ] && echo 1 || echo 0 )" "" \
+  record "P8-S5-generation:$CYCLE_ID" bool "$( [ "$acted" -eq 0 ] && echo 1 || echo 0 )" "" \
     "recoveryGeneration advanced from ${generation_before:-?} to ${REC_GENERATION:-?}, which is the daemon's own count of every attempt it has ever made" || true
   if await_readable 240; then recovered_ok=1; fi
   ready_ms=$(( $(date +%s%3N) - started ))
-  record "P8-S5-ready-ms" le "$( [ "$recovered_ok" -eq 1 ] && echo "$ready_ms" || echo "" )" \
+  record "P8-S5-ready-ms:$CYCLE_ID" le "$( [ "$recovered_ok" -eq 1 ] && echo "$ready_ms" || echo "" )" \
     "$P8_RECOVERY_READY_BUDGET_MS" \
     "from the fault to a sibling container reading a byte through the mount again" || true
   # WHEN THIS ARM FAILS, THE DAEMON'S OWN ACCOUNT IS THE DIAGNOSIS AND THE CLEANUP CONTRACT IS ABOUT TO
@@ -2928,7 +2969,7 @@ step_S5_recovery() {
     echo "  --- mount survey (after the R1 fault) ---" >&2
     bash "$WORK/out/mountrows.sh" "$WORK/mnt" "host" >&2 || true
   fi
-  record "P8-R1" bool "$( [ "$gone" -eq 1 ] && [ "$acted" -eq 0 ] && [ "$recovered_ok" -eq 1 ] && echo 1 || echo 0 )" "" \
+  record "P8-R1:$CYCLE_ID" bool "$( [ "$gone" -eq 1 ] && [ "$acted" -eq 0 ] && [ "$recovered_ok" -eq 1 ] && echo 1 || echo 0 )" "" \
     "the mount lost beneath a living daemon, recovered by the recovery supervisor" || true
 }
 
@@ -2962,7 +3003,15 @@ inherit_fingerprint() {
     container="$(container_for "$server")"
     docker inspect -f "server $server {{.Id}} {{.State.StartedAt}}" "$container" >> "$out" 2>/dev/null \
       || echo "server $server UNREADABLE" >> "$out"
-    stat -c "config $server %i" "$WORK/$server" >> "$out" 2>/dev/null \
+    # THE CONFIGURATION DIRECTORY BY ITS REAL NAME, WHICH IS NOT THE SERVER'S ID.
+    #
+    # `$WORK/$server` is `$WORK/emby`, `$WORK/jellyfin`, `$WORK/plex` — three paths this gate never creates.
+    # The directories the three servers are actually bound to are `jf-config`, `plex-config` and
+    # `emby-config`, and `config_dir_for` is the one place that mapping lives. Statting the wrong path wrote
+    # `config <server> UNREADABLE` on every call, so `inherit_fingerprint` returned 1 every time,
+    # `assert_inherited` recorded `P8-cycle-inherited` as a FAILURE in all three cycles of every soak, and the
+    # assertion that makes this a soak rather than three Phase 7 runs could never once have passed.
+    stat -c "config $server %i" "$(config_dir_for "$server")" >> "$out" 2>/dev/null \
       || echo "config $server UNREADABLE" >> "$out"
   done
   # AND THE MOUNT POINT ITSELF, which after cycle 1 has been mounted before.
@@ -3076,7 +3125,13 @@ disagrees with the mount is the defect this line of work started from" || true
 step_S3_consumers_read() {
   # ALL THREE, CONCURRENTLY, IN THEIR OWN CONTAINERS AS THEIR OWN UID. `phase_bytes` is the same helper every
   # Phase 7 stage used, and the ids it is given here are this cycle's.
-  phase_bytes "P8-S3-windows:$CYCLE_ID" - - "P8-S3-inread" ":$CYCLE_ID" "cycle $CYCLE_ID step S3"
+  #
+  # THE PER-SERVER READ IS `P8-S3-windows`, WHICH IS THE ID THE CLOSURE RULE ASKS FOR, and the host-side
+  # aggregate takes a name of its own. `requiredCycleGateIds` expands `P8-S3-windows` across the three servers
+  # precisely because §3's S3 is a claim about what EACH server can read in its OWN container — so the id has
+  # to be the per-server one. Handing the aggregate that name and the per-server reads a name nobody requires
+  # left all three of S3's required ids absent from every cycle, which is a soak that could never close.
+  phase_bytes "P8-S3-host-windows:$CYCLE_ID" - - "P8-S3-windows" ":$CYCLE_ID" "cycle $CYCLE_ID step S3"
   # AND THAT THEY WERE CONCURRENT RATHER THAN CONSECUTIVE. The in-container reads above are issued one after
   # another by construction, so what is asserted here is the property the three-way sampler measures: three
   # servers holding the same mount at the same instant.
@@ -3170,13 +3225,21 @@ a surface that disagrees with the file it is derived from is a lockout nobody ca
 step_S9_upgrade_rollback() {
   # THE TARGET IS RECORDED BEFORE ANYTHING CHANGES, AND ROLLBACK HONOURS IT. §8.3 of the contract is explicit
   # that surviving cache loss is NOT claimed, so nothing here asserts it.
+  # THE ROLLBACK TARGET IS READ FROM THE PATH THE SHIPPED COMMAND ACTUALLY WRITES, which is
+  # `$PROJECTIOND_ALPHA_CACHE_DIR/.projection-alpha-previous-image` — its own `UPGRADE_RECORD_NAME`, under
+  # the cache directory this run gave it. This step used to read `$WORK/cache/rollback-target`, a name
+  # nothing in the product has ever written, so `P8-S9-upgrade-recorded-rollback-target` would have measured
+  # an absent file and recorded a FAILURE in every cycle of every soak — against a product that had done
+  # exactly what §8.3 says it does.
+  local rollback_target
+  rollback_target="$WORK/cache/.projection-alpha-previous-image"
   local target_before
   target_before=""
-  [ -s "$WORK/cache/rollback-target" ] && target_before="$(cat "$WORK/cache/rollback-target" 2>/dev/null || true)"
+  [ -s "$rollback_target" ] && target_before="$(cat "$rollback_target" 2>/dev/null || true)"
   alpha upgrade
   local target_after
   target_after=""
-  [ -s "$WORK/cache/rollback-target" ] && target_after="$(cat "$WORK/cache/rollback-target" 2>/dev/null || true)"
+  [ -s "$rollback_target" ] && target_after="$(cat "$rollback_target" 2>/dev/null || true)"
   record "P8-S9-upgrade-recorded-rollback-target:$CYCLE_ID" bool \
     "$( [ -n "$target_after" ] && echo 1 || echo 0 )" "" \
     "upgrade recorded a rollback target before it changed anything: '${target_after:-absent}'" || true
@@ -3329,7 +3392,9 @@ test "${RESOLUTIONS:-0}" -ge 1 \
 # ----------------------------------------------------------------------------------------------------------
 step "THE MOUNT TOPOLOGY AT THE END — the accumulation question, asked before anything is torn down"
 # ----------------------------------------------------------------------------------------------------------
-# SIX FAULTS HAVE BEEN DONE TO THIS MOUNT POINT. Phase 6 §9.7 measured that each recovery stacks over the
+# THREE FAULTS AND THREE STOP/START PAIRS HAVE BEEN DONE TO THIS MOUNT POINT — one of each per cycle, and
+# the mount point is the SAME one throughout, which is the whole of §8.1. Phase 6 §9.7 measured that each
+# recovery stacks over the
 # corpse it found rather than removing it, so a mount point that has survived several carries several dead
 # layers — and an appliance that grows one per fault eventually meets §9.6, a mount point nothing can bind,
 # with no operator involved and no warning. This is the count that says whether that is still true.
@@ -3338,7 +3403,8 @@ step "THE MOUNT TOPOLOGY AT THE END — the accumulation question, asked before 
 echo "  at the end of the run: $(count_our_layers) mount(s) of ours and $(count_rows_at_mountpoint) row(s) \
 of any kind at the mount point, against a floor of $MOUNT_LAYER_FLOOR"
 record P8-layers-at-end le "$(layers_above_floor)" "$P8_MOUNT_LAYERS_ABOVE_FLOOR_MAX_AT_END" \
-  "mounts of OURS still stacked at the projected mount point after six faults, above the floor taken \
+  "mounts of OURS still stacked at the projected mount point after $P8_CYCLES_PER_SOAK cycles, each of which \
+took the mount out from under a living daemon once and stopped and started it once, above the floor taken \
 before the daemon ever mounted" || true
 
 # ----------------------------------------------------------------------------------------------------------
@@ -3401,9 +3467,15 @@ npx tsx src/ops/projection-phase8-cli.ts close --results "$RESULTS_REL" --cycles
   || die "the run did not satisfy the predeclared closure rule"
 
 echo
-echo "RELIABILITY LOOP gate PASSED. Exactly what was proved:"
-echo "  - $P8_ARMS_PER_RUN recovery arms, in the order the contract names, each followed by the same"
-echo "    byte, catalogue, churn, mount-topology and bind verification."
+# WHAT THIS SUMMARY SAYS IS WHAT THIS TRANCHE MEASURED, AND IT IS NOT PHASE 7's. The block below was carried
+# over from that gate whole, and it opened by printing `$P8_ARMS_PER_RUN` — a name no module publishes and
+# this gate never assigns, so a soak in which everything had passed, the closure check included, still exited
+# non-zero on an unbound variable three lines from the end. Phase 8 has no arms: it has three cycles of ten
+# steps, and one injected recovery inside each.
+echo "OPERATOR SOAK PASSED. Exactly what was proved:"
+echo "  - $P8_CYCLES_PER_SOAK operator cycles of ${P8_STEPS// /, }, in the order the contract names, with"
+echo "    NOTHING recreated between them, each followed by the same byte, catalogue, churn, mount-topology"
+echo "    and bind verification."
 echo "  - FIVE MINUTES of paced direct play on all THREE servers AT ONCE, ten media-time seeks per server"
 echo "    including backwards and beyond 90% of duration, and a five-minute forced transcode per server."
 echo "  - THREE REAL, DIGEST-PINNED MEDIA SERVERS on ONE production projectiond mount over a REAL PROVIDER,"
