@@ -1838,7 +1838,20 @@ stop_daemon() {
   # that would have settled #16 without a second run.
   docker logs "$MOUNT_CONTAINER" > "$WORK/out/daemon-previous.log" 2>&1 || true
   docker rm -f "$MOUNT_CONTAINER" >/dev/null 2>&1 || true
+  # THE COUNT IS SETTLED RATHER THAN SNAPPED, AND THE LOOP CAN ONLY EVER END EARLIER THAN ITS BOUND. A mount
+  # namespace is torn down when the last process in it exits, and `docker stop` returning is not by itself a
+  # promise that the host's mount table has caught up. So this waits — briefly — for the count to reach the
+  # floor and stops the instant it does. A residual that is real never reaches the floor and is reported at
+  # the bound, so waiting cannot turn a failure into a pass; it can only stop a true pass being read as a
+  # failure by a tick.
+  local settle=0
   STOP_LAYERS_AFTER="$(count_our_layers)"
+  while [ -n "$MOUNT_LAYER_FLOOR" ] && [ "$settle" -lt 20 ] \
+        && [ "$STOP_LAYERS_AFTER" -gt "$MOUNT_LAYER_FLOOR" ]; do
+    sleep 0.5
+    settle=$(( settle + 1 ))
+    STOP_LAYERS_AFTER="$(count_our_layers)"
+  done
 }
 
 restart_daemon() {
