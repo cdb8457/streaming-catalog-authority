@@ -1549,12 +1549,12 @@ live one in either — the marker has to be a quotation of something that is no 
 
 | Arm | Times executed | Outcome | Where |
 |---|---|---|---|
-| **R1** | **5** — attempts 3, 4, 5, 6 and 7 | **FAILED twice, identically, then RECOVERED.** Attempts 3 and 4: `P7-R1-action-ms` 34,304 and 34,085 against 33,000, no attempt spent, the generation never advanced, the namespace never came back, the operator’s four windows **0 of 4**. Attempt 5, from the candidate that carries §8.4: **every assertion of the arm passed** — 14,603 ms to one bounded `recover-mount-underlay`, 17,153 ms to a sibling reading a byte again, **4 of 4** windows, all three servers reading inside their own containers, one layer above the floor. Attempt 6 reproduced all of that from the candidate that carries §8.4.5 — 13,109 ms and 15,615 ms — and additionally passed `P7-R1-remediation`, the one assertion attempt 5 failed **Attempt 7 reproduced it a third time from candidate 8** — 14,490 ms and 16,913 ms, one layer, the underlay fingerprint `fccf4ba8c5c2` identical across the fault, and `P7-arm-binds-unchanged` passing for the first time in this arm’s history (§11.4 #15 is why it never could before) | §11.3.1, §11.3.2, §11.3.3, §11.3.4 |
-| **R2** | **3** — attempts 5, 6 and 7 | **PASSED every assertion of the arm.** The corpse was verified stale, `action-ms` 11,510/33,000, `ready-ms` 13,811/59,000, one action, one layer, 4 of 4 windows, all three servers reading. Attempt 6 reproduced it: 13,096 ms and 15,367 ms, one layer **Attempt 7 reproduced it again**: 12,974 ms and 15,209 ms, one layer, binds unchanged | §11.3.3, §11.3.4 |
-| **R3** | **3** — attempts 5, 6 and 7 | **PASSED in attempt 5; BLOCKED in attempt 6** by the provider rotating to an origin the operator has not allowlisted, which §7 predeclares as BLOCKED rather than failed. In attempt 5: reads failed inside the deadline, the breaker held, nothing reached the live resolver during the hold, the first read after release digest-matched, and `recoveryGeneration` did not advance **Attempt 7 is the first run to complete this arm since §8.5, and every assertion of the arm passed again** — `read-fail-ms` 611/20,000, 0 requests through the hold, `recovery-ms` 1,341/80,000, `no-recovery-action` 0/0, the mount untouched — **while `P7-arm-layers` measured 2/1. That is §11.4 #16 and it is the blocker this tranche now ends on** | §11.3.3 |
-| **R4** | **2** — attempts 5 and 7 | **PASSED its own assertions.** The serve-death supervisor remounted in place, draining one corpse of its own first, and the entry was unchanged **Attempt 7 reproduced it**: `ready-ms` 1,572/22,000, identity unchanged, the recovery loop declining, `single-flight` 1/1 across both supervisors — **with `P7-arm-layers` still 2/1, inherited from R3** | §11.3.3 |
-| **R5** | **2** — attempts 5 and 7 | **PASSED.** `refuse-foreign-mount` / `inspect-mount-owner` beside `recoveryUnderlay=underlay-covered`, nothing spent, and the tmpfs asserted still mounted and byte-unmodified afterwards **Attempt 7 reproduced it**, with `recoveryAttempts` still 0 and the tmpfs still on top and byte-unmodified — **and `P7-arm-layers` still 2/1, inherited from R3** | §11.3.3 |
-| **R6** | **2** — attempts 5 and 7 | **FAILED, AND THE INJECTOR IS WHY.** `umount -l` with nothing holding the connection killed the serve loop, so the SERVE supervisor took the fault, its three remounts failed under the masked `/dev/fuse`, and the daemon exited with the recovery loop having spent nothing — §11.4 #14 **Attempt 7 ran the REPAIRED injector for the first time and the arm still did not reach its subject.** `P7-R6-connection-held` passed — the open descriptor #14 added is held — and then the injector’s own premise assertion refused: one of our mounts remained after the lazy detach, because R3 had left two stacked. **#14 remains unmeasured, for a reason that is not #14** — §11.4 #16 | §11.3.3 |
+| **R1** | **6** — attempts 3, 4, 5, 6, 7 and 8 | **FAILED twice, identically, then RECOVERED.** Attempts 3 and 4: `P7-R1-action-ms` 34,304 and 34,085 against 33,000, no attempt spent, the generation never advanced, the namespace never came back, the operator’s four windows **0 of 4**. Attempt 5, from the candidate that carries §8.4: **every assertion of the arm passed** — 14,603 ms to one bounded `recover-mount-underlay`, 17,153 ms to a sibling reading a byte again, **4 of 4** windows, all three servers reading inside their own containers, one layer above the floor. Attempt 6 reproduced all of that from the candidate that carries §8.4.5 — 13,109 ms and 15,615 ms — and additionally passed `P7-R1-remediation`, the one assertion attempt 5 failed **Attempt 7 reproduced it a third time from candidate 8** — 14,490 ms and 16,913 ms, one layer, the underlay fingerprint `fccf4ba8c5c2` identical across the fault, and `P7-arm-binds-unchanged` passing for the first time in this arm’s history (§11.4 #15 is why it never could before) | §11.3.1, §11.3.2, §11.3.3, §11.3.4 |
+| **R2** | **4** — attempts 5, 6, 7 and 8 | **PASSED every assertion of the arm.** The corpse was verified stale, `action-ms` 11,510/33,000, `ready-ms` 13,811/59,000, one action, one layer, 4 of 4 windows, all three servers reading. Attempt 6 reproduced it: 13,096 ms and 15,367 ms, one layer **Attempt 7 reproduced it again**: 12,974 ms and 15,209 ms, one layer, binds unchanged | §11.3.3, §11.3.4 |
+| **R3** | **4** — attempts 5, 6, 7 and 8 | **PASSED in attempt 5; BLOCKED in attempt 6** by the provider rotating to an origin the operator has not allowlisted, which §7 predeclares as BLOCKED rather than failed. In attempt 5: reads failed inside the deadline, the breaker held, nothing reached the live resolver during the hold, the first read after release digest-matched, and `recoveryGeneration` did not advance **Attempt 7 is the first run to complete this arm since §8.5, and every assertion of the arm passed again** — `read-fail-ms` 611/20,000, 0 requests through the hold, `recovery-ms` 1,341/80,000, `no-recovery-action` 0/0, the mount untouched — **while `P7-arm-layers` measured 2/1. That is §11.4 #16 and it is the blocker this tranche now ends on** | §11.3.3 |
+| **R4** | **3** — attempts 5, 7 and 8 | **PASSED its own assertions.** The serve-death supervisor remounted in place, draining one corpse of its own first, and the entry was unchanged **Attempt 7 reproduced it**: `ready-ms` 1,572/22,000, identity unchanged, the recovery loop declining, `single-flight` 1/1 across both supervisors — **with `P7-arm-layers` still 2/1, inherited from R3** | §11.3.3 |
+| **R5** | **3** — attempts 5, 7 and 8 | **PASSED.** `refuse-foreign-mount` / `inspect-mount-owner` beside `recoveryUnderlay=underlay-covered`, nothing spent, and the tmpfs asserted still mounted and byte-unmodified afterwards **Attempt 7 reproduced it**, with `recoveryAttempts` still 0 and the tmpfs still on top and byte-unmodified — **and `P7-arm-layers` still 2/1, inherited from R3** | §11.3.3 |
+| **R6** | **3** — attempts 5, 7 and 8 | **FAILED TWICE ON ITS OWN INJECTOR, AND THEN REACHED ITS SUBJECT.** In **attempt 8**, from the candidate that carries §8.7, the mount point held exactly one of ours before the arm, the lazy detach left **none**, the premise assertion the repaired injector makes rather than assumes was TRUE, and every assertion of the arm passed — the first time in this tranche's history. §11.16 **HISTORICALLY, for attempts 5 and 7:** **FAILED, AND THE INJECTOR IS WHY.** `umount -l` with nothing holding the connection killed the serve loop, so the SERVE supervisor took the fault, its three remounts failed under the masked `/dev/fuse`, and the daemon exited with the recovery loop having spent nothing — §11.4 #14 **Attempt 7 ran the REPAIRED injector for the first time and the arm still did not reach its subject.** `P7-R6-connection-held` passed — the open descriptor #14 added is held — and then the injector’s own premise assertion refused: one of our mounts remained after the lazy detach, because R3 had left two stacked. **#14 remains unmeasured, for a reason that is not #14** — §11.4 #16 | §11.3.3 |
 
 **THE PER-ARM VERIFICATION OF §3.2 IS NOT THE SAME THING AS AN ARM PASSING, AND ATTEMPT 5 IS WHERE THAT
 DISTINCTION HAS TO BE MADE.** R1 to R5 each passed their own arm’s assertions, and R1 to R5 each **failed**
@@ -1562,9 +1562,10 @@ DISTINCTION HAS TO BE MADE.** R1 to R5 each passed their own arm’s assertions,
 (§11.4 #12) — while R3 to R5 also failed `P7-arm-layers` at 2/1 (§11.4 #13). **SO NO ARM IN THAT RUN IS
 RECORDED AS HAVING PASSED THE WHOLE OF §3.2**, and the table above says what each arm’s own assertions did and
 deliberately nothing more.
-**SO: ALL SIX ARMS HAVE NOW RUN, TWICE, IN TWO SEQUENCES THAT BOTH FAILED. NO SEQUENCE HAS EVER PASSED, AND
-THEREFORE NO SEQUENCE HAS EVER BEEN REPEATED IN THE SENSE §4.1 MEANS** — the three-consecutive-fresh-runs rule
-has now been reached twice and satisfied neither time.
+**SO: ALL SIX ARMS HAVE NOW RUN THREE TIMES, AND THE THIRD SEQUENCE — ATTEMPT 8 — PASSED EVERY ONE OF THEM.**
+The two before it failed: attempt 5 on four defects, attempt 7 on §11.4 #16. §11.16 is the run and the table
+in it is the three arms that changed. **ONE PASSING SEQUENCE IS NOT THREE**, and §4.1 clause 1 closes on
+`npm run go:phase7-gate:three` and on nothing else.
 
 **AND EVERY ARM NOW HAS A REPEAT, WHICH IS NEW AND IS NOT THE SAME THING AS A PASS.** R1 to R5 met their own
 arms' assertions in attempt 7 as they did in attempt 5, and four of the five figures moved by less than three
@@ -2167,6 +2168,55 @@ window that opens and closes unobserved is the one thing this tranche cannot aff
 **AND IT DOES NOT CHANGE THE VERDICT BELOW BY EXISTING.** A sequence it launches is one measured run, which is
 one of the three §4.1 requires and is not a closure. Whatever it produces belongs in §11.16 and in a new
 readiness decision, taken by somebody reading it.
+
+### 11.16 ATTEMPT 8 — THE PROVIDER ROTATED BACK IN, AND THE FIRST COMPLETE SEQUENCE IN THIS TRANCHE'S HISTORY PASSED
+
+**FROM CANDIDATE 13**, image `sha256:216f1ae6…`, with `PROJECTIOND_IMAGE=projectiond:phase7c13-frozen`. The §7
+recheck immediately before it answered `allowedOriginCount=6`, `resolvedOriginDigest=256c61b89300`, verdict
+**`allowed`**, exit 0 — `256c61b89300` is the **first** of the six the operator's allowlist has held since
+§11.13, so this is the pool rotating back to a member that has been authorised all along and not a new
+authorisation. The harness §11.15.5 describes launched the gate on that verdict, at **07:02:40Z**, and the run
+ended at **07:38:31Z**.
+
+# **201 verdicts. 201 pass. 0 fail. 0 skip. Six arms of six.**
+
+**AND THE GATE'S OWN CLOSURE CHECK SAID SO IN ITS OWN WORDS**: *"every predeclared arm, stage, phase and budget
+is present, terminal and passing"*.
+
+**THE ROWS THIS TRANCHE HAS BEEN BLOCKED ON FOR THREE ATTEMPTS:**
+
+| | Attempt 5 | Attempt 7 | **Attempt 8** |
+|---|---|---|---|
+| `P7-arm-layers:R1` / `:R2` | 1/1 | 1/1 | **1/1** |
+| **`P7-arm-layers:R3`** | **2/1** | **2/1** | **1/1 PASS** |
+| **`P7-arm-layers:R4`** | **2/1** | **2/1** | **1/1 PASS** |
+| **`P7-arm-layers:R5`** | **2/1** | **2/1** | **1/1 PASS** |
+| **`P7-arm-layers:R6`** | arm never reached | arm never reached | **1/1 PASS** |
+| `P7-layers-at-end` | — | — | **1/1 PASS** |
+| **`P7-R3-restart-left-no-layer`** | did not exist | did not exist | **0/0 PASS** |
+| **`P7-R3-no-serve-death`** | did not exist | did not exist | **0/0 PASS** |
+| **`P7-R3-single-flight`** | did not exist | did not exist | **0/0 PASS** |
+
+**THE THREE NEW ASSERTIONS ARE THE ONES WORTH READING.** `P7-R3-restart-left-no-layer` measured **zero** of
+ours at the mount point between the two daemons R3 replaces — the operation §8.7.1 identified as the whole
+mechanism — and `P7-R3-no-serve-death` and `P7-R3-single-flight` both measured **0**, which **refutes §11.3.5's
+hypothesis rather than confirming it**: the serve-death supervisor did nothing at all during R3, so the layer
+never came from a second supervisor. It came from replacing the process, exactly as §8.7.1 says.
+
+**AND R6 REACHED ITS SUBJECT FOR THE FIRST TIME IN THIS TRANCHE'S HISTORY.** §11.9's ledger has recorded R6 as
+*"FAILED, AND THE INJECTOR IS WHY"* twice — first on #14's descriptor, then on #16's residual defeating the
+premise #14's repair asserts rather than assumes. With the residual gone, `P7-R6-fault-took-the-mount` passed
+and every assertion of the arm followed. **#14's repair is measured, and it is measured because #16 was fixed.**
+
+**EVERY MEDIA STAGE WENT GREEN AGAIN**, with nothing blocked and nothing skipped: ten verified media-time seeks
+per server, five minutes of paced direct play on all three at once with an instant measured at which all three
+were decoding, and a five-minute forced transcode per server. The host's container, network and volume **sets**
+came back identical, `P7-own-mountpoints-removed` measured **0**, and no secret, reference or label reached
+anything the run wrote.
+
+**WHAT THIS IS AND IS NOT.** It is **one** complete passing sequence. §4.1 clause 1 closes on
+`npm run go:phase7-gate:three` — **three consecutive fresh runs from one frozen candidate, exit 0, zero
+failures, zero skips** — and one green run is a coincidence until it is three. §11.17 is that sequence.
 
 ## 12. The readiness decision
 
