@@ -717,10 +717,10 @@ test('§8.7 predeclares the shutdown decision, its ownership proof and the half 
     '§8.7 no longer says that a daemon killed outright still leaves its mount behind');
   assert(section.includes('clear-stale-mount'),
     '§8.7 no longer names the shipped remediation for the state it does not repair');
-  assert(section.includes('### 8.7.4 What would have to be true before anybody says this is fixed'),
+  assert(section.includes('### 8.7.5 What would have to be true before anybody says this is fixed'),
     '§8.7 no longer predeclares what would have to be measured before this may be called fixed');
   assert(/#16 is a measurement with a\s+proposed fix/.test(section),
-    '§8.7.4 no longer says that #16 is a measurement with a proposed fix rather than a fixed defect');
+    '§8.7.5 no longer says that #16 is a measurement with a proposed fix rather than a fixed defect');
 });
 
 test('the shutdown removes ONE row and only the one this process recorded making', () => {
@@ -788,6 +788,41 @@ test('§8.7.1\'s claim about the kernel is a program, and its control reproduces
   // AND IT MUST NOT REACH ANYTHING REAL. The measurement is about a kernel, not about this host's mounts.
   assert(!/\/mnt\/user|\$WORK\/mnt|rshared"/.test(probe),
     'the propagation probe binds or mounts something outside its own throwaway container');
+});
+
+test('§8.7 has a LIVING-DAEMON instrument that needs no provider, and its control has to fail', () => {
+  const gateSource = read('deploy/projection-restart-topology-gate.sh');
+  const scripts = JSON.parse(read('package.json')).scripts as Record<string, string>;
+  assert(scripts['go:restart-topology-gate'] === 'bash deploy/projection-restart-topology-gate.sh',
+    'the restart-topology gate is not reachable through an npm script, so nobody will run it');
+  // THE SIX ASSERTIONS, AND EACH ONE COVERS SOMETHING THE OTHER INSTRUMENTS CANNOT SAY. The Go table is pure,
+  // the propagation probe is about a kernel, and the nine gates of §9 all stop the daemon without asserting
+  // anything about what that left. This is the only place the shipped shutdown is measured end to end.
+  for (const id of ['RT1', 'RT2', 'RT3', 'RT4', 'RT5', 'RT6']) {
+    assert(gateSource.includes(`"${id} `) || gateSource.includes(`${id} `),
+      `the restart-topology gate no longer asserts ${id}`);
+  }
+  // THE CONSUMER IS LOAD-BEARING AND NOT SCENERY. An ordinary unmount removes a mount nobody is holding, so a
+  // stop with nothing attached takes the polite path every time and the repair is never reached.
+  assert(gateSource.includes('hold_descriptor') && /exec 9< /.test(gateSource),
+    'the gate no longer has a consumer holding an OPEN DESCRIPTOR, so the ordinary unmount would succeed and '
+    + 'the shutdown detach would never be exercised');
+  assert(/RT2 the ordinary unmount was NOT refused/.test(gateSource),
+    'the gate treats an unrefused ordinary unmount as a pass, which would make it green without measuring '
+    + 'anything §8.7 changed');
+  // THE CONTROL HAS TO REPRODUCE THE DEFECT — the rule #13 was resolved in violation of.
+  assert(/RT4 a SIGKILLed daemon left nothing behind/.test(gateSource),
+    'the gate no longer FAILS when a SIGKILLed daemon leaves nothing behind, so RT1 could pass for a reason '
+    + 'that is not the repair');
+  // THE SEQUENCE IS MEASURED AGAINST THE FIRST FLOOR, WHICH IS THE WHOLE OF #16.
+  assert(gateSource.includes('for generation in 1 2 3') && gateSource.includes('the floor the FIRST one measured'),
+    'the gate no longer drives a SEQUENCE of generations against the floor the first one measured');
+  // AND IT REACHES NO PROVIDER. A gate that could be blocked by a CDN rotation would be no use for the one
+  // thing this instrument exists for.
+  assert(gateSource.includes('"endpoints": []'),
+    'the restart-topology gate configures an endpoint, so it is no longer provider-free');
+  assert(!/torbox|credential|real-provider/i.test(gateSource),
+    'the restart-topology gate reaches for provider material');
 });
 
 test('the gate stops the daemon the way the appliance does, and asserts what that left behind', () => {

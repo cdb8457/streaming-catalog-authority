@@ -640,7 +640,34 @@ what changes.
 
 All three are in `PHASE7_ARM_DETAIL_GATE_IDS.R3`, so an absent one is a failed run and not a quiet omission.
 
-### 8.7.4 What would have to be true before anybody says this is fixed
+### 8.7.4 The instrument that can measure this WITHOUT a provider, and why one was needed
+
+**THE FIRST DRAFT OF THIS REPAIR HAD THREE INSTRUMENTS AND NONE OF THEM COULD SEE THE PRODUCT.** The Go table
+is a pure function; the propagation probe is about a kernel and uses `tmpfs`; and the nine gates of §9 all stop
+the daemon when they are finished with it and **not one of them asserts anything about what that left at the
+mount point**. The only instrument that could was `P7-R3-restart-left-no-layer` — inside a three-hour run that
+needs three digest-pinned media servers and a metered provider account. **A repair whose only witness is the
+gate it is trying to unblock is a repair nobody can check while that gate is blocked**, which is exactly the
+position §11.15.2 records.
+
+**SO `deploy/projection-restart-topology-gate.sh` (`npm run go:restart-topology-gate`) IS THE MISSING ONE**, and
+it is deliberately the smallest thing that can hold the claim: **no provider, no access material, no media
+server** — one local entry served from a host file through the production image, one unprivileged consumer, and
+the daemon's own mount lifecycle.
+
+| | What it asserts | Why nothing else could |
+|---|---|---|
+| **RT1** | a graceful stop, **with a consumer holding an open descriptor**, leaves **nothing** of ours at the mount point | the descriptor is what makes the ordinary unmount fail; without it every stop takes the polite path and the repair is never reached. A stop that is **not** refused is recorded as a FAILURE here rather than a pass, because it means the thing under test did not run |
+| **RT2** | and the daemon's own log names the removal as **its own row**, on the ordinary unmount being refused | a count that returned to the floor for some other reason would pass RT1 and prove nothing |
+| **RT3** | **three sequential generations** never exceed one layer above the floor the **FIRST** one measured, with the same consumer reading the same digest through every one without being restarted or re-bound | this is #16's own shape: every generation in isolation is one layer above its **own** floor, and the defect is that the floor moves |
+| **RT4** | **THE CONTROL** — a `SIGKILL`ed daemon **does** leave a layer, and the gate FAILS if it does not; then the shipped remediation `umount -l` clears it | a green RT1 on a host where the residual cannot happen would be a tautology. This is the rule #13 was resolved in violation of |
+| **RT5** | a **foreign overlay** stacked on top is refused at shutdown, left **mounted and byte-unmodified**, and the daemon says it refused | `AA6` and `RC5` assert this of the recovery path; nothing asserted it of the shutdown path, which is where §8.7 added a removal |
+| **RT6** | the host's container, network and volume **SETS** are identical and nothing is left at the mount point | the same standard every other gate here is held to |
+
+**IT DOES NOT MEASURE A PHASE 7 ARM AND DOES NOT CLAIM TO.** `P7-arm-layers` is read by the Phase 7 gate and
+nowhere else, and §8.7.5 is still what closure needs.
+
+### 8.7.5 What would have to be true before anybody says this is fixed
 
 **THE STANDARD IS §8.5.1's, APPLIED TO ITSELF.** R1 and R2 measuring `1/1` is not evidence about this: they
 never exhibited it. What settles it is **one complete sequence in which R3, R4, R5 and R6 all run and
@@ -665,6 +692,7 @@ daemon's mount lifecycle is re-run from the final frozen candidate.**
 | `go:publisher-mount-gate` | publishes through a real mount with the changed image | 1 |
 | `go:rclone-comparison-gate` | Phase 2's comparison harness, revalidated against the changed image | 1 |
 | `deploy/projection-alpha-acceptance.sh` | Phase 6's install matrix, driving the **shipped** operator command | 1 |
+| `go:restart-topology-gate` | **PHASE 7 §8.7 ADDS IT.** The shutdown path is where §8.7's removal lives, and no gate above asserts anything about what stopping the daemon left at the mount point. It is provider-free by construction, so it can run when the matrix's own subject is blocked | 1 |
 
 **Phase 3's reliability loop is in scope by the same test and is named rather than assumed:** its `A3` is a
 serve-loop death, and the changed row is on that path. It is re-run **once** rather than three times, and
@@ -1166,7 +1194,7 @@ time somebody re-derived it:
 | 13 | **attempt 5, arms R3–R5** | **A DEAD LAYER ACCUMULATED IN THE HOST NAMESPACE THAT THE DAEMON'S OWN NAMESPACE DID NOT HAVE.** `P7-arm-layers` measured **2/1** from R3 onward while the daemon's own drain log said `floor 1, now 2` — one of ours in its namespace, two in the host's — and the run kept nothing that could say which row the host had, or where it came from. It also broke R6 (#14). **DIAGNOSED BY THE NEXT RUN AND RESOLVED BY #11’S FIX**: attempt 6 measured 1/1 after every arm it reached. A transient refusal changes the sustained class, and a class that changes and comes back is a second actionable window — so the supervisor took a SECOND action for one fault and that one stacked a live layer. The count was a symptom of #11 | the gate — a layer count outside the bound now prints the mount-id-and-type survey in **both** namespaces, which is exactly what defect #6 bought for R1 and what this arm did not have |
 | 14 | **attempt 5, arm R6** | **THE INJECTOR RELIED ON A REFERENCE IT DID NOT HOLD, AND THE RUN DIED ON DOCKER'S OWN BIND REFUSAL.** `umount -l` leaves the FUSE superblock alive only while something references it. R1 measured the connection surviving after twenty minutes of playback; R6, with nothing reading, measured the opposite — the serve loop died, the SERVE supervisor took the fault, its three remounts failed under the masked `/dev/fuse`, and the process exited with the recovery loop having spent nothing. The dead mount it left made `restart_daemon` fail with `error while creating mount source path … file exists`, status 125 | the gate — R6 now holds an **open descriptor** on the projected entry from a sibling first (what a media server holds while playing), asserts it, asserts that **none** of our mounts remain after the detach, and clears its own dead layers with the shared helper before the restart |
 | 15 | **attempt 6, arms R1 and R2** | **`P7-arm-binds-unchanged` COMPARED AN UNORDERED COLLECTION AS A STRING.** With #12 fixed the baseline was readable for the first time, and the comparison still failed — on the ORDER of `docker inspect`’s `.Mounts` array. Measured inside one run: `mnt=>/media/projection:rslave` came back FIRST in the baseline and LAST after arm R1, with the same container id, the same start instant and the same four mounts with the same modes. Docker does not promise that order and it is not a property of the container | the gate — the mount list is emitted one entry per line and sorted with `LC_ALL=C sort` before comparison, so what is asserted is the SET: same container, same start instant, same sources at the same destinations with the same modes. A mount added, removed, re-pointed or re-moded still fails, which is what *never re-bound* means |
-| 16 | **attempt 7, arms R3–R6** | **#13 WAS RECORDED AS RESOLVED ON EVIDENCE THAT COULD NOT HAVE SHOWN IT, AND IT IS NOT RESOLVED.** #13's own row says the residual appeared *from R3 onward*; the run it cites as having resolved it — attempt 6 — was BLOCKED by the provider at arm R3 and reached only R1 and R2, the two arms that measured `1/1` in attempt 5 as well. So *"attempt 6 measured 1/1 after every arm it reached"* is true and proves nothing about this defect. **Attempt 7 is the first run since the fix to reach R3, and it measured `P7-arm-layers` at 2/1 at R3, R4 and R5 — the same three arms, the same numbers, as attempt 5.** It differs from #13 in one respect that matters: **both namespaces now agree**, 2 rows in the host's and 2 in the daemon's, where #13 measured 1 and 2 — so this is a second **live** layer and not the host-only ghost #13 described. And it is not reachable by §8.5's skip, which is gated on a **drain that removed something**: across the whole of R3 `recoveryGeneration` never left 2, `P7-R3-no-recovery-action` measured **0/0** and `P7-R3-mount-untouched` passed, so the recovery supervisor did nothing at all while a layer appeared. **It also broke R6 again, exactly as #13 did** (see below) | **the product** — §8.7, and the mechanism is not the hypothesis §11.3.5 named. R3 is the only arm that REPLACES the daemon, the gate replaced it with `docker rm -f` — a `SIGKILL` — and at an `rshared` mount point a mount whose namespace is destroyed SURVIVES with its transport dead, which is the same recipe `projection-stale-mount-gate.sh` uses to manufacture a corpse on purpose. The replacement daemon then stacks over it and says so in its own log, and its floor is now 1, so its drain may never remove it. The daemon now removes ITS OWN mount on a shutdown whose ordinary unmount was refused, authorised by the mountinfo row it recorded when its own `Mount()` returned rather than by a type or a count; and the gate stops it the way the shipped operator command does instead of injecting a crash §3.1 never declared. §8.7.4 is what would have to be measured before this may be called fixed |
+| 16 | **attempt 7, arms R3–R6** | **#13 WAS RECORDED AS RESOLVED ON EVIDENCE THAT COULD NOT HAVE SHOWN IT, AND IT IS NOT RESOLVED.** #13's own row says the residual appeared *from R3 onward*; the run it cites as having resolved it — attempt 6 — was BLOCKED by the provider at arm R3 and reached only R1 and R2, the two arms that measured `1/1` in attempt 5 as well. So *"attempt 6 measured 1/1 after every arm it reached"* is true and proves nothing about this defect. **Attempt 7 is the first run since the fix to reach R3, and it measured `P7-arm-layers` at 2/1 at R3, R4 and R5 — the same three arms, the same numbers, as attempt 5.** It differs from #13 in one respect that matters: **both namespaces now agree**, 2 rows in the host's and 2 in the daemon's, where #13 measured 1 and 2 — so this is a second **live** layer and not the host-only ghost #13 described. And it is not reachable by §8.5's skip, which is gated on a **drain that removed something**: across the whole of R3 `recoveryGeneration` never left 2, `P7-R3-no-recovery-action` measured **0/0** and `P7-R3-mount-untouched` passed, so the recovery supervisor did nothing at all while a layer appeared. **It also broke R6 again, exactly as #13 did** (see below) | **the product** — §8.7, and the mechanism is not the hypothesis §11.3.5 named. R3 is the only arm that REPLACES the daemon, the gate replaced it with `docker rm -f` — a `SIGKILL` — and at an `rshared` mount point a mount whose namespace is destroyed SURVIVES with its transport dead, which is the same recipe `projection-stale-mount-gate.sh` uses to manufacture a corpse on purpose. The replacement daemon then stacks over it and says so in its own log, and its floor is now 1, so its drain may never remove it. The daemon now removes ITS OWN mount on a shutdown whose ordinary unmount was refused, authorised by the mountinfo row it recorded when its own `Mount()` returned rather than by a type or a count; and the gate stops it the way the shipped operator command does instead of injecting a crash §3.1 never declared. §8.7.5 is what would have to be measured before this may be called fixed |
 
 **#5 IS THE ARGUMENT FOR THE WHOLE REGRESSION MATRIX, STATED PLAINLY.** The fix for #4 passed every offline
 test, including three new ones written specifically for it, and was byte-identical in both directions on the
@@ -1186,7 +1214,7 @@ wrong first.
 An earlier revision of this paragraph said *"#16 IS IN NEITHER COLUMN YET, because nothing has been fixed for
 it"*, and that was true when it was written. What has changed is that a repair exists, is committed, is
 contracted at §8.7 and is pinned; what has **not** changed is that no run has measured it. The two are
-different sentences and §8.7.4 is the one that says what would settle it. Putting a row in a column it has not
+different sentences and §8.7.5 is the one that says what would settle it. Putting a row in a column it has not
 earned is how #13 came to be recorded as resolved, and the column here records the fix's ADDRESS — the shipped
 daemon, not the gate — which is a fact about the diff and checkable from it. **#16 is also the only row in this
 table whose repair is in both places at once**: the product removes its own mount, and the instrument stops
@@ -1907,7 +1935,7 @@ with `MNT_DETACH` before exiting **was removed from the host too**. The control 
 what makes the second half evidence rather than a tautology.
 
 **WHAT NONE OF THAT IS.** It is not a sequence attempt, it does not touch a single Phase 7 arm, and it says
-nothing whatever about whether `P7-arm-layers` reads 1 at R3, R4, R5 and R6. **§8.7.4 predeclares what would,
+nothing whatever about whether `P7-arm-layers` reads 1 at R3, R4, R5 and R6. **§8.7.5 predeclares what would,
 and no run has produced it.**
 
 ### 11.15.1 OFFLINE AT CANDIDATE 10, ON BOTH HOSTS, AND THE NINE ARE THE SAME NINE
@@ -1987,7 +2015,7 @@ all.
    that replaces the daemon, the gate replaced it with a `SIGKILL`, and at an `rshared` mount point that leaves
    a corpse the replacement stacks over — and both halves of it are measured by a program on this very kernel
    (§8.7.1, §11.15). The daemon now removes its own mount, proven by the mountinfo row it recorded creating.
-   **NONE OF THAT IS A MEASUREMENT OF `P7-arm-layers` AT R3.** §8.7.4 predeclares what would be, §4.2 still
+   **NONE OF THAT IS A MEASUREMENT OF `P7-arm-layers` AT R3.** §8.7.5 predeclares what would be, §4.2 still
    names a layer count outside `MOUNT_LAYERS_ABOVE_FLOOR_MAX` as a NO-GO, and **the threshold has not moved
    and is not going to.**
 2. **NO SEQUENCE HAS PASSED, AND NO SEQUENCE HAS BEEN ATTEMPTED SINCE THE FIX.** Attempt 5 reached all six arms

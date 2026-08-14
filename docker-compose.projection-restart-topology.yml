@@ -1,0 +1,38 @@
+# Projection Phase 7 §8.7 — a real, migrated PostgreSQL for the RESTART-TOPOLOGY gate.
+#
+# WHY A SEPARATE FILE, AND A SEPARATE PORT. Every gate here binds a fixed loopback port so that two of them
+# cannot silently lend each other state, and so that a second copy of one dies on an allocated port rather
+# than on a mystery. `…-publisher.yml` binds 5470, `…-jellyfin.yml` 5480, `…-plex.yml` 5490, `…-emby.yml` 5500,
+# `…-three.yml` 5510, `…-lease.yml` 5540, `…-lifecycle.yml` 5550, `…-serve-death.yml` 5560,
+# `…-stale-mount.yml` 5570, and the rest are up to 5620. This one takes 5630, its own project name, its own
+# network and throwaway storage.
+#
+# THE DAEMON IS NOT HERE, deliberately, for the same reason `docker-compose.projection-stale-mount.yml` says:
+# the daemon's launch flags and its `rshared` mount point ARE the experiment, and writing them into a file
+# that reads as infrastructure would make a measurement rig look like a deployment shape to copy.
+
+name: projection-restart-topology-gate
+
+services:
+  postgres:
+    # PINNED BY DIGEST, like every other external image these gates touch.
+    image: postgres:16@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20
+    environment:
+      POSTGRES_DB: catalog
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "${PROJECTION_RESTART_TOPOLOGY_GATE_PG_PORT:-5630}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d catalog"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    tmpfs:
+      # Throwaway, and it says so in the only way that cannot be forgotten: its storage does not survive the
+      # container.
+      - /var/lib/postgresql/data
+
+networks:
+  default:
+    name: projection-restart-topology-gate

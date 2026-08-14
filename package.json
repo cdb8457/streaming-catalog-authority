@@ -122,6 +122,7 @@
     "go:gates": "bash deploy/projectiond-gates.sh",
     "go:fuse-smoke": "bash deploy/projectiond-fuse-smoke.sh",
     "go:mount-propagation-probe": "bash deploy/projection-mount-propagation-probe.sh",
+    "go:restart-topology-gate": "bash deploy/projection-restart-topology-gate.sh",
     "go:image-smoke": "bash deploy/projectiond-image-smoke.sh",
     "go:publisher-mount-gate": "bash deploy/projection-publisher-mount-gate.sh",
     "go:jellyfin-dataplane-gate": "bash deploy/projection-jellyfin-dataplane-gate.sh",
