@@ -444,6 +444,10 @@
       "group": "offline"
     },
     {
+      "file": "projection-phase8.ts",
+      "group": "offline"
+    },
+    {
       "file": "projection-mount-truth.ts",
       "group": "offline"
     },
