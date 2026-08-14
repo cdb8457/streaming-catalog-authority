@@ -1609,6 +1609,37 @@ nothing about it, while a headline three paragraphs up still counts it. **That i
 that knew the difference. The count pin catches the arithmetic version. **Nothing yet catches the reasoning
 version**, and §11.4's closing paragraph says so rather than implying the pins are complete.
 
+### 11.11.3 THE SIX TAMPERS THAT PROVE §8.7's PINS BITE, AND THE TREE THEY WERE REVERTED INTO
+
+**A PIN NOBODY HAS SEEN FAIL IS A PIN NOBODY HAS TESTED**, which is the rule §11.11.1 and §11.11.2 already
+apply. §8.7 adds a product decision, an ownership proof, a gate change and three required assertions, and every
+one of them was driven the same way: edit ONE shipped or documented fact, run the suite that is supposed to
+notice, record what it said, revert with `git checkout --`. **All six failed the intended assertion and
+`git status` was empty after every revert.**
+
+| Tamper | What was changed | What failed, in its own words |
+|---|---|---|
+| 1 | a safety clause removed from §8.7's contract | *"§8.7's safety contract no longer states: AT MOST ONE ROW IS EVER REMOVED"* |
+| 2 | the ownership proof widened from the recorded IDENTITY back to a file-system type | **BOTH HALVES FAILED, AND THE GO ONE IS THE INTERESTING ONE.** `TestPlanShutdownDetachRemovesOnlyTheRowThisProcessMade` failed on the row *"ANOTHER MOUNT OF OURS is on top — same type, same shape, different attachment"*: *"want detach=false, got true (the row on top is byte-for-byte the attachment this process created)"* — a reason string that had stopped being true of the code printing it. And `test/projection-phase7.ts`: *"the shutdown no longer compares the row on top against the identity this process recorded, so it is deciding on a shape again — which is defect #5 exactly"* |
+| 3 | `restart_daemon` put back to `docker rm -f` | *"restart_daemon force-removes the daemon again, which is the SIGKILL that produced #16"* |
+| 4 | `P7-R3-restart-left-no-layer` removed from the contract module's required set, leaving the gate still recording it | *"P7-R3-restart-left-no-layer is not required by the contract module, so a run that omitted it would still be a passing run"* |
+| 5 | the sequential regression collapsed to ONE generation — a cold start, which is what every previous table was | *"the sequential regression is no longer a loop over generations"* |
+| 6 | the roadmap keeps the old product-fix count while the §11.4 ledger has moved | *"the Phase 7 roadmap row does not state that seven of them are in shipped product code"* |
+
+**TAMPER 2 IS THE ONE WORTH DWELLING ON AND IT IS THE WHOLE ARGUMENT OF §8.7.2 IN ONE FAILURE.** The widened
+condition is the one every previous version of this decision in this repository has used, and it passes eight of
+the nine rows in the table. The row it fails is a `fuse.projectiond` mount, above the floor, at the right path,
+that this process did not make — which is not a hypothetical: §11.4 #5 is the run where exactly that description
+matched two different mounts and the drain removed the live one. **A shape test cannot tell them apart and an
+identity can.**
+
+**AND TAMPER 5 IS THE ONE THIS TRANCHE'S OWN HISTORY DEMANDS.** #13 was recorded as resolved on a run that
+reached only the arms the defect has never appeared in, and #16 is the correction. A regression that measured
+one generation would repeat that mistake in miniature: **every generation in isolation measures one layer above
+its OWN floor**, and the whole defect is that the floor moves. The control arm inside that same test asserts the
+defect still reproduces with the fix disabled, so a green result is evidence that the fix is what removes the
+layer rather than that the scenario stopped being modelled.
+
 ### 11.12 HISTORICALLY — WHAT CANDIDATE 7 HAD RUN, AND WHAT IT HAD NOT. §11.14 SUPERSEDES IT
 
 **THIS SECTION IS KEPT AS IT STOOD AND IS NO LONGER THE ANSWER TO ITS OWN QUESTION.** The candidate has moved
