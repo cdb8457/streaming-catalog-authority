@@ -172,15 +172,13 @@ rm -f "$GATE_ROOT/tamper-$$.sh"
 #
 # SO THE TWO LISTS ARE COMPARED RATHER THAN READ. `REQUIRED_DIRS`, `REQUIRED_FILES` and `REQUIRED_OTHER` come
 # out of the shipped command's own source; the assignments come out of the gate's own `alpha()`.
-ALPHA_REQUIRES="$(
-  awk '/^REQUIRED_(DIRS|FILES|OTHER)=/,/[^\\]$/' "$ALPHA" \
-    | tr -d '\\"' | tr ' ' '\n' \
-    | grep -o 'PROJECTIOND_ALPHA_[A-Z_]*' | LC_ALL=C sort -u
-)"
-GATE_SUPPLIES="$(
-  awk '/^alpha\(\) \{/,/^\}$/' "$GATE_SOURCE" \
-    | grep -o 'PROJECTIOND_ALPHA_[A-Z_]*=' | tr -d '=' | LC_ALL=C sort -u
-)"
+# EACH PIPELINE IS ONE LINE, because `test/custody-runtime-closure.ts` reads every shipped `.sh` end to end
+# and refuses a line whose quotes do not close on it — and a quoted command substitution spanning four lines
+# is exactly that. It caught this file on its first run, which is the pin doing its job.
+alpha_required_names() { awk '/^REQUIRED_(DIRS|FILES|OTHER)=/,/[^\\]$/' "$ALPHA" | tr -d '\\"' | tr ' ' '\n' | grep -o 'PROJECTIOND_ALPHA_[A-Z_]*' | LC_ALL=C sort -u; }
+gate_supplied_names() { awk '/^alpha\(\) \{/,/^\}$/' "$GATE_SOURCE" | grep -o 'PROJECTIOND_ALPHA_[A-Z_]*=' | tr -d '=' | LC_ALL=C sort -u; }
+ALPHA_REQUIRES="$(alpha_required_names)"
+GATE_SUPPLIES="$(gate_supplied_names)"
 MISSING_ENV="$(comm -23 <(printf '%s\n' "$ALPHA_REQUIRES") <(printf '%s\n' "$GATE_SUPPLIES") || true)"
 UNKNOWN_ENV="$(comm -13 <(printf '%s\n' "$ALPHA_REQUIRES") <(printf '%s\n' "$GATE_SUPPLIES") || true)"
 if [ -z "$MISSING_ENV" ] && [ -z "$UNKNOWN_ENV" ]; then
@@ -439,11 +437,9 @@ asked to behave like one"
 # there is exercised here and a rename fails loudly below instead of quietly rehearsing nothing.
 lift() {
   local name="$1" body
-  body="$(awk -v fn="$name" '
-    $0 ~ "^" fn "\\(\\) \\{" { inside = 1 }
-    inside { print }
-    inside && /^\}$/ { exit }
-  ' "$GATE_SOURCE")"
+  # ONE LINE, for the reason the gate's own `count_our_layers` states about itself: a quoted program split
+  # over two is one `test/custody-runtime-closure.ts` cannot parse.
+  body="$(awk -v fn="$name" '$0 ~ "^" fn "\\(\\) \\{" { inside = 1 } inside { print } inside && /^\}$/ { exit }' "$GATE_SOURCE")"
   case "$body" in
     "$name() {"*) : ;;
     *) die "could not lift $name() out of $GATE_SOURCE; the gate has renamed or reshaped it, and a \
