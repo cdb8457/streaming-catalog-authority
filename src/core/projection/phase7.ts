@@ -322,9 +322,16 @@ export const PHASE7_ARM_DETAIL_GATE_IDS: Readonly<Record<Phase7Arm, readonly str
   ]),
   // R3 IS THE CONTROL AND ITS WHOLE ASSERTION IS AN ABSENCE. A provider outage never touches the mount, so a
   // recovery supervisor that had become trigger-happy fails here and nowhere else in this gate.
+  // AND THE ABSENCE IS ASSERTED OF BOTH SUPERVISORS AND OF THE RESTART, WHICH IS WHAT §11.4 #16 COST. The
+  // eight above are all about the RECOVERY supervisor, and it is blind to the serve-death path by design: a
+  // remount taken there advances no generation and logs no `recovery:` line. So a live layer could appear in
+  // this arm with every one of them passing, which is exactly what two six-arm runs measured. The last three
+  // are the diagnostic §11.3.5 named — a serve-death observation, a single-flight count across BOTH
+  // supervisors, and the mount point coming back to the floor between the two daemons this arm replaces.
   R3: Object.freeze([
     'P7-R3-read-fail-ms', 'P7-R3-breaker-opened', 'P7-R3-refusal-ms', 'P7-R3-hold-resolver-requests',
     'P7-R3-recovery-ms', 'P7-R3-half-open-probes', 'P7-R3-no-recovery-action', 'P7-R3-mount-untouched',
+    'P7-R3-no-serve-death', 'P7-R3-single-flight', 'P7-R3-restart-left-no-layer',
   ]),
   // R4's ASSERTION IS THAT EXACTLY ONE SUPERVISOR ACTED. Phase 6 declines `serve-loop-dead` because the
   // serve-death path already owns it and two supervisors on one mount point is the worst blast radius in

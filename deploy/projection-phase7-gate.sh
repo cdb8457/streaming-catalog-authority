@@ -1800,9 +1800,50 @@ recovered() { [ -n "$RECOVERY_MS" ]; }
 
 # A daemon restart is three steps, always in this order, because the resolver lives in the daemon's network
 # namespace and a restarted daemon has a new one.
+# HOW LONG THE DAEMON IS GIVEN TO PUT ITS OWN MOUNT DOWN. It is generously above everything the shipped
+# shutdown path can spend — one unmount syscall, one mount-table read, one detach and a bounded wait for a
+# request loop a consumer may still be holding — so a stop that runs out of time is a product fault to
+# investigate rather than an instrument that did not wait.
+DAEMON_STOP_TIMEOUT_S="${DAEMON_STOP_TIMEOUT_S:-25}"
+
+# THE OUTGOING DAEMON'S OWN NUMBERS, SET BY `stop_daemon` AND READ BY THE ARM THAT ASKED FOR THE RESTART.
+STOP_LAYERS_BEFORE=""; STOP_LAYERS_AFTER=""
+
+# STOPPING THE DAEMON THE WAY THE APPLIANCE STOPS IT, AND THE REASON IS §11.4 #16.
+#
+# THIS USED TO BE `docker rm -f`, WHICH IS A `SIGKILL`, AND THAT IS NOT A RESTART — IT IS A CRASH. Nothing in
+# §3.1 declares one: R3's fault is a provider outage and R6's is a masked `/dev/fuse`, and in both arms
+# replacing the process is SETUP rather than the subject. A `SIGKILL` gives the daemon no instant in which to
+# remove its own mount, and at a mount point whose propagation is `rshared` that mount then SURVIVES — the
+# kernel does not propagate an unmount when a mount namespace is destroyed, so the row stays on the host. The
+# replacement daemon stacks over it, exactly as its startup log says it does, and the mount point carries two
+# of ours for the rest of the run. That is the whole of #16: `P7-arm-layers` measured 2/1 at R3, R4 and R5 in
+# attempt 7 and at the same three arms in attempt 5, with the recovery supervisor provably idle throughout.
+#
+# SO THE GATE NOW DOES WHAT THE SHIPPED OPERATOR COMMAND DOES — `deploy/projection-alpha.sh stop` is
+# `compose down`, which is `SIGTERM` — and the product is measured instead of a crash the contract never
+# declared. THIS LOOSENS NOTHING: it removes an undeclared fault from two arms and adds an assertion that did
+# not exist, `P7-R3-restart-left-no-layer`, which fails LOUDLY if the daemon's own stop leaves anything behind.
+# §8.6 repaired `RC8`'s injector on exactly this reasoning and §11.11.1's third tamper pins the shape of it.
+#
+# AND THE CRASH CASE IS NOT PRETENDED AWAY. A daemon that is killed outright still leaves its mount, nothing
+# inside a process can clean up after a `SIGKILL`, and the shipped `preflight` refuses to clear it for the
+# operator on purpose — it prints `clear-stale-mount` instead. §8.7 records that as the limitation it is.
+stop_daemon() {
+  STOP_LAYERS_BEFORE="$(count_our_layers)"
+  docker stop -t "$DAEMON_STOP_TIMEOUT_S" "$MOUNT_CONTAINER" >/dev/null 2>&1 || true
+  # ITS OWN ACCOUNT, TAKEN WHILE THE CONTAINER STILL EXISTS. `docker logs` dies with the container, and the
+  # lines this gate most needs from a stop — what the daemon did with its own mount on the way out — are
+  # written in the last second of its life. §11.3.5 named the absence of exactly this as the one diagnostic
+  # that would have settled #16 without a second run.
+  docker logs "$MOUNT_CONTAINER" > "$WORK/out/daemon-previous.log" 2>&1 || true
+  docker rm -f "$MOUNT_CONTAINER" >/dev/null 2>&1 || true
+  STOP_LAYERS_AFTER="$(count_our_layers)"
+}
+
 restart_daemon() {
   stop_resolver
-  docker rm -f "$MOUNT_CONTAINER" >/dev/null 2>&1 || true
+  stop_daemon
   start_daemon
   start_resolver
 }
@@ -2938,6 +2979,13 @@ arm_R3() {
   # recovery generation must NOT move. A provider outage never touches the mount, and a supervisor that had
   # become trigger-happy fails here and nowhere else in this gate.
   local generation_before actions_before started trips slowest opened
+  # THE THREE MEASUREMENTS §11.3.5 NAMED AS THE ONE DIAGNOSTIC THAT WOULD SETTLE #16, AND THIS ARM DID NOT HAVE
+  # ANY OF THEM. R4 has had a serve-death observation and a single-flight count ACROSS BOTH SUPERVISORS since it
+  # was written; R3 asserted only about the recovery supervisor, so a remount taken by the serve-death path
+  # would have been invisible to every assertion this arm makes — which is precisely the hypothesis #16 was left
+  # holding. They are declared here and taken after the restart, because the restart is this arm's setup and a
+  # count from before it would be a count from a container that no longer exists.
+  local deaths_before remounts_before
   # THE ORDER OF THESE TWO STEPS IS THE WHOLE ARM. Access material is memory-only by contract, so a source
   # whose lease is still good never asks the resolver anything and an outage is invisible to it. The lease has
   # to be dropped, and the only way to drop it is to restart the daemon — which, because the resolver lives in
@@ -2945,10 +2993,26 @@ arm_R3() {
   # cannot be started with a credential it will refuse: restart BOTH while the credential is still good, and
   # break it immediately afterwards, BEFORE anything reads.
   restart_daemon
+  # THE STOP IS ITSELF A MEASUREMENT NOW — PROJECTION PHASE 7 §8.7. A daemon that goes away without removing
+  # its own mount leaves a corpse the replacement stacks over, and the mount point then carries two of ours for
+  # the rest of the run whatever the arms do afterwards. This asserts the mount point came back to the floor
+  # between the two daemons: not that the layer count is acceptable at the end, but that the ONE operation that
+  # was producing the residual no longer produces it.
+  record "P7-R3-restart-left-no-layer" eq "${STOP_LAYERS_AFTER:-}" "$MOUNT_LAYER_FLOOR" \
+    "of ours at the mount point after the daemon stopped and before its replacement started (it held ${STOP_LAYERS_BEFORE:-?} while it was running)" || true
+  if [ -n "${STOP_LAYERS_AFTER:-}" ] && [ "$STOP_LAYERS_AFTER" -gt "$MOUNT_LAYER_FLOOR" ]; then
+    echo "  --- what the outgoing daemon said about its own mount on the way out ---" >&2
+    grep -E "unmounting|unmount refused|detaching this process|shutdown detach|leaving |request loop is still" \
+      "$WORK/out/daemon-previous.log" | tail -10 | sed 's/^/  daemon: /' >&2 || true
+    echo "  --- mount survey (after the stop, before the replacement) ---" >&2
+    bash "$WORK/out/mountrows.sh" "$WORK/mnt" "host" >&2 || true
+  fi
   await_recovery "$DAEMON_STARTED_MS" || die "R3: the namespace did not come back before the outage"
   sample
   generation_before="${REC_GENERATION:-0}"
   actions_before="$(recovery_actions)"
+  deaths_before="$(serve_deaths)"
+  remounts_before="$(remount_starts)"
   chmod 0644 "$WORK/inputs/torbox-credential"
 
   trips=0; slowest=0
@@ -3010,6 +3074,29 @@ arm_R3() {
   record "P7-R3-mount-untouched" bool \
     "$( [ "${REC_GENERATION:-x}" = "$generation_before" ] && echo 1 || echo 0 )" "" \
     "recoveryGeneration is still ${generation_before}, which is the daemon's own count of every attempt it has ever made" || true
+  # ...AND THE SAME ABSENCE ASSERTED OF THE OTHER SUPERVISOR, WHICH IS WHAT THIS ARM WAS MISSING. `recoveryGeneration`
+  # and `recovery_actions` are both blind to the serve-death path: it neither advances the generation nor logs a
+  # `recovery:` line. So a provider outage that killed the serve loop would have been repaired by a supervisor
+  # every assertion above passes over, and the only trace would be a layer nobody could attribute — §11.3.5's
+  # hypothesis, now measured rather than hypothesised, in the two counts R4 has always had.
+  record "P7-R3-no-serve-death" eq "$(( $(serve_deaths) - deaths_before ))" 0 \
+    "a provider outage does not sever the FUSE connection, so the serve-death supervisor has nothing to react to" || true
+  record "P7-R3-single-flight" eq "$(( $(remount_starts) - remounts_before ))" 0 \
+    "remounts started across BOTH supervisors during a provider outage, which must be none at all" || true
+  # THE DAEMON'S OWN ACCOUNT ON THE FAILING PATH, WHICH THIS ARM HAS NEVER KEPT. Attempt 7's log was removed by
+  # the gate's own cleanup contract — correct behaviour, and exactly why §11.3.5 had to stop where it did.
+  if [ "$readable_again" -ne 1 ] || [ "$(( $(recovery_actions) - actions_before ))" -ne 0 ] \
+     || [ "$(( $(remount_starts) - remounts_before ))" -ne 0 ]; then
+    mkdir -p "$EVIDENCE_DIR" && chmod 700 "$EVIDENCE_DIR"
+    if docker logs "$MOUNT_CONTAINER" > "$EVIDENCE_DIR/r3-daemon-$$.log" 2>&1; then
+      chmod 600 "$EVIDENCE_DIR/r3-daemon-$$.log"
+      echo "  the daemon's own account is kept at $REL_GATE_ROOT/evidence/r3-daemon-$$.log" >&2
+      grep -E "serve loop died|remount|recovery|stale|detach|owns exactly one row|cannot prove" \
+        "$EVIDENCE_DIR/r3-daemon-$$.log" | tail -15 >&2 || true
+    fi
+    echo "  --- mount survey (after the R3 outage) ---" >&2
+    bash "$WORK/out/mountrows.sh" "$WORK/mnt" "host" >&2 || true
+  fi
   record "P7-R3" bool "$readable_again" "" \
     "a sustained provider outage past the breaker cooldown, then recovery, with the mount untouched throughout" || true
   # THE NAMESPACE CLOCK IS RE-BASED FOR THE ARM VERIFICATION THAT FOLLOWS, because this arm restarted the

@@ -220,6 +220,12 @@ func main() {
 		fail("mount refused: " + err.Error())
 	}
 
+	// WHICH ROW AT THE MOUNT POINT IS THIS PROCESS'S OWN — PROJECTION PHASE 7 §8.7, and it is taken here because
+	// this is the one instant at which the answer is not a judgement: the `Mount()` above has just returned and
+	// nothing has had a chance to change the stack since.
+	own := &ownMountRef{}
+	own.record(cfg.MountPoint, startupStack, startupStackKnown)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -310,10 +316,39 @@ func main() {
 		case sig := <-signals:
 			logLine(fmt.Sprintf("received %s, unmounting", sig))
 			cancel()
+			// THE POLITE FORM FIRST, ALWAYS, AND IT IS UNCHANGED. An ordinary unmount removes the mount for every
+			// namespace it propagates to and takes nothing away from a consumer that is not holding it open.
+			unmountRefused := false
 			if err := mount.Unmount(); err != nil {
+				unmountRefused = true
 				logLine("unmount refused: " + err.Error())
 			}
-			<-mount.Done()
+			// ...AND WHEN IT IS REFUSED, THE PROCESS THAT MADE THE MOUNT REMOVES ITS OWN — PROJECTION PHASE 7 §8.7.
+			//
+			// AN ORDINARY UNMOUNT IS REFUSED FOR EXACTLY THE REASON THIS APPLIANCE EXISTS: somebody is reading
+			// through it. With three media servers holding descriptors inside the namespace that is the ordinary
+			// case rather than the exceptional one, and what it used to leave behind was a corpse the NEXT daemon
+			// then stacked over — one dead layer per stop, for ever, which is §11.4 #16 and the second half of the
+			// rough edge Phase 6 §9.7 named. The lazy form is what the daemon's own startup message already tells
+			// an operator to use on a stale mount; here it is used on a mount this process can PROVE is its own.
+			currentStack, currentStackKnown := fusefs.MountStackAt(cfg.MountPoint)
+			if detach, why := planShutdownDetach(unmountRefused, *own, currentStack, currentStackKnown); detach {
+				logLine("detaching this process's own mount at " + cfg.MountPoint + " on the way out: " + why)
+				if err := unix.Unmount(cfg.MountPoint, unix.MNT_DETACH); err != nil {
+					logLine("shutdown detach refused: " + err.Error())
+				}
+			} else if unmountRefused {
+				logLine("leaving " + cfg.MountPoint + " exactly as it is: " + why)
+			}
+			// THE WAIT IS BOUNDED AND THE CLEANUP ABOVE IS NOT. A lazily detached mount keeps its super-block for
+			// as long as a consumer holds a descriptor inside it, so the request loop can outlive the shutdown by
+			// design; the row is already gone, which is the only part an operator or the next daemon can see.
+			select {
+			case <-mount.Done():
+			case <-time.After(shutdownServeDrainBudget):
+				logLine("the request loop is still held by a consumer's open descriptor; exiting with the " +
+					"mount point already released")
+			}
 			return
 		case <-mount.Done():
 			if mount.UnmountRequested() {
@@ -327,7 +362,8 @@ func main() {
 			if !*autoRemount {
 				os.Exit(*serveExitCode)
 			}
-			if !remountLoop(d, cfg, *debug, *strictMount, &mount, mountsAtStartup, startupCountKnown, true) {
+			if !remountLoop(d, cfg, *debug, *strictMount, &mount, mountsAtStartup, startupCountKnown, true,
+				own, startupStack, startupStackKnown) {
 				logLine("serve loop died and no remount succeeded; exiting")
 				os.Exit(*serveExitCode)
 			}
@@ -353,7 +389,8 @@ func main() {
 			// contributes a second REASON to call this and no new behaviour inside it: `planRemountCleanup`
 			// still only ever touches our own mount, and the drain still never goes below the floor counted
 			// before this process mounted anything.
-			ok := remountLoop(d, cfg, *debug, *strictMount, &mount, mountsAtStartup, startupCountKnown, false)
+			ok := remountLoop(d, cfg, *debug, *strictMount, &mount, mountsAtStartup, startupCountKnown, false,
+				own, startupStack, startupStackKnown)
 			if ok {
 				// A REMOUNT IS NOT YET A RECOVERY, WHICH IS WHY NOTHING IS CLEARED HERE BUT THE FLAG. The
 				// serve-death branch above clears a death because it recorded one; this branch recorded
@@ -677,12 +714,169 @@ func drainAloneRepairedIt(detached int, serveLoopDied bool, observed fusefs.Prob
 	return current <= mountsAtStartup+1
 }
 
+// ownMountRef is the identity of the mount row THIS PROCESS put at the mount point — PROJECTION PHASE 7 §8.7.
+//
+// WHY A DAEMON NEEDS TO KNOW WHICH ROW IS ITS OWN, AND WHY NOTHING ELSE IT ALREADY HAD COULD SAY. Every other
+// fact this daemon holds about the mount point describes a SHAPE: `mountsAtStartup` is a count, `IsOurMountType`
+// is a file-system type that a bind of somebody else's projectiond mount answers to as well, and
+// `ObserveMountpoint` is a transport answer about whatever happens to be on top. Each of them was tried, and
+// each of them was found to describe two different mounts at once — §11.4 #5 is the run where "above the floor
+// and of our type" removed this daemon's own live mount, and §8.4.1 is why a count cannot tell an attachment
+// from a different attachment of the same shape. THE ONLY THING THAT CAN IS THE ROW ITSELF.
+//
+// SO IT IS RECORDED AT THE ONE MOMENT IT IS UNAMBIGUOUS: immediately after a `Mount()` this process performed
+// returned success, when the row on top of the fingerprinted underlay is the row that call just created and
+// nothing else has had an instant in which to change it.
+//
+// AND IT IS "KNOWN" ONLY UNDER THE SAME EVIDENCE §8.4 ADMITS ANYTHING ON. If the mount table cannot be read,
+// if the startup fingerprint was never taken, if the stack is not the predeclared underlay with EXACTLY ONE
+// row above it, or if that row is not one of ours, then this process cannot prove which row it made and the
+// identity stays UNKNOWN — which authorises nothing anywhere. It is held in memory for the life of one
+// process and is never written down, for the same reason the underlay fingerprint is not: mount ids belong to
+// the running kernel.
+type ownMountRef struct {
+	row   fusefs.MountIdentity
+	known bool
+}
+
+// record re-measures which row this process owns, and is called after EVERY successful mount rather than once.
+// A recovery replaces the mount, so an identity that was taken once would name a row that no longer exists —
+// and a stale identity is worse than none, because it can never match and would silently refuse for ever.
+func (o *ownMountRef) record(mountPoint string, startup []fusefs.MountIdentity, startupKnown bool) {
+	o.row, o.known = fingerprintOwnMount(mountPoint, startup, startupKnown)
+	if o.known {
+		logLine("this process owns exactly one row at " + mountPoint + ", above the underlay it fingerprinted")
+		return
+	}
+	// SAID ONCE, AT THE MOMENT IT BECOMES TRUE, so a shutdown that later declines to clean up is explained by a
+	// line taken when the evidence was missing rather than looking like a new fault.
+	logLine("this process cannot prove which row at " + mountPoint + " is its own, so it will remove nothing " +
+		"there on the way out")
+}
+
+// fingerprintOwnMount answers which row at the mount point this process just created, and whether that can be
+// PROVED rather than assumed.
+//
+// IT IS PURE OF EVERYTHING BUT THE MOUNT TABLE. It takes one read of `/proc/self/mountinfo`, which cannot
+// block — procfs is not served by a FUSE connection — so it can be called on the mount path and on the way
+// out, neither of which may ever wait on the thing they are reporting about.
+//
+// THE FOUR CONDITIONS ARE ALL NECESSARY AND EACH ONE FAILS CLOSED:
+//
+//   - the startup fingerprint exists, because without it there is no baseline to be "above";
+//   - the mount table reads now, because a stack that cannot be read is not a stack anybody has identified;
+//   - the stack is the predeclared underlay with EXACTLY ONE row above it — `underlay-covered` on identity,
+//     not merely on a count, so every row beneath is the same attachment §8.4 measured before the first mount;
+//   - and that one row is of our own file-system type. This is the WEAKEST of the four and it is last on
+//     purpose: it is a necessary check and never a sufficient one, exactly as `IsOurMountType` says.
+func fingerprintOwnMount(mountPoint string, startup []fusefs.MountIdentity,
+	startupKnown bool) (fusefs.MountIdentity, bool) {
+	current, currentKnown := fusefs.MountStackAt(mountPoint)
+	return identifyOwnMount(current, currentKnown, startup, startupKnown)
+}
+
+// identifyOwnMount is the whole of that decision as a TOTAL function of two measurements, so the table that
+// drives it can be exhaustive without a kernel — the same separation `planRemountCleanup` and
+// `drainAloneRepairedIt` have, and for the same reason: the branch that must never be reached has to be
+// EXECUTED by a test rather than merely written down.
+func identifyOwnMount(current []fusefs.MountIdentity, currentKnown bool,
+	startup []fusefs.MountIdentity, startupKnown bool) (fusefs.MountIdentity, bool) {
+	if !startupKnown || !currentKnown {
+		return fusefs.MountIdentity{}, false
+	}
+	if len(current) != len(startup)+1 {
+		return fusefs.MountIdentity{}, false
+	}
+	if verdict, _ := fusefs.CompareUnderlay(startup, startupKnown, current, currentKnown); verdict != daemon.UnderlayCovered {
+		return fusefs.MountIdentity{}, false
+	}
+	top := current[len(current)-1]
+	if !fusefs.IsOurMountType(top.FsType) {
+		return fusefs.MountIdentity{}, false
+	}
+	return top, true
+}
+
+// planShutdownDetach decides whether the shutdown path may detach the mount THIS PROCESS made, after an
+// ordinary unmount of it has already been refused — PROJECTION PHASE 7 §8.7.
+//
+// WHAT THIS EXISTS FOR, AS A MEASUREMENT RATHER THAN A THEORY. §11.4 #16: the layer count at the projected
+// mount point went from 1 to 2 across arm R3 and stayed there through R4 and R5, in BOTH namespaces, while the
+// recovery supervisor demonstrably did nothing. R3 replaces the daemon on purpose — it is the only way to drop
+// a memory-only lease — and a projectiond process that goes away without removing its own mount leaves a
+// CORPSE at a mount point whose propagation is `rshared`: destroying a mount namespace does not propagate an
+// unmount to its peers, so the row survives on the host, and the replacement daemon stacks over it because
+// stacking over a stale mount is what this daemon's startup path does by design. Two of ours, permanently, for
+// every stop the ordinary unmount could not complete — and with three media servers holding open descriptors
+// inside the mount, the ordinary unmount is exactly what cannot complete.
+//
+// SO THE REPAIR IS AT THE ONE END WHERE OWNERSHIP IS NOT A JUDGEMENT: the process that MADE the mount removes
+// it. Every other place this could be repaired was considered and each is worse, and saying so is the point:
+//
+//   - a drain at STARTUP would be a new process removing a row it never made, and inside a container it would
+//     remove the OPERATOR'S OWN BIND — after a hard kill the bind Docker sets up IS the corpse, so detaching it
+//     strands the mount point in the container's own root with no host peer, which is Phase 2's worst defect
+//     reached from the other direction;
+//   - a drain by the shipped operator command was refused, deliberately and in writing, before this tranche:
+//     `deploy/projection-alpha.sh` preflight says what is there and prints `clear-stale-mount`, because
+//     "unmounting something at the operator's mount point is the one action this whole tranche refuses to take
+//     automatically";
+//   - and widening the recovery drain would hand it a licence over rows nobody has identified, which is §11.4
+//     #5 exactly.
+//
+// THE PROOF OF OWNERSHIP IS AN IDENTITY AND NOT A SHAPE. The row on top of the mount point must be
+// BYTE-FOR-BYTE the row `fingerprintOwnMount` recorded when this process's own `Mount()` returned: same mount
+// id, same parent, same device, same subtree root, same mount point, same propagation, same type, same source.
+// A mount id is unique among live mounts, so nothing that is not that exact attachment can match — not a
+// re-mounted bind of the same share, not a second daemon's mount of the same namespace, not a tmpfs, and not
+// the operator's own bind.
+//
+// AND IT IS ONLY EVER REACHED WHEN THE ORDINARY UNMOUNT HAS ALREADY BEEN REFUSED, so on every path where the
+// polite form works this decision changes nothing at all.
+//
+// WHAT IT CANNOT DO, WHICH IS THE HALF THAT MAKES IT SAFE: it never removes more than one row, never removes a
+// row it did not make, never touches the underlay, never consults a file-system type on its own, and refuses
+// outright on an unreadable mount table or an unproved identity. A daemon that is killed outright still leaves
+// its mount behind — nothing inside a process can clean up after a `SIGKILL` — and §8.7 says so rather than
+// implying otherwise.
+func planShutdownDetach(unmountRefused bool, own ownMountRef,
+	current []fusefs.MountIdentity, currentKnown bool) (bool, string) {
+	if !unmountRefused {
+		return false, "the ordinary unmount was not refused, so there is nothing left to detach"
+	}
+	if !own.known {
+		return false, "this process never proved which row it mounted, which authorises no detach at all"
+	}
+	if !currentKnown {
+		return false, "an unreadable mount table, which authorises no detach"
+	}
+	if len(current) == 0 {
+		return false, "nothing is mounted at the mount point any more"
+	}
+	if !current[len(current)-1].SameAttachment(own.row) {
+		return false, "the row on top of the mount point is not the attachment this process created"
+	}
+	return true, "the row on top is byte-for-byte the attachment this process created"
+}
+
+// shutdownServeDrainBudget bounds how long a shutdown waits for the request loop after the mount has been
+// dealt with.
+//
+// IT IS A BOUND ON WAITING AND NEVER ON CLEANING UP, and the order matters: the mount is removed FIRST and
+// this only decides how long the process then lingers. A lazily detached FUSE mount keeps its super-block
+// alive for as long as anything holds a descriptor inside it — which, with three media servers reading, can
+// be indefinitely — so a shutdown that waited for the loop would be a shutdown that never returned, and the
+// container runtime would kill it. It did exactly that before this bound existed. The row is already gone by
+// then, so what this budget trades away is a tidy log line and nothing an operator can observe at the mount.
+const shutdownServeDrainBudget = 5 * time.Second
+
 // `serveLoopDied` IS A FACT ABOUT WHICH SUPERVISOR IS CALLING AND NOT A CLAIM ABOUT THE MOUNT. The serve-death
 // branch of main's select passes true — its own mount is gone, that is what woke it — and the recovery branch
 // passes false, because a recovery request is only ever serviced when no death has been observed. It is read in
 // exactly one place: the drain-alone repair above, where "our own mount was never broken" is the whole premise.
 func remountLoop(d *daemon.Daemon, cfg daemon.Config, debug, strictMount bool, mount **fusefs.Mounted,
-	mountsAtStartup int, startupCountKnown, serveLoopDied bool) bool {
+	mountsAtStartup int, startupCountKnown, serveLoopDied bool,
+	own *ownMountRef, startupStack []fusefs.MountIdentity, startupStackKnown bool) bool {
 	const attempts = 3
 	for attempt := 1; attempt <= attempts; attempt++ {
 		time.Sleep(time.Duration(attempt) * time.Second)
@@ -875,6 +1069,11 @@ func remountLoop(d *daemon.Daemon, cfg daemon.Config, debug, strictMount bool, m
 				logLine(fmt.Sprintf("the drain alone repaired %s: %d row(s) against a floor of %d, and the "+
 					"one on top is this daemon's own live mount; NOT stacking another over it",
 					cfg.MountPoint, currentAfterDrain, mountsAtStartup))
+				// THE SURVIVING ROW IS RE-IDENTIFIED EVEN THOUGH NOTHING WAS MOUNTED, because the drain moved the
+				// stack: rows came off it, and an identity taken before that describes a mount point that no
+				// longer exists. Re-measuring is the only thing that can be right here, and if the drain left a
+				// shape this cannot prove, the identity goes UNKNOWN and the shutdown removes nothing.
+				own.record(cfg.MountPoint, startupStack, startupStackKnown)
 				return true
 			}
 		default:
@@ -898,6 +1097,9 @@ func remountLoop(d *daemon.Daemon, cfg daemon.Config, debug, strictMount bool, m
 		}
 		*mount = next
 		logLine(fmt.Sprintf("remount attempt %d/%d: mounted", attempt, attempts))
+		// AND WHICH ROW IS NOW OURS, RE-MEASURED RATHER THAN CARRIED OVER. The mount this process owned a moment
+		// ago has been replaced; carrying its identity forward would name a row that no longer exists.
+		own.record(cfg.MountPoint, startupStack, startupStackKnown)
 		return true
 	}
 	logLine("remount attempts exhausted")

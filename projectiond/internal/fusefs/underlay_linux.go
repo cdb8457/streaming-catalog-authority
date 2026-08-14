@@ -84,6 +84,23 @@ func (m MountIdentity) canonical() string {
 	}, "\x00")
 }
 
+// SameAttachment reports whether two rows are the SAME attachment, on every field that identifies one.
+//
+// IT IS THE ONLY WAY A CALLER OUTSIDE THIS PACKAGE MAY COMPARE TWO ROWS, and it exists so that a decision to
+// REMOVE something can be made on identity rather than on shape — PROJECTION PHASE 7 §8.7. `CompareUnderlay`
+// answers a question about a whole stack against a predeclared baseline; this answers the narrower one a
+// shutdown has to ask, which is "is the row on top of the mount point, right now, byte-for-byte the row this
+// process created?".
+//
+// IT REUSES `canonical` RATHER THAN RE-LISTING THE FIELDS, deliberately. A second field list is a second
+// place to forget one, and the whole safety of every decision built on this is that the comparison is
+// EXHAUSTIVE: mount id, parent mount id, device, subtree root, mount point, propagation, file-system type and
+// source. A mount id is unique among live mounts, so a re-mounted attachment of the same share compares
+// unequal — which is the property that makes "this is the one I made" mean something.
+func (m MountIdentity) SameAttachment(other MountIdentity) bool {
+	return m.canonical() == other.canonical()
+}
+
 // MountStackAt returns the identities of every mount row at EXACTLY this path, bottom first, and whether the
 // mount table could be read at all.
 //

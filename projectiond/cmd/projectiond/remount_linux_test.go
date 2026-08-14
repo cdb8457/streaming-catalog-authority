@@ -264,10 +264,15 @@ func TestTheDrainAloneRepairIsOnlyReachedAfterADrain(t *testing.T) {
 	if next := strings.Index(drain, "\n\t\t\tdefault:"); next >= 0 && call > next {
 		t.Fatalf("the drain-alone repair has moved out of the lazy-detach branch")
 	}
-	if !strings.Contains(main, "remountLoop(d, cfg, *debug, *strictMount, &mount, mountsAtStartup, startupCountKnown, true)") {
+	// THE ARGUMENT LIST WIDENED AND THE CLAIM DID NOT — PROJECTION PHASE 7 §8.7 passes the own-mount identity
+	// and the startup fingerprint through as well, so the match now stops at the discriminator instead of at a
+	// closing bracket. This is the same shape of update §11.6 records for `planRemountCleanup`'s signature pin:
+	// what is asserted is still exactly "the serve-death caller says true and the recovery caller says false",
+	// and a caller that swapped them still fails here.
+	if !strings.Contains(main, "remountLoop(d, cfg, *debug, *strictMount, &mount, mountsAtStartup, startupCountKnown, true,") {
 		t.Fatalf("the serve-death caller no longer tells remountLoop that the serve loop died")
 	}
-	if !strings.Contains(main, "remountLoop(d, cfg, *debug, *strictMount, &mount, mountsAtStartup, startupCountKnown, false)") {
+	if !strings.Contains(main, "remountLoop(d, cfg, *debug, *strictMount, &mount, mountsAtStartup, startupCountKnown, false,") {
 		t.Fatalf("the recovery caller no longer tells remountLoop that the serve loop did not die")
 	}
 }

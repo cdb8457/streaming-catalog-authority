@@ -685,6 +685,111 @@ test('the layer residual fix is a named decision with a table, not five conditio
 });
 
 // ---------------------------------------------------------------------------------------------------------
+// §8.7 — THE LAYER THAT ARRIVES WHEN THE DAEMON IS REPLACED
+//
+// FOUR PINS, AND EACH ONE COVERS A DIFFERENT WAY THE REPAIR COULD BE QUIETLY UNDONE: the contract could stop
+// predeclaring it, the ownership proof could be widened back into a shape test, the gate could go back to
+// injecting a crash the contract never declared, or the arm could keep the graceful stop and lose the
+// assertions that make it a measurement.
+// ---------------------------------------------------------------------------------------------------------
+
+test('§8.7 predeclares the shutdown decision, its ownership proof and the half it does NOT fix', () => {
+  const document = read(CONTRACT);
+  const start = document.indexOf('## 8.7 THE LAYER THAT ARRIVES WHEN THE DAEMON IS REPLACED');
+  assert(start >= 0, 'the contract no longer predeclares §8.7, so the repair for #16 is a change nobody agreed '
+    + 'to in advance — which is the shape §8.5 was retired for');
+  const section = document.slice(start, document.indexOf('\n## 9.', start));
+  for (const clause of [
+    'WRITTEN AND COMMITTED BEFORE THE FIRST RERUN THAT MEASURES IT',
+    'Nothing below is a claim that #16 is fixed',
+    'THE POLITE FORM IS TRIED FIRST',
+    'AT MOST ONE ROW IS EVER REMOVED',
+    'THE FILE-SYSTEM TYPE IS NEVER THE EVIDENCE',
+    'R5 IS UNTOUCHED',
+    'NOTHING IS EVER ABORTED',
+    'AN UNPROVED IDENTITY REMOVES NOTHING',
+  ]) {
+    assert(section.includes(clause), `§8.7's safety contract no longer states: ${clause}`);
+  }
+  // AND THE LIMITATION IS NAMED RATHER THAN LEFT TO BE DISCOVERED. A section that fixed the graceful stop and
+  // said nothing about the hard kill would be claiming more than it repaired.
+  assert(/killed\*{0,2}\s*\*{0,2}outright\*{0,2} still leaves its mount/i.test(section),
+    '§8.7 no longer says that a daemon killed outright still leaves its mount behind');
+  assert(section.includes('clear-stale-mount'),
+    '§8.7 no longer names the shipped remediation for the state it does not repair');
+  assert(section.includes('### 8.7.4 What would have to be true before anybody says this is fixed'),
+    '§8.7 no longer predeclares what would have to be measured before this may be called fixed');
+  assert(/#16 is a measurement with a\s+proposed fix/.test(section),
+    '§8.7.4 no longer says that #16 is a measurement with a proposed fix rather than a fixed defect');
+});
+
+test('the shutdown removes ONE row and only the one this process recorded making', () => {
+  const source = read(MAIN_GO_SRC);
+  const table = read('projectiond/cmd/projectiond/shutdown_detach_linux_test.go');
+  assert(source.includes('func planShutdownDetach('),
+    'the shutdown decision is no longer a named function, so a table cannot drive the SHIPPED decision');
+  assert(source.includes('func identifyOwnMount('),
+    'the own-mount identity is no longer a total function of two measurements, so its refusing branches '
+    + 'cannot be executed without a kernel');
+  const plan = source.slice(source.indexOf('func planShutdownDetach('),
+    source.indexOf('// shutdownServeDrainBudget'));
+  assert(plan.includes('SameAttachment(own.row)'),
+    'the shutdown no longer compares the row on top against the identity this process recorded, so it is '
+    + 'deciding on a shape again — which is defect #5 exactly');
+  assert(!/IsOurMountType|ProbeLiveProjectiond|mountsAtStartup/.test(plan),
+    'the shutdown decision consults a file-system type, a transport answer or a count; the identity is the '
+    + 'only thing that may authorise removing a row');
+  // THE IDENTITY IS ADMITTED ONLY UNDER §8.4's OWN EVIDENCE, and `underlay-covered` on IDENTITY rather than on
+  // a row count is the whole of it.
+  const identify = source.slice(source.indexOf('func identifyOwnMount('), source.indexOf('func planShutdownDetach('));
+  assert(identify.includes('CompareUnderlay(') && identify.includes('UnderlayCovered'),
+    'the own-mount identity no longer requires the predeclared underlay to be intact underneath it');
+  assert(identify.includes('len(current) != len(startup)+1'),
+    'the own-mount identity no longer requires EXACTLY one row above the underlay, so two of ours would be '
+    + 'read as one');
+  for (const name of [
+    'TestPlanShutdownDetachRemovesOnlyTheRowThisProcessMade',
+    'TestTheOwnMountIdentityIsOnlyKnownWhenItCanBePROVED',
+    'TestTheLayerCountSurvivesASequenceOfGENERATIONS',
+    'TestTheShutdownPathTriesThePoliteFormFirstAndNeverAbortsAConnection',
+    'TestTheOwnMountIdentityIsReMeasuredAfterEveryMount',
+  ]) {
+    assert(table.includes(name), `the shutdown detach has no ${name}, so a branch nobody has run is a safety one`);
+  }
+  // THE SEQUENTIAL CASE IS THE ONE THAT MATTERS AND IT HAS TO BE A SEQUENCE. A cold-start table cannot catch
+  // #16: every generation in isolation measures one layer above its OWN floor, and the defect is that the
+  // floor moves. This is the assertion that stops the regression being rewritten into six independent cases.
+  const sequence = table.slice(table.indexOf('func TestTheLayerCountSurvivesASequenceOfGENERATIONS'));
+  assert(/for generation := 1; generation <= generations; generation\+\+/.test(sequence),
+    'the sequential regression is no longer a loop over generations');
+  assert(sequence.includes('runFloor') && sequence.includes('the floor the first'),
+    'the sequential regression no longer measures against the floor the FIRST generation took, which is the '
+    + 'only floor a gate or an operator ever compares against');
+  assert(sequence.includes('the control must reproduce the defect'),
+    'the sequential regression has no control arm, so nothing proves the fix is what removes the layer');
+});
+
+test('the gate stops the daemon the way the appliance does, and asserts what that left behind', () => {
+  assert(gate.includes('stop_daemon()') && gate.includes('docker stop -t "$DAEMON_STOP_TIMEOUT_S"'),
+    'the gate no longer stops the daemon with a bounded SIGTERM, so it is injecting a crash §3.1 never '
+    + 'declared into two arms that measure something else');
+  const restart = gate.slice(gate.indexOf('restart_daemon() {'), gate.indexOf('record() { node'));
+  assert(!/docker rm -f "\$MOUNT_CONTAINER"/.test(restart),
+    'restart_daemon force-removes the daemon again, which is the SIGKILL that produced #16');
+  assert(restart.includes('stop_daemon'), 'restart_daemon no longer goes through the graceful stop');
+  // AND THE STOP IS A MEASUREMENT RATHER THAN A CONVENIENCE. Without these three the graceful stop would be a
+  // quieter way of passing the arm rather than a way of measuring the product.
+  for (const id of ['P7-R3-restart-left-no-layer', 'P7-R3-no-serve-death', 'P7-R3-single-flight']) {
+    assert(gate.includes(`record "${id}"`), `the gate no longer records ${id}`);
+    assert((PHASE7_ARM_DETAIL_GATE_IDS.R3 as readonly string[]).includes(id),
+      `${id} is not required by the contract module, so a run that omitted it would still be a passing run`);
+  }
+  assert(gate.includes('EVIDENCE_DIR/r3-daemon-'),
+    'R3 no longer keeps the daemon\'s own account on its failing path, which is the one diagnostic §11.3.5 '
+    + 'named and did not have');
+});
+
+// ---------------------------------------------------------------------------------------------------------
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failures.length > 0) {
   for (const [name, error] of failures) {
