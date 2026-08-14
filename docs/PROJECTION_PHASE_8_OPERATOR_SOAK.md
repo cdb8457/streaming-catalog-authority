@@ -1,6 +1,6 @@
 # Projection Phase 8 — the operator soak
 
-**Status: OPEN — §2 to §10 are the contract and every one of them was written and committed BEFORE the first
+**Status: NO-GO — §2 to §10 are the contract and every one of them was written and committed BEFORE the first
 measured run. §11 is the run record and §12 is the decision.** No threshold in §4 may move after the first
 measured run; a clause that measures FALSE is recorded as **superseded**, with what it said kept whole, exactly
 as Phase 4 §4.1, Phase 5 §3.3 and Phase 7 §8.4.4 did — never edited into agreement with a result.
@@ -226,8 +226,105 @@ records both. If it does not, the matrix that Phase 7 §11.15.3 records **is** t
 
 ## 11. Run record
 
-**INCOMPLETE.** See §12.
+**NO SOAK HAS BEEN MEASURED. THE TRANCHE IS A NO-GO AND §12 SAYS SO.** What follows is what was built, from
+which source, what it has been checked against, and — in exact terms — why it has never been executed.
+
+### 11.1 What exists, and what it has been checked against
+
+| What | Where | State |
+|---|---|---|
+| the contract | `docs/PROJECTION_PHASE_8_OPERATOR_SOAK.md` | §2–§10, **committed before anything was built against it**, and no threshold in §4 has moved |
+| the thresholds as code | `src/core/projection/phase8.ts` | three new, **every other one IMPORTED** from the closed tranche that owns it |
+| the closure check | `phase8ClosureProblems` | refuses a short soak, an absent measurement, a duplicated verdict, a skip, and a budget the soak supplied for itself |
+| the CLI | `src/ops/projection-phase8-cli.ts` | publishes the budgets as shell assignments the gate evals once, and refuses to publish them at all if the freshness inversion has stopped holding |
+| the gate | `deploy/projection-phase8-gate.sh` | **3,419 lines, written, syntax-clean, and NEVER EXECUTED** |
+| the three-runner and the optional wrapper | `deploy/projection-phase8-gate-{three,optional}.sh` | written; a skip propagates as a skip rather than folding into success |
+| the offline suite | `test/projection-phase8.ts` | **26 assertions, 26 passing**, registered in the offline inventory |
+
+**THE SOURCE DIGESTS, UNDER THE SAME RECIPE PHASE 7 §11.1.1 USES** — path, then LF-normalised content, sorted,
+one sha256, over the six files that are this tranche's gate:
+
+| | Value |
+|---|---|
+| commit | `3308675b3a10fd100f357ad5e516dbe61b5df5bb`, tree `bd9f73b34491d56ef81bac01e0da644ba27b51fe` |
+| PHASE 8 GATE SOURCE | `763c58dfa4015981` |
+| OPERATOR SOURCE | `6dbb238d51f6415f` — **unmoved**, and this tranche changes no shipped product source |
+| PHASE 7 GATE SOURCE | `76f2fe0d2bf5031f` — **unmoved**, so Phase 7's closure is untouched by anything here |
+
+**AND THAT LAST ROW IS THE POINT OF THIS ONE.** §9 of this contract says Phase 8 changes no shipped product
+source, and the digests are how a reader checks it rather than takes it: `projectiond/`, the Phase 7 gate and
+the shipped operator command are byte-identical to what Phase 7 §11.17 closed on, so **the ten-gate matrix
+Phase 7 §11.15.3 records is the matrix for this candidate** and re-running it would produce the same numbers
+against the same bytes.
+
+### 11.2 Why no soak has been run, stated as two reasons, one of which is a decision
+
+**THE FIRST IS ARITHMETIC AND IT IS NOT THIS TRANCHE'S TO ARGUE WITH.** The session that produced all of this
+was authorised **six provider-facing full attempts in total**. Four were spent closing Phase 7: one
+`go:phase7-gate` (§11.16) and the three runs inside `go:phase7-gate:three` (§11.17). **Two remain.** §4.1
+clause 1 of this contract closes on **three consecutive fresh soaks**, and one soak is three cycles — so
+closure needs nine cycles and cannot be reached from two attempts by any accounting. **A tranche that cannot
+close is one whose GO is not available, and pretending otherwise is what §4.2 exists to refuse.**
+
+**THE SECOND IS A DECISION, AND IT IS TAKEN HERE RATHER THAN LEFT TO DRIFT IN.** The remaining two attempts
+could still have been spent running the gate ONCE, to prove the instrument and surface defects — which is
+exactly what Phase 7's attempts 5 and 7 did, and it is a real use of a metered account. **It was not done, and
+the reason is Phase 7 §8.7.4's own lesson, learned tonight.** That section exists because §8.7's repair had
+three witnesses and none of them could see the product, so a provider-free living-daemon instrument had to be
+built before the repair could be checked at all — and on its **first execution** it found a defect in the
+shipped daemon. **This gate has no such rehearsal.** Its first execution would be a multi-hour provider-facing
+run of 3,419 lines that have never run once, against the operator's metered account, at the end of a long
+session, with no cheap way to tell a product defect from a wiring defect. **Spending the last two attempts that
+way is the thing this repository's discipline is against**, and the honest alternative is to say so and stop.
+
+**WHAT WOULD CHANGE THAT, EXACTLY, SO THE NEXT SESSION DOES NOT HAVE TO REDISCOVER IT:**
+
+1. **A provider-free rehearsal for this gate**, in the shape `deploy/projection-restart-topology-gate.sh` has:
+   the same cycle, the same inheritance assertion and the same operator command, against the **local seed
+   entry** the setup already publishes as generation 1, with no provider and no approved-window checks. That is
+   what makes a wiring defect cost minutes instead of an attempt. **It is named here as the next work rather
+   than half-built.**
+2. **Then one full soak**, then the three `go:phase8-gate:three` needs.
+
+### 11.3 What has NOT been claimed anywhere in this document
+
+**NO FIGURE IN THIS TRANCHE COMES FROM A SOAK, BECAUSE THERE HAS NOT BEEN ONE.** Nothing here reports a cycle
+time, a layer count, a recovery budget, a window match or a consumer restart. The only measurements this
+document contains are offline ones — 26 assertions on a development host — and they are about the contract and
+the gate's own shape rather than about the appliance.
+
+**AND PHASE 7's EVIDENCE IS NOT RELABELLED.** Every run in `docs/PROJECTION_PHASE_7_OPERATOR_USABLE_ALPHA.md`
+§11 stays exactly where it is, attributed to the candidate that produced it. §10 of this contract refuses that
+relabelling in terms, and this section is where a reader can check that it was kept.
 
 ## 12. The readiness decision
 
-**PENDING.** No measured soak has been recorded.
+# **NO-GO.**
+
+**§4.1 CLAUSE 1 IS UNSATISFIED AND NOTHING ELSE MATTERS UNTIL IT IS.** `npm run go:phase8-gate:three` has
+**never run**, and neither has a single `go:phase8-gate`. §4.2 forbids a GO on fewer than three consecutive
+fresh passing soaks and this document does not manufacture one.
+
+**THE BLOCKER, NAMED EXACTLY:** the gate exists, is syntax-clean and is pinned by 26 offline assertions, and
+**it has never been executed**. §11.2 gives the two reasons — a provider-facing attempt budget that cannot
+reach nine cycles, and a deliberate refusal to spend the last two attempts on the first execution of 3,419
+untested lines — and §11.2's numbered list is what would clear it.
+
+**WHAT IS NOT BLOCKING IT, BECAUSE IT WAS DONE:**
+
+- **the contract is predeclared and committed**, before anything was built against it, with §4's thresholds
+  three-new-and-the-rest-imported and §4.2's NO-GO list written before any result existed;
+- **the freshness inversion is encoded rather than described** — a cycle that finds its cache, ledger,
+  manifest, server configuration directories, container ids or mount point NEW fails, and the assertion
+  compares by inode and by container start instant rather than by existence;
+- **the two thresholds this tranche adds are load-bearing ids** rather than prose: a consumer restart and an
+  operator intervention are both counted, both budgeted at zero, and both refused by the closure check if they
+  carry a number the module does not name;
+- **the gate injects no `SIGKILL`, reboots nothing, touches no unrelated service and never writes the
+  operator's endpoint file**, and each of those is pinned;
+- **and it changes no shipped product source**, which the digests in §11.1 are how a reader checks. Phase 7's
+  GO is untouched.
+
+**WHAT THIS IS NOT.** It is not a partial pass, it is not "nearly there", and it is not evidence about the
+appliance. **A gate that has never run has measured nothing**, and every rough edge Phase 7 §12.4 ships is
+still exactly as rough as that document says it is.
