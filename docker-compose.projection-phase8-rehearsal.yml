@@ -1,0 +1,38 @@
+# Projection Phase 8 §11.2 — a real, migrated PostgreSQL for the PROVIDER-FREE REHEARSAL.
+#
+# WHY A SEPARATE FILE, AND A SEPARATE PORT. Every gate here binds a fixed loopback port so that two of them
+# cannot silently lend each other state, and so that a second copy of one dies on an allocated port rather
+# than on a mystery. `…-restart-topology.yml` takes 5630 and `…-phase8.yml` takes 5640; this one takes 5650,
+# its own project name, its own network and throwaway storage.
+#
+# THE APPLIANCE IS NOT HERE, AND THAT IS THE WHOLE POINT OF THIS REHEARSAL. Every other gate in this
+# repository starts the daemon itself, with its own container name and its own flags. This one does not: it
+# drives `deploy/projection-alpha.sh`, the SHIPPED operator command, which brings the appliance up out of
+# `docker-compose.projection-alpha.yml` — the profile an operator actually runs. Writing a second daemon
+# service into this file would mean the rehearsal was rehearsing a daemon nobody deploys.
+
+name: projection-phase8-rehearsal
+
+services:
+  postgres:
+    # PINNED BY DIGEST, like every other external image these gates touch.
+    image: postgres:16@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20
+    environment:
+      POSTGRES_DB: catalog
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "${PROJECTION_PHASE8_REHEARSAL_PG_PORT:-5650}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d catalog"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    tmpfs:
+      # Throwaway, and it says so in the only way that cannot be forgotten: its storage does not survive the
+      # container.
+      - /var/lib/postgresql/data
+
+networks:
+  default:
+    name: projection-phase8-rehearsal

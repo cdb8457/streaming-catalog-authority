@@ -716,6 +716,8 @@
     "go:phase7-gate": "bash deploy/projection-phase7-gate.sh",
     "go:phase7-gate:three": "bash deploy/projection-phase7-gate-three.sh",
     "go:phase7-gate:optional": "bash deploy/projection-phase7-gate-optional.sh",
+    "go:phase8-rehearsal": "bash deploy/projection-phase8-rehearsal.sh",
+    "go:phase8-gate-audit": "tsx src/ops/projection-phase8-gate-audit-cli.ts",
     "go:phase8-gate": "bash deploy/projection-phase8-gate.sh",
     "go:phase8-gate:three": "bash deploy/projection-phase8-gate-three.sh",
     "go:phase8-gate:optional": "bash deploy/projection-phase8-gate-optional.sh"
