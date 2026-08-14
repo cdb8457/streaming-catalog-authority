@@ -2113,6 +2113,15 @@ ordinary case here rather than a surprise.
 
 **AND THE LAST TWO ROWS ARE STILL THE TRANCHE**, for the reason §11.15.2 gives and for no other.
 
+**AND THE COMMITS AFTER THE FREEZE MOVE `docs/` AND NOTHING ELSE, WHICH IS A CHECK RATHER THAN A REASSURANCE.**
+
+```
+git diff 8822dae..HEAD -- deploy/ projectiond/ src/ test/ package.json   docker-compose.projection-phase7.yml docker-compose.projection-recovery.yml   docker-compose.projection-alpha.yml docker-compose.projection-restart-topology.yml
+```
+
+is **empty**, so every subject the ten-gate matrix measured is byte-identical at the commit this record ends
+with. That is the claim Phase 6's first closure row made falsely, stated here as something a reader can run.
+
 ### 11.15.4 OFFLINE AT CANDIDATE 13, ON BOTH HOSTS, AND THE NINE ARE STILL THE SAME NINE
 
 | What, at candidate 13 | development host | Unraid `tower` |
