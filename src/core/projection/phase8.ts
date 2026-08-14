@@ -139,7 +139,13 @@ export const PHASE8_INHERITED_BETWEEN_CYCLES: readonly string[] = Object.freeze(
 
 /** What this tranche refuses to claim. Every one is a sentence, and §10 of the contract carries all of them. */
 export const PHASE8_NONCLAIMS: readonly string[] = Object.freeze([
-  'It adds no provider. TorBox only, and Real-Debrid and Usenet have named contracts rather than support.',
+  // THE PROVIDER IS NOT NAMED HERE AND THAT IS A BOUNDARY RATHER THAN A STYLE. The adapter-boundary suite
+  // keeps an explicit allowlist of the files that may know which provider this is, and a file arrives on it
+  // deliberately or not at all; a contract module has no reason to be one of them. It scans case-insensitively
+  // for the name, so even a comment about the boundary would put this file on the wrong side of it. Phase 7s
+  // own nonclaim list says the same thing the same way.
+  'It adds no provider. One provider is one provider, and Real-Debrid and Usenet have named contracts '
+    + 'rather than support.',
   'It is one host. Three green soaks on a host that is not this one close nothing at all.',
   'It is not an uptime, availability or endurance claim. Three cycles is three cycles, not a week.',
   'It is not a load test and no figure here is a performance claim.',

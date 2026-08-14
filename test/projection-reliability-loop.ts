@@ -380,17 +380,24 @@ test('A3 requires the assertion this whole tranche exists for', () => {
 // Containment of the one shared-code change
 // ---------------------------------------------------------------------------------------------------------
 
-test('--no-barrier reaches no gate but the two that face a real provider', () => {
-  // THE ALLOWED SET GREW BY ONE AND THE REASON IS THE SAME ONE THAT PUT PHASE 3 IN IT. `concurrent-scan`
+test('--no-barrier reaches no gate but the three that face a real provider', () => {
+  // THE ALLOWED SET HAS GROWN TWICE AND THE REASON IS THE SAME ONE THAT PUT PHASE 3 IN IT. `concurrent-scan`
   // requires `--endpoint` and `--barrier-ref` because G18 rendezvouses three scanners at a HELD provider
   // read, and a real provider has no control surface to hold anything at. Projection Phase 7 puts the same
-  // three servers on the same mount over the same real provider, so it faces the same absence.
+  // three servers on the same mount over the same real provider, so it faces the same absence — and
+  // Projection Phase 8 puts those same three servers on that same mount for three consecutive operator
+  // cycles, which is the same topology again and therefore the same absence again.
   //
   // WHAT THE CONTAINMENT IS STILL FOR, UNCHANGED. Every Phase 1 caller must be bit-for-bit unaffected: the
   // flag may not drift into a gate whose endpoint IS controllable, because there the barrier is the whole
-  // instrument. Naming the second caller here is what keeps that a decision somebody took rather than a
-  // check that quietly stopped applying.
-  const allowed = new Set(['projection-reliability-loop-gate.sh', 'projection-phase7-gate.sh']);
+  // instrument. Naming each caller here is what keeps that a decision somebody took rather than a check that
+  // quietly stopped applying — and the second half of this test, that every allowed caller actually USES the
+  // flag, is what stops an exemption outliving the caller it was made for.
+  const allowed = new Set([
+    'projection-reliability-loop-gate.sh',
+    'projection-phase7-gate.sh',
+    'projection-phase8-gate.sh',
+  ]);
   const dir = join(repoRoot, 'deploy');
   const offenders: string[] = [];
   for (const entry of readdirNames(dir)) {
@@ -399,7 +406,7 @@ test('--no-barrier reaches no gate but the two that face a real provider', () =>
     if (read(`deploy/${entry}`).includes('--no-barrier')) offenders.push(entry);
   }
   assertEq(offenders.length, 0, `--no-barrier appears in ${offenders.join(', ')}`);
-  // AND BOTH OF THE ALLOWED TWO ACTUALLY USE IT, so the exception cannot outlive the caller it was made for.
+  // AND EVERY ALLOWED CALLER ACTUALLY USES IT, so the exception cannot outlive the caller it was made for.
   for (const entry of allowed) {
     assert(read(`deploy/${entry}`).includes('--no-barrier'),
       `${entry} is exempted from the containment and does not use the flag; the exemption is stale`);
