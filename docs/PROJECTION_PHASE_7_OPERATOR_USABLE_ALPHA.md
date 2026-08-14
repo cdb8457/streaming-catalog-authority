@@ -2156,10 +2156,11 @@ fewer than three complete passing sequences and this document does not manufactu
 **AND THE REASON HAS CHANGED AGAIN, WHICH IS THE ONLY THING WORTH READING THIS SECTION FOR.** #16 — the
 blocker this document ended on last time — turned out not to be a supervisor, a fault or an arm: it is what
 happens when the daemon is REPLACED, and §8.7 is the contract for the repair, written and committed before any
-run measured it. **AND NOT ONE RUN HAS MEASURED IT, BECAUSE THE PROVIDER ROTATED OUT OF THE OPERATOR'S
-ALLOWLIST AGAIN BEFORE THE FIRST ATTEMPT COULD BE LAUNCHED.** Everything that could be proved without the
-provider was proved twice, from two frozen candidates; the one thing §4.1 closes on could not be attempted at
-all.
+run measured it. **AND NOT ONE SEQUENCE HAS MEASURED IT, BECAUSE THE PROVIDER ROTATED OUT OF THE OPERATOR'S
+ALLOWLIST BEFORE THE FIRST ATTEMPT COULD BE LAUNCHED AND HAS STAYED OUT.** Everything that could be proved
+without the provider was proved from three independently frozen and byte-proved candidates, and the
+provider-free time bought a **tenth gate** and a **seventeenth defect** — the latter in the shipped daemon, on
+the path §8.7 had just changed. The one thing §4.1 closes on could not be attempted at all.
 
 **WHAT IS BLOCKING IT, IN ORDER, AND EACH ONE IS A DIFFERENT KIND OF THING:**
 
@@ -2173,11 +2174,13 @@ all.
    and is not going to.**
 2. **NO SEQUENCE HAS PASSED, AND NO SEQUENCE HAS BEEN ATTEMPTED SINCE THE FIX.** Attempt 5 reached all six arms
    and failed on four defects; attempt 6 fixed the product one and was BLOCKED at arm R3 by the provider;
-   attempt 7 reached all six arms and failed on #16; and **candidates 9 and 10 have not attempted one at all**
-   — §11.15.2 is why. §11.9 is the arm ledger and §11.15 is what the current candidates have and have not run.
-3. **THE PROVIDER IS SERVING AN ORIGIN OUTSIDE THE OPERATOR'S ALLOWLIST RIGHT NOW, AGAIN, AND IT IS A SEVENTH
-   DIGEST.** `f446a32964bf` against an `allowedOriginCount` of 6, `resolverStatus=200`, verdict `disallowed`,
-   twice, forty minutes apart — §11.15.2. **THIS IS NOT A PRODUCT DEFECT AND THE ALLOWLIST IS DOING THE ONE
+   attempt 7 reached all six arms and failed on #16; and **candidates 9 to 13 have not attempted one at all**
+   — §11.15.2 is why. §11.9 is the arm ledger and §11.15.3 is what the final candidate has and has not run.
+3. **THE PROVIDER IS SERVING AN ORIGIN OUTSIDE THE OPERATOR'S ALLOWLIST RIGHT NOW, AGAIN, AND THERE ARE THREE
+   OF THEM.** `f446a32964bf`, `d24a544ecef3` and `d4064d307d25`, each against an `allowedOriginCount` of 6,
+   `resolverStatus=200`, verdict `disallowed`, across five observations spanning three hours — §11.15.2. The
+   third is the origin §11.3 records as having blocked **attempt 2**, so the pool is not drifting away from the
+   allowlist so much as circling outside it. **THIS IS NOT A PRODUCT DEFECT AND THE ALLOWLIST IS DOING THE ONE
    JOB IT EXISTS FOR.** §7 predeclares a run into it as **BLOCKED rather than failed**, nothing automated here
    writes `endpoint.json`, and the blocker was escalated with a digest, a count and a verdict and nothing else.
    §11.13's operator action cleared a different digest at a different time and does not reach forward to this
@@ -2196,8 +2199,9 @@ all.
    candidate 8 — the single gate that precedes it failed deterministically at R3, and three copies of one
    failure is not a sequence — and §11.15.2 says why it has not been launched from candidate 9 or 10, which is
    a different reason entirely and is not this tranche's to fix. **The sequence is owed from the candidate that
-   fixes #16, and candidate 10 is that candidate the moment the provider serves an origin the operator has
-   allowlisted.**
+   fixes #16, candidate 13 is that candidate, it is frozen and staged and its image is built, and a
+   recheck-and-launch harness is waiting so that the first allowlisted window is spent on the sequence itself
+   rather than on noticing.**
 
 **WHAT IS NO LONGER BLOCKING IT, AND THIS IS THE EXPENSIVE HALF THAT WAS BOUGHT:**
 
