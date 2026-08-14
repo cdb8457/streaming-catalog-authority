@@ -2037,12 +2037,19 @@ defect caught before it could cost a run.
 | immediately before the first intended attempt from candidate 9 | 6 | `f446a32964bf`, scheme `https`, `resolverStatus=200` | **`disallowed`**, exit 70 |
 | again, after the candidate-9 matrix and the candidate-10 freeze | 6 | `f446a32964bf` | **`disallowed`**, exit 70 |
 | again, after the candidate-10 matrix | 6 | **`d24a544ecef3`** | **`disallowed`**, exit 70 |
+| again, after the candidate-10 matrix | 6 | `d24a544ecef3` | **`disallowed`**, exit 70 |
+| immediately before the first intended attempt from candidate 13 | 6 | **`d4064d307d25`** | **`disallowed`**, exit 70 |
 
-**NEITHER IS ONE THE OPERATOR HAS AUTHORISED, AND THERE ARE NOW TWO OF THEM.** The six in the allowlist are the
-five §11.13 records plus the one it added; `f446a32964bf` is none of them and `d24a544ecef3` is none of them
-either. **THE POOL IS CYCLING THROUGH AT LEAST TWO MEMBERS OUTSIDE THE ALLOWLIST**, which is a stronger version
-of the arithmetic §7 predeclared and Phase 3 §11.7 measured: a rotation back into the allowlist is not something
-this tranche can wait for on any schedule it controls. **NOTHING WAS WRITTEN TO
+**NONE OF THE THREE IS ONE THE OPERATOR HAS AUTHORISED.** The six in the allowlist are the five §11.13 records
+plus the one it added, and `f446a32964bf`, `d24a544ecef3` and `d4064d307d25` are none of them. **THE POOL IS
+CYCLING THROUGH AT LEAST THREE MEMBERS OUTSIDE THE ALLOWLIST**, which is a stronger version of the arithmetic §7
+predeclared and Phase 3 §11.7 measured: a rotation back into the allowlist is not something this tranche can
+wait for on any schedule it controls.
+
+**AND THE THIRD DIGEST IS ONE THIS REPOSITORY HAS SEEN BEFORE, WHICH IS WORTH A SENTENCE.** `d4064d307d25` is
+the origin §11.3 records as having BLOCKED **attempt 2**, and Phase 3 §11.7 already listed it as observed and
+not allowlisted. So it has been outside the operator's allowlist across two tranches and two days, and the pool
+returning to it is the ordinary behaviour §7 was written for rather than anything new. **NOTHING WAS WRITTEN TO
 `endpoint.json` AND NOTHING WILL BE** without an explicit operator instruction naming that exact change — §7,
 unchanged, and §11.13 is the only time in this tranche's history that instruction has been given. The blocker
 was escalated with **a digest, a count and a verdict and nothing else**.
