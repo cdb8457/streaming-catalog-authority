@@ -2145,6 +2145,29 @@ across lines — §11.4 #3's own defect, caught on the development host in a sec
 metered run. That is the second time in this tranche a suite has failed the person adding a section about it,
 and it is worth the sentence it costs.
 
+### 11.15.5 WHAT IS ARMED AND WAITING, SO THE NEXT WINDOW IS NOT SPENT NOTICING
+
+**THE SEQUENCE IS OWED FROM CANDIDATE 13 AND EVERYTHING IT NEEDS IS IN PLACE.** The tree is staged and
+byte-proved at `/mnt/user/appdata/catalog-p7c13`, `npm ci` has run in it, and
+`projectiond:phase7c13-frozen` is built to `sha256:216f1ae6…`.
+
+**A RECHECK-AND-LAUNCH HARNESS IS RUNNING ON THE HOST AND IT IS NOT PART OF ANY GATE.** It lives at
+`/root/attempt-launcher.sh`, outside the frozen tree, and it does exactly two things every fifteen minutes: it
+runs `deploy/projection-provider-origin-recheck.sh` — the official redaction-safe instrument, which is what §7
+requires **immediately before** a sequence — and, on exit 0 and only on exit 0, it runs one
+`deploy/projection-phase7-gate.sh`. It writes a digest, a count and a verdict per tick to
+`/tmp/launcher13b.out` and preserves each recheck under
+`/mnt/user/appdata/catalog-p7-evidence/attempt8/`. **It cannot write `endpoint.json`, it prints no origin, and
+it launches nothing while the verdict is `disallowed`.** `pkill -f attempt-launcher.sh` stops it.
+
+**WHY IT EXISTS RATHER THAN A HUMAN WATCHING.** The observed rotation stretches in this repository's record run
+from about forty minutes to at least eighty-four, and the whole of §11.15 was completed inside one of them. A
+window that opens and closes unobserved is the one thing this tranche cannot afford twice.
+
+**AND IT DOES NOT CHANGE THE VERDICT BELOW BY EXISTING.** A sequence it launches is one measured run, which is
+one of the three §4.1 requires and is not a closure. Whatever it produces belongs in §11.16 and in a new
+readiness decision, taken by somebody reading it.
+
 ## 12. The readiness decision
 
 # **NO-GO.**
