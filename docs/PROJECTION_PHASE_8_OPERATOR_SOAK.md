@@ -241,6 +241,20 @@ which source, what it has been checked against, and — in exact terms — why i
 | the three-runner and the optional wrapper | `deploy/projection-phase8-gate-{three,optional}.sh` | written; a skip propagates as a skip rather than folding into success |
 | the offline suite | `test/projection-phase8.ts` | **26 assertions, 26 passing**, registered in the offline inventory |
 
+**AND THE FULL OFFLINE INVENTORY IS 315 SELECTED, 315 PASSED, 0 FAILED, 0 REQUIRED-BUT-SKIPPED** on the
+development host, at the commit this record ends with — 315 rather than the 314 Phase 7 §11.15.4 records,
+because this tranche adds one suite and nothing else. TypeScript is clean.
+
+**TWO BOUNDARY PINS CAUGHT THESE FILES AND BOTH WERE RIGHT TO, WHICH IS WORTH THE PARAGRAPH.** The
+provider-adapter boundary keeps an explicit allowlist of the files that may know which provider this is, and a
+file arrives on it deliberately or not at all; the contract module named the provider in a nonclaim and was
+refused, so the nonclaim now uses Phase 7's own form and the comment explaining the rule does not name it
+either — the scan is case-insensitive, so a comment about the boundary would itself have broken it. And Phase
+3's `--no-barrier` containment names its exempt callers rather than describing them: this gate puts the same
+three servers on the same mount over the same real provider, which is the same absence of a control surface
+that put Phase 3 and Phase 7 on that list, so the set is now three and named, with the second half of the test
+still requiring every allowed caller to actually use the flag.
+
 **THE SOURCE DIGESTS, UNDER THE SAME RECIPE PHASE 7 §11.1.1 USES** — path, then LF-normalised content, sorted,
 one sha256, over the six files that are this tranche's gate:
 
