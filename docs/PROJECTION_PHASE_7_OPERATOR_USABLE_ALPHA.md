@@ -2106,6 +2106,29 @@ ordinary case here rather than a surprise.
 
 **AND THE LAST TWO ROWS ARE STILL THE TRANCHE**, for the reason §11.15.2 gives and for no other.
 
+### 11.15.4 OFFLINE AT CANDIDATE 13, ON BOTH HOSTS, AND THE NINE ARE STILL THE SAME NINE
+
+| What, at candidate 13 | development host | Unraid `tower` |
+|---|---|---|
+| `npm run typecheck` | **clean** | **clean** |
+| `npm run go:fmt` / `go:vet` | **clean** / **clean** | **clean** / **clean** |
+| `npm run go:test` | every package `ok` | **all 11 packages `ok`** |
+| `npx tsx test/projection-phase7.ts` | **48 passed, 0 failed** — 43 before §8.7, with five added for it | — |
+| `npx tsx test/projection-bounded-recovery.ts` | 52/0 | — |
+| `npx tsx test/projection-evidence-consistency.ts` | 8/0 | — |
+| `npx tsx test/custody-runtime-closure.ts` | 39/0 — every shipped `.sh` parses under LF and CRLF, both new ones included | — |
+| **full `npm run test:offline`** | **314 selected, 314 passed, 0 failed, 0 required-but-skipped, 673 s** | **314 selected, 305 passed, 9 failed, 0 required-but-skipped, 907 s** |
+
+**THE NINE ARE THE SAME NINE, NO MORE AND NO FEWER**, and §11.15.1 records the control that proved them
+pre-existing on that host: every one of them re-run one at a time from candidate 8's staged tree, failing there
+with the same status. Neither of the two shipped scripts this tranche added is among them, and neither changed
+the count.
+
+**AND `test/custody-runtime-closure.ts` REFUSED AN EARLIER DRAFT OF ONE OF THEM**, for a quoted program split
+across lines — §11.4 #3's own defect, caught on the development host in a second instead of two hours into a
+metered run. That is the second time in this tranche a suite has failed the person adding a section about it,
+and it is worth the sentence it costs.
+
 ## 12. The readiness decision
 
 # **NO-GO.**
