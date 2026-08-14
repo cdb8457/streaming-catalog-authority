@@ -226,90 +226,212 @@ records both. If it does not, the matrix that Phase 7 §11.15.3 records **is** t
 
 ## 11. Run record
 
-**NO SOAK HAS BEEN MEASURED. THE TRANCHE IS A NO-GO AND §12 SAYS SO.** What follows is what was built, from
-which source, what it has been checked against, and — in exact terms — why it has never been executed.
+**NO SOAK HAS BEEN MEASURED. THE TRANCHE IS A NO-GO AND §12 SAYS SO.** No figure anywhere in this document
+comes from a soak, because there has not been one, and no provider was contacted at any point in this
+tranche — not once, in either session that wrote it.
+
+**WHAT HAS CHANGED SINCE THE FIRST VERSION OF THIS RECORD IS THE BLOCKER ITSELF.** That version said the gate
+"exists, is syntax-clean and is pinned by 26 offline assertions, and **it has never been executed**", and
+named a provider-free rehearsal as the work that would let anyone find out what that meant. **The rehearsal
+has now been built and run.** It found **thirteen defects in the instrument and one in the shipped product**,
+every one of them provider-free, most of them in seconds. So the blocker is no longer "nobody has looked". It
+is a specific, named, structural mismatch between §3 of this contract and the gate that is supposed to
+measure it, and §12 states it in one paragraph.
 
 ### 11.1 What exists, and what it has been checked against
 
 | What | Where | State |
 |---|---|---|
-| the contract | `docs/PROJECTION_PHASE_8_OPERATOR_SOAK.md` | §2–§10, **committed before anything was built against it**, and no threshold in §4 has moved |
+| the contract | `docs/PROJECTION_PHASE_8_OPERATOR_SOAK.md` | §2–§10, **committed before anything was built against it**, and **no threshold in §4 has moved** |
 | the thresholds as code | `src/core/projection/phase8.ts` | three new, **every other one IMPORTED** from the closed tranche that owns it |
-| the closure check | `phase8ClosureProblems` | refuses a short soak, an absent measurement, a duplicated verdict, a skip, and a budget the soak supplied for itself |
-| the CLI | `src/ops/projection-phase8-cli.ts` | publishes the budgets as shell assignments the gate evals once, and refuses to publish them at all if the freshness inversion has stopped holding |
-| the gate | `deploy/projection-phase8-gate.sh` | **3,419 lines, written, syntax-clean, and NEVER EXECUTED** |
-| the three-runner and the optional wrapper | `deploy/projection-phase8-gate-{three,optional}.sh` | written; a skip propagates as a skip rather than folding into success |
-| the offline suite | `test/projection-phase8.ts` | **26 assertions, 26 passing**, registered in the offline inventory |
+| the closure check | `phase8ClosureProblems` | refuses a short soak, an absent measurement, a duplicated verdict, a skip, and a budget the soak supplied for itself — **all five now exercised as controls rather than asserted** |
+| the CLI | `src/ops/projection-phase8-cli.ts` | publishes the budgets as shell assignments the gate evals once, refuses to publish them if the freshness inversion has stopped holding, and now also publishes **the two imported constants the gate reads and it did not** |
+| the gate | `deploy/projection-phase8-gate.sh` | **3,514 lines. Ten of its defects are repaired; the eleventh is the blocker and is not repairable here.** Still never executed as a soak |
+| the three-runner and the optional wrapper | `deploy/projection-phase8-gate-{three,optional}.sh` | unchanged; a skip propagates as a skip rather than folding into success |
+| **the static wiring audit** | `src/core/projection/phase8-gate-audit.ts`, `src/ops/projection-phase8-gate-audit-cli.ts` | **NEW.** Models the ids a soak would actually write and compares THOSE against the closure rule |
+| **the provider-free rehearsal** | `deploy/projection-phase8-rehearsal.sh` (`npm run go:phase8-rehearsal`) | **NEW, 749 lines, and it has been RUN on the real Unraid host.** §11.2 |
+| the offline suites | `test/projection-phase8.ts`, `test/projection-phase8-gate-audit.ts` | **26 + 17 = 43 assertions, all passing**, both registered in the offline inventory |
 
-**AND THE FULL OFFLINE INVENTORY IS 315 SELECTED, 315 PASSED, 0 FAILED, 0 REQUIRED-BUT-SKIPPED** on the
-development host, at the commit this record ends with — 315 rather than the 314 Phase 7 §11.15.4 records,
-because this tranche adds one suite and nothing else. TypeScript is clean.
-
-**TWO BOUNDARY PINS CAUGHT THESE FILES AND BOTH WERE RIGHT TO, WHICH IS WORTH THE PARAGRAPH.** The
-provider-adapter boundary keeps an explicit allowlist of the files that may know which provider this is, and a
-file arrives on it deliberately or not at all; the contract module named the provider in a nonclaim and was
-refused, so the nonclaim now uses Phase 7's own form and the comment explaining the rule does not name it
-either — the scan is case-insensitive, so a comment about the boundary would itself have broken it. And Phase
-3's `--no-barrier` containment names its exempt callers rather than describing them: this gate puts the same
-three servers on the same mount over the same real provider, which is the same absence of a control surface
-that put Phase 3 and Phase 7 on that list, so the set is now three and named, with the second half of the test
-still requiring every allowed caller to actually use the flag.
+**AND THE FULL OFFLINE INVENTORY IS 316 SELECTED, 316 PASSED, 0 FAILED, 0 REQUIRED-BUT-SKIPPED** on the
+development host — 316 rather than the 315 the first version of this record names, because this tranche adds
+one suite and nothing else. TypeScript is clean. On the Unraid host `gofmt`, `go vet`, `go build` and **all
+eleven Go packages** are clean.
 
 **THE SOURCE DIGESTS, UNDER THE SAME RECIPE PHASE 7 §11.1.1 USES** — path, then LF-normalised content, sorted,
-one sha256, over the six files that are this tranche's gate:
+one sha256, truncated to sixteen characters:
 
 | | Value |
 |---|---|
-| commit | `3308675b3a10fd100f357ad5e516dbe61b5df5bb`, tree `bd9f73b34491d56ef81bac01e0da644ba27b51fe` |
-| PHASE 8 GATE SOURCE | `763c58dfa4015981` |
-| OPERATOR SOURCE | `6dbb238d51f6415f` — **unmoved**, and this tranche changes no shipped product source |
-| PHASE 7 GATE SOURCE | `76f2fe0d2bf5031f` — **unmoved**, so Phase 7's closure is untouched by anything here |
+| commit | `8412a969eeebc9ff6ad368b08be6a45def9b1e95`, tree `76f79bc26f3dbafef0445db5335505949ae95c13` |
+| image built from that tree, on Unraid | `sha256:216f1ae6f298781b34b0855f1b5201d5db51eec816b8ccf894876797a7a21a46` |
+| PHASE 8 GATE SOURCE | `e799af5bcf6febf4` — **moved**, from `763c58dfa4015981`, and §11.3 is the list of what moved and why |
+| PHASE 8 REHEARSAL SOURCE | `33f019d19c6077f1` — new |
+| OPERATOR SOURCE | `6dbb238d51f6415f` — **unmoved** |
+| PHASE 7 GATE SOURCE | `76f2fe0d2bf5031f` — **unmoved** |
 
-**AND THAT LAST ROW IS THE POINT OF THIS ONE.** §9 of this contract says Phase 8 changes no shipped product
-source, and the digests are how a reader checks it rather than takes it: `projectiond/`, the Phase 7 gate and
-the shipped operator command are byte-identical to what Phase 7 §11.17 closed on, so **the ten-gate matrix
-Phase 7 §11.15.3 records is the matrix for this candidate** and re-running it would produce the same numbers
-against the same bytes.
+**AND THOSE LAST TWO ROWS ARE THE POINT OF THE TABLE.** §9 says Phase 8 changes no shipped product source, and
+the digests are how a reader checks it rather than takes it. They are re-derivable from this tree with the
+recipe `sourceDigest` in `test/projection-bounded-recovery.ts` implements. `projectiond/` is untouched — the
+image this tree builds on Unraid is `sha256:216f1ae6…`, the **same image Phase 7 §11.1.1 records against its
+candidates 12 and 13** — the Phase 7 gate is byte-identical, and the shipped operator command is
+byte-identical. **Phase 7's GO is untouched, none of its evidence is relabelled, and the ten-gate matrix
+Phase 7 §11.15.3 records is still the matrix for this candidate.**
 
-### 11.2 Why no soak has been run, stated as two reasons, one of which is a decision
+### 11.2 The rehearsal §11.2 named as the next work — built, run, and what happened
 
-**THE FIRST IS ARITHMETIC AND IT IS NOT THIS TRANCHE'S TO ARGUE WITH.** The session that produced all of this
-was authorised **six provider-facing full attempts in total**. Four were spent closing Phase 7: one
-`go:phase7-gate` (§11.16) and the three runs inside `go:phase7-gate:three` (§11.17). **Two remain.** §4.1
-clause 1 of this contract closes on **three consecutive fresh soaks**, and one soak is three cycles — so
-closure needs nine cycles and cannot be reached from two attempts by any accounting. **A tranche that cannot
-close is one whose GO is not available, and pretending otherwise is what §4.2 exists to refuse.**
+The previous version of this section gave two reasons for not running the gate. **The first was arithmetic** —
+six provider-facing attempts authorised, four spent closing Phase 7, and §4.1 needing nine cycles — and it
+stands unchanged. **The second was a decision**: that the last two attempts should not be spent on the first
+execution of 3,419 lines that had never run once, because Phase 7 §8.7.4's lesson is that an instrument you
+cannot run without the provider is one you cannot debug. It named the missing rehearsal as the next work
+rather than half-building it.
 
-**THE SECOND IS A DECISION, AND IT IS TAKEN HERE RATHER THAN LEFT TO DRIFT IN.** The remaining two attempts
-could still have been spent running the gate ONCE, to prove the instrument and surface defects — which is
-exactly what Phase 7's attempts 5 and 7 did, and it is a real use of a metered account. **It was not done, and
-the reason is Phase 7 §8.7.4's own lesson, learned tonight.** That section exists because §8.7's repair had
-three witnesses and none of them could see the product, so a provider-free living-daemon instrument had to be
-built before the repair could be checked at all — and on its **first execution** it found a defect in the
-shipped daemon. **This gate has no such rehearsal.** Its first execution would be a multi-hour provider-facing
-run of 3,419 lines that have never run once, against the operator's metered account, at the end of a long
-session, with no cheap way to tell a product defect from a wiring defect. **Spending the last two attempts that
-way is the thing this repository's discipline is against**, and the honest alternative is to say so and stop.
+**THAT DECISION IS NOW MEASURED RATHER THAN ARGUED, AND IT WAS RIGHT BY A MARGIN NOBODY ESTIMATED.** Had those
+two attempts been spent, the first would have died in **setup**, on an unbound shell variable, before a single
+cycle — and the second would have died in the same place.
 
-**WHAT WOULD CHANGE THAT, EXACTLY, SO THE NEXT SESSION DOES NOT HAVE TO REDISCOVER IT:**
+`deploy/projection-phase8-rehearsal.sh` is that instrument. It is provider-free by construction: the daemon it
+drives is configured with an **empty endpoint list**, the operator's input directory is never read, and no
+credential, reference or origin is anywhere in reach. It involves **no media server and simulates none** — its
+three consumers are unprivileged `alpine` containers holding the projected path, exactly as the
+restart-topology gate's single consumer does, and nothing in it asserts anything whatever about Plex, Jellyfin
+or Emby. It records **no `P8-` verdict** and closes nothing.
 
-1. **A provider-free rehearsal for this gate**, in the shape `deploy/projection-restart-topology-gate.sh` has:
-   the same cycle, the same inheritance assertion and the same operator command, against the **local seed
-   entry** the setup already publishes as generation 1, with no provider and no approved-window checks. That is
-   what makes a wiring defect cost minutes instead of an attempt. **It is named here as the next work rather
-   than half-built.**
-2. **Then one full soak**, then the three `go:phase8-gate:three` needs.
+It has three parts, and the first two need no Docker at all:
 
-### 11.3 What has NOT been claimed anywhere in this document
+- **A — the gate's wiring, read from its bytes.** The three scripts parse; the static audit passes; the same
+  audit **refuses a tampered copy**, so a green audit is evidence rather than a command that printed
+  something; and A4 compares the environment the shipped operator command **requires**, taken out of that
+  command's own source, against what the gate's `alpha()` actually sets.
+- **B — the closure, report and redaction plumbing**, exercised against a document **synthesised from the
+  gate's own emissions** rather than a fixture, with five controls — an absent id, a duplicated id, a skip, a
+  budget the soak supplied for itself, and a two-cycle soak — each of which must be refused for its own
+  reason, plus a redaction check that must refuse a log carrying a URL.
+- **C — the live half**: the shipped operator command, provider-free, over one local seed entry, with three
+  consumers attached **before the first mount** and never touched again, across three cycles that inherit
+  everything. It runs the gate's **own** `inherit_fingerprint`, `assert_inherited`, `config_dir_for`,
+  `container_for` and layer counters, **lifted out of the gate file by name at run time**, so a repair made to
+  the gate is rehearsed without being copied and a rename fails loudly instead of rehearsing nothing.
+
+**IT ALSO REFUSES TO RUN IF AN APPLIANCE IS ALREADY INSTALLED ON THE HOST.** The shipped compose profile fixes
+`container_name` at `projection-alpha-projectiond`, because an operator's appliance has one name; stopping,
+replacing or adopting somebody else's appliance in order to rehearse a gate is the thing every contract here
+forbids, so it names that and stops.
+
+### 11.3 The defect ledger — thirteen in the instrument, one in the product
+
+**THIS IS THE CANONICAL LEDGER FOR THIS TRANCHE.** Every entry was found provider-free. Numbers 1 to 13 are
+defects in this tranche's own instrument and are repaired here except #11; number 14 is a finding about the
+**shipped product** and is recorded rather than repaired, because §9 changes no shipped product source and a
+change there would re-open Phase 7's whole matrix.
+
+| # | Where | What, and what it would have cost |
+|---|---|---|
+| 1 | gate, closing summary | `P8_ARMS_PER_RUN` read three lines from the end and published by nothing. Under `set -u`, **a soak in which every cycle passed and the closure check itself passed would still have exited non-zero** — on a name belonging to a tranche that has arms. Phase 8 has cycles |
+| 2 | CLI | `P8_POLL_INTERVAL_MS` never published, and the gate reads it where it builds the daemon configuration. **This is where the first attempt would have died: in setup, before cycle 1** |
+| 3 | CLI | `P8_READ_FAIL_BUDGET_MS` never published, and the gate reads it at every in-container read |
+| 4 | gate, `step_S5_recovery` | all thirteen ids recorded **without the cycle suffix**. The closure rule requires `P8-S5-action-ms:C1`, `:C2` and `:C3`; the gate wrote `P8-S5-action-ms` three times. **Fifteen required measurements absent from every soak, and eight ids carrying three verdicts each** — both refused in terms by `phase8ClosureProblems` |
+| 5 | gate, S3 | the name `P8-S3-windows` given to the host-side aggregate read and the three per-server in-container reads named something nobody requires. §3's S3 is a claim about what EACH server reads in its OWN container, which is why the module expands that id across the three servers. **All three of S3's required ids absent from every cycle** |
+| 6 | gate, `phase_bytes` | those per-server reads recorded as **booleans**, where the closure rule measures them against `OPERATOR_WINDOWS_REQUIRED` and demands a finite measurement and the contract's budget. `bool` writes neither field. `inread.sh` was already printing `matched/total` and the gate discarded it |
+| 7 | gate, `inherit_fingerprint` | statted `$WORK/emby`, `$WORK/jellyfin` and `$WORK/plex` — **three paths this gate never creates**. The real directories are `jf-config`, `plex-config` and `emby-config`, so the fingerprint wrote UNREADABLE every time and **`P8-cycle-inherited` was recorded as a FAILURE in all three cycles of every soak.** That assertion is the one thing that makes this a soak rather than three Phase 7 runs with a different name, and it could never once have passed |
+| 8 | gate, S9 | the rollback target read from `$WORK/cache/rollback-target`, **a name nothing in the product has ever written**. The shipped command records it at `$PROJECTIOND_ALPHA_CACHE_DIR/.projection-alpha-previous-image`, so the id measured an absent file and failed in every cycle — against a product doing exactly what §8.3 says it does |
+| 9 | gate, `step_S5_recovery` | `generation_before` inherited from whatever the previous `sample` had left in the variable, where `await_recovery_action` waits for the generation to become **different** from it. On cycle 1 nothing had sampled; on cycles 2 and 3 it described a daemon S9's upgrade and rollback had already replaced. **The wait therefore returned on its FIRST poll having observed no recovery at all, and `P8-S5-action-ms` would have recorded a couple of hundred milliseconds against a 33-second budget, green, for a supervisor that had not yet done anything.** A green measurement of nothing is worse than a red one |
+| 10 | gate, setup | the two preserved logs created at 0600 under **Phase 7's names**, so every soak left an empty `arms-<pid>.jsonl` in the evidence of a tranche with no arms, and the cycle log the closure check reads was left to be created by its first append at whatever the operator's umask allowed rather than at the 0600 §6 requires |
+| **11** | **gate ↔ §3** | **THE BLOCKER. Not repaired, and §12 is why.** The gate hands `deploy/projection-alpha.sh` an environment that command refuses outright — `PROJECTIOND_ALPHA_CACHE` and `_MANIFEST` where it requires `_CACHE_DIR` and `_MANIFEST_DIR`, and no `_MEDIA_ROOT`, `_SECRETS_DIR` or `_CONFIG` at all — **and §3 defines five of the ten steps as that command**, so S1, S2, S7, S8 and S9 measure nothing. Correcting the names is **not** sufficient and must not be done alone: the gate simultaneously runs **its own daemon** with an `rshared` bind at the same mount point, so one mount point would have two owners |
+| 12 | gate, `inherit_fingerprint` | the mount point fingerprinted with `stat -c %i`, which on a **mounted** path returns the mounted filesystem's root inode rather than the directory's. The rehearsal measured `mountpoint 12103424006462983` on a cycle that fingerprinted the path as a plain directory and `mountpoint 1` — the FUSE root — on the cycles that fingerprinted it while serving. Two different questions compared as one |
+| 13 | gate, S2 | §3's S2 is **four verbs and the step ran three**: `install` was never invoked at all, and `P8-S2-install-idempotent` was recorded from the exit status of a **`start`** — an id naming one verb and measuring another |
+| **14** | **SHIPPED PRODUCT — `deploy/projection-alpha.sh`** | **`install` succeeds exactly once and fails on every later invocation while the appliance is running.** `OWNED_DIRS` includes the **mount point**, and `install_appliance` writes `.projection-alpha/owned` into each owned directory. On day one the mount point is a plain directory and the marker lands on the host. Once the appliance starts, the FUSE filesystem is mounted **over** that directory, so the marker is invisible, the `[ ! -e ... ]` guard is therefore true, and `mkdir -p .../mnt/.projection-alpha` targets a **read-only** filesystem: `Read-only file system`, `set -e`, exit 1 |
+
+**#14 IS EXACTLY THE QUESTION §3 WROTE S2 TO ASK, AND IT IS WORTH THE PARAGRAPH.** That row says an appliance
+that is idempotent only when nothing is using it **is not idempotent**, and §1 says Phase 6 `AA1`–`AA11` prove
+idempotence *once, against a fresh install, with one unprivileged consumer and no provider*. The shipped
+command's own header states the contract it breaks: *"An operator who is unsure what state they are in should
+be able to run the verb they want and get that state, which is the opposite of a script that fails when it has
+nothing to do."* It was reproduced on the real Unraid host, in cycles 2 and 3 of the rehearsal, in both of the
+rehearsal's runs. **It is a finding, not a repair**: §9 forbids the repair here, and a soak that ran only
+`start` — as the gate did before #13 was fixed — could never have found it.
+
+### 11.4 The provider-free verification matrix, on the real Unraid host and the development host
+
+**EVERY ROW BELOW IS FROM THE FROZEN CANDIDATE `8412a96`, tree `76f79bc2…`, staged into an emptied directory
+by `git archive` and proved byte-identical in BOTH directions** by independently computed per-file sha256
+manifests over **1,677 tracked files**, with an empty diff.
+
+| What | Where | Result |
+|---|---|---|
+| `bash -n`, gate + three-runner + optional wrapper | Unraid | **clean** |
+| the static wiring audit over the gate's bytes | Unraid + dev | **0 problems**, and it **refuses** a tampered copy |
+| the closure, report and redaction plumbing + **6 controls** | Unraid + dev | **11 of 11**, every control refused for its own reason |
+| `deploy/projection-phase8-rehearsal.sh` part C — three inheriting cycles of the shipped operator command | Unraid | **see below** |
+| `npm run go:restart-topology-gate` | Unraid | **8 of 8, exit 0** — RT1 to RT6, including RT4's control |
+| `gofmt -l`, `go vet ./...`, `go build ./...` | Unraid | **clean** |
+| `go test ./...` | Unraid | **all 11 packages ok** |
+| `npm run typecheck` | dev | **clean** |
+| `test/projection-phase8.ts` | dev + Unraid | **26 of 26** |
+| `test/projection-phase8-gate-audit.ts` | dev + Unraid | **17 of 17**, six of them controls |
+| the full offline inventory | dev | **316 selected, 316 passed, 0 failed, 0 required-but-skipped** |
+| the full offline inventory | Unraid | **316 selected, 307 passed, 9 failed, 0 required-but-skipped** — and the nine are named below |
+| the host's container, network, volume sets and `fuse.projectiond` mountpoints | Unraid | **identical before and after every run**: 44 containers, 28 running, 18 networks, 46 volumes, **0** projection mounts, no run directory left |
+
+**THE REHEARSAL'S OWN RESULT IS 60 PASS, 4 FAIL, OF 64 ASSERTIONS — AND IT IS THE SAME 60/4 FROM THE
+PRECEDING CANDIDATE `7c864a9` AS FROM THE FROZEN ONE, WITH THE SAME FOUR FAILURES**, which is the only reason
+this section says anything at all about reproducibility. Its **first** execution, from `9698383` before two of
+the defects below were repaired, was 58 of 63; that run is what found #12 and #13 and it is not evidence about
+anything else. **THE FOUR FAILURES ARE THREE FACTS.**
+A4 and A6 are the two halves of defect #11. C3.2 and C3.3 are defect #14, reproduced in each of the two cycles
+that can reach it. **Everything else the shipped operator command was asked to do, provider-free, it did**:
+`preflight` honest about the mount point in all three cycles; `start` idempotent over a running appliance in
+all three; the operator surface agreeing with what a sibling container can actually read in all three; all
+three consumers reading identical bytes through the same mount in their own containers as their own uid,
+**without one of them being restarted or re-bound at any point**; **one** layer above a floor of **zero** after
+every cycle; the shipped `stop` leaving nothing of ours at the mount point in all three; `reset-recovery`
+clean in all three; `upgrade` recording a rollback target before it changed anything and `rollback` honouring
+it in all three; a **foreign overlay refused at shutdown and left byte-unmodified**; **zero** operator
+interventions across the three cycles; and the host as it was found.
+
+**THE NINE UNRAID FAILURES ARE THE NINE THAT HOST ALWAYS HAS, AND THEY ARE ENUMERATED RATHER THAN
+SUMMARISED**, exactly as Phase 7 §12.2 enumerates the same nine: `custodian-contract`,
+`sidecar-runtime-prototype`, `sidecar-durable-state-evidence`, `kek-correction-gates`,
+`custodian-storage-ipc-gates` and `custody-transition` are suites that **fail closed** on a host whose `shfs`
+will not honour the restrictive modes or present the links they need to certify it; and
+`projection-gate-embedded-programs`, `projection-mount-hardening` and `projection-multi-frontend` copy a
+shipped `.sh` to a temp directory and exec it directly, which is status 126 on Linux because every shipped
+script is mode 644 in git and is always invoked as `bash script.sh`. **Not one of them is a suite this tranche
+touches, not one of them is new, and the count is unchanged from Phase 7's**, which is the check that this
+tranche added none. **Both Phase 8 suites PASS on that host** — `projection-phase8.ts` and
+`projection-phase8-gate-audit.ts`, 26 and 17 — and **required-but-skipped is 0 on both hosts**, which is the
+number §4.1 clause 11 actually turns on.
+
+**AND THE INHERITANCE HELD ONCE #12 AND #7 WERE FIXED**, which is the first time anything in this repository
+has asserted it: cycles 2 and 3 found the same cache, the same durable ledger, the same manifest, the same
+three consumer configuration directories, the same three container ids and the same mount point as cycle 1,
+compared by inode and by container start instant. **That is the freshness inversion working, on real
+hardware — and it is a fact about the rehearsal, not about a soak.**
+
+### 11.5 The provider-facing attempt ledger
+
+**ZERO.** No soak has been attempted, `npm run go:phase8-gate` has still never run, `npm run
+go:phase8-gate:three` has still never run, and **the provider was not contacted at any point in this
+tranche.** `deploy/projection-provider-origin-recheck.sh` was therefore not run either: §7 requires it
+immediately before each soak, and there was no soak to run it before. `endpoint.json` was not read, not
+written and not touched.
+
+### 11.6 What has NOT been claimed anywhere in this document
 
 **NO FIGURE IN THIS TRANCHE COMES FROM A SOAK, BECAUSE THERE HAS NOT BEEN ONE.** Nothing here reports a cycle
-time, a layer count, a recovery budget, a window match or a consumer restart. The only measurements this
-document contains are offline ones — 26 assertions on a development host — and they are about the contract and
-the gate's own shape rather than about the appliance.
+time, a recovery budget, an approved-window match or a per-server playback figure. The layer counts, the
+inheritance results and the operator-command results in §11.4 come from a **provider-free rehearsal with three
+unprivileged containers standing in for consumers**, and they are labelled that way in every sentence that
+carries one. They are evidence about the instrument and about the shipped operator command; **they are not
+evidence about the appliance under a soak and no later document may cite them as such.**
+
+**NO MEDIA-SERVER BEHAVIOUR WAS MEASURED OR SIMULATED.** §4.2 makes a simulated real-server behaviour a NO-GO;
+this tranche measures none, claims none and simulates none.
 
 **AND PHASE 7's EVIDENCE IS NOT RELABELLED.** Every run in `docs/PROJECTION_PHASE_7_OPERATOR_USABLE_ALPHA.md`
-§11 stays exactly where it is, attributed to the candidate that produced it. §10 of this contract refuses that
-relabelling in terms, and this section is where a reader can check that it was kept.
+§11 stays exactly where it is, attributed to the candidate that produced it. §10 refuses that relabelling in
+terms, §11.1's unmoved operator and Phase 7 gate digests are how a reader checks that nothing it measures has
+changed, and this section is where a reader can see that it was kept.
 
 ## 12. The readiness decision
 
@@ -317,28 +439,70 @@ relabelling in terms, and this section is where a reader can check that it was k
 
 **§4.1 CLAUSE 1 IS UNSATISFIED AND NOTHING ELSE MATTERS UNTIL IT IS.** `npm run go:phase8-gate:three` has
 **never run**, and neither has a single `go:phase8-gate`. §4.2 forbids a GO on fewer than three consecutive
-fresh passing soaks and this document does not manufacture one.
+fresh passing soaks and this document does not manufacture one. **Not one of §4.1's eleven clauses about a
+soak has been satisfied, because there has been no soak.**
 
-**THE BLOCKER, NAMED EXACTLY:** the gate exists, is syntax-clean and is pinned by 26 offline assertions, and
-**it has never been executed**. §11.2 gives the two reasons — a provider-facing attempt budget that cannot
-reach nine cycles, and a deliberate refusal to spend the last two attempts on the first execution of 3,419
-untested lines — and §11.2's numbered list is what would clear it.
+**THE BLOCKER, NAMED EXACTLY, AND IT IS DEFECT #11.** §3 of this contract defines five of the ten steps of a
+cycle as the **shipped operator command**: S1 is `preflight`, S2 is `install`/`start`/`start`/`status`, S7 is
+`stop`/`start`, S8 is `reset-recovery` and S9 is `upgrade`/`rollback`. The gate cannot invoke it. It passes an
+environment that command refuses outright, **and the correction is not the variable names**: the gate also
+starts its own daemon, with an `rshared` bind at the same mount point that the shipped command's own compose
+profile would bring an appliance up at. **One mount point cannot have two owners.** Reconciling them means
+either the gate stops running its own daemon — in which case the appliance under test runs with the shipped
+profile's hard-coded `--poll=5s` and **without** `--strict-direct-mount`, and so is not the appliance Phase 7
+measured — or §3 stops naming the shipped command, **which §4.1 forbids**, because a contract may not be
+edited into agreement with its instrument.
+
+**THAT IS A DECISION ABOUT WHAT PHASE 8 MEASURES AND IT IS NOT TAKEN HERE.** Taking it quietly at the end of a
+session, and then declaring a GO from the instrument it produced, is precisely the shape §4.2 exists to
+refuse. It is named as the next work, in exactly the way §11.2 of the previous version of this record named
+the rehearsal, and for the same reason.
+
+**AND ONE HALF OF IT MUST NOT BE FIXED ON ITS OWN, WHICH IS A SAFETY NOTE RATHER THAN A STYLE ONE.** While the
+variable names are wrong every verb exits REFUSED and changes nothing. Correct only the names and the shipped
+`install` and `start` become live commands aimed at a mount point another daemon is already serving. `A6` of
+the rehearsal is the pin that says so and it fails while both owners exist.
 
 **WHAT IS NOT BLOCKING IT, BECAUSE IT WAS DONE:**
 
-- **the contract is predeclared and committed**, before anything was built against it, with §4's thresholds
-  three-new-and-the-rest-imported and §4.2's NO-GO list written before any result existed;
-- **the freshness inversion is encoded rather than described** — a cycle that finds its cache, ledger,
-  manifest, server configuration directories, container ids or mount point NEW fails, and the assertion
-  compares by inode and by container start instant rather than by existence;
-- **the two thresholds this tranche adds are load-bearing ids** rather than prose: a consumer restart and an
-  operator intervention are both counted, both budgeted at zero, and both refused by the closure check if they
-  carry a number the module does not name;
+- **the contract is predeclared and committed**, before anything was built against it, and **no threshold in
+  §4 has moved** — not one, in either direction, and §4.2's NO-GO list was written before any result existed;
+- **the rehearsal §11.2 named as the next work exists, has run on the real host, and found fourteen things**,
+  **twelve of which are repaired here** — including three unbound shell names, any one of which would have
+  ended a provider-facing soak, two of them in setup. The two that are not repaired are #11, which is the
+  blocker above, and #14, which is a shipped-product finding §9 forbids repairing in this tranche;
+- **the pin that could not bite has been replaced by one that does.** `test/projection-phase8.ts` asserted
+  that every required id "is an id the gate actually records" by stripping the cycle and server suffixes and
+  looking for the bare string, and it was green against a gate that recorded five of S5's ids with no suffix
+  at all. The new audit expands the ids instead, follows the gate's call graph to know what runs three times,
+  and **six controls prove it bites**;
+- **the freshness inversion has been asserted against real hardware for the first time** — cycles 2 and 3
+  inheriting cycle 1's cache, ledger, manifest, consumer configuration directories, container ids and mount
+  point, by inode and by container start instant;
 - **the gate injects no `SIGKILL`, reboots nothing, touches no unrelated service and never writes the
-  operator's endpoint file**, and each of those is pinned;
-- **and it changes no shipped product source**, which the digests in §11.1 are how a reader checks. Phase 7's
-  GO is untouched.
+  operator's endpoint file**, and each of those is still pinned;
+- **no provider was contacted, no attempt was spent, and `endpoint.json` was not touched**;
+- **and it changes no shipped product source.** The operator source and the Phase 7 gate source are
+  byte-identical to what Phase 7 closed on, the image this tree builds is the same `sha256:216f1ae6…` Phase 7
+  §11.1.1 records against its last two candidates, **Phase 7's GO is untouched**, and the ten-gate matrix that
+  tranche recorded is still the matrix for this candidate.
+
+**WHAT WOULD CLEAR IT, IN ORDER, SO THE NEXT SESSION DOES NOT HAVE TO REDISCOVER IT:**
+
+1. **Take the ownership decision in §12 and write it into the contract before building against it**, the way
+   §8.4 and §8.7 of Phase 7 were written before the runs that measured them. Either the gate drives the
+   shipped appliance and §2 records that the daemon under test carries the shipped profile's flags, or §3's
+   five steps are re-specified — and the second is a change to what this tranche measures, not a fix.
+2. **Then re-run the rehearsal**, which will say whether the reconciliation works, in minutes and for nothing.
+   `A4` and `A6` are the two assertions that turn green when it does.
+3. **Then decide what to do about defect #14**, which the reconciled S2 will meet on cycle 2 of every soak. It
+   is a shipped-product defect; repairing it re-opens Phase 7's matrix under §9, and not repairing it means
+   §4.1 clause 2 cannot be satisfied, because S2 cannot run all four of its verbs successfully. **Either way
+   it is a decision with a cost, and pretending it is not is what §4.2 refuses.**
+4. **Then one full soak**, then the three `go:phase8-gate:three` needs.
 
 **WHAT THIS IS NOT.** It is not a partial pass, it is not "nearly there", and it is not evidence about the
-appliance. **A gate that has never run has measured nothing**, and every rough edge Phase 7 §12.4 ships is
-still exactly as rough as that document says it is.
+appliance under repetition. **A gate that has never run a soak has measured no soak**, every rough edge Phase 7
+§12.4 ships is still exactly as rough as that document says it is, and the one new thing this tranche knows
+about the product — that `install` fails on the second day — is a finding it has recorded rather than a
+problem it has solved.

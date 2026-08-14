@@ -64,8 +64,13 @@ deploy/projection-alpha.sh reset-recovery   # clears a recovery lockout, AFTER y
 Set the environment from `deploy/projectiond-alpha.env.example` first. **Every variable is required and none
 has a default that could point at somebody else's data.**
 
-**Every one of these verbs is idempotent.** Running `install` twice, `start` on an already-ready appliance,
-`stop` on a stopped one or `reset-recovery` on a clean ledger are all successes, not errors.
+**Seven of these verbs are idempotent.** `start` on an already-ready appliance, `stop` on a stopped one and
+`reset-recovery` on a clean ledger are all successes, not errors.
+
+**`install` IS THE EXCEPTION AND IT IS NEW. DO NOT RUN IT AGAIN WHILE THE APPLIANCE IS RUNNING** — it will
+fail with `Read-only file system`. **`stop` first, or simply do not run it: you do not need to.** §6.7 is what
+is actually happening and why it is harmless. This line used to say all eight verbs were idempotent; that was
+measured to be false on the real host and the sentence is corrected rather than deleted.
 
 ## 4. Reading `status`, which is the only page you need during an incident
 
@@ -217,6 +222,33 @@ deploy/projection-alpha.sh status    # and keep the image digest it prints
 TorBox only. One Unraid host has been measured. One `projectiond` FUSE mount, `rshared`, with the consumer
 bound before the daemon first mounts there. Real-Debrid and Usenet have **named contracts** in
 `docs/PROJECTION_PHASE_6_DEPLOYABLE_ALPHA.md` §13, and a contract is not a feature.
+
+### 6.7 `install` works once, and fails every time after that while the appliance is running
+
+**WHAT YOU WILL SEE.** You installed the appliance on day one and it worked. Some time later — after a reboot,
+or because you were not sure what state you were in, or because you were following §3 from the top — you run
+`install` again while the appliance is up, and it fails:
+
+```
+mkdir: cannot create directory '<your mount point>/.projection-alpha': Read-only file system
+```
+
+**WHY.** `install` writes a small ownership marker into each directory this appliance claims, and one of those
+directories is **the mount point**. On day one the mount point is an ordinary empty directory and the marker
+lands on your disk. Once the appliance starts, its FUSE filesystem is mounted **over** that directory — so the
+marker is hidden underneath it, `install` cannot see the marker it wrote and tries to write it again, and the
+thing it is now writing into is the projected filesystem, which is **read-only by design**. Nothing is
+damaged, nothing is lost, and the marker under the mount is still there.
+
+**WHAT TO DO.** Nothing, in the ordinary case: **you do not need to run `install` twice.** If you want it to
+succeed anyway, `stop` first, then `install`, then `start`. If you are unsure what state you are in, run
+`status` — that is what it is for, and it is always safe.
+
+**HOW IT WAS FOUND.** `deploy/projection-phase8-rehearsal.sh`, provider-free, on the real Unraid host, in the
+second and third of three cycles against the same mount point.
+`docs/PROJECTION_PHASE_8_OPERATOR_SOAK.md` §11.3 #14 is the record. It is written down rather than repaired:
+that repair touches shipped source Phase 7's closure measured, and re-opening that is a decision with a cost
+of its own.
 
 ## 7. What to do when a media server stops seeing files
 
