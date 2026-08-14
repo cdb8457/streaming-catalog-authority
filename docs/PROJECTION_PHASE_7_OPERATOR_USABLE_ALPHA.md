@@ -676,6 +676,37 @@ never exhibited it. What settles it is **one complete sequence in which R3, R4, 
 proposed fix and this section says so.** And a GO needs three of them, from one frozen candidate, which §4.1
 clause 1 has always required and no run has ever produced.
 
+### 8.7.6 AND THE NEW INSTRUMENT FOUND A DEFECT ON ITS FIRST RUN, ON THE PATH §8.7 HAD JUST CHANGED
+
+**THIS IS WHY §8.7.4 EXISTS AND IT PAID FOR ITSELF IN ONE EXECUTION.** `RT5` stacked a tmpfs above the live
+mount, stopped the daemon, and measured what a `docker stop` had done to it: **the tmpfs was gone and the
+projectiond mount was still there.** The exact inverse of what every other row of this product promises.
+
+**THE CAUSE IS ONE SENTENCE AND IT HAS BEEN TRUE SINCE BEFORE THIS TRANCHE.** `Mounted.Unmount()` is
+`umount(2)` **against the mount POINT**, and `umount(2)` removes whatever is on **top** of that path — not the
+mount the caller happens to be serving. The shutdown path has called it unconditionally on `SIGTERM` for the
+whole of this product's history. At a mount point whose propagation is `rshared` the removal then propagates
+straight back out to the host, so the thing an operator stacked there is gone from their machine too.
+
+**IT IS THE `--auto-remount` DEFECT'S OWN SHAPE, ON THE ONE PATH NOTHING HAD EVER ASSERTED ABOUT.** Phase 6
+`AA6` and `RC5` both assert that a foreign overlay is left exactly where it is, and both of them assert it of
+the **recovery** path. §8.7's own safety contract covered the detach it added. **Nobody had ever asked what a
+STOP does to a mount point that is not exactly as the daemon left it**, and the honest reason is that until
+§8.7.4 there was no instrument that could ask.
+
+**THE GUARD IS NOT A SECOND RULE. IT IS THE SAME IDENTITY, ASKED EARLIER.** The row on top of the mount point
+must be byte-for-byte the row this process recorded creating — the same predicate, `shutdownMayRemoveOwnMount`,
+now governs the ordinary unmount as well as the lazy detach, and the evidence is **re-taken between them**,
+because a refused unmount is an instant of its own and something may have been stacked in it. That is §8.4.5's
+rule applied to a second path rather than a new idea.
+
+**WHAT IT COSTS, STATED RATHER THAN GLOSSED.** With something stacked above us the daemon now leaves **its own
+mount standing**, because it cannot be removed from underneath the thing on top without removing that too. So a
+stop into that state leaves a layer — the same state §8.7.2 already names for the hard kill, with the same
+shipped remediation (`preflight` prints `clear-stale-mount`). **An appliance that leaves its own mount behind
+in a state an operator created is a rough edge. An appliance that silently unmounts whatever an operator put at
+its mount point, every single time it stops, is a defect.**
+
 ## 9. The regression matrix
 
 **Phase 7 changes `projectiond` — one row of `planRemountCleanup` — so every gate whose subject is the
@@ -1164,7 +1195,7 @@ product-fix rows and fails if this document's headline or the roadmap row states
 **FIVE, TWO IN THE PRODUCT** for the interval between the run that found #5 and the run that found #7, which
 is exactly the class of stale summary that pin now exists to catch.
 
-**16 DEFECTS. SEVEN ARE IN SHIPPED PRODUCT CODE, AND ONE OF THOSE SEVEN WAS INTRODUCED BY THIS TRANCHE
+**17 DEFECTS. EIGHT ARE IN SHIPPED PRODUCT CODE, AND ONE OF THOSE EIGHT WAS INTRODUCED BY THIS TRANCHE
 AND CAUGHT BY ITS OWN REGRESSION MATRIX** — which is the most useful thing in this section.
 
 **WHAT COUNTS AS A ROW HERE, STATED SO THE NUMBER IS CHECKABLE RATHER THAN A JUDGEMENT.** A row is a defect a
@@ -1195,6 +1226,7 @@ time somebody re-derived it:
 | 14 | **attempt 5, arm R6** | **THE INJECTOR RELIED ON A REFERENCE IT DID NOT HOLD, AND THE RUN DIED ON DOCKER'S OWN BIND REFUSAL.** `umount -l` leaves the FUSE superblock alive only while something references it. R1 measured the connection surviving after twenty minutes of playback; R6, with nothing reading, measured the opposite — the serve loop died, the SERVE supervisor took the fault, its three remounts failed under the masked `/dev/fuse`, and the process exited with the recovery loop having spent nothing. The dead mount it left made `restart_daemon` fail with `error while creating mount source path … file exists`, status 125 | the gate — R6 now holds an **open descriptor** on the projected entry from a sibling first (what a media server holds while playing), asserts it, asserts that **none** of our mounts remain after the detach, and clears its own dead layers with the shared helper before the restart |
 | 15 | **attempt 6, arms R1 and R2** | **`P7-arm-binds-unchanged` COMPARED AN UNORDERED COLLECTION AS A STRING.** With #12 fixed the baseline was readable for the first time, and the comparison still failed — on the ORDER of `docker inspect`’s `.Mounts` array. Measured inside one run: `mnt=>/media/projection:rslave` came back FIRST in the baseline and LAST after arm R1, with the same container id, the same start instant and the same four mounts with the same modes. Docker does not promise that order and it is not a property of the container | the gate — the mount list is emitted one entry per line and sorted with `LC_ALL=C sort` before comparison, so what is asserted is the SET: same container, same start instant, same sources at the same destinations with the same modes. A mount added, removed, re-pointed or re-moded still fails, which is what *never re-bound* means |
 | 16 | **attempt 7, arms R3–R6** | **#13 WAS RECORDED AS RESOLVED ON EVIDENCE THAT COULD NOT HAVE SHOWN IT, AND IT IS NOT RESOLVED.** #13's own row says the residual appeared *from R3 onward*; the run it cites as having resolved it — attempt 6 — was BLOCKED by the provider at arm R3 and reached only R1 and R2, the two arms that measured `1/1` in attempt 5 as well. So *"attempt 6 measured 1/1 after every arm it reached"* is true and proves nothing about this defect. **Attempt 7 is the first run since the fix to reach R3, and it measured `P7-arm-layers` at 2/1 at R3, R4 and R5 — the same three arms, the same numbers, as attempt 5.** It differs from #13 in one respect that matters: **both namespaces now agree**, 2 rows in the host's and 2 in the daemon's, where #13 measured 1 and 2 — so this is a second **live** layer and not the host-only ghost #13 described. And it is not reachable by §8.5's skip, which is gated on a **drain that removed something**: across the whole of R3 `recoveryGeneration` never left 2, `P7-R3-no-recovery-action` measured **0/0** and `P7-R3-mount-untouched` passed, so the recovery supervisor did nothing at all while a layer appeared. **It also broke R6 again, exactly as #13 did** (see below) | **the product** — §8.7, and the mechanism is not the hypothesis §11.3.5 named. R3 is the only arm that REPLACES the daemon, the gate replaced it with `docker rm -f` — a `SIGKILL` — and at an `rshared` mount point a mount whose namespace is destroyed SURVIVES with its transport dead, which is the same recipe `projection-stale-mount-gate.sh` uses to manufacture a corpse on purpose. The replacement daemon then stacks over it and says so in its own log, and its floor is now 1, so its drain may never remove it. The daemon now removes ITS OWN mount on a shutdown whose ordinary unmount was refused, authorised by the mountinfo row it recorded when its own `Mount()` returned rather than by a type or a count; and the gate stops it the way the shipped operator command does instead of injecting a crash §3.1 never declared. §8.7.5 is what would have to be measured before this may be called fixed |
+| **17** | **the restart-topology gate, RT5, on its FIRST run** | **A STOP UNMOUNTED SOMEBODY ELSE'S MOUNT AND LEFT ITS OWN STANDING.** `Mounted.Unmount()` is `umount(2)` against the mount POINT, and `umount(2)` removes whatever is on **top** of that path rather than the mount the caller is serving. The shutdown path has called it unconditionally on `SIGTERM` for the whole of this product's history. Measured on the real host: a tmpfs stacked above the live mount, a `docker stop`, and afterwards **the tmpfs was gone and the projectiond mount was still there** — and because the mount point is `rshared`, the removal propagated straight back out to the host. It is the `--auto-remount` defect's own shape on the one path nothing had ever asserted about: Phase 6 `AA6` and `RC5` assert a foreign overlay is left exactly where it is and both assert it of the RECOVERY path, and §8.7's own safety contract covered only the detach it added | **the product** — §8.7.6. The SAME identity now governs the ordinary unmount as governs the detach: the row on top must be byte-for-byte the one this process recorded creating, and the evidence is re-taken between the two. What it costs is stated rather than glossed — with something stacked above it the daemon now leaves its own mount standing, which is the state `preflight` already prints `clear-stale-mount` for |
 
 **#5 IS THE ARGUMENT FOR THE WHOLE REGRESSION MATRIX, STATED PLAINLY.** The fix for #4 passed every offline
 test, including three new ones written specifically for it, and was byte-identical in both directions on the
@@ -1206,7 +1238,7 @@ this document to publish, for one revision, the sentence *"the appliance did not
 report it**"* about an appliance that was reporting a precise closed-set refusal the whole time. §11.3.2
 withdraws that half in place rather than deleting it, and §11.4 #7 is why it was ever written.
 
-**NINE OF THE SIXTEEN ARE IN THE INSTRUMENT AND SEVEN ARE IN THE PRODUCT**, and the split is worth stating
+**NINE OF THE SEVENTEEN ARE IN THE INSTRUMENT AND EIGHT ARE IN THE PRODUCT**, and the split is worth stating
 because it is the same split every closed tranche here has reported: the gates find product defects by being
 wrong first.
 
@@ -2086,6 +2118,12 @@ all.
   not a file-system type, not a count, not a transport answer, each of which this repository has already
   watched describe two different mounts at once. Seven tampers pin it (§11.11.3) and the second of them caught
   the widened, shape-based form passing eight of nine table rows.
+- **AND THE INSTRUMENT THAT WAS BUILT TO WATCH THE FIX CAUGHT A DEFECT IN IT — IN THE PATH §8.7 HAD JUST
+  CHANGED — ON ITS FIRST EXECUTION.** §11.4 #17: a `SIGTERM` with a tmpfs stacked above the live mount removed
+  **the tmpfs**, because `Unmount()` is `umount(2)` against the mount POINT and takes whatever is on top. The
+  same identity now governs both removals, and the gate is **8 of 8** with the fix. **That is the argument for
+  §8.7.4 in one line, and it is the fourth time in this document a real host has refused something every
+  offline test accepted.**
 - **THE §9 MATRIX IS NINE OF NINE FROM BOTH CANDIDATES THAT CARRY THAT DAEMON**, with Phase 6's own
   `go:recovery-gate:three` green at thirteen arms in each of three cold starts, twice — the gate that caught
   §11.4 #5, which is the one previous change to this same lifecycle that every offline test passed and a real
