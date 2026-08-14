@@ -715,7 +715,10 @@
     "ops:projection-recovery": "tsx src/ops/projection-recovery-cli.ts",
     "go:phase7-gate": "bash deploy/projection-phase7-gate.sh",
     "go:phase7-gate:three": "bash deploy/projection-phase7-gate-three.sh",
-    "go:phase7-gate:optional": "bash deploy/projection-phase7-gate-optional.sh"
+    "go:phase7-gate:optional": "bash deploy/projection-phase7-gate-optional.sh",
+    "go:phase8-gate": "bash deploy/projection-phase8-gate.sh",
+    "go:phase8-gate:three": "bash deploy/projection-phase8-gate-three.sh",
+    "go:phase8-gate:optional": "bash deploy/projection-phase8-gate-optional.sh"
   },
   "dependencies": {
     "pg": "^8.13.1",

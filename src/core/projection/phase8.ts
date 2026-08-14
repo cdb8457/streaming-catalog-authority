@@ -206,7 +206,11 @@ export function requiredSoakGateIds(): readonly string[] {
     'P8-consumers-never-touched',
     'P8-layers-at-end',
     'P8-own-mountpoints-removed',
-    'P8-sets-identical-at-end',
+    // THE HOST SETS ARE THREE IDS AND NOT ONE, because a boolean over three comparisons cannot say
+    // WHICH set moved, and "the host is not as it was found" is the one verdict an operator has to act on.
+    'P8-host-container-set-unchanged',
+    'P8-host-network-set-unchanged',
+    'P8-host-volume-set-unchanged',
     'P8-leak-evidence',
     'P8-leak-manifest',
     'P8-leak-library-state',

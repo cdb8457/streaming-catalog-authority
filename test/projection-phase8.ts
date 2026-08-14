@@ -271,6 +271,92 @@ test('the contract imports Phase 7s provider rule rather than restating it', () 
   assert(/BLOCKED, not failed/.test(document), 'the contract no longer carries the BLOCKED-not-failed rule');
 });
 
+// ---------------------------------------------------------------------------------------------------------
+console.log('\nthe gate records what the module requires, and restates none of its numbers');
+// ---------------------------------------------------------------------------------------------------------
+
+const GATE = 'deploy/projection-phase8-gate.sh';
+const gate = read(GATE);
+
+test('every id the module REQUIRES is an id the gate actually records', () => {
+  // A CONTRACT THAT REQUIRES AN ID NO GATE EMITS IS A CONTRACT THAT CAN NEVER BE SATISFIED, and a gate that
+  // emits an id the contract does not require is one whose failure nobody has to explain. This is the first
+  // half; the closure check is the second.
+  const missing: string[] = [];
+  for (const id of [...requiredCycleGateIds(1), ...requiredSoakGateIds()]) {
+    const bare = id.replace(/:(emby|jellyfin|plex):C1$/, '').replace(/:C1$/, '');
+    if (!gate.includes(bare)) missing.push(id);
+  }
+  assert(missing.length === 0, `the gate records none of: ${missing.join(', ')}`);
+});
+
+test('the gate RESTATES no threshold and evaluates them out of the module once', () => {
+  // THE BUDGETS LEAVE THE MODULE AS SHELL ASSIGNMENTS AND THE GATE EVALS THEM, which is what stops a number
+  // drifting between the document, the module and the shell. A literal spelling anywhere in the gate is a
+  // second copy of a number the contract derives.
+  assert(/P8_BUDGETS="\$\(npx tsx src\/ops\/projection-phase8-cli\.ts budgets --sh\)"/.test(gate),
+    'the gate no longer reads its budgets out of the contract module');
+  assert(gate.includes('eval "$P8_BUDGETS"'), 'the gate no longer evaluates the budgets it read');
+  const executable = gate.split('\n').filter((line) => !line.trim().startsWith('#')).join('\n');
+  for (const value of [
+    PHASE8_RULES.PLAY_DECODED_SECONDS_MIN,
+    PHASE8_RULES.RECOVERY_ACTION_BUDGET_MS,
+    PHASE8_RULES.RECOVERY_READY_BUDGET_MS,
+    PHASE8_RULES.READY_BUDGET_MS,
+  ]) {
+    assert(!new RegExp(`[=:-]\\s*${value}\\b`).test(executable),
+      `the gate spells ${value} literally instead of reading it from the module`);
+  }
+});
+
+test('the gate takes its own loopback ports, so it can never collide with another gate', () => {
+  // TWO GATES ON ONE HOST BINDING ONE PORT IS A SECOND RUN DYING ON "port is already allocated", which reads
+  // like a gate defect and is not. Every port this gate takes is asserted different from Phase 7's.
+  const phase7 = read('deploy/projection-phase7-gate.sh');
+  const portsOf = (source: string): string[] =>
+    [...source.matchAll(/:-(\d{4,5})\}/g)].map((match) => match[1] as string);
+  const mine = new Set(portsOf(gate));
+  const theirs = new Set(portsOf(phase7));
+  const shared = [...mine].filter((port) => theirs.has(port));
+  assert(shared.length === 0, `the Phase 8 gate shares loopback port(s) with Phase 7: ${shared.join(', ')}`);
+  assert(mine.size >= 4, 'the gate declares too few ports to be the one that binds a database and three servers');
+});
+
+test('the three-runner and the optional wrapper exist and are reachable through npm', () => {
+  const scripts = JSON.parse(read('package.json')).scripts as Record<string, string>;
+  assertEq(scripts['go:phase8-gate'], 'bash deploy/projection-phase8-gate.sh', 'the single gate');
+  assertEq(scripts['go:phase8-gate:three'], 'bash deploy/projection-phase8-gate-three.sh', 'the three-runner');
+  assertEq(scripts['go:phase8-gate:optional'], 'bash deploy/projection-phase8-gate-optional.sh', 'the optional');
+  const three = read('deploy/projection-phase8-gate-three.sh');
+  // A SKIP IS NOT A COMPLETED SOAK AND THE WRAPPER'S OWN ACCOUNTING IS WHAT SAYS SO.
+  assert(three.includes('completed=0'), 'the three-runner no longer counts completed soaks');
+  assert(/SKIPPED at run/.test(three), 'the three-runner no longer refuses to fold a skip into success');
+  assert(/projection-phase8-gate.sh/.test(three), 'the three-runner does not run the Phase 8 gate');
+  assert(three.includes('bash "$GATE_COMMAND"'), 'the three-runner no longer invokes the gate it resolved');
+});
+
+test('the gate asserts the INHERITANCE, which is the one thing that makes it a soak', () => {
+  assert(gate.includes('P8-cycle-inherited'), 'the gate no longer asserts what a cycle inherited');
+  assert(gate.includes('inherit_fingerprint'), 'the inheritance is no longer fingerprinted');
+  // BY IDENTITY AND NOT BY EXISTENCE. A recreated cache directory exists; it is not the one the last cycle
+  // used, and an existence check would pass over exactly the thing this tranche is measuring.
+  assert(/stat -c 'cache %i'/.test(gate), 'the cache is no longer compared by inode');
+  assert(/\{\{\.Id\}\} \{\{\.State\.StartedAt\}\}/.test(gate),
+    'the servers are no longer compared by container id AND start instant');
+  assert(gate.includes('OPERATOR INTERVENTION #'),
+    'the gate no longer counts the things a human had to do between cycles');
+});
+
+test('the gate injects no SIGKILL, reboots nothing and never writes the operator endpoint file', () => {
+  // §8.2 OF THE CONTRACT IS A DECISION AND THIS IS WHAT KEEPS IT. An operator soak measures the ordinary
+  // path; a SIGKILL is not one, and injecting it would measure a limitation the product already declares.
+  const executable = gate.split('\n').filter((line) => !line.trim().startsWith('#')).join('\n');
+  assert(!/kill -s 9|kill -9|--signal *KILL/.test(executable), 'the gate injects a SIGKILL');
+  assert(!/reboot|shutdown -r/.test(executable), 'the gate reboots something');
+  assert(!/> *[^ ]*endpoint\.json|tee [^ ]*endpoint\.json/.test(executable),
+    'the gate writes the operator endpoint file');
+});
+
 test('this suite is wired into the offline inventory, so a rename cannot silently end the coverage', () => {
   assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/projection-phase8.ts'), 'suite in npm test');
   const inventory = JSON.parse(read('test/suite-inventory.json')) as {
