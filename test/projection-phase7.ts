@@ -769,6 +769,27 @@ test('the shutdown removes ONE row and only the one this process recorded making
     'the sequential regression has no control arm, so nothing proves the fix is what removes the layer');
 });
 
+test('§8.7.1\'s claim about the kernel is a program, and its control reproduces the defect', () => {
+  const probe = read('deploy/projection-mount-propagation-probe.sh');
+  const scripts = JSON.parse(read('package.json')).scripts as Record<string, string>;
+  assert(scripts['go:mount-propagation-probe'] === 'bash deploy/projection-mount-propagation-probe.sh',
+    'the propagation probe is not reachable through an npm script, so nobody will run it');
+  // THE TWO HALVES §8.7 RESTS ON, AND THE PROBE HAS TO ASSERT BOTH DIRECTIONS. A probe that only measured the
+  // repair would pass on a kernel where the defect cannot happen at all, which is a green tick for a scenario
+  // that stopped being modelled — the shape #13 was wrongly resolved by.
+  assert(probe.includes('afterNamespaceDestroyed') && probe.includes('afterSelfDetach'),
+    'the probe no longer measures both the surviving mount and the self-detach');
+  assert(probe.includes('THE CONTROL HAS TO REPRODUCE THE DEFECT'),
+    'the probe no longer requires its control to reproduce the defect, so a pass proves nothing');
+  assert(/AFTER_DESTROY" -ne \$\(\( FLOOR \+ 1 \)\)/.test(probe),
+    'the probe no longer FAILS when the control leaves nothing behind');
+  assert(probe.includes('--propagation unchanged'),
+    'the probe lets unshare make the namespace private, which passes the control for the wrong reason');
+  // AND IT MUST NOT REACH ANYTHING REAL. The measurement is about a kernel, not about this host's mounts.
+  assert(!/\/mnt\/user|\$WORK\/mnt|rshared"/.test(probe),
+    'the propagation probe binds or mounts something outside its own throwaway container');
+});
+
 test('the gate stops the daemon the way the appliance does, and asserts what that left behind', () => {
   assert(gate.includes('stop_daemon()') && gate.includes('docker stop -t "$DAEMON_STOP_TIMEOUT_S"'),
     'the gate no longer stops the daemon with a bounded SIGTERM, so it is injecting a crash §3.1 never '

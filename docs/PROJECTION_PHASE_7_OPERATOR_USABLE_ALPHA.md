@@ -561,6 +561,16 @@ rather than in a log nobody kept:
 DAEMON.** R6 restarts it twice more, which is why `P7-layers-at-end` is exposed to the same thing; #14's repair
 already had to work around it with `projection_gate_unmount_run`, and nobody asked why that was necessary.
 
+**AND STEP 3 IS THE ONE THIS SECTION IS NOT ALLOWED TO ASSERT WITHOUT A MEASUREMENT, SO IT IS A PROGRAM.**
+`deploy/projection-mount-propagation-probe.sh` (`npm run go:mount-propagation-probe`) measures both halves of
+it inside one throwaway privileged container, on a `tmpfs` of its own, touching nothing: a mount made in a
+child mount namespace over an `rshared` mount point, whose namespace is then destroyed, and the same mount
+removed by the process that made it with `MNT_DETACH` before it exits. **It asserts BOTH directions and it
+FAILS if its control does not reproduce the defect** — a probe that only measured the repair would pass on a
+kernel where the residual cannot happen at all, which is exactly the shape of evidence #13 was wrongly
+resolved by. It uses `tmpfs` and not FUSE on purpose: the claim is about propagation, and a transport, a serve
+loop and a corpse would be three things the measurement does not need. §11.15 records what it said.
+
 ### 8.7.2 The product change, and the ownership proof is an identity rather than a shape
 
 **THE REPAIR IS AT THE ONE END WHERE OWNERSHIP IS NOT A JUDGEMENT: THE PROCESS THAT MADE THE MOUNT REMOVES
