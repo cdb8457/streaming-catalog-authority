@@ -173,6 +173,19 @@ umount -l <your mount point>
 **The appliance deliberately does not do that for you.** Unmounting something at your mount point is the one
 action it refuses to take automatically.
 
+**WHAT IT DOES DO IS REMOVE ITS OWN MOUNT WHEN YOU STOP IT, AND THAT IS NEW.** `stop`, `upgrade` and
+`rollback` all stop the appliance, and the ordinary unmount they have always attempted **cannot remove a
+mount a media server is reading through** — which is the ordinary case, not the exceptional one. What that
+used to leave behind was a dead mount at your mount point, so the next `start` stacked over it and you
+accumulated one dead layer per stop with nothing to tell you. The daemon now removes its own mount on the way
+out: it detaches **the exact mount row it recorded creating**, compared field by field, and it removes nothing
+else — not your bind, not a foreign overlay, not another `fuse.projectiond` mount that is not the one it made.
+If it cannot prove which row is its own it removes nothing at all and says so in its log.
+
+**THE ONE CASE THIS DOES NOT COVER IS THE APPLIANCE BEING KILLED OUTRIGHT** — a `SIGKILL`, an out-of-memory
+kill, or a host that loses power. Nothing inside a process can clean up after that, so §6.2's dead mount is
+still what you will meet, `preflight` still names it, and `umount -l <your mount point>` is still the fix.
+
 ### 6.3 A wedged probe can outlive its mount
 
 The mount observation is sampled single-flight, and a probe parked in an uninterruptible `statfs` releases
