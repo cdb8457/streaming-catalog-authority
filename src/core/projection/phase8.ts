@@ -23,8 +23,25 @@
 
 import { PROJECTION_PHASE_1_BUDGETS } from './runtime-contract.js';
 import { MEDIA_SERVER_SOAK, type GateResult } from './media-server-dataplane.js';
-import { RELIABILITY_LOOP_RULES } from './reliability-loop.js';
+import { RELIABILITY_LOOP_RULES, RELIABILITY_POLL_INTERVAL_MS } from './reliability-loop.js';
 import { PHASE7_RULES, PHASE7_SERVER_IDS } from './phase7.js';
+
+/**
+ * The two IMPORTED constants the gate needs that are not thresholds, kept out of `PHASE8_RULES` on purpose.
+ *
+ * NEITHER IS A §4 THRESHOLD AND NEITHER MAY BECOME ONE BY BEING WRITTEN DOWN HERE. §4's table is the list of
+ * numbers a VERDICT is measured against, and `phase8BudgetKeyFor` returns nothing for either of these: the
+ * poll interval is the flag the daemon is configured with, and the read-fail budget is how long the gate
+ * waits for an in-container read before it stops waiting. Putting them in `PHASE8_RULES` would have added two
+ * rows to a table the contract predeclared and closed, which is the one edit §4 forbids.
+ *
+ * THEY ARE HERE BECAUSE THE GATE READ THEM AND NOTHING PUBLISHED THEM. Phase 7 publishes its own poll interval
+ * the same way and for the same reason; this tranche's CLI was written from that one and dropped both, and
+ * under `set -u` the gate exits at the line that reads the first of them — during setup, before a single
+ * cycle. `src/core/projection/phase8-gate-audit.ts` is the pin that now refuses that.
+ */
+export const PHASE8_POLL_INTERVAL_MS = RELIABILITY_POLL_INTERVAL_MS;
+export const PHASE8_READ_FAIL_BUDGET_MS = RELIABILITY_LOOP_RULES.READ_FAIL_BUDGET_MS;
 
 /**
  * The ten steps of one operator cycle, in the order the gate runs them, and the order is part of the

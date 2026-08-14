@@ -19,7 +19,9 @@ import {
   PHASE8_NONCLAIMS,
   PHASE8_INHERITED_BETWEEN_CYCLES,
   PHASE8_SERVER_IDS,
-      THE_SOAK_IS_FRESH_AND_THE_CYCLES_ARE_NOT,
+  PHASE8_POLL_INTERVAL_MS,
+  PHASE8_READ_FAIL_BUDGET_MS,
+  THE_SOAK_IS_FRESH_AND_THE_CYCLES_ARE_NOT,
   phase8ClosureProblems,
   type Phase8Results,
 } from '../core/projection/phase8.js';
@@ -89,6 +91,11 @@ function main(): void {
         console.log(`P8_STEPS='${PHASE8_STEPS.join(' ')}'`);
         console.log(`P8_SERVERS='${PHASE8_SERVER_IDS.join(' ')}'`);
         console.log(`P8_INHERITED='${PHASE8_INHERITED_BETWEEN_CYCLES.length}'`);
+        // THE TWO IMPORTED CONSTANTS THAT ARE NOT THRESHOLDS, published only in the shell form the gate
+        // evals. They are not in the human form and not in §4's table because no verdict is measured against
+        // either; the gate reads both, and this CLI shipped without them.
+        console.log(`P8_POLL_INTERVAL_MS=${PHASE8_POLL_INTERVAL_MS}`);
+        console.log(`P8_READ_FAIL_BUDGET_MS=${PHASE8_READ_FAIL_BUDGET_MS}`);
       }
       // THE DERIVED FACT THIS CONTRACT DEPENDS ON, CHECKED WHERE THE BUDGETS ARE PUBLISHED — so the gate
       // cannot even load its thresholds once the freshness inversion has stopped holding.
