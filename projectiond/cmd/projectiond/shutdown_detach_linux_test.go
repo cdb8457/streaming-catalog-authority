@@ -142,6 +142,71 @@ func TestPlanShutdownDetachRemovesOnlyTheRowThisProcessMade(t *testing.T) {
 	}
 }
 
+// TestTheORDINARYUnmountIsGovernedByTheSameIdentityAsTheDetach — PROJECTION PHASE 7 §8.7.6, and the
+// restart-topology gate's `RT5` is the run that made this necessary.
+//
+// `Unmount()` IS `umount(2)` AGAINST THE MOUNT POINT AND IT REMOVES WHATEVER IS ON TOP. Every version of this
+// daemon called it unconditionally on `SIGTERM`, so a stop removed a tmpfs somebody had stacked above the live
+// mount and left the projectiond mount standing — measured, on the real host, at a mount point whose
+// propagation carried the removal straight back out to it. That is the `--auto-remount` defect's own shape on
+// the one path nothing had ever asserted about, and the guard is not a second rule: it is the SAME identity.
+func TestTheORDINARYUnmountIsGovernedByTheSameIdentityAsTheDetach(t *testing.T) {
+	known := ownMountRef{row: ourFirstMount, known: true}
+	for _, tc := range []struct {
+		name         string
+		own          ownMountRef
+		current      []fusefs.MountIdentity
+		currentKnown bool
+		want         bool
+	}{
+		{
+			name: "our own row on top — the ordinary unmount is aimed at the row we made",
+			own:  known, current: []fusefs.MountIdentity{operatorBind, ourFirstMount}, currentKnown: true,
+			want: true,
+		},
+		{
+			name: "a FOREIGN overlay on top — the ordinary unmount would remove IT, so it is not attempted",
+			own:  known, current: []fusefs.MountIdentity{operatorBind, ourFirstMount, foreignOverlay},
+			currentKnown: true, want: false,
+		},
+		{
+			name: "another mount of OURS on top — same type, different attachment, still not ours to remove",
+			own:  known, current: []fusefs.MountIdentity{operatorBind, ourFirstMount, ourSecondMount},
+			currentKnown: true, want: false,
+		},
+		{
+			name: "the operator's own bind alone — our mount is already gone and theirs is not ours to take",
+			own:  known, current: []fusefs.MountIdentity{operatorBind}, currentKnown: true, want: false,
+		},
+		{
+			name: "an unreadable mount table", own: known, current: nil, currentKnown: false, want: false,
+		},
+		{
+			name: "an unproved identity", own: ownMountRef{},
+			current: []fusefs.MountIdentity{operatorBind, ourFirstMount}, currentKnown: true, want: false,
+		},
+		{
+			name: "an empty mount point", own: known, current: nil, currentKnown: true, want: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, why := shutdownMayRemoveOwnMount(tc.own, tc.current, tc.currentKnown)
+			if got != tc.want {
+				t.Fatalf("want %v, got %v (%s)", tc.want, got, why)
+			}
+		})
+	}
+	// AND THE DETACH IS THE SAME DECISION PLUS ONE CONDITION, rather than a second copy of it that can drift.
+	for _, refused := range []bool{true, false} {
+		got, _ := planShutdownDetach(refused, known,
+			[]fusefs.MountIdentity{operatorBind, ourFirstMount}, true)
+		if got != refused {
+			t.Fatalf("the detach must add exactly the refused-unmount condition to the identity; refused=%v "+
+				"gave %v", refused, got)
+		}
+	}
+}
+
 // TestTheOwnMountIdentityIsOnlyKnownWhenItCanBePROVED. The identity is what authorises the removal, so every
 // state in which it cannot be established has to answer UNKNOWN — and unknown removes nothing, anywhere.
 func TestTheOwnMountIdentityIsOnlyKnownWhenItCanBePROVED(t *testing.T) {
@@ -308,10 +373,18 @@ func TestTheShutdownPathTriesThePoliteFormFirstAndNeverAbortsAConnection(t *test
 	if end := strings.Index(signalBranch, "case <-mount.Done():"); end > 0 {
 		signalBranch = signalBranch[:end]
 	}
+	identityAt := strings.Index(signalBranch, "shutdownMayRemoveOwnMount(")
 	unmountAt := strings.Index(signalBranch, "mount.Unmount()")
 	detachAt := strings.Index(signalBranch, "planShutdownDetach(")
-	if unmountAt < 0 || detachAt < 0 {
-		t.Fatal("the shutdown path must try the ordinary unmount and then ask planShutdownDetach")
+	if identityAt < 0 || unmountAt < 0 || detachAt < 0 {
+		t.Fatal("the shutdown path must ask the identity, then try the ordinary unmount, then ask " +
+			"planShutdownDetach")
+	}
+	// THE IDENTITY IS ASKED FIRST AND IT GOVERNS BOTH REMOVALS — §8.7.6. An ordinary unmount attempted before
+	// the identity is an unmount of whatever happens to be on top, which is what RT5 measured.
+	if identityAt > unmountAt {
+		t.Fatal("the ordinary unmount is attempted BEFORE the identity is proved, so it can remove a row this " +
+			"process did not make")
 	}
 	if unmountAt > detachAt {
 		t.Fatal("the ordinary unmount must be attempted BEFORE anything is detached")

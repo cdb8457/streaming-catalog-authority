@@ -316,10 +316,21 @@ func main() {
 		case sig := <-signals:
 			logLine(fmt.Sprintf("received %s, unmounting", sig))
 			cancel()
-			// THE POLITE FORM FIRST, ALWAYS, AND IT IS UNCHANGED. An ordinary unmount removes the mount for every
-			// namespace it propagates to and takes nothing away from a consumer that is not holding it open.
+			// THE IDENTITY IS ASKED FIRST AND IT GOVERNS BOTH REMOVALS — PROJECTION PHASE 7 §8.7.6.
+			//
+			// `Unmount()` IS `umount(2)` AGAINST THE MOUNT POINT AND IT REMOVES WHATEVER IS ON TOP, which is not
+			// necessarily this daemon's own mount. The restart-topology gate's `RT5` measured a stop removing a
+			// tmpfs somebody had stacked above the live mount and leaving the projectiond mount standing — the
+			// `--auto-remount` defect's own shape, on the one path nothing had ever asserted about.
+			currentStack, currentStackKnown := fusefs.MountStackAt(cfg.MountPoint)
+			mayRemove, why := shutdownMayRemoveOwnMount(*own, currentStack, currentStackKnown)
 			unmountRefused := false
-			if err := mount.Unmount(); err != nil {
+			if !mayRemove {
+				logLine("leaving " + cfg.MountPoint + " exactly as it is: " + why)
+			} else if err := mount.Unmount(); err != nil {
+				// THE POLITE FORM FIRST, ALWAYS. An ordinary unmount takes nothing away from a consumer that is
+				// not holding the mount open, and it is only ever aimed at a row this process has just proved is
+				// the one it made.
 				unmountRefused = true
 				logLine("unmount refused: " + err.Error())
 			}
@@ -331,14 +342,17 @@ func main() {
 			// then stacked over — one dead layer per stop, for ever, which is §11.4 #16 and the second half of the
 			// rough edge Phase 6 §9.7 named. The lazy form is what the daemon's own startup message already tells
 			// an operator to use on a stale mount; here it is used on a mount this process can PROVE is its own.
-			currentStack, currentStackKnown := fusefs.MountStackAt(cfg.MountPoint)
-			if detach, why := planShutdownDetach(unmountRefused, *own, currentStack, currentStackKnown); detach {
-				logLine("detaching this process's own mount at " + cfg.MountPoint + " on the way out: " + why)
+			//
+			// AND THE EVIDENCE IS RE-TAKEN BEFORE THE DESTRUCTIVE FORM, which is §8.4.5's own rule applied here:
+			// the refused unmount is an instant of its own, and something may have been stacked in it.
+			afterStack, afterKnown := fusefs.MountStackAt(cfg.MountPoint)
+			if detach, whyDetach := planShutdownDetach(unmountRefused, *own, afterStack, afterKnown); detach {
+				logLine("detaching this process's own mount at " + cfg.MountPoint + " on the way out: " + whyDetach)
 				if err := unix.Unmount(cfg.MountPoint, unix.MNT_DETACH); err != nil {
 					logLine("shutdown detach refused: " + err.Error())
 				}
 			} else if unmountRefused {
-				logLine("leaving " + cfg.MountPoint + " exactly as it is: " + why)
+				logLine("leaving " + cfg.MountPoint + " exactly as it is: " + whyDetach)
 			}
 			// THE WAIT IS BOUNDED AND THE CLEANUP ABOVE IS NOT. A lazily detached mount keeps its super-block for
 			// as long as a consumer holds a descriptor inside it, so the request loop can outlive the shutdown by
@@ -844,11 +858,43 @@ func planShutdownDetach(unmountRefused bool, own ownMountRef,
 	if !unmountRefused {
 		return false, "the ordinary unmount was not refused, so there is nothing left to detach"
 	}
+	return shutdownMayRemoveOwnMount(own, current, currentKnown)
+}
+
+// shutdownMayRemoveOwnMount is the identity question on its own, asked BEFORE the ordinary unmount as well as
+// before the lazy one — PROJECTION PHASE 7 §8.7.6, and a measured run is why it is asked twice.
+//
+// WHAT `Unmount()` ACTUALLY DOES, WHICH IS NOT WHAT ITS NAME SUGGESTS. It is `umount(2)` against the mount
+// POINT, and `umount(2)` removes whatever is on TOP of that path — not the mount the caller happens to be
+// serving. Every version of this daemon has called it unconditionally on `SIGTERM`, and for the whole of that
+// time it has been true that anything stacked above this daemon's mount would be removed by a stop instead of
+// this daemon's own mount. **`deploy/projection-restart-topology-gate.sh` measured it on its first run**, at
+// `RT5`: a tmpfs stacked above the live mount, a `docker stop`, and afterwards the tmpfs was gone and the
+// projectiond mount was still there. The propagation made it worse rather than better — the mount point is
+// `rshared`, so the removal propagated straight back out to the host.
+//
+// THAT IS THE `--auto-remount` DEFECT'S OWN SHAPE, ON A PATH NOBODY HAD LOOKED AT. Phase 6 `AA6` and `RC5`
+// assert that a foreign overlay is left exactly where it is, and both of them assert it of the RECOVERY path.
+// The shutdown path had no such assertion and no such guard, and §8.7's own safety contract only ever covered
+// the detach it added.
+//
+// SO THE SAME EVIDENCE NOW AUTHORISES BOTH REMOVALS, AND THERE IS ONLY ONE OF IT. The row on top of the mount
+// point must be byte-for-byte the row this process recorded creating. Anything else — a foreign overlay, a
+// second projectiond mount of a different attachment, an unreadable mount table, an unproved identity, an
+// empty mount point — and this daemon touches NOTHING on the way out and says so.
+//
+// WHAT IT COSTS, STATED RATHER THAN GLOSSED: when something is stacked above us we now leave our own mount
+// standing, because it cannot be removed from underneath the thing on top of it without removing that too.
+// That is the trade §8.7.2 already names for the hard-kill case, it is what the shipped `preflight`'s
+// `clear-stale-mount` remediation exists for, and it is strictly better than the alternative, which is an
+// appliance that silently unmounts whatever an operator put at its mount point every time it stops.
+func shutdownMayRemoveOwnMount(own ownMountRef, current []fusefs.MountIdentity,
+	currentKnown bool) (bool, string) {
 	if !own.known {
-		return false, "this process never proved which row it mounted, which authorises no detach at all"
+		return false, "this process never proved which row it mounted, which authorises removing nothing"
 	}
 	if !currentKnown {
-		return false, "an unreadable mount table, which authorises no detach"
+		return false, "an unreadable mount table, which authorises removing nothing"
 	}
 	if len(current) == 0 {
 		return false, "nothing is mounted at the mount point any more"

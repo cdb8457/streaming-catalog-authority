@@ -206,10 +206,14 @@ docker build -t "$IMAGE" ./projectiond
 # ----------------------------------------------------------------------------------------------------------
 step "the host, before anything of this gate's exists"
 # ----------------------------------------------------------------------------------------------------------
-docker ps -a --format '{{.Names}}' | LC_ALL=C sort > "$WORK/out/containers-before.txt"
-docker network ls --format '{{.Name}}' | LC_ALL=C sort > "$WORK/out/networks-before.txt"
-docker volume ls --format '{{.Name}}' | LC_ALL=C sort > "$WORK/out/volumes-before.txt"
-echo "  $(wc -l < "$WORK/out/containers-before.txt") containers, $(wc -l < "$WORK/out/networks-before.txt") networks, $(wc -l < "$WORK/out/volumes-before.txt") volumes"
+# THE SNAPSHOTS ARE HELD IN VARIABLES AND NOT IN THE RUN DIRECTORY, because the cleanup contract REMOVES the
+# run directory — and the first execution of this gate wrote its "after" files into a directory that had just
+# been deleted, so the comparison compared two absences and reported every set as different. A snapshot that
+# the teardown can destroy is not a snapshot of the teardown.
+CONTAINERS_BEFORE="$(docker ps -a --format '{{.Names}}' | LC_ALL=C sort)"
+NETWORKS_BEFORE="$(docker network ls --format '{{.Name}}' | LC_ALL=C sort)"
+VOLUMES_BEFORE="$(docker volume ls --format '{{.Name}}' | LC_ALL=C sort)"
+echo "  $(echo "$CONTAINERS_BEFORE" | wc -l) containers, $(echo "$NETWORKS_BEFORE" | wc -l) networks, $(echo "$VOLUMES_BEFORE" | wc -l) volumes"
 
 # ----------------------------------------------------------------------------------------------------------
 step "starting a real PostgreSQL and migrating it"
@@ -428,17 +432,22 @@ docker compose -f "$COMPOSE_FILE" down -v --remove-orphans >/dev/null 2>&1 || tr
 docker network rm "$NETWORK" >/dev/null 2>&1 || true
 projection_gate_cleanup_run "$GATE_ROOT" "$WORK" "$VERIFY_IMAGE" || true
 
-docker ps -a --format '{{.Names}}' | LC_ALL=C sort > "$WORK/out/containers-after.txt" 2>/dev/null || true
-docker network ls --format '{{.Name}}' | LC_ALL=C sort > "$WORK/out/networks-after.txt" 2>/dev/null || true
-docker volume ls --format '{{.Name}}' | LC_ALL=C sort > "$WORK/out/volumes-after.txt" 2>/dev/null || true
+CONTAINERS_AFTER="$(docker ps -a --format '{{.Names}}' | LC_ALL=C sort)"
+NETWORKS_AFTER="$(docker network ls --format '{{.Name}}' | LC_ALL=C sort)"
+VOLUMES_AFTER="$(docker volume ls --format '{{.Name}}' | LC_ALL=C sort)"
 SETS_OK=1
-for what in containers networks volumes; do
-  if ! diff -q "$WORK/out/$what-before.txt" "$WORK/out/$what-after.txt" >/dev/null 2>&1; then
-    SETS_OK=0
-    echo "  the $what SET differs:" >&2
-    diff "$WORK/out/$what-before.txt" "$WORK/out/$what-after.txt" | head -6 >&2 || true
-  fi
-done
+if [ "$CONTAINERS_BEFORE" != "$CONTAINERS_AFTER" ]; then
+  SETS_OK=0; echo "  the container SET differs:" >&2
+  diff <(echo "$CONTAINERS_BEFORE") <(echo "$CONTAINERS_AFTER") | head -6 >&2 || true
+fi
+if [ "$NETWORKS_BEFORE" != "$NETWORKS_AFTER" ]; then
+  SETS_OK=0; echo "  the network SET differs:" >&2
+  diff <(echo "$NETWORKS_BEFORE") <(echo "$NETWORKS_AFTER") | head -6 >&2 || true
+fi
+if [ "$VOLUMES_BEFORE" != "$VOLUMES_AFTER" ]; then
+  SETS_OK=0; echo "  the volume SET differs:" >&2
+  diff <(echo "$VOLUMES_BEFORE") <(echo "$VOLUMES_AFTER") | head -6 >&2 || true
+fi
 LEFT="$(count_our_layers)"
 if [ "$SETS_OK" -eq 1 ] && [ "$LEFT" -eq "$FLOOR" ]; then
   pass "RT6 the container, network and volume SETS are identical and nothing of ours is left at the mount point"
