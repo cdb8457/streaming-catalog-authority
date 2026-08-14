@@ -448,6 +448,10 @@
       "group": "offline"
     },
     {
+      "file": "projection-phase8-gate-audit.ts",
+      "group": "offline"
+    },
+    {
       "file": "projection-mount-truth.ts",
       "group": "offline"
     },
