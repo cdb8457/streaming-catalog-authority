@@ -193,6 +193,10 @@ else
     printf '%s\n' "$UNKNOWN_ENV" | sed 's/^/      /' >&2; }
   fail "A4 the gate's environment for the shipped operator command does not match what that command \
 requires, so every verb in S1, S2, S7, S8 and S9 exits REFUSED and five of the ten steps measure nothing"
+  echo "    AND DO NOT FIX THIS HALF ON ITS OWN — see A6. While the names are wrong every verb refuses and" >&2
+  echo "    changes nothing, which is a SAFE failure. Correcting them without resolving the daemon" >&2
+  echo "    ownership below would let the shipped command bring a SECOND projectiond up over a mount point" >&2
+  echo "    this gate's own daemon already holds." >&2
 fi
 
 # AND THE CONTROL: the comparison must notice a name that is missing. It is run against a copy of the gate's
@@ -203,6 +207,38 @@ if [ -n "$(comm -23 <(printf '%s\n' "$ALPHA_REQUIRES") <(printf '%s\n' "$CONTROL
   pass "A5 CONTROL: the same comparison names a required variable that has been removed"
 else
   fail "A5 CONTROL: removing a required variable changed nothing, so A4 cannot detect one"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# A6 — ONE MOUNT POINT, TWO OWNERS, AND THAT IS THE OTHER HALF OF THE SAME BLOCKER.
+# ----------------------------------------------------------------------------------------------------------
+# THE GATE STARTS ITS OWN DAEMON. `start_daemon` runs `docker run --name "$MOUNT_CONTAINER"` with the
+# `rshared` bind at `$WORK/mnt`, and every observation the gate makes — `sample`, `recovery_actions`, the
+# teardown, the log tails — names that container.
+#
+# AND §3 SAYS FIVE OF THE TEN STEPS ARE THE SHIPPED OPERATOR COMMAND, which brings the appliance up out of
+# `docker-compose.projection-alpha.yml` as `projection-alpha-projectiond`, at the SAME `$WORK/mnt`. Those are
+# two different appliances competing for one mount point, and no small edit reconciles them: the gate's daemon
+# runs with `--strict-direct-mount` and a poll interval derived from the contract, and the shipped profile
+# hard-codes `--poll=5s` and passes no such flag, so an appliance driven by the shipped command is not the one
+# Phase 7 measured. Either the gate stops running its own daemon, or §3 stops naming the shipped command —
+# and §4.1 forbids the second, because a contract may not be edited into agreement with its instrument.
+#
+# THIS IS WHY A4 MUST NOT BE FIXED ALONE. While the variable names are wrong, every verb refuses and changes
+# nothing — a safe failure. Correct only the names and the shipped `install` and `start` become live commands
+# aimed at a mount point another daemon is already serving.
+GATE_STARTS_ITS_OWN="$(grep -c 'docker run -d --name "\$MOUNT_CONTAINER"' "$GATE_SOURCE" || true)"
+GATE_DRIVES_SHIPPED="$(grep -cE '^\s*alpha (install|start|stop|upgrade|rollback)\b' "$GATE_SOURCE" || true)"
+if [ "${GATE_STARTS_ITS_OWN:-0}" -ge 1 ] && [ "${GATE_DRIVES_SHIPPED:-0}" -ge 1 ]; then
+  fail "A6 the gate starts its OWN daemon container AND drives the shipped operator command's lifecycle \
+verbs ($GATE_DRIVES_SHIPPED of them) at the same mount point. One mount point cannot have two owners, and \
+until one of those two is removed the five steps §3 defines as the shipped command cannot be measured."
+elif [ "${GATE_DRIVES_SHIPPED:-0}" -ge 1 ]; then
+  pass "A6 the appliance under test is the one the shipped operator command owns, and the gate starts no \
+competing daemon of its own"
+else
+  fail "A6 the gate drives no lifecycle verb of the shipped operator command at all, so §3's S1, S2, S7, S8 \
+and S9 are not the steps the contract defines"
 fi
 
 # ----------------------------------------------------------------------------------------------------------

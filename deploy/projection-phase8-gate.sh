@@ -3014,8 +3014,20 @@ inherit_fingerprint() {
     stat -c "config $server %i" "$(config_dir_for "$server")" >> "$out" 2>/dev/null \
       || echo "config $server UNREADABLE" >> "$out"
   done
-  # AND THE MOUNT POINT ITSELF, which after cycle 1 has been mounted before.
-  stat -c 'mountpoint %i' "$WORK/mnt" >> "$out" 2>/dev/null || echo "mountpoint UNREADABLE" >> "$out"
+  # AND THE MOUNT POINT ITSELF, IDENTIFIED BY THE DIRECTORY THAT CONTAINS IT rather than by whatever happens
+  # to be mounted at it.
+  #
+  # `stat -c %i` ON A MOUNTED PATH RETURNS THE MOUNTED FILESYSTEM'S ROOT INODE, NOT THE DIRECTORY'S, and the
+  # provider-free rehearsal measured exactly that: `mountpoint 12103424006462983` on a cycle that fingerprinted
+  # the path while it was a plain directory, and `mountpoint 1` — the FUSE root — on the cycles that
+  # fingerprinted it while the appliance was serving. Two different questions, compared as though they were
+  # one, and the cycles disagreed for a reason that had nothing to do with inheritance.
+  #
+  # THE RUN ROOT PLUS A FIXED NAME IS THE STABLE FORM OF THE SAME CLAIM. `$WORK` is never recreated inside a
+  # soak and `mnt` is a fixed name under it, so the same run-root inode IS the same mount point — and it says
+  # so whether the appliance happens to be mounted at that instant or not.
+  stat -c 'run-root %i' "$WORK" >> "$out" 2>/dev/null || echo "run-root UNREADABLE" >> "$out"
+  [ -d "$WORK/mnt" ] || echo "mountpoint ABSENT" >> "$out"
   if grep -q UNREADABLE "$out"; then return 1; fi
   return 0
 }
@@ -3100,13 +3112,24 @@ an honest preflight refuses when and only when there is something to refuse" || 
 step_S2_install_start_status() {
   # IDEMPOTENT WHILE THREE MEDIA SERVERS ARE READING, which is the half Phase 6 `AA1`-`AA4` could not ask:
   # every one of its arms drove a fresh install with one unprivileged byte reader.
-  local first second
+  # §3's S2 IS FOUR VERBS AND THIS STEP RAN THREE OF THEM. `install` was never invoked at all, while
+  # `P8-S2-install-idempotent` was recorded from the exit status of a `start` — an id that names one verb
+  # and measures another, which is the shape of measurement this repository refuses everywhere else. It
+  # matters here more than it would elsewhere: the provider-free rehearsal ran the missing verb against a
+  # mount point that had been mounted before and the shipped `install` FAILED, which is a finding about the
+  # product that a soak running only `start` could never have made.
+  local installed first second
+  alpha install; installed="$ALPHA_STATUS"
   alpha start; first="$ALPHA_STATUS"
   alpha start; second="$ALPHA_STATUS"
-  record "P8-S2-install-idempotent:$CYCLE_ID" bool "$( [ "$first" -eq 0 ] && echo 1 || echo 0 )" "" \
-    "the shipped start exited $first with three media servers holding the mount" || true
-  record "P8-S2-start-idempotent:$CYCLE_ID" bool "$( [ "$second" -eq 0 ] && echo 1 || echo 0 )" "" \
-    "a SECOND start over a running appliance exited $second, which is what idempotent means here" || true
+  record "P8-S2-install-idempotent:$CYCLE_ID" bool "$( [ "$installed" -eq 0 ] && echo 1 || echo 0 )" "" \
+    "the shipped install exited $installed over an appliance this soak has already installed once, with \
+three media servers holding the mount; an install that only works when nothing is using it is not idempotent" \
+    || true
+  record "P8-S2-start-idempotent:$CYCLE_ID" bool \
+    "$( [ "$first" -eq 0 ] && [ "$second" -eq 0 ] && echo 1 || echo 0 )" "" \
+    "the shipped start exited $first and a SECOND start over the running appliance exited $second, which is \
+what idempotent means here" || true
   alpha status
   # STATUS IS TRUTHFUL WHEN IT AGREES WITH THE MOUNT. A surface that says ready over a namespace nobody can
   # read is the defect this whole line of work started from, so the two are compared rather than either
