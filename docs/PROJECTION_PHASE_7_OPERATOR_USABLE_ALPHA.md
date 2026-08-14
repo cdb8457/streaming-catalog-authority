@@ -769,6 +769,9 @@ SIX PRODUCED MEASUREMENTS, AND NO FIGURE IN §11 IS ATTRIBUTED TO A CANDIDATE TH
 | **8** | **`f512b5656c26aa3f6bfe97d334f5d6367e0c5336`**, tree `61cf1b6c5443bf5e0358062d2fbf44877dd9ca40` | `fc64a0f7…` over **1,660** files, byte-identical in **both** directions | **the same** `sha256:b7f80288…`, rebuilt from the re-frozen tree | **attempt 7** (§11.3.5) — the first sequence attempt with the provider allowed, and the run that found §11.4 #16 |
 | 9 | `3f3446f19bfce0c9c124de1edd6bf32384e10b88`, tree `6014753b1b99097810df3d20f4f97ce0c4334b34` | `0b509fcb…` over **1,661** files, byte-identical in **both** directions | **`sha256:d534ae139300a3bd731d1998be4d7e444078c405b17fe9e103757d2a91a7e4ac`** | the **first** §9 regression matrix carrying §8.7's daemon — **nine of nine** (§11.15). **NO sequence attempt**: the provider served a disallowed origin for the whole of its life |
 | **10** | **`842b8f2c5d2dc36d6d955e367788f2d5a95ea1f5`**, tree `030a205559f2880545fd7233db38cf05c2f3a28e` | `62be988d…` over **1,662** files, byte-identical in **both** directions | **the same** `sha256:d534ae13…`, rebuilt from the re-frozen tree | the §9 matrix again, the mount-propagation probe on the Unraid kernel, and the offline inventory — §11.15 |
+| 11 | `3ee72eeadf5c4f60b340db8e23fa1378e7bf3d89`, tree `a6a906b7ebafc105726aaef87e0cf66c898971ba` | `538817ad…` over **1,664** files, byte-identical in **both** directions | **the same** `sha256:d534ae13…` | the **first** execution of `go:restart-topology-gate` — **5 pass / 3 fail**, and the run that found §11.4 #17 |
+| 12 | `346bce831bc9aac1c02d0107acd0610bdf62f5f2`, tree `00de26cd7fc425143a53cbffce6189f0be8a952d` | `dc801b7f…` over **1,664** files, byte-identical in **both** directions | **`sha256:216f1ae6f298781b34b0855f1b5201d5db51eec816b8ccf894876797a7a21a46`** | `go:restart-topology-gate` again with §8.7.6's fix — **8 of 8** |
+| **13** | **`8822dae5071c13344822e36f9919f25704168743`**, tree `eb0367547b8b2e692625a5986929a8e0b359494d` | `8cb2b6cf…` over **1,664** files, byte-identical in **both** directions | **the same** `sha256:216f1ae6…`, rebuilt from the re-frozen tree | the **whole ten-gate matrix**, the offline inventories, and the candidate the sequence is owed from — §11.15.3 |
 
 **THE STAGING PROOF IS THE ONE PHASE 6 DID NOT HAVE, AND IT IS SYMMETRIC.** `/mnt/user/appdata/catalog-p7`
 was removed and recreated **empty**, `git archive <commit>` was extracted into it, and a sorted per-file
@@ -800,6 +803,9 @@ source moved twice and the daemon source once, so each is given against the cand
 | **8 — `f512b56`** | `6dbb238d51f6415f` | `ae419db2714d8616` | `08d9e9af01203b34` | `sha256:b7f80288…` |
 | 9 — `3f3446f` | `6dbb238d51f6415f` | **`2d5cef3f68c50455`** | **`93c515dd397e361a`** | **`sha256:d534ae13…`** |
 | **10 — `842b8f2`** | `6dbb238d51f6415f` | **`76f2fe0d2bf5031f`** | `93c515dd397e361a` | `sha256:d534ae13…` |
+| 11 — `3ee72ee` | `6dbb238d51f6415f` | `76f2fe0d2bf5031f` | `93c515dd397e361a` | `sha256:d534ae13…` |
+| 12 — `346bce8` | `6dbb238d51f6415f` | `76f2fe0d2bf5031f` | **`5e8560bfdd1d5e17`** | **`sha256:216f1ae6…`** |
+| **13 — `8822dae`** | `6dbb238d51f6415f` | `76f2fe0d2bf5031f` | **`887d269b77fb82dd`** | `sha256:216f1ae6…` |
 
 **THE OPERATOR DIGEST COLUMN CHANGES SPELLING AT CANDIDATE 5 AND THE SOURCE IT COVERS DOES NOT.** Candidates 2
 to 4 quote `33005b52c9896455`, computed by hand in the session that produced them and not reproducible from
@@ -814,6 +820,15 @@ to `93c515dd397e361a` and the image from `sha256:b7f80288…` to `sha256:d534ae1
 **same image digest** from its own frozen tree and holds the same `projectiond/` tree, which is the check that
 the daemon did **not** move between them: candidate 10 differs from candidate 9 in `deploy/` (a new probe and
 the gate's settle loop), `test/`, `package.json` and `docs/`, and in nothing the daemon is.
+
+**AND THE LAST TWO ROWS ARE THE ONE PLACE IN THIS TABLE WHERE THE `projectiond/` TREE MOVES AND THE IMAGE DOES
+NOT.** Candidate 13 differs from candidate 12 in `docs/` and in one `_test.go` file — the wiring pin §11.11.3's
+eighth tamper bought — and a `_test.go` file is not in the built image, so `git rev-parse HEAD:projectiond`
+moves while `sha256:216f1ae6…` does not. That is the correct answer in both directions and it is stated here
+because a reader comparing the two columns would otherwise be entitled to suspect one of them.
+
+**THE PHASE 7 GATE SOURCE HAS NOT MOVED SINCE CANDIDATE 10**, which is what makes §11.15's matrix figures and
+any later sequence attempt comparable: `76f2fe0d2bf5031f` at candidates 10, 11, 12 and 13.
 
 **THE OPERATOR SOURCE DIGEST IS THE SAME AT EVERY CANDIDATE**, which is what makes §11.7's alpha install
 matrix attributable: the shipped operator command an operator runs did not move at any point in this tranche.
@@ -2037,6 +2052,59 @@ disallowed origin fails at the egress allowlist on its first read, is recorded a
 failed**, and counts toward nothing in either direction. Every provider-free obligation in §4.1 was completed
 while the blocker stood, which is the whole of §11.15, and a recheck-and-launch harness was left waiting so
 that the first rotation back into the allowlist is spent on the sequence rather than on noticing.
+
+### 11.15.3 CANDIDATE 13 — THE TENTH GATE, THE SEVENTEENTH DEFECT, AND WHAT THE FINAL CANDIDATE HAS RUN
+
+**CANDIDATE 13 IS `8822dae5071c13344822e36f9919f25704168743`**, tree `eb0367547b8b2e692625a5986929a8e0b359494d`,
+`projectiond/` tree `887d269b77fb82ddfb9801aee7e7caddb0195bca`, Phase 7 gate source `76f2fe0d2bf5031f` —
+unmoved since candidate 10 — operator source `6dbb238d51f6415f`, staged into an **emptied**
+`/mnt/user/appdata/catalog-p7c13` and proved byte-identical **in both directions** over **1,664** files, both
+manifests hashing to `8cb2b6cfd92e93226bb1474d0f2a0767c710e9e60f550a15f110117410167511`. Image
+`sha256:216f1ae6f298781b34b0855f1b5201d5db51eec816b8ccf894876797a7a21a46`.
+
+**THE ONE THING THE STAGED TREE GAINED AFTERWARDS IS NAMED RATHER THAN LEFT TO BE NOTICED.** The manifest above
+was computed **before** anything was added to the directory, which is the only order in which it means
+anything; a serialising runner script and `npm ci`'s `node_modules` were written into it afterwards. Neither is
+shipped source, no gate reads either, and re-computing the manifest with `node_modules` excluded returns the
+same **1,664** files. It is recorded because "byte-identical in both directions" is a claim about an instant
+and a reader is entitled to know which one.
+
+**THE MATRIX IS NOW TEN GATES AND IT IS TEN OF TEN:**
+
+| Gate | Runs | Result |
+|---|---|---|
+| **`go:restart-topology-gate`** — **NEW, §8.7.4** | 1 | **exit 0 — 8 of 8 assertions**, 67 s. RT1 a graceful stop with a consumer holding an open descriptor left **nothing** of ours; RT2 the daemon named the removal as its own row; RT3 **three sequential generations** measured 1 layer while serving and **0 after every stop**, against the floor the FIRST one took, with the same consumer reading the same digest through all three without being restarted or re-bound; RT4 the control — a `SIGKILL`ed daemon **did** leave one, and `umount -l` cleared it; RT5 the foreign overlay still on top and byte-unmodified, refused in the daemon's own words; RT6 the host's sets identical |
+| `go:mount-propagation-probe` — §8.7.1 | 1 | **exit 0**, 1 s. `floor=1`, `afterNamespaceDestroyed=2`, `afterSelfDetach=2` |
+| `go:recovery-gate:three` | 3 | **exit 0**, 799 s — **RC1 to RC13 in every run, 39 passes, 0 failures** |
+| `go:stale-mount-gate:three` | 3 | **exit 0**, 273 s |
+| `go:serve-death-gate:three` | 3 | **exit 0**, 53 s |
+| `go:mount-truth-gate:three` | 3 | **exit 0**, 64 s |
+| `go:mount-health-gate:three` | 3 | **exit 0**, 277 s |
+| `go:sustained-outage-gate:three` | 3 | **exit 0**, 268 s |
+| `go:publisher-mount-gate` | 1 | **exit 0**, 101 s |
+| `go:rclone-comparison-gate` | 1 | **exit 0**, 127 s |
+| `deploy/projection-alpha-acceptance.sh` | 1 | **exit 0 — 11 of 11 arms**, driving the shipped operator command |
+
+**AND THE TENTH GATE EARNED ITS PLACE BEFORE THE MATRIX EVER RAN.** Its **first** execution, from candidate 11,
+was **5 pass / 3 fail** — and one of the three was §11.4 #17, a defect in the shipped daemon, on the path §8.7
+had just changed. §8.7.6 is the guard; candidate 12 measured **8 of 8** with it; candidate 13 reproduces that.
+**The other two failures were the gate's own** — it wrote its "after" snapshots into the run directory its own
+cleanup contract had just removed, so it compared two absences and reported every set as different. Both are
+recorded because a gate that found a product defect and an instrument defect on the same first run is the
+ordinary case here rather than a surprise.
+
+| | From candidate 13? |
+|---|---|
+| the **ten**-gate regression matrix | **YES** — the table above |
+| the restart-topology gate, 8 of 8, with §8.7.6's fix | **YES** |
+| the mount-propagation probe on the Unraid kernel | **YES** |
+| TypeScript, `gofmt`, `go vet`, every Go package, the focused Phase 2–7 / evidence / custody suites, the full offline inventory — development host | **YES** — **314 selected, 314 passed, 0 failed, 0 required-but-skipped, 673 s** |
+| the same, on **Unraid** | **YES** — §11.15.4 |
+| the nine-tamper proof that §8.7's pins bite, **including the one that did not** | **YES** — §11.11.3 |
+| **one full `npm run go:phase7-gate` — a six-arm sequence** | **NO** |
+| **`npm run go:phase7-gate:three` — the sequence this tranche closes on** | **NO. STILL NOT ONCE.** |
+
+**AND THE LAST TWO ROWS ARE STILL THE TRANCHE**, for the reason §11.15.2 gives and for no other.
 
 ## 12. The readiness decision
 
