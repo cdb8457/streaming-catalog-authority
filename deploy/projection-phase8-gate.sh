@@ -1377,13 +1377,24 @@ cat > "$WORK/out/probe-reachable.cjs" <<'PROBEREACHABLE'
 //   exit 0  a connection was ESTABLISHED  -> the resolver is reachable, which is the FAILURE
 //   exit 1  refused, reset or timed out   -> loopback only, which is the property
 //   exit 2  the host could not be resolved at all, so nothing was measured
+//
+// THE NAME IS RESOLVED FIRST, EXPLICITLY, AND THAT IS THE DIFFERENCE BETWEEN A PROPERTY AND A COINCIDENCE.
+// Inferring "could not be resolved" from the connect error was a guess: Docker's embedded DNS can answer a
+// failed lookup with EAI_AGAIN rather than ENOTFOUND, and this program mapped everything that was not
+// ENOTFOUND to 1 — "refused at the transport", the PASSING verdict. So a subject whose name did not resolve
+// at all would have been recorded as loopback-only, having measured nothing. That became a live risk the
+// moment §13 moved the subject onto the network its own compose profile declares.
 const net = require('node:net');
+const dns = require('node:dns');
 const [, , host, portRaw] = process.argv;
-const socket = net.connect({ host, port: Number(portRaw) });
-socket.setTimeout(4000);
-socket.on('connect', () => { socket.destroy(); process.exit(0); });
-socket.on('timeout', () => { socket.destroy(); process.exit(1); });
-socket.on('error', (error) => process.exit(error && error.code === 'ENOTFOUND' ? 2 : 1));
+dns.lookup(host, (lookupError) => {
+  if (lookupError) process.exit(2);
+  const socket = net.connect({ host, port: Number(portRaw) });
+  socket.setTimeout(4000);
+  socket.on('connect', () => { socket.destroy(); process.exit(0); });
+  socket.on('timeout', () => { socket.destroy(); process.exit(1); });
+  socket.on('error', (error) => process.exit(error && error.code === 'ENOTFOUND' ? 2 : 1));
+});
 PROBEREACHABLE
 
 cat > "$WORK/out/leakcheck.sh" <<'LEAK'
@@ -2291,8 +2302,21 @@ echo "  the resolver answers on the shared loopback and refuses an unauthenticat
 
 # THE RESOLVER IS NOT REACHABLE FROM ANYWHERE ELSE, MEASURED AT THE TRANSPORT. A resolver anything on the
 # network could reach is a credential oracle: it mints CDN links for the operator's account to whoever asks.
+# THE PROBE RUNS ON THE APPLIANCE'S OWN NETWORK, AND §13 IS WHY IT HAD TO MOVE.
+#
+# The subject is no longer a container this gate runs on the gate network — it is the appliance the shipped
+# compose profile brings up, on the network THAT profile declares. A probe left on the gate network would have
+# failed to RESOLVE the name at all, and `probe-reachable.cjs` returns 2 for that: "the host could not be
+# resolved, so nothing was measured", which this gate correctly treats as fatal rather than as a pass. It
+# would have died in setup, on a wiring change, having measured nothing — the exact shape §11.3 is full of.
+#
+# AND THE APPLIANCE'S OWN NETWORK IS THE STRONGER PLACE TO ASK FROM, not a weaker one. The claim is that the
+# resolver binds loopback and is therefore unreachable from anything that is not sharing the daemon's network
+# namespace. A sibling on the SAME network that still cannot reach it is that claim; a probe from a different
+# network would be measuring Docker's inter-bridge isolation instead, and would pass even if the resolver were
+# bound to every interface.
 set +e
-docker run --rm --network "$NETWORK" -v "$PWD:/workspace:ro" -w /workspace \
+docker run --rm --network "$ALPHA_NETWORK" -v "$PWD:/workspace:ro" -w /workspace \
   -e npm_config_update_notifier=false "$NODE_IMAGE" \
   node "/workspace/$REL/out/probe-reachable.cjs" "$MOUNT_CONTAINER" "${RESOLVER_PORT}" >/dev/null 2>&1
 resolver_reach=$?

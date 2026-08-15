@@ -850,6 +850,60 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+step "C8 — the appliance is REACHABLE BY NAME from the network its own profile declares"
+# ----------------------------------------------------------------------------------------------------------
+# THIS IS A WIRING ASSERTION AND IT IS HERE BECAUSE §13 MOVED THE SUBJECT ONTO A DIFFERENT NETWORK.
+#
+# The soak proves the TorBox resolver is loopback-only by trying to reach it from a sibling container and
+# requiring a REFUSAL at the transport. `probe-reachable.cjs` distinguishes three outcomes: connected (0),
+# refused or timed out (1), and **the host could not be resolved at all (2)** — and the gate treats 2 as
+# fatal, because a probe that could not find its target has measured nothing. While the gate ran a daemon of
+# its own on the gate network, the name resolved there. It no longer does: the appliance is on the network
+# `docker-compose.projection-alpha.yml` declares. **A soak would have died in setup, on a name lookup,
+# having measured nothing** — which is the exact shape of five entries in §11.3's ledger.
+#
+# SO WHAT IS ASSERTED IS THE DISTINCTION ITSELF: from the appliance's own network, its name RESOLVES (not 2)
+# and a port nothing is listening on is REFUSED (1). No resolver is involved and none is simulated; this is
+# about whether the question can be asked at all.
+PROBE_CJS="$WORK/out/probe-reachable.cjs"
+awk '/^cat > "\$WORK\/out\/probe-reachable.cjs" <<.PROBEREACHABLE.$/{inside=1;next} inside&&/^PROBEREACHABLE$/{exit} inside{print}' \
+  "$GATE_SOURCE" > "$PROBE_CJS"
+if [ ! -s "$PROBE_CJS" ]; then
+  fail "C8 the gate's own reachability probe could not be lifted out of its bytes, so nothing was rehearsed"
+else
+  NODE_IMAGE_REHEARSAL="node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32"
+  set +e
+  docker run --rm --network "$ALPHA_PROJECT" -v "$WORK/out:/out:ro" \
+    -e npm_config_update_notifier=false "$NODE_IMAGE_REHEARSAL" \
+    node /out/probe-reachable.cjs "$ALPHA_CONTAINER" 9. >/dev/null 2>&1
+  PROBE_BAD_PORT=$?
+  docker run --rm --network "$ALPHA_PROJECT" -v "$WORK/out:/out:ro" \
+    -e npm_config_update_notifier=false "$NODE_IMAGE_REHEARSAL" \
+    node /out/probe-reachable.cjs "$ALPHA_CONTAINER" 8292 >/dev/null 2>&1
+  PROBE_CLOSED=$?
+  docker run --rm --network "$ALPHA_PROJECT" -v "$WORK/out:/out:ro" \
+    -e npm_config_update_notifier=false "$NODE_IMAGE_REHEARSAL" \
+    node /out/probe-reachable.cjs "no-such-appliance-$$" 8292 >/dev/null 2>&1
+  PROBE_UNKNOWN=$?
+  set -e
+  if [ "$PROBE_CLOSED" -eq 1 ]; then
+    pass "C8 the appliance resolves by name from its own network and a closed port is REFUSED at the \
+transport, which is the outcome the soak's loopback-only assertion requires"
+  else
+    fail "C8 probing a closed port on the appliance from its own network returned $PROBE_CLOSED, where 1 is \
+'refused' and 2 is 'the name could not be resolved and nothing was measured'"
+  fi
+  if [ "$PROBE_UNKNOWN" -eq 2 ]; then
+    pass "C8 CONTROL: a name that does not exist returns 2 — 'nothing was measured' — so the check above is \
+a resolution that worked rather than a probe that cannot tell the difference"
+  else
+    fail "C8 CONTROL: an unknown container name returned $PROBE_UNKNOWN instead of 2, so C8 cannot \
+distinguish a refusal from a failed lookup"
+  fi
+  echo "  (a malformed port returned $PROBE_BAD_PORT; it is reported and asserted on by nothing)"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 step "C6 — a FOREIGN overlay on top is refused at shutdown, left mounted and byte-unmodified"
 # ----------------------------------------------------------------------------------------------------------
 # THE SAFETY BOUNDARY, REHEARSED IN THE ORDINARY PATH. §8.7's removal is authorised by an IDENTITY: the one
