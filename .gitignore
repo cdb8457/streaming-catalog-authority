@@ -99,3 +99,26 @@ deploy/ci/acceptance/playwright-report/
 # credential — but an interrupted run leaves a scratch tree, and nothing here belongs where a bare
 # `git add -A` reaches.
 .projection-consumer-attachment-check/
+
+# THE ROOTS OF EVERY GATE THIS LINE OF WORK ADDED AFTER THE ONES ABOVE, AND THE OMISSION WAS INCIDENTAL
+# RATHER THAN DELIBERATE.
+#
+# Each holds the same two things the reliability loop's root does: an interrupted run's scratch tree, and an
+# `evidence/` directory that is kept ON PURPOSE — verdict logs, a failing arm's daemon log, a decoder's
+# stderr — because the run directory the cleanup contract deletes is no place for the record of what was
+# measured. The Phase 7 and Phase 8 gate roots also hold a 0600 copy of the operator's two secret files for
+# the length of a run.
+#
+# NOTHING OF THE KIND WAS EVER TRACKED, and that was luck rather than structure: these directories simply
+# did not exist on a machine where anybody ran `git add -A`. This makes it structural.
+.projection-phase7-gate/
+.projection-phase8-gate/
+.projection-phase8-rehearsal/
+.projection-alpha-acceptance/
+.projection-restart-topology-gate/
+.projection-recovery-gate/
+.projection-stale-mount-gate/
+.projection-serve-death-gate/
+.projection-mount-truth-gate/
+.projection-mount-health-gate/
+.projection-sustained-outage-gate/
