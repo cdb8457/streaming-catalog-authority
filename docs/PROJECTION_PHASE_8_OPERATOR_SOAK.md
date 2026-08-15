@@ -1,9 +1,14 @@
 # Projection Phase 8 — the operator soak
 
 **Status: NO-GO — §2 to §10 are the contract and every one of them was written and committed BEFORE the first
-measured run. §11 is the run record and §12 is the decision.** No threshold in §4 may move after the first
+measured run. §11 is the run record, §12 is the decision as it stood at commit `f482f31`, §13 is the
+superseding design and §14 is the current decision.** No threshold in §4 may move after the first
 measured run; a clause that measures FALSE is recorded as **superseded**, with what it said kept whole, exactly
 as Phase 4 §4.1, Phase 5 §3.3 and Phase 7 §8.4.4 did — never edited into agreement with a result.
+
+**§13 IS A DESIGN SECTION AND IT WAS COMMITTED BEFORE ANYTHING WAS MEASURED AGAINST IT**, which is the same
+rule §2–§10 were written under. It moves no threshold, shortens no cycle and changes no step's meaning; it
+takes the ownership decision §12 refused to take without authority, and it records what that costs.
 
 **What Phase 8 is, in one sentence.** Phase 7 proved the appliance survives **six deliberate faults** with three
 real media servers attached; Phase 8 asks whether it survives **being used**, over and over, by an operator who
@@ -325,6 +330,13 @@ defects in this tranche's own instrument and are repaired here except #11; numbe
 **shipped product** and is recorded rather than repaired, because §9 changes no shipped product source and a
 change there would re-open Phase 7's whole matrix.
 
+**THE TWO WORDS "EXCEPT #11" AND "RECORDED RATHER THAN REPAIRED" ARE THE STATE AT COMMIT `f482f31` AND ARE
+KEPT.** **§13 repairs both**, under an authority that did not exist when this paragraph was written: #11 by
+making the shipped operator command the sole owner of the daemon and the mount point, and #14 by moving the
+ownership record out of the namespace it governs. §13.7 is the re-run obligation that repairing #14 incurs,
+and it is honoured rather than waived. **Nothing above this paragraph is edited to agree with that** — the
+ledger is what fourteen provider-free findings looked like when they were found.
+
 | # | Where | What, and what it would have cost |
 |---|---|---|
 | 1 | gate, closing summary | `P8_ARMS_PER_RUN` read three lines from the end and published by nothing. Under `set -u`, **a soak in which every cycle passed and the closure check itself passed would still have exited non-zero** — on a name belonging to a tranche that has arms. Phase 8 has cycles |
@@ -433,7 +445,13 @@ this tranche measures none, claims none and simulates none.
 terms, §11.1's unmoved operator and Phase 7 gate digests are how a reader checks that nothing it measures has
 changed, and this section is where a reader can see that it was kept.
 
-## 12. The readiness decision
+## 12. The readiness decision — **as it stood at commit `f482f31`, and §13 is what changed**
+
+**THIS SECTION IS KEPT WHOLE AND IS NOT EDITED.** It is the decision this tranche took when the blocker was
+unresolved, and the thing it refused to do — take the ownership decision quietly, at the end of a session,
+and then declare a GO from the instrument it produced — is exactly what §13 does not do either: §13 was
+written, reviewed and committed **before a single soak was measured against it**. The verdict below is
+superseded by §14; every word of its reasoning stands.
 
 # **NO-GO.**
 
@@ -506,3 +524,198 @@ appliance under repetition. **A gate that has never run a soak has measured no s
 §12.4 ships is still exactly as rough as that document says it is, and the one new thing this tranche knows
 about the product — that `install` fails on the second day — is a finding it has recorded rather than a
 problem it has solved.
+
+## 13. The superseding design — **one owner, and it is the shipped operator command**
+
+**THIS SECTION WAS WRITTEN AND COMMITTED BEFORE ANYTHING WAS MEASURED AGAINST IT**, in exactly the way §2 to
+§10 were written before anything was built against them, and for the same reason: §12 refused to take this
+decision quietly at the end of a session and then declare a GO from the instrument it produced. **NO
+THRESHOLD IN §4 MOVES. NO CYCLE IS SHORTENED. §3's ten steps keep their meanings and their order.** What
+changes is who owns the daemon, and three things about the product that had to change for that to be honest.
+
+### 13.1 The decision, in one sentence
+
+**`deploy/projection-alpha.sh` — the shipped operator command §3 already names at S1, S2, S7, S8 and S9 — is
+the SOLE owner of the subject `projectiond` daemon and of the mount point it serves.** The gate prepares
+isolated inputs, pre-attaches the three consumers, invokes that command, observes it, injects the one
+declared fault and verifies the results. **It runs no daemon of its own at that mount point, and it may not.**
+
+### 13.2 What is superseded, kept whole rather than erased
+
+**THE TWO-OWNER DESIGN IS SUPERSEDED AND IS NOT DELETED.** §11.3 #11 states it exactly, §12 states its
+consequences exactly, and the rehearsal's `A4` and `A6` are the two assertions that measured it. Read as
+history it is correct in every particular: the gate ran its own `projectiond` container with an `rshared`
+bind at `$WORK/mnt`, and §3 simultaneously defined five of the ten steps as a command whose own compose
+profile would bring an appliance up at the same path. **One mount point cannot have two owners**, and §12's
+refusal to fix half of it — to correct the variable names while both owners existed, turning a safe refusal
+into a live `install` aimed at a mount point another daemon was serving — was right.
+
+**§9 IS SUPERSEDED BY THIS SECTION AND SAYS SO HERE RATHER THAN BEING REWRITTEN.** That section said *"Phase 8
+changes no shipped product source by contract"* and named what must happen if a measured cycle forced one:
+Phase 7's `go:phase7-gate:three` **and** the ten-gate matrix are re-frozen and re-run from the final
+candidate, and §11 records both. **A measured cycle did force one — three, in fact — and §13.4 is the list
+and §13.7 is the re-run obligation being honoured rather than waived.**
+
+### 13.3 What the gate may and may not do, stated as rules rather than as intentions
+
+| The gate MAY | The gate MAY NOT |
+|---|---|
+| create its own isolated run root, database, manifest, cache, media root and configuration | mount anything at the subject mount point itself |
+| pre-attach the three real media servers before the first mount, and never touch them again | start, stop, restart, `docker run`, `docker stop` or `docker rm` the subject daemon by any route other than a shipped verb |
+| invoke `preflight`, `install`, `start`, `status`, `stop`, `reset-recovery`, `upgrade` and `rollback` | pass the shipped command an environment it does not define, or configure the daemon by any path the product does not expose |
+| observe the daemon's own status surface, log and mount rows from outside the process | adopt, replace or stop an appliance it did not install |
+| inject S5's declared fault — the mount removed from beneath a living daemon, at its own mount point | inject any fault §3 does not declare, or `SIGKILL` anything |
+
+**THE SUBJECT'S CONTAINER NAME IS THE OPERATOR'S AND CANNOT CARRY A RUN ID.** `docker-compose.projection-alpha.yml`
+fixes `container_name` at `projection-alpha-projectiond` because an operator's appliance has one name. **So a
+gate that finds that name taken REFUSES TO RUN** rather than stopping, replacing or adopting what is there —
+the same refusal the provider-free rehearsal already makes, for the same reason, and it is a safety rule
+before it is a hygiene one.
+
+**AND THE DEAD SECOND OWNER WAS DELETED RATHER THAN LEFT UNREACHABLE.** `corpse_is_stale`, `start_blocker`
+and `stop_blocker` were carried over whole from Phase 7 and never called by this gate; `start_blocker` binds
+`rshared` at exactly the subject mount point. A rule that holds only because nothing calls the code is a rule
+one call undoes, and an audit reading these bytes cannot tell an unreachable second owner from a reachable
+one. The injector still exists where it is used and measured, at `deploy/projection-recovery-gate.sh` `RC4`.
+
+### 13.4 The three shipped-product changes, and why each is safe
+
+**THESE ARE PRODUCT CHANGES, NOT INSTRUMENT CHANGES, AND THAT IS WHY §13.7 EXISTS.** Each was forced by the
+decision above; each preserves the appliance an operator who sets nothing already had.
+
+**1 — THE POLL INTERVAL BECOMES A BOUNDED, VALIDATED OPERATOR INPUT.** `PROJECTIOND_ALPHA_POLL`, whole
+seconds, 1s to 60s, **default `5s` — the value this profile has always hard-coded**. `preflight` validates it
+and refuses anything else, so an operator who mistypes it learns from the verb that changes nothing rather
+than from a container that restarts forever.
+
+*Why it had to exist.* Every readiness budget this product publishes is derived as **one pointer poll plus one
+read deadline**, so the interval is one half of a relationship rather than a free parameter. §4 imports
+`RECOVERY_READY_BUDGET_MS` from Phase 7, which derives it from Phase 6's constants at a **2s** poll. An
+appliance that could not be told to run at 2s could not be measured against those budgets — which is the
+whole reason the gate ever ran a daemon of its own. **The soak runs the appliance at 2s and says so here**;
+the number is not new, it is the one Phase 7 measured, and it now reaches the daemon through a shipped,
+validated input instead of through a second daemon the operator never gets.
+
+**2 — `--strict-direct-mount` BECOMES PART OF THE SHIPPED PROFILE, UNCONDITIONALLY.** It refuses to fall back
+to the `fusermount` suid helper when a direct mount fails.
+
+*Why it is safe, and why it is not an environment switch.* **The runtime stage of the shipped image is
+distroless and contains no `fusermount` binary at all**, so the fallback this flag forbids could never have
+succeeded in this image: without the flag, a direct mount that failed for any reason would try a helper that
+is not there and produce a failure naming the wrong cause. It is also what **every arm of Phase 7 measured**,
+and an appliance claimed on Phase 7's evidence has to be the appliance Phase 7 drove. It is not an
+environment switch because a Compose `command:` list cannot conditionally omit an element: an empty string is
+a positional argument, and Go's flag parser stops at the first one — so a "disabled" spelling would silently
+drop every flag after it. A flag that can be turned off by accident is worse than one that cannot be turned
+off at all.
+
+**3 — THE OWNERSHIP MARKER LEAVES THE NAMESPACE IT GOVERNS.** This is the repair of §11.3 **#14**, and it is
+the one product defect this tranche found rather than caused.
+
+*What was wrong.* `OWNED_DIRS` included the **mount point**, and `install` wrote `.projection-alpha/owned`
+into every owned directory. On day one that lands on the host. The moment the appliance starts, the read-only
+FUSE namespace is mounted **over** it: the marker is invisible, the `[ ! -e ... ]` guard is therefore true,
+and the write is aimed at a filesystem that refuses every mutation syscall. `Read-only file system`, `set
+-e`, exit 1 — **for an appliance that was working perfectly.** Reproduced on the real host, in cycles 2 and 3
+of both of the rehearsal's runs.
+
+*The repair, and every property of it is there because its absence is a real failure mode.*
+
+| Property | Why |
+|---|---|
+| a single durable **ownership record** in an operator-state directory, default `<cache>/.projection-alpha-state/`, override `PROJECTIOND_ALPHA_STATE_DIR` | the cache is the one path the contract already requires to be durable and writable, and it is **never mounted over**. It is a DIRECTORY because the probe cache sweeps loose files out of its own root at every daemon startup and skips directories — the same defect that once ate the recovery ledger |
+| **refused** if it is inside the mount point, the media root or the manifest directory | a record kept where the appliance mounts is the defect itself, restated as configuration |
+| **0700** on the directory, **0600** on the file | it names which host paths this appliance manages: not a secret, and nobody else's business |
+| **atomic** — same-directory temp plus rename | a truncated record reads as foreign and would refuse the next install of a perfectly good appliance |
+| **exact** ownership: the recorded mount and cache must equal this installation's, byte for byte | read with a `while read` rather than `awk`, because rebuilding a record with `awk` normalises runs of whitespace and would call a path with two spaces in it foreign |
+| three answers — **ours**, **absent**, **foreign** — and only `absent` may be adopted | "not ours" and "nobody's" are different states. A command that collapsed them would either refuse a correct reinstall or put its name on another appliance's directories |
+| a v1 installation is **migrated**, never refused: its per-directory markers are still accepted, and `install` writes the record every time | an operator who upgrades this script must not have to reinstall |
+| the **mount point gets no marker at all**, and nothing is ever written into or unmounted from the projected tree to recover one | the two things this appliance refuses on principle are writing into the read-only namespace and detaching the operator's mount |
+
+**THE MOUNT POINT LOSES NOTHING BY LOSING ITS MARKER.** Ownership of it is established by the ownership
+record, by a live `fuse.projectiond` mount at exactly that path — this product's own filesystem answering,
+which is a stronger statement than any file — or by the directory being empty. All three already existed.
+
+### 13.5 What this changes in §3, which is nothing
+
+**S1 IS STILL `preflight`. S2 IS STILL `install`, `start`, `start`, `status`. S7 IS STILL `stop` THEN
+`start`. S8 IS STILL `reset-recovery`. S9 IS STILL `upgrade` THEN `rollback`.** They are now invocations that
+can succeed instead of invocations that exit REFUSED, which is the entire difference. **§4.1's clause 2 —
+every cycle runs all ten steps — becomes satisfiable for the first time**, and #14's repair is what makes
+S2's four verbs able to succeed on cycle 2 rather than three of them.
+
+**THE SETUP BRINGS THE APPLIANCE UP THROUGH `install` AND `start` BEFORE CYCLE 1, AND THAT IS DECLARED HERE
+RATHER THAN NOTICED LATER.** Everything between the consumers attaching and the first cycle — three real
+libraries scanned, generation 2 published, the operator's object proved decodable — needs a namespace to
+read. So cycle 1's S2 runs the four verbs over an appliance that is **already serving**, which is exactly the
+question §3 wrote S2 to ask, and makes cycle 1's S2 the same experiment as cycles 2 and 3's rather than a
+weaker one.
+
+**AND THE RESOLVER MOVES WITH THE DAEMON, WHICH IS A CONSEQUENCE NOBODY WOULD PREDICT FROM THE PARAGRAPH
+ABOVE.** The loopback-only TorBox resolver runs *inside the daemon's network namespace* — that is what makes
+it unreachable from anything else on the host — and a namespace dies with the container that owns it. While
+the gate ran a daemon the shipped verbs could not touch, this was invisible; the moment the operator command
+became the sole owner, a shipped `stop` became the death of the resolver and a shipped `start` a namespace
+the old resolver could never rejoin. So S7's stop and start carry the resolver, and `upgrade` and `rollback`
+**ask** whether the daemon container was replaced rather than assuming either answer.
+
+### 13.6 Phase 7's safety properties are preserved, and the regressions that say so
+
+**NOTHING IN §13 RELAXES A SAFETY PROPERTY, AND THE LIST IS EXPLICIT** because "we did not weaken anything" is
+a claim and not a measurement. Only the exact recorded `mountinfo` row may be detached; type, count and shape
+are never trusted; the expected Unraid underlay and any foreign overlay are never unmounted; there is no
+broad or lazy unmount of anything but this run's own mount point; the mount layer maximum stays **1**;
+recovery stays bounded and single-flight; the lockout stays durable and is cleared only by a human typing
+`reset-recovery`; and `R5`'s refusal is unchanged. **None of them is touched by this section**, which is
+itself the point: the redesign moves ownership, not policy.
+
+**THE NEW REGRESSIONS, POSITIVE AND NEGATIVE, AND WHERE EACH LIVES:**
+
+| What | Where | Kind |
+|---|---|---|
+| sole ownership: exactly one appliance container serves the mount point, no other container projects at it, exactly one layer of ours above the floor | rehearsal part C, every cycle | positive |
+| the gate binds the projected path into no container of its own, drives the shipped verbs, and watches the container the shipped profile names | rehearsal `A6` | positive |
+| the same search finds a second owner when one is put back | rehearsal `A6b` | **control** |
+| the profile expresses the poll interval and the strict flag, and the gate hands over the interval its budgets assume | rehearsal `A7` | positive |
+| ownership is recorded outside the namespace it governs and no marker is written into the mount point | rehearsal `A8`, acceptance `AA12` | positive |
+| **`install` succeeds over a SERVING appliance** — #14 | rehearsal part C cycles 2 and 3, acceptance `AA12` | positive |
+| `stop`/`start` with the consumers untouched; `upgrade`/`rollback` honouring the recorded target | rehearsal part C, every cycle | positive |
+| a **v1** marker left inside the mount point before the first mount, so the cycles are a migration | rehearsal part C setup | positive |
+| an ownership record naming a **different** installation is refused | rehearsal `C1a`, acceptance `AA13` | **control** |
+| an ownership record this version cannot read is refused | rehearsal `C1a` | **control** |
+| the same record naming **this** installation is accepted | rehearsal `C1a`, acceptance `AA13` | **control for the controls** |
+| seven invalid bounded inputs refused — a non-duration, `0s`, above the ceiling, milliseconds, a relative state directory, one inside the mount point, one inside the media root | rehearsal `C1a`, acceptance `AA14` | **controls** |
+| a valid poll interval inside the bound is accepted | rehearsal `C1a`, acceptance `AA14` | **control for the controls** |
+| a valid environment with three consumers attached PASSES `preflight`, so every refusal above is attributable | rehearsal `C1a` | **control for the controls** |
+| three consumers pre-attached before the first mount, never restarted or re-bound | rehearsal part C, gate `P8-consumers-pre-attached` | positive |
+
+**EVERY CONTROL ABOVE MUST FAIL FOR ITS OWN REASON.** A control that passes because the environment was
+broken in some other way proves nothing, which is why `C1a` runs **after** the consumers are attached — before
+them, `preflight` refuses everything for a reason that has nothing to do with the input under test, and all
+seven refusals would have been vacuous.
+
+### 13.7 What must be re-run, because shipped source moved
+
+**THIS IS §9's OWN INSTRUCTION BEING FOLLOWED, NOT AN EXCEPTION TO IT.**
+
+1. **The Phase 6 alpha install/recovery matrices** (`npm run go:alpha-acceptance`, and the recovery gate),
+   because the operator command and its profile are what they measure. Phase 6 §11.1's `OPERATOR SOURCE
+   DIGEST` **moves**, and the pin in `test/projection-bounded-recovery.ts` refuses the old value until the
+   record is updated **after** the re-run — never before it, and never by editing the digest to match.
+2. **Phase 7's `npm run go:phase7-gate:three` and the ten-gate regression matrix**, re-frozen and re-run from
+   the **final** candidate, because that tranche's GO rests on the same operator source.
+3. **The provider-free rehearsal, the restart-topology gate, and the full offline inventory**, before any
+   provider-facing attempt is spent.
+
+**AND THE ORDER MATTERS: EVERY ONE OF THESE COMES BEFORE THE FIRST SOAK.** §11.2's lesson is that an
+instrument you cannot run without the provider is one you cannot debug, and it was right by a margin nobody
+estimated; the same logic applies to a product change nobody has run.
+
+### 13.8 What §13 does not claim
+
+- **It does not fix Phase 7's rough edges.** §12.4 of that document still ships. #14 was a Phase 8 finding
+  about a Phase 6 command, and repairing it repairs exactly that.
+- **It does not change what Phase 8 measures.** Every threshold, every step, every cycle count and every
+  nonclaim in §2 to §10 is untouched, and §4.2's NO-GO list is unchanged.
+- **It is not evidence.** Nothing in this section is a measurement. §11 is where measurements go and §14 is
+  where the verdict goes, and neither may cite this section as a result.

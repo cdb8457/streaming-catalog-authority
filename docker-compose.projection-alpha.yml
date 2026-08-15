@@ -22,6 +22,15 @@
 #                                 and never a value: there is no variable in this contract that holds one,
 #                                 so an environment that leaked could not leak one
 #
+# ...AND THE TWO OPTIONAL ONES, WHICH HAVE DEFAULTS BECAUSE THEIR DEFAULTS ARE WHAT THIS PROFILE ALREADY DID:
+#
+#   PROJECTIOND_ALPHA_POLL          how often the daemon re-reads the pointer. Whole seconds, bounded, and
+#                                 validated by the operator command; `5s` if unset, which is what this file
+#                                 has always hard-coded
+#   PROJECTIOND_ALPHA_STATE_DIR     where this appliance records which host paths it owns. It is not read by
+#                                 the daemon and appears nowhere in this file, because it must never be
+#                                 anywhere the daemon mounts over — which is exactly the defect it repairs
+#
 # WHY IT IS PRIVILEGED-ISH. A FUSE mount needs /dev/fuse and CAP_SYS_ADMIN, and it needs bidirectional mount
 # propagation for the mount to be visible to other containers on the host. Those are granted explicitly here
 # rather than assumed by the image, which runs non-root by default. Everything else is dropped.
@@ -49,7 +58,29 @@ services:
     tmpfs: ["/tmp:size=16m"]
     command:
       - --config=/etc/projectiond/config.json
-      - --poll=5s
+      # THE POLL INTERVAL IS THE ONE RUNTIME NUMBER AN OPERATOR MAY SET, AND IT IS BOUNDED RATHER THAN FREE.
+      #
+      # WHY IT IS AN INPUT AT ALL. Every readiness budget this product publishes is derived as "one pointer
+      # poll plus one read deadline", so the interval is one half of a relationship rather than a free
+      # parameter — and an appliance that could not state it could not be measured against the budgets its own
+      # closed tranches derive. Phase 8 found that out the hard way: its gate configured a daemon at the
+      # interval its budgets assume and this profile could not express it, so the gate ran a SECOND daemon and
+      # one mount point acquired two owners. `deploy/projection-alpha.sh preflight` validates the value and
+      # refuses anything that is not whole seconds inside a bound.
+      #
+      # THE DEFAULT IS WHAT THIS PROFILE HAS ALWAYS CARRIED. An operator who sets nothing gets `5s`, which is
+      # the appliance Phase 6 closed on and Phase 6 §11's evidence describes.
+      - --poll=${PROJECTIOND_ALPHA_POLL:-5s}
+      # MOUNT BY SYSCALL, OR REFUSE — NEVER QUIETLY THROUGH A HELPER THAT IS NOT IN THIS IMAGE.
+      #
+      # The runtime stage of the shipped image is distroless and contains no `fusermount` binary at all, so
+      # the fallback this flag forbids could never have succeeded here; without the flag a direct mount that
+      # failed for any reason would try the helper, not find it, and produce a mount failure that names the
+      # wrong cause. With it, the failure is the real one and it is immediate.
+      #
+      # IT IS ALSO WHAT PHASE 7 MEASURED. Every arm of that tranche's gate ran the daemon with this flag, and
+      # an appliance claimed on Phase 7's evidence has to be the appliance Phase 7 drove.
+      - --strict-direct-mount
       # THE TWO SUPERVISORS, SPELLED IN THE PROFILE RATHER THAN IN AN ENVIRONMENT VARIABLE.
       #
       # An operator reading this file must be able to see that the daemon will ACT on a fault. Recovery is off

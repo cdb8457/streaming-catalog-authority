@@ -58,6 +58,44 @@ CONTAINER="projection-alpha-projectiond"
 MARKER_NAME=".projection-alpha/owned"
 UPGRADE_RECORD_NAME=".projection-alpha-previous-image"
 
+# ----------------------------------------------------------------------------------------------------------
+# THE OPERATOR STATE DIRECTORY, AND IT EXISTS BECAUSE OF A MEASURED DEFECT IN THIS FILE
+# ----------------------------------------------------------------------------------------------------------
+# WHAT WENT WRONG, IN THE WORDS OF THE RUN THAT FOUND IT. The Phase 8 provider-free rehearsal drove this
+# command through three inheriting cycles on the real host and `install` FAILED on cycles 2 and 3 with
+# `Read-only file system`. `OWNED_DIRS` included the MOUNT POINT and `install_appliance` wrote a marker into
+# every owned directory. On day one the mount point is a plain directory and the marker lands on the host.
+# The moment the appliance starts, the read-only FUSE namespace is mounted OVER that directory: the marker is
+# hidden, the `[ ! -e ... ]` guard is therefore true, and the write is aimed at a filesystem that refuses
+# every mutation syscall before it reaches this process. `set -e`, exit 1 — for an appliance that was working
+# perfectly. Phase 8 §11.3 #14 is the ledger entry; this block is its repair.
+#
+# WHY A SEPARATE DIRECTORY RATHER THAN A CLEVERER GUARD. Every guard that could see through the mount would
+# have to either write into the projected media tree or unmount it to look underneath, and BOTH are actions
+# this appliance refuses on principle: the projected namespace is read-only by construction and the operator's
+# mount point is the one thing no automatic path here may detach. So the ownership metadata moves OUT of the
+# namespace it governs, to a place the appliance's own filesystem can never cover, and the mount point stops
+# carrying a marker at all.
+#
+# WHERE IT LIVES BY DEFAULT, AND WHY IT IS A DIRECTORY UNDER THE CACHE. The cache is the one path the contract
+# already requires to be durable and writable, and it is never mounted over. It is a DIRECTORY for the same
+# reason `MARKER_NAME` is: the probe cache sweeps loose files out of its own root at every daemon startup and
+# skips directories.
+STATE_DIR_NAME=".projection-alpha-state"
+OWNERSHIP_RECORD_NAME="owned"
+# THE RECORD FORMAT VERSION. v1 is the per-directory marker file this command has always written; v2 is the
+# record below. A v1 installation is READ and migrated, never refused — an operator who upgrades this script
+# must not have to reinstall.
+OWNERSHIP_RECORD_VERSION="2"
+
+# THE BOUNDED RUNTIME INPUTS. Each is OPTIONAL, each has a default that is exactly what this appliance already
+# shipped, and each is validated here rather than by the daemon's own flag parser — because a daemon that
+# refuses its configuration at startup is a container that restarts forever and an operator who finds out from
+# a log rather than from `preflight`.
+POLL_DEFAULT="5s"
+POLL_MIN_SECONDS=1
+POLL_MAX_SECONDS=60
+
 VERB="${1:-}"
 
 say()  { printf 'projection-alpha: %s\n' "$*"; }
@@ -90,6 +128,12 @@ PROJECTIOND_ALPHA_MOUNT PROJECTIOND_ALPHA_SECRETS_DIR"
 REQUIRED_FILES="PROJECTIOND_ALPHA_CONFIG"
 REQUIRED_OTHER="PROJECTIOND_ALPHA_IMAGE"
 
+# ...AND THE OPTIONAL ONES, WHICH ARE A DIFFERENT KIND OF VARIABLE AND ARE LISTED SEPARATELY SO THEY CANNOT BE
+# CONFUSED WITH ONE. An absent required variable is a refusal; an absent optional one is the shipped default.
+# NEITHER OF THEM MAY HOLD A CREDENTIAL and neither names a path this appliance would create outside its own
+# directories.
+OPTIONAL_INPUTS="PROJECTIOND_ALPHA_POLL PROJECTIOND_ALPHA_STATE_DIR"
+
 # THE DIRECTORIES THIS APPLIANCE MAY CREATE. The media root is deliberately NOT among them: it is the
 # operator's existing library, and a script that created it would be a script that could create it in the
 # wrong place and then fill it.
@@ -106,6 +150,15 @@ CREATED_DIRS="PROJECTIOND_ALPHA_MANIFEST_DIR PROJECTIOND_ALPHA_CACHE_DIR PROJECT
 # What it does own is what it WRITES: the cache (the probe records and the recovery ledger) and the mount
 # point (where it mounts). Those are the two a wrong path would damage.
 OWNED_DIRS="PROJECTIOND_ALPHA_CACHE_DIR PROJECTIOND_ALPHA_MOUNT"
+
+# THE DIRECTORIES A MARKER FILE MAY BE WRITTEN INTO, WHICH IS A SHORTER LIST AGAIN, AND THE MOUNT POINT'S
+# ABSENCE FROM IT IS THE REPAIR OF PHASE 8 §11.3 #14.
+#
+# A directory this appliance MOUNTS OVER cannot hold a file this appliance can still read afterwards. Writing
+# one there produced an `install` that succeeded exactly once and then failed forever with `Read-only file
+# system` — so the mount point's ownership is recorded in the operator state directory instead, where the
+# namespace can never hide it, and nothing is ever written under the projected tree.
+MARKED_DIRS="PROJECTIOND_ALPHA_CACHE_DIR"
 
 # An absolute, clean, non-ambiguous path. Anything else is refused rather than resolved: resolving a relative
 # path means resolving it against whatever directory the operator happened to be in.
@@ -139,13 +192,147 @@ check_image_shape() {
   esac
 }
 
+# A POLL INTERVAL THE DAEMON'S OWN FLAG ACCEPTS, INSIDE A BOUND THIS APPLIANCE IS WILLING TO STAND BEHIND.
+#
+# WHY IT IS AN INPUT AT ALL. Every readiness budget this product publishes is derived from the pointer poll
+# plus one read deadline, so the interval is not a free parameter — it is one half of a relationship. An
+# appliance whose poll interval could not be stated could not be measured against the budgets its own closed
+# tranches derive, which is how Phase 8 arrived at a gate configuring a daemon the shipped profile could not
+# express. The default is the one this profile has always carried and an operator who sets nothing gets it.
+#
+# WHOLE SECONDS ONLY, and that is not a simplification: the gate that measures this appliance derives the
+# flag from a millisecond constant and refuses a value that is not a whole number of seconds, so accepting
+# `1500ms` here would let the instrument and the product disagree about the same number.
+check_poll_shape() {
+  local value="$1" seconds
+  [ -n "$value" ] || die "PROJECTIOND_ALPHA_POLL is set but empty; unset it for the default of $POLL_DEFAULT"
+  case "$value" in
+    *s) seconds="${value%s}" ;;
+    *) die "PROJECTIOND_ALPHA_POLL must name whole seconds, like '$POLL_DEFAULT'" ;;
+  esac
+  case "$seconds" in
+    ''|*[!0-9]*) die "PROJECTIOND_ALPHA_POLL must name whole seconds, like '$POLL_DEFAULT'" ;;
+  esac
+  [ "$seconds" -ge "$POLL_MIN_SECONDS" ] \
+    || die "PROJECTIOND_ALPHA_POLL is below the ${POLL_MIN_SECONDS}s floor this appliance will run at"
+  [ "$seconds" -le "$POLL_MAX_SECONDS" ] \
+    || die "PROJECTIOND_ALPHA_POLL is above the ${POLL_MAX_SECONDS}s ceiling this appliance will run at"
+}
+
+# WHERE THE OWNERSHIP RECORD LIVES. The default is a directory under the cache; an operator may move it, and
+# the one place they may NOT move it to is anywhere this appliance mounts over.
+state_dir() {
+  printf '%s' "${PROJECTIOND_ALPHA_STATE_DIR:-$PROJECTIOND_ALPHA_CACHE_DIR/$STATE_DIR_NAME}"
+}
+ownership_record_path() { printf '%s/%s' "$(state_dir)" "$OWNERSHIP_RECORD_NAME"; }
+
+# THE ONE COMBINATION THIS APPLIANCE REFUSES OUTRIGHT, AND IT IS THE DEFECT ITSELF WRITTEN AS A RULE.
+check_state_dir_shape() {
+  local value="$1"
+  check_path_shape PROJECTIOND_ALPHA_STATE_DIR "$value"
+  case "$value" in
+    "$PROJECTIOND_ALPHA_MOUNT"|"$PROJECTIOND_ALPHA_MOUNT"/*)
+      die "PROJECTIOND_ALPHA_STATE_DIR is inside the mount point, where this appliance's own read-only file \
+system would hide it the moment it started; that is the defect this directory exists to repair" ;;
+  esac
+  case "$value" in
+    "$PROJECTIOND_ALPHA_MEDIA_ROOT"|"$PROJECTIOND_ALPHA_MEDIA_ROOT"/*)
+      die "PROJECTIOND_ALPHA_STATE_DIR is inside the operator's media root, which this appliance never writes to" ;;
+  esac
+  case "$value" in
+    "$PROJECTIOND_ALPHA_MANIFEST_DIR"|"$PROJECTIOND_ALPHA_MANIFEST_DIR"/*)
+      die "PROJECTIOND_ALPHA_STATE_DIR is inside the control plane's manifest directory, which this appliance \
+does not own" ;;
+  esac
+}
+
 marker_path() { printf '%s/%s' "$1" "$MARKER_NAME"; }
+
+# ONE FIELD OUT OF THE OWNERSHIP RECORD, READ WITHOUT A SUBPROCESS AND WITHOUT RESHAPING A PATH.
+#
+# IT IS A `while read` RATHER THAN `awk`, AND A PATH WITH TWO SPACES IN IT IS WHY. Rebuilding a record with
+# `awk` normalises runs of whitespace, so `/mnt/user/my  media` would be compared against `/mnt/user/my media`
+# and the appliance would call its own installation foreign. Exact ownership means exact bytes.
+ownership_field() {
+  local file="$1" prefix="$2 " line
+  while IFS= read -r line; do
+    case "$line" in
+      "$prefix"*) printf '%s' "${line#"$prefix"}"; return 0 ;;
+    esac
+  done < "$file"
+  return 1
+}
+
+# WHOSE INSTALLATION THIS IS, AND IT HAS THREE ANSWERS RATHER THAN TWO.
+#
+#   ours     — a record exists and names EXACTLY this mount point and this cache directory
+#   absent   — there is no record at all, which is either a first install or a v1 installation to migrate
+#   foreign  — a record exists and names something else, or is unreadable, or names a version this command
+#              does not understand
+#
+# THE THIRD ANSWER IS THE POINT. "Not ours" and "nobody's" are different states and only the second may be
+# adopted. A command that collapsed them would either refuse a perfectly correct reinstall or put its name on
+# a directory belonging to another appliance — and this file exists to make the second impossible.
+ownership_state() {
+  local record version mount cache
+  record="$(ownership_record_path)"
+  if [ ! -e "$record" ]; then printf 'absent'; return 0; fi
+  if [ ! -f "$record" ] || [ ! -r "$record" ]; then printf 'foreign'; return 0; fi
+  version="$(ownership_field "$record" version || true)"
+  mount="$(ownership_field "$record" mount || true)"
+  cache="$(ownership_field "$record" cache || true)"
+  if [ "$version" != "$OWNERSHIP_RECORD_VERSION" ]; then printf 'foreign'; return 0; fi
+  if [ -z "$mount" ] || [ -z "$cache" ]; then printf 'foreign'; return 0; fi
+  if [ "$mount" != "$PROJECTIOND_ALPHA_MOUNT" ] || [ "$cache" != "$PROJECTIOND_ALPHA_CACHE_DIR" ]; then
+    printf 'foreign'; return 0
+  fi
+  printf 'ours'
+}
+
+# WRITING IT, AND EVERY PROPERTY HERE IS THERE BECAUSE ITS ABSENCE IS A REAL FAILURE MODE.
+#
+#   0700 ON THE DIRECTORY AND 0600 ON THE FILE — it says which host paths this appliance manages, which is
+#   not a secret and is nobody else's business either.
+#   ATOMIC — a temp file in the SAME directory and a rename, so a crash between the two leaves either the old
+#   record or the new one and never half of one. A truncated record reads as `foreign` and would refuse the
+#   next install of a perfectly good appliance.
+#   NEVER UNDER THE MOUNT — `check_state_dir_shape` has already refused that, and this function does no
+#   further path arithmetic of its own.
+write_ownership_record() {
+  local dir record tmp
+  dir="$(state_dir)"
+  record="$(ownership_record_path)"
+  mkdir -p "$dir"
+  chmod 700 "$dir" 2>/dev/null || true
+  tmp="$dir/.$OWNERSHIP_RECORD_NAME.tmp.$$"
+  {
+    printf 'version %s\n' "$OWNERSHIP_RECORD_VERSION"
+    printf 'mount %s\n' "$PROJECTIOND_ALPHA_MOUNT"
+    printf 'cache %s\n' "$PROJECTIOND_ALPHA_CACHE_DIR"
+  } > "$tmp"
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$record"
+}
 
 # A DIRECTORY IS OURS IF IT IS EMPTY OR CARRIES OUR MARKER. Anything else is somebody's data and this script
 # does not decide what to do with somebody's data.
 check_dir_ownership() {
   local name="$1" value="$2"
   [ -d "$value" ] || return 0
+  # THE OWNERSHIP RECORD OUTRANKS EVERY OTHER ANSWER, IN BOTH DIRECTIONS.
+  #
+  # It is the only statement of ownership this appliance can still read while its own file system is mounted
+  # over the directory in question, and it is the only one that can name a DIFFERENT installation. A record
+  # that names somebody else's directories is refused here rather than anywhere later, because everything
+  # later is a write.
+  case "$(ownership_state)" in
+    ours) return 0 ;;
+    foreign)
+      die "$name is governed by an ownership record that does not name this installation, or that this \
+version cannot read. This appliance will not adopt, repair or overwrite it. Point PROJECTIOND_ALPHA_STATE_DIR \
+at this installation's own state directory, or remove that record deliberately" ;;
+    *) : ;;
+  esac
   if [ -e "$(marker_path "$value")" ]; then
     return 0
   fi
@@ -220,6 +407,11 @@ preflight() {
     eval "value=\${$name:-}"
     check_path_shape "$name" "$value"
   done
+
+  # THE OPTIONAL, BOUNDED INPUTS, CHECKED IN THE VERB THAT CHANGES NOTHING. An operator who has mistyped one
+  # finds out from `preflight` rather than from a container that restarts forever.
+  check_poll_shape "${PROJECTIOND_ALPHA_POLL:-$POLL_DEFAULT}"
+  check_state_dir_shape "$(state_dir)"
 
   # THE CONFIGURATION MUST EXIST AND MUST PARSE. A daemon that refuses its own configuration at startup is a
   # container that restarts forever, and the operator finds out from a log rather than from this.
@@ -322,18 +514,29 @@ install_appliance() {
       say "created $name"
     fi
   done
-  for name in $OWNED_DIRS; do
+  for name in $MARKED_DIRS; do
     eval "value=\${$name:-}"
     # THE MARKER IS WHAT MAKES A SECOND INSTALL IDEMPOTENT AND A WRONG PATH LOUD. It is written only into a
     # directory this run either created or already owned, both of which `check_dir_ownership` has decided —
-    # and only into the two this appliance actually writes to. The manifest directory is the control plane's
-    # and gets no marker.
+    # and only into a directory this appliance never mounts over. The manifest directory is the control
+    # plane's and gets no marker; the MOUNT POINT no longer gets one at all, and Phase 8 §11.3 #14 is why.
     if [ ! -e "$(marker_path "$value")" ]; then
       mkdir -p "$(dirname "$(marker_path "$value")")"
       printf 'projection-alpha owns this directory. Removing this file does not remove the data.\n' \
         > "$(marker_path "$value")"
     fi
   done
+  # THE DURABLE OWNERSHIP RECORD, WRITTEN LAST AND WRITTEN EVERY TIME.
+  #
+  # EVERY TIME, NOT ONLY WHEN IT IS ABSENT, AND THAT IS THE MIGRATION. A v1 installation carries per-directory
+  # markers and no record; `check_dir_ownership` has already accepted it on those markers, and this line is
+  # what turns it into a v2 installation without an operator reinstalling anything. Rewriting an identical
+  # record is a rename over itself, which costs nothing and cannot half-happen.
+  #
+  # AND IT WORKS WHILE THE APPLIANCE IS SERVING, which is the whole of the repair: the state directory is
+  # outside the projected namespace by construction, so `install` over a running appliance writes to a
+  # filesystem that accepts writes. Nothing here writes into, stats through, or unmounts the mount point.
+  write_ownership_record
   say "installed; run start"
 }
 

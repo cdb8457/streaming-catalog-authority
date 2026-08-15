@@ -61,16 +61,24 @@ deploy/projection-alpha.sh rollback         # returns to the digest upgrade reco
 deploy/projection-alpha.sh reset-recovery   # clears a recovery lockout, AFTER you have fixed the fault
 ```
 
-Set the environment from `deploy/projectiond-alpha.env.example` first. **Every variable is required and none
-has a default that could point at somebody else's data.**
+Set the environment from `deploy/projectiond-alpha.env.example` first. **Every path variable is required and
+none has a default that could point at somebody else's data.**
 
-**Seven of these verbs are idempotent.** `start` on an already-ready appliance, `stop` on a stopped one and
-`reset-recovery` on a clean ledger are all successes, not errors.
+**TWO VARIABLES ARE OPTIONAL AND BOTH HAVE THE DEFAULT THIS APPLIANCE ALWAYS HAD.** Leave them empty and
+nothing changes.
 
-**`install` IS THE EXCEPTION AND IT IS NEW. DO NOT RUN IT AGAIN WHILE THE APPLIANCE IS RUNNING** — it will
-fail with `Read-only file system`. **`stop` first, or simply do not run it: you do not need to.** §6.7 is what
-is actually happening and why it is harmless. This line used to say all eight verbs were idempotent; that was
-measured to be false on the real host and the sentence is corrected rather than deleted.
+| Optional | Default | What it does |
+|---|---|---|
+| `PROJECTIOND_ALPHA_POLL` | `5s` | how often the daemon re-reads the pointer. **Whole seconds, 1s to 60s**, refused by `preflight` otherwise. It is one half of a relationship rather than a free number: every readiness budget this product publishes is one pointer poll plus one read deadline |
+| `PROJECTIOND_ALPHA_STATE_DIR` | a directory under your cache | where this appliance records which host paths it owns. **It may never be inside the mount point** — `preflight` refuses that — because the appliance mounts a read-only filesystem over the mount point and would hide its own record |
+
+**ALL EIGHT VERBS ARE IDEMPOTENT.** `install` on an installed appliance, `start` on an already-ready one,
+`stop` on a stopped one and `reset-recovery` on a clean ledger are all successes, not errors.
+
+**AND `install` IS NOW INCLUDED, WHICH IT WAS NOT.** Between Phase 6 and Phase 8 this page said `install` was
+the exception and would fail with `Read-only file system` while the appliance was running. **That was true,
+it was measured on the real host, and it is now fixed** — §6.7 keeps the whole story, because a rough edge
+that is repaired is still worth being able to recognise.
 
 ## 4. Reading `status`, which is the only page you need during an incident
 
@@ -223,9 +231,14 @@ TorBox only. One Unraid host has been measured. One `projectiond` FUSE mount, `r
 bound before the daemon first mounts there. Real-Debrid and Usenet have **named contracts** in
 `docs/PROJECTION_PHASE_6_DEPLOYABLE_ALPHA.md` §13, and a contract is not a feature.
 
-### 6.7 `install` works once, and fails every time after that while the appliance is running
+### 6.7 `install` used to work once and fail every time after that — **REPAIRED, and kept here whole**
 
-**WHAT YOU WILL SEE.** You installed the appliance on day one and it worked. Some time later — after a reboot,
+**THIS IS NO LONGER A ROUGH EDGE. IT IS HISTORY, AND IT IS KEPT** because an operator running an older copy of
+this appliance will still meet it, and because a page that quietly deleted a defect it once told you to live
+with is a page you cannot trust about the ones it still lists. **What is written below is what it looked
+like; what is written after it is what changed.**
+
+**WHAT YOU WOULD HAVE SEEN.** You installed the appliance on day one and it worked. Some time later — after a reboot,
 or because you were not sure what state you were in, or because you were following §3 from the top — you run
 `install` again while the appliance is up, and it fails:
 
@@ -240,15 +253,29 @@ marker is hidden underneath it, `install` cannot see the marker it wrote and tri
 thing it is now writing into is the projected filesystem, which is **read-only by design**. Nothing is
 damaged, nothing is lost, and the marker under the mount is still there.
 
-**WHAT TO DO.** Nothing, in the ordinary case: **you do not need to run `install` twice.** If you want it to
-succeed anyway, `stop` first, then `install`, then `start`. If you are unsure what state you are in, run
-`status` — that is what it is for, and it is always safe.
-
 **HOW IT WAS FOUND.** `deploy/projection-phase8-rehearsal.sh`, provider-free, on the real Unraid host, in the
 second and third of three cycles against the same mount point.
-`docs/PROJECTION_PHASE_8_OPERATOR_SOAK.md` §11.3 #14 is the record. It is written down rather than repaired:
-that repair touches shipped source Phase 7's closure measured, and re-opening that is a decision with a cost
-of its own.
+`docs/PROJECTION_PHASE_8_OPERATOR_SOAK.md` §11.3 #14 is the record.
+
+**WHAT CHANGED, AND IT IS ONE SENTENCE.** The ownership marker moved **out of the namespace it governs**: what
+this appliance owns is now recorded once, in a small state directory beside your cache — 0600 inside a 0700
+directory, written atomically — and **the mount point gets no marker at all**. Ownership of the mount point
+was never in doubt without one: a live `fuse.projectiond` mount at exactly that path is this product's own
+filesystem answering, which is a stronger statement than any file could make.
+
+**WHAT YOU HAVE TO DO ABOUT IT: NOTHING.** An installation made by an older copy is **migrated in place** the
+first time you run `install` with this one — the old markers are still accepted, the record is written
+alongside them, and no reinstall is needed. Nothing is ever written into, or unmounted from, your projected
+media tree to make that happen.
+
+**WHAT IT WILL REFUSE.** A state directory you point **inside** the mount point, the media root or the
+manifest directory; and an ownership record that names **a different installation**. The second is deliberate:
+"not yours" and "nobody's" are different answers, and this appliance will not put its name on another one's
+directories. Point `PROJECTIOND_ALPHA_STATE_DIR` at this installation's own state directory, or remove that
+record on purpose.
+
+`docs/PROJECTION_PHASE_8_OPERATOR_SOAK.md` §13.4 is the design record, and the cost of the repair — re-running
+Phase 6's install matrix and Phase 7's whole regression matrix from a re-frozen candidate — is §13.7.
 
 ## 7. What to do when a media server stops seeing files
 

@@ -176,25 +176,37 @@ rm -f "$GATE_ROOT/tamper-$$.sh"
 # and refuses a line whose quotes do not close on it — and a quoted command substitution spanning four lines
 # is exactly that. It caught this file on its first run, which is the pin doing its job.
 alpha_required_names() { awk '/^REQUIRED_(DIRS|FILES|OTHER)=/,/[^\\]$/' "$ALPHA" | tr -d '\\"' | tr ' ' '\n' | grep -o 'PROJECTIOND_ALPHA_[A-Z_]*' | LC_ALL=C sort -u; }
+# ...AND THE OPTIONAL ONES, WHICH ARE A DIFFERENT LIST AND MUST BE READ FROM THE SAME BYTES.
+#
+# WHY THEY ARE HERE AT ALL. §13 gives the shipped command two bounded inputs — the poll interval the recovery
+# budgets are derived from, and the state directory the ownership record lives in — and a comparison that
+# knew only the REQUIRED list would report the gate handing over a perfectly correct optional one as "set by
+# the gate and required by nothing". What A4 is for is that the gate can INVOKE the command; a name the
+# command defines and validates is a name it can take.
+alpha_optional_names() { awk '/^OPTIONAL_INPUTS=/,/[^\\]$/' "$ALPHA" | tr -d '\\"' | tr ' ' '\n' | grep -o 'PROJECTIOND_ALPHA_[A-Z_]*' | LC_ALL=C sort -u; }
 gate_supplied_names() { awk '/^alpha\(\) \{/,/^\}$/' "$GATE_SOURCE" | grep -o 'PROJECTIOND_ALPHA_[A-Z_]*=' | tr -d '=' | LC_ALL=C sort -u; }
 ALPHA_REQUIRES="$(alpha_required_names)"
+ALPHA_OPTIONAL="$(alpha_optional_names)"
+ALPHA_ACCEPTS="$(printf '%s\n%s\n' "$ALPHA_REQUIRES" "$ALPHA_OPTIONAL" | grep -v '^$' | LC_ALL=C sort -u)"
 GATE_SUPPLIES="$(gate_supplied_names)"
+test -n "$ALPHA_OPTIONAL" \
+  || fail "A4 the shipped command publishes no OPTIONAL_INPUTS list, so §13's bounded inputs are undeclared"
 MISSING_ENV="$(comm -23 <(printf '%s\n' "$ALPHA_REQUIRES") <(printf '%s\n' "$GATE_SUPPLIES") || true)"
-UNKNOWN_ENV="$(comm -13 <(printf '%s\n' "$ALPHA_REQUIRES") <(printf '%s\n' "$GATE_SUPPLIES") || true)"
+UNKNOWN_ENV="$(comm -13 <(printf '%s\n' "$ALPHA_ACCEPTS") <(printf '%s\n' "$GATE_SUPPLIES") || true)"
 if [ -z "$MISSING_ENV" ] && [ -z "$UNKNOWN_ENV" ]; then
   pass "A4 the gate hands the shipped operator command exactly the environment it requires, so S1, S2, S7, \
 S8 and S9 can invoke it at all"
 else
   [ -z "$MISSING_ENV" ] || { echo "    required by the shipped command and NOT set by the gate:" >&2
     printf '%s\n' "$MISSING_ENV" | sed 's/^/      /' >&2; }
-  [ -z "$UNKNOWN_ENV" ] || { echo "    set by the gate and required by nothing:" >&2
+  [ -z "$UNKNOWN_ENV" ] || { echo "    set by the gate and named by neither list in that command:" >&2
     printf '%s\n' "$UNKNOWN_ENV" | sed 's/^/      /' >&2; }
   fail "A4 the gate's environment for the shipped operator command does not match what that command \
 requires, so every verb in S1, S2, S7, S8 and S9 exits REFUSED and five of the ten steps measure nothing"
-  echo "    AND DO NOT FIX THIS HALF ON ITS OWN — see A6. While the names are wrong every verb refuses and" >&2
-  echo "    changes nothing, which is a SAFE failure. Correcting them without resolving the daemon" >&2
-  echo "    ownership below would let the shipped command bring a SECOND projectiond up over a mount point" >&2
-  echo "    this gate's own daemon already holds." >&2
+  echo "    A4 AND A6 ARE ONE BLOCKER WITH TWO HALVES AND NEITHER MAY BE REPAIRED ALONE. While the names" >&2
+  echo "    are wrong every verb refuses and changes nothing, which is a SAFE failure. Correcting them" >&2
+  echo "    while anything else in the gate still mounts at the same path would aim a live shipped" >&2
+  echo "    install and start at a mount point another daemon is already serving." >&2
 fi
 
 # AND THE CONTROL: the comparison must notice a name that is missing. It is run against a copy of the gate's
@@ -225,18 +237,92 @@ fi
 # THIS IS WHY A4 MUST NOT BE FIXED ALONE. While the variable names are wrong, every verb refuses and changes
 # nothing — a safe failure. Correct only the names and the shipped `install` and `start` become live commands
 # aimed at a mount point another daemon is already serving.
-GATE_STARTS_ITS_OWN="$(grep -c 'docker run -d --name "\$MOUNT_CONTAINER"' "$GATE_SOURCE" || true)"
+# WHAT IT ASKS OF THE BYTES, AND IT IS THREE QUESTIONS RATHER THAN ONE, because the blocker had three halves
+# and repairing any two of them would still leave a gate that measured the wrong thing:
+#
+#   - does the gate drive the shipped lifecycle verbs at all? (§3's S1, S2, S7, S8 and S9 ARE those verbs)
+#   - does it mount anything ITSELF? Every `docker run` that binds the projected path inside a container is a
+#     second owner, and the search is for the BIND rather than for a container name, because a name can be
+#     renamed and a bind cannot be anything else.
+#   - is the subject the container the shipped profile names? A gate driving the shipped verbs while watching
+#     a container of its own would be reading one appliance's logs about another's mount.
+# THE PATTERN IS A VARIABLE AND CARRIES NO DOUBLE QUOTE, and `test/custody-runtime-closure.ts` is why: it
+# reads every shipped script end to end under all three line endings and cannot parse a quoted regex holding
+# the other quote inside a command substitution. An unreadable line is not an empty one.
+GATE_MOUNT_PATTERN='^[[:space:]]*-v .*:/mnt/projection:rshared'
+GATE_MOUNTS_ITS_OWN=$(grep -cE "$GATE_MOUNT_PATTERN" "$GATE_SOURCE" || true)
 GATE_DRIVES_SHIPPED="$(grep -cE '^\s*alpha (install|start|stop|upgrade|rollback)\b' "$GATE_SOURCE" || true)"
-if [ "${GATE_STARTS_ITS_OWN:-0}" -ge 1 ] && [ "${GATE_DRIVES_SHIPPED:-0}" -ge 1 ]; then
-  fail "A6 the gate starts its OWN daemon container AND drives the shipped operator command's lifecycle \
-verbs ($GATE_DRIVES_SHIPPED of them) at the same mount point. One mount point cannot have two owners, and \
-until one of those two is removed the five steps §3 defines as the shipped command cannot be measured."
-elif [ "${GATE_DRIVES_SHIPPED:-0}" -ge 1 ]; then
-  pass "A6 the appliance under test is the one the shipped operator command owns, and the gate starts no \
-competing daemon of its own"
-else
+GATE_SUBJECT_IS_SHIPPED=0
+grep -q '^MOUNT_CONTAINER="projection-alpha-projectiond"$' "$GATE_SOURCE" && GATE_SUBJECT_IS_SHIPPED=1
+if [ "${GATE_MOUNTS_ITS_OWN:-0}" -ge 1 ]; then
+  fail "A6 the gate still binds the projected path into a container of its own ($GATE_MOUNTS_ITS_OWN place(s)), \
+so one mount point has two owners and the five steps §3 defines as the shipped command cannot be measured"
+elif [ "${GATE_DRIVES_SHIPPED:-0}" -lt 1 ]; then
   fail "A6 the gate drives no lifecycle verb of the shipped operator command at all, so §3's S1, S2, S7, S8 \
 and S9 are not the steps the contract defines"
+elif [ "$GATE_SUBJECT_IS_SHIPPED" -ne 1 ]; then
+  fail "A6 the gate drives the shipped verbs but its subject container is not the one the shipped compose \
+profile names, so its observations are about a different appliance from the one it is driving"
+else
+  pass "A6 the appliance under test is the one the shipped operator command owns: $GATE_DRIVES_SHIPPED \
+lifecycle invocation(s), no bind of the projected path into any container of the gate's own, and the subject \
+is the container name the shipped profile fixes"
+fi
+
+# AND THE CONTROL FOR A6, because a search that finds nothing has not been shown to be able to find anything.
+cp "$GATE_SOURCE" "$GATE_ROOT/tamper-$$.sh"
+SECOND_OWNER_LINE='    -v $WORK/mnt:/mnt/projection:rshared'
+printf '%s\n' "$SECOND_OWNER_LINE" >> "$GATE_ROOT/tamper-$$.sh"
+TAMPER_HITS=$(grep -cE "$GATE_MOUNT_PATTERN" "$GATE_ROOT/tamper-$$.sh" || true)
+if [ "${TAMPER_HITS:-0}" -ge 1 ]; then
+  pass "A6b CONTROL: the same search DOES find a second owner when one is put back"
+else
+  fail "A6b CONTROL: a re-introduced second-owner bind was not detected, so A6 proves nothing"
+fi
+rm -f "$GATE_ROOT/tamper-$$.sh"
+
+# ----------------------------------------------------------------------------------------------------------
+# A7 — THE OTHER HALF OF THE RECONCILIATION: THE PROFILE CAN EXPRESS WHAT THE BUDGETS ASSUME.
+# ----------------------------------------------------------------------------------------------------------
+# §12 of the previous record named this as the reason renaming the variables was not enough: "the appliance
+# under test runs with the shipped profile's hard-coded `--poll=5s` and WITHOUT `--strict-direct-mount`, and
+# so is not the appliance Phase 7 measured". §13 resolves it in the product rather than in the gate — the poll
+# interval became a bounded, validated operator input and the strict flag became part of the profile — so
+# what is checked here is that the product really can express it and that the gate really hands it over.
+A7_OK=1
+grep -q -- '- --poll=\${PROJECTIOND_ALPHA_POLL:-5s}' docker-compose.projection-alpha.yml \
+  || { A7_OK=0; echo "    the alpha profile no longer takes the poll interval as a bounded input" >&2; }
+grep -qE '^\s+- --strict-direct-mount$' docker-compose.projection-alpha.yml \
+  || { A7_OK=0; echo "    the alpha profile no longer passes --strict-direct-mount" >&2; }
+grep -q 'PROJECTIOND_ALPHA_POLL="\$DAEMON_POLL"' "$GATE_SOURCE" \
+  || { A7_OK=0; echo "    the gate does not hand the shipped command the interval its budgets assume" >&2; }
+grep -q 'check_poll_shape' "$ALPHA" \
+  || { A7_OK=0; echo "    the shipped command no longer validates the poll interval" >&2; }
+if [ "$A7_OK" -eq 1 ]; then
+  pass "A7 the shipped profile expresses the poll interval as a bounded, validated operator input and passes \
+--strict-direct-mount, and the gate hands it the same interval its budgets are derived from"
+else
+  fail "A7 the appliance the gate would drive is not configured the way §4's budgets assume, so a soak would \
+measure a differently configured daemon from the product being claimed"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# A8 — THE OWNERSHIP MARKER IS NOT INSIDE THE THING IT GOVERNS. Defect #14, asked of the bytes.
+# ----------------------------------------------------------------------------------------------------------
+A8_OK=1
+grep -q '^MARKED_DIRS="PROJECTIOND_ALPHA_CACHE_DIR"$' "$ALPHA" \
+  || { A8_OK=0; echo "    the shipped command's marked-directory list is not the cache alone" >&2; }
+awk '/^install_appliance\(\) \{/,/^\}$/' "$ALPHA" | grep -q 'for name in \$MARKED_DIRS' \
+  || { A8_OK=0; echo "    install still writes a marker into every OWNED directory, mount point included" >&2; }
+awk '/^install_appliance\(\) \{/,/^\}$/' "$ALPHA" | grep -q 'write_ownership_record' \
+  || { A8_OK=0; echo "    install writes no durable ownership record outside the projected namespace" >&2; }
+grep -q 'is inside the mount point, where this appliance' "$ALPHA" \
+  || { A8_OK=0; echo "    a state directory inside the mount point is no longer refused" >&2; }
+if [ "$A8_OK" -eq 1 ]; then
+  pass "A8 the shipped command records what it owns OUTSIDE the namespace it mounts, writes no marker into \
+the mount point, and refuses a state directory placed inside one"
+else
+  fail "A8 the ownership marker is still governed by the filesystem that hides it, which is defect #14"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
@@ -430,6 +516,74 @@ done
 echo "  three unprivileged consumers hold the projected path; none of them is a media server and none is \
 asked to behave like one"
 
+# ----------------------------------------------------------------------------------------------------------
+step "C1a — the bounded inputs §13 adds are VALIDATED, and an invalid one is refused rather than resolved"
+# ----------------------------------------------------------------------------------------------------------
+# THE POSITIVE COMES FIRST AND IT IS WHAT MAKES THE REST CONTROLS RATHER THAN COINCIDENCES. `preflight`
+# refuses an appliance with no consumer attached, so every one of these would exit non-zero for a reason that
+# has nothing to do with the input under test if it ran before C1. It runs here, with three consumers holding
+# the path, where a valid environment PASSES — and so a refusal below is attributable to the one thing changed.
+alpha preflight
+if [ "$ALPHA_STATUS" -eq 0 ]; then
+  pass "C1a with every input valid and three consumers attached, the shipped preflight PASSES — so each \
+refusal below is attributable to the single input it changes"
+else
+  sed 's/^/      /' "$WORK/out/alpha-preflight-pre.txt" >&2 || true
+  fail "C1a the shipped preflight refused a valid environment, so none of the controls below mean anything"
+fi
+
+refuses_with() {
+  local what="$1" name="$2" value="$3"
+  if env "$name=$value" bash "$ALPHA" preflight >/dev/null 2>&1; then
+    fail "$what — IT WAS ACCEPTED, so the validation it controls proves nothing"
+  else
+    pass "$what"
+  fi
+}
+refuses_with "C1a PROJECTIOND_ALPHA_POLL that is not a duration is REFUSED" PROJECTIOND_ALPHA_POLL "abc"
+refuses_with "C1a PROJECTIOND_ALPHA_POLL of 0s is REFUSED" PROJECTIOND_ALPHA_POLL "0s"
+refuses_with "C1a PROJECTIOND_ALPHA_POLL above the ceiling is REFUSED" PROJECTIOND_ALPHA_POLL "600s"
+refuses_with "C1a PROJECTIOND_ALPHA_POLL in milliseconds is REFUSED" PROJECTIOND_ALPHA_POLL "1500ms"
+refuses_with "C1a a relative PROJECTIOND_ALPHA_STATE_DIR is REFUSED" PROJECTIOND_ALPHA_STATE_DIR "state"
+refuses_with "C1a a PROJECTIOND_ALPHA_STATE_DIR INSIDE the mount point is REFUSED — defect #14 as a rule" \
+  PROJECTIOND_ALPHA_STATE_DIR "$WORK/mnt/state"
+refuses_with "C1a a PROJECTIOND_ALPHA_STATE_DIR inside the operator's media root is REFUSED" \
+  PROJECTIOND_ALPHA_STATE_DIR "$WORK/media/state"
+
+# AND THE OWNERSHIP RECORD ITSELF: A FOREIGN ONE IS REFUSED, NOT ADOPTED AND NOT OVERWRITTEN.
+#
+# This is the state an operator reaches by pointing a second appliance's state directory at the first one's,
+# or by moving a cache between installations. "Not ours" and "nobody's" are different answers and only the
+# second may be adopted; a command that collapsed them would put its name on another appliance's directories.
+FOREIGN_STATE="$WORK/foreign-state"
+mkdir -p "$FOREIGN_STATE"
+printf 'version 2\nmount /somewhere/else/mnt\ncache /somewhere/else/cache\n' > "$FOREIGN_STATE/owned"
+refuses_with "C1a an ownership record naming a DIFFERENT installation is REFUSED rather than adopted" \
+  PROJECTIOND_ALPHA_STATE_DIR "$FOREIGN_STATE"
+printf 'version 99\nmount %s\ncache %s\n' "$WORK/mnt" "$WORK/cache" > "$FOREIGN_STATE/owned"
+refuses_with "C1a an ownership record this version cannot read is REFUSED rather than guessed at" \
+  PROJECTIOND_ALPHA_STATE_DIR "$FOREIGN_STATE"
+printf 'version 2\nmount %s\ncache %s\n' "$WORK/mnt" "$WORK/cache" > "$FOREIGN_STATE/owned"
+if env "PROJECTIOND_ALPHA_STATE_DIR=$FOREIGN_STATE" bash "$ALPHA" preflight >/dev/null 2>&1; then
+  pass "C1a CONTROL: the SAME record naming THIS installation is accepted, so the two refusals above are \
+about whose record it is rather than about there being one"
+else
+  fail "C1a CONTROL: a correct ownership record was refused, so the refusals above prove nothing"
+fi
+rm -rf "$FOREIGN_STATE"
+
+# THE COVERED v1 MARKER — THE EXACT SHAPE AN OPERATOR UPGRADING FROM THE PREVIOUS VERSION ARRIVES IN.
+#
+# A v1 installation wrote `.projection-alpha/owned` INTO the mount point while it was still a plain directory.
+# This puts one there before anything has ever mounted, so the cycles below run over an installation that
+# already carries one — and the mount that covers it must not turn a working appliance into an `install` that
+# fails forever.
+mkdir -p "$WORK/mnt/.projection-alpha"
+printf 'projection-alpha owns this directory. Removing this file does not remove the data.\n' \
+  > "$WORK/mnt/.projection-alpha/owned"
+echo "  a v1 ownership marker has been left inside the mount point, so the cycles below are a MIGRATION \
+rather than a first install"
+
 # THE GATE'S OWN FUNCTIONS, LIFTED OUT OF THE GATE'S OWN BYTES AT RUN TIME.
 #
 # THIS IS WHAT MAKES THE REHEARSAL A REHEARSAL RATHER THAN A SECOND IMPLEMENTATION. A copy of
@@ -534,7 +688,8 @@ $( [ "$DEAD" -eq 1 ] && echo DEAD || echo readable )"
   alpha start;   FIRST="$ALPHA_STATUS"
   alpha start;   SECOND="$ALPHA_STATUS"
   if [ "$INSTALLED" -eq 0 ] && [ "$FIRST" -eq 0 ]; then
-    pass "C3.$CYCLE_INDEX S2 the shipped install and start succeeded with three consumers holding the mount"
+    pass "C3.$CYCLE_INDEX S2 the shipped install and start succeeded with three consumers holding the mount\
+$( [ "$CYCLE_INDEX" -gt 1 ] && printf '%s' ", and this install ran over an appliance that was already SERVING, which is defect #14" )"
   else
     sed 's/^/      /' "$WORK/out/alpha-install-$CYCLE_ID.txt" >&2 || true
     sed 's/^/      /' "$WORK/out/alpha-start-$CYCLE_ID.txt" >&2 || true
@@ -555,6 +710,42 @@ $( [ "$DEAD" -eq 1 ] && echo DEAD || echo readable )"
 container can actually read (=$READS)"
   else
     fail "C3.$CYCLE_INDEX S2 the surface says running=$SAYS_RUNNING and a sibling container reads=$READS"
+  fi
+
+  # SOLE OWNERSHIP, ASSERTED RATHER THAN ASSUMED, AND IT IS THE WHOLE OF §13 IN TWO NUMBERS.
+  #
+  # ONE container serving this mount point, and it is the one the shipped profile names; ONE row of ours at
+  # the path, above the floor taken before anything mounted. Two owners show up as two of either, and the
+  # blocker this redesign exists to remove was exactly that state written into the instrument.
+  OWNERS="$(docker ps --format '{{.Names}}' --filter "name=^${ALPHA_CONTAINER}$" | grep -c . || true)"
+  FOREIGN_OWNERS=0
+  for other in $(docker ps --format '{{.Names}}' | grep -v "^${ALPHA_CONTAINER}$" || true); do
+    if docker inspect -f '{{range .Mounts}}{{.Destination}}{{println}}{{end}}' "$other" 2>/dev/null \
+         | grep -qx '/mnt/projection'; then
+      FOREIGN_OWNERS=$(( FOREIGN_OWNERS + 1 ))
+    fi
+  done
+  OURS_NOW="$(count_our_layers)"
+  if [ "$OWNERS" -eq 1 ] && [ "$FOREIGN_OWNERS" -eq 0 ] \
+     && [ "$OURS_NOW" -eq $(( MOUNT_LAYER_FLOOR + 1 )) ]; then
+    pass "C3.$CYCLE_INDEX SOLE OWNERSHIP: exactly one appliance container serves this mount point, no other \
+container on the host projects at it, and there is exactly one layer of ours above the floor"
+  else
+    fail "C3.$CYCLE_INDEX SOLE OWNERSHIP: $OWNERS appliance container(s), $FOREIGN_OWNERS other \
+projecting container(s), and $OURS_NOW layer(s) of ours against a floor of $MOUNT_LAYER_FLOOR"
+  fi
+
+  # THE OWNERSHIP RECORD IS WHERE §13 PUTS IT, AND NOTHING WAS WRITTEN UNDER THE MOUNT.
+  RECORD="$WORK/cache/.projection-alpha-state/owned"
+  RECORD_PERMS="$(stat -c '%a' "$RECORD" 2>/dev/null || echo absent)"
+  RECORD_DIR_PERMS="$(stat -c '%a' "$WORK/cache/.projection-alpha-state" 2>/dev/null || echo absent)"
+  RECORD_MOUNT="$(sed -n 's/^mount //p' "$RECORD" 2>/dev/null | head -1 || true)"
+  if [ "$RECORD_MOUNT" = "$WORK/mnt" ] && [ "$RECORD_PERMS" = "600" ] && [ "$RECORD_DIR_PERMS" = "700" ]; then
+    pass "C3.$CYCLE_INDEX the ownership record names this mount point exactly, at 0600 inside a 0700 \
+directory, OUTSIDE the namespace it governs"
+  else
+    fail "C3.$CYCLE_INDEX the ownership record is '${RECORD_MOUNT:-absent}' at mode ${RECORD_PERMS} inside a \
+directory at mode ${RECORD_DIR_PERMS}"
   fi
 
   # S3 (provider-free form) — all three consumers read the LOCAL seed entry, in their own containers.

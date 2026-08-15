@@ -59,7 +59,28 @@ RESOLVER_PORT="${PROJECTION_PHASE8_GATE_RESOLVER_PORT:-8292}"
 PLEX_PORT="${PROJECTION_PHASE8_GATE_PLEX_PORT:-32670}"
 DAEMON_STATUS_PORT=9098
 
-MOUNT_CONTAINER="projection-p8-mount-$$"
+# THE SUBJECT IS THE APPLIANCE THE SHIPPED OPERATOR COMMAND OWNS, AND ITS NAME IS THAT COMMAND'S RATHER THAN
+# THIS RUN'S. §13 of the contract is the decision and this line is where it lands.
+#
+# WHAT IT REPLACED. This gate used to run `docker run -d --name projection-p8-mount-$$` with an `rshared` bind
+# at exactly the mount point `docker-compose.projection-alpha.yml` would bring an appliance up at, WHILE §3
+# defines five of the ten steps of a cycle as that same shipped command. One mount point, two owners — the
+# blocker Phase 8 §11.3 #11 named and §12 of the previous record refused to resolve without authority. It is
+# resolved in the only direction that leaves §3 intact: the gate stops owning a daemon, and every lifecycle
+# transition in this file goes through the verb an operator types.
+#
+# A FIXED NAME CANNOT CARRY THIS RUN'S PID, AND THAT IS THE PRODUCT'S DECISION, NOT THIS GATE'S. An operator's
+# appliance has one name. So this gate REFUSES TO RUN when that name is already taken rather than stopping,
+# replacing or adopting whatever is there — the same refusal the provider-free rehearsal already makes, for
+# the same reason.
+MOUNT_CONTAINER="projection-alpha-projectiond"
+ALPHA_COMPOSE_PROJECT="projection-alpha"
+ALPHA_COMPOSE_FILE="docker-compose.projection-alpha.yml"
+ALPHA_NETWORK="projection-alpha"
+# WHETHER THIS RUN IS THE ONE THAT BROUGHT THE APPLIANCE UP. Nothing in the cleanup path may take an appliance
+# down that this run did not install, and a flag set at exactly one place is how that is guaranteed rather
+# than argued.
+WE_OWN_THE_APPLIANCE=0
 JF_CONTAINER="projection-p8-jellyfin-$$"
 PLEX_CONTAINER="projection-p8-plex-$$"
 EMBY_CONTAINER="projection-p8-emby-$$"
@@ -70,6 +91,11 @@ EMBY_CONTAINER="projection-p8-emby-$$"
 # spent an arm discovering.
 RESOLVER_SEQ=0
 RESOLVER_CONTAINER=""
+# WHICH DAEMON CONTAINER THE LIVE RESOLVER IS SHARING A NAMESPACE WITH, and whether the resolver is under
+# management at all yet. `ensure_resolver` compares the first against the container that is actually there;
+# the second is what stops it starting a resolver during a setup that has not reached one.
+RESOLVER_DAEMON_ID=""
+RESOLVER_MANAGED=0
 CONSUMER_PREFIX="projection-p8-consumer-$$"
 
 GATE_ROOT="$PWD/.projection-phase8-gate"
@@ -137,7 +163,17 @@ cleanup() {
   for leftover in $(docker ps -aq --filter "name=^projection-p8-resolver-$$-" 2>/dev/null); do
     docker rm -f "$leftover" >/dev/null 2>&1 || true
   done
-  docker rm -f "$MOUNT_CONTAINER" >/dev/null 2>&1 || true
+  # THE APPLIANCE, AND ONLY IF THIS RUN IS THE ONE THAT BROUGHT IT UP. The subject carries the operator's own
+  # container name now, so an unguarded `docker rm -f` here would be this gate removing somebody else's
+  # appliance on its way out of a failure — which is the single thing every contract in this repository
+  # refuses. The setup will not start when that name is already taken, so the flag can only be 1 for an
+  # appliance this run installed.
+  if [ "$WE_OWN_THE_APPLIANCE" = "1" ]; then
+    docker compose -p "$ALPHA_COMPOSE_PROJECT" -f "$ALPHA_COMPOSE_FILE" down --remove-orphans \
+      >/dev/null 2>&1 || true
+    docker rm -f "$MOUNT_CONTAINER" >/dev/null 2>&1 || true
+    docker network rm "$ALPHA_NETWORK" >/dev/null 2>&1 || true
+  fi
   docker compose -f "$COMPOSE_FILE" down -v --remove-orphans >/dev/null 2>&1 || true
   # THE RECORDER IS REMOVED LAST OF THIS SET AND ONLY HERE, in the EXIT trap, because every verdict this run
   # will ever write has already been written by the time the trap runs. Removing it any earlier is the defect
@@ -180,14 +216,13 @@ fi
 echo "  four operator inputs are present; this run WILL contact the provider"
 
 mkdir -p "$WORK/manifest" "$WORK/media" "$WORK/cache" "$WORK/mnt" "$WORK/out" "$WORK/inputs" \
-         "$WORK/blocker-cache" \
          "$WORK/inprog" "$WORK/daemon-inputs" "$WORK/consumer" \
          "$WORK/jf-config" "$WORK/jf-cache" "$WORK/plex-config" "$WORK/plex-transcode" "$WORK/emby-config"
 # THE PATH INTO THE PERMISSIVE DIRECTORIES MUST BE TRAVERSABLE BY A UID THAT DID NOT CREATE IT — 0755 and not
 # 0777, because traversal is all that is needed, and explicit rather than inherited from the operator's
 # umask, which at a hardened 077 leaves 0700 and a container running as uid 1000 outside.
 chmod 755 "$GATE_ROOT" "$WORK"
-chmod 777 "$WORK/cache" "$WORK/mnt" "$WORK/out" "$WORK/consumer" "$WORK/blocker-cache" \
+chmod 777 "$WORK/cache" "$WORK/mnt" "$WORK/out" "$WORK/consumer" \
           "$WORK/jf-config" "$WORK/jf-cache" "$WORK/plex-config" "$WORK/plex-transcode" "$WORK/emby-config"
 chmod 755 "$WORK/inprog"
 chmod 700 "$WORK/inputs" "$WORK/daemon-inputs"
@@ -435,6 +470,11 @@ cat > "$WORK/out/config.cjs" <<'CONFIG'
 // THE DAEMON IS GIVEN THE GATE SECRET AND NOTHING ELSE. `tokenFile` names its own copy, in its own 0700
 // directory; the provider API key is never mounted into this container and is not merely unreferenced in it.
 //
+// THE PATH IS `/run/secrets` BECAUSE THAT IS WHERE THE SHIPPED PROFILE PUTS IT. This gate used to run its own
+// daemon and could choose its own spelling; it now runs the appliance the operator command brings up, and
+// `docker-compose.projection-alpha.yml` mounts `PROJECTIOND_ALPHA_SECRETS_DIR` read-only at `/run/secrets`.
+// A configuration naming any other path would be a daemon that could not read its own token.
+//
 // THE STATUS SURFACE IS ON, AND IT IS LOOPBACK ONLY. Phase 3 reads `/readyz` for readiness, for the serve
 // death A3 causes and for the probe-cache level, and the daemon binds it to 127.0.0.1 — reachable only from
 // a container sharing this one's network namespace.
@@ -469,7 +509,7 @@ writeFileSync(out, `${JSON.stringify({
     id: endpoint.id,
     resolverUrl: endpoint.resolverUrl,
     allowedOrigins: endpoint.allowedOrigins,
-    tokenFile: '/var/lib/projectiond/inputs/gate-secret',
+    tokenFile: '/run/secrets/gate-secret',
     allowInsecureHttp: false,
     allowPrivateAddresses: false,
     loopbackResolver: true,
@@ -1541,6 +1581,21 @@ if ! docker run --rm --device /dev/fuse:/dev/fuse "$VERIFY_IMAGE" test -c /dev/f
   exit "$GATE_SKIP_STATUS"
 fi
 docker compose -f "$COMPOSE_FILE" config -q || die "the gate's Compose file is not valid"
+
+# THE SUBJECT'S NAME IS THE OPERATOR'S AND IT IS CHECKED BEFORE IT IS TAKEN.
+#
+# §13 makes `deploy/projection-alpha.sh` the sole owner of the daemon under test, and that command's compose
+# profile fixes `container_name` at `projection-alpha-projectiond` because an operator's appliance has one
+# name. A soak cannot carry this run's pid in it. So a name that is already taken is a REFUSAL rather than
+# something to stop, replace or adopt: taking somebody else's appliance down in order to measure a gate is
+# precisely what every contract here forbids, and a gate that did it once would do it to a production
+# appliance eventually. The provider-free rehearsal makes the same refusal in the same words.
+if docker ps -a --format '{{.Names}}' | grep -qx "$MOUNT_CONTAINER"; then
+  die "an appliance is already installed on this host as '$MOUNT_CONTAINER'. This gate drives the SHIPPED \
+operator command, whose container name is fixed, and it will not stop, replace or adopt an appliance it did \
+not install. Remove or stop that appliance deliberately first."
+fi
+
 npx tsx src/ops/projection-host-preflight-cli.ts propagation --path "$GATE_ROOT" --require
 npx tsx src/ops/projection-host-preflight-cli.ts traversal --path "$GATE_ROOT" --path "$WORK"
 
@@ -1567,6 +1622,14 @@ $(wc -l < "$GATE_ROOT/host-volumes-before-$$.txt" | tr -d ' ') volume(s) that ar
 step "building the production projectiond image, and migrating a throwaway PostgreSQL"
 # ----------------------------------------------------------------------------------------------------------
 docker build -t "$IMAGE" ./projectiond
+# THE IMAGE AS AN IMMUTABLE REFERENCE, WHICH IS WHAT THE SHIPPED COMMAND ASKS FOR AND WHAT `upgrade` RECORDS.
+#
+# A locally built image has no repository digest, and `check_image_shape` refuses `:latest` outright and warns
+# on any other bare tag — for the right reason: two runs of an appliance whose tag can move are not provably
+# runs of the same thing. The image ID is exact bytes on this host, so it is what the soak hands over and what
+# every evidence line about this candidate's image means.
+ALPHA_IMAGE_REF="$(docker inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null || true)"
+test -n "$ALPHA_IMAGE_REF" || die "the built image has no id, so nothing pinned could be run"
 docker compose -f "$COMPOSE_FILE" up -d --wait postgres
 npx tsx src/ops/migrate-cli.ts
 docker network create "$NETWORK" >/dev/null 2>&1 || true
@@ -1621,20 +1684,64 @@ test "$(node "$REL/out/jq.cjs" outcome < "$WORK/out/publish-1.json")" = "publish
 # measured either, because `await_path` is a metadata operation the daemon answers from memory with no
 # provider contact at all.
 DAEMON_STARTED_MS=""
+
+# ----------------------------------------------------------------------------------------------------------
+# THE SHIPPED OPERATOR COMMAND, WHICH IS THE ONLY THING IN THIS FILE THAT OWNS A DAEMON OR A MOUNT
+# ----------------------------------------------------------------------------------------------------------
+# IT IS DEFINED HERE, ABOVE ITS FIRST CALLER, AND A REAL DEFECT IS WHY THAT IS WORTH A LINE. A shell function
+# does not exist until its definition has been executed, and this gate has already lost an entire assertion to
+# a helper defined two hundred lines below the call site that needed it — `container_for`, which wrote
+# `UNREADABLE` three times into the baseline every arm was then compared against.
+#
+# THE ENVIRONMENT IS THE COMMAND'S OWN CONTRACT, NAME FOR NAME. The previous version of this function set
+# `PROJECTIOND_ALPHA_CACHE` and `_MANIFEST` where the command requires `_CACHE_DIR` and `_MANIFEST_DIR`, and
+# set no `_MEDIA_ROOT`, `_SECRETS_DIR` or `_CONFIG` at all — so every verb of S1, S2, S7, S8 and S9 exited
+# REFUSED and five of the ten steps measured nothing. The rehearsal's A4 compares these assignments against
+# that command's own `REQUIRED_*` lists, out of its bytes, so the two cannot drift apart again.
+#
+# `PROJECTIOND_ALPHA_POLL` IS THE HALF OF THE RECONCILIATION THAT IS NOT A RENAME. §4's recovery budgets are
+# derived as one pointer poll plus one read deadline, so an appliance measured against them has to be running
+# at the interval they assume; the shipped profile used to hard-code `5s` and could not express it, which is
+# the reason this gate ever ran a daemon of its own. The value handed over is the same `DAEMON_POLL` the
+# budgets are derived from, and the shipped command validates it and refuses anything outside its bound.
+#
+# `PROJECTIOND_ALPHA_STATE_DIR` IS DELIBERATELY NOT SET. The appliance's default state directory is what an
+# operator gets, so it is what this soak measures.
+ALPHA_STATUS=0
+alpha() {
+  local verb="$1"
+  set +e
+  PROJECTIOND_ALPHA_MANIFEST_DIR="$WORK/manifest" \
+  PROJECTIOND_ALPHA_MEDIA_ROOT="$WORK/media" \
+  PROJECTIOND_ALPHA_CACHE_DIR="$WORK/cache" \
+  PROJECTIOND_ALPHA_MOUNT="$WORK/mnt" \
+  PROJECTIOND_ALPHA_SECRETS_DIR="$WORK/daemon-inputs" \
+  PROJECTIOND_ALPHA_CONFIG="$WORK/config.json" \
+  PROJECTIOND_ALPHA_POLL="$DAEMON_POLL" \
+  PROJECTIOND_ALPHA_IMAGE="$ALPHA_IMAGE_REF" \
+    bash deploy/projection-alpha.sh "$verb" > "$WORK/out/alpha-$verb-${CYCLE_ID:-setup}.txt" 2>&1
+  ALPHA_STATUS=$?
+  set -e
+  return 0
+}
+
+# BRINGING THE SUBJECT UP IS `install` THEN `start`, AND NOTHING ELSE IN THIS FILE MAY MOUNT ANYTHING.
+#
+# WHY THE SETUP DOES IT AT ALL, WHEN S2 ALSO DOES. Everything between here and the first cycle — three real
+# libraries scanned, generation 2 published, the operator's object proved decodable — needs a namespace to
+# read. So the appliance is brought up here the way an operator brings it up, and cycle 1's S2 then runs the
+# same four verbs over an appliance that is already serving, which is exactly the question §3 wrote S2 to ask:
+# an appliance that is idempotent only when nothing is using it is not idempotent.
 start_daemon() {
   DAEMON_STARTED_MS="$(date +%s%3N)"
-  docker run -d --name "$MOUNT_CONTAINER" \
-    --network "$NETWORK" --user 0:0 \
-    --cap-drop ALL --cap-add SYS_ADMIN --security-opt apparmor:unconfined \
-    --device /dev/fuse:/dev/fuse \
-    -v "$WORK/manifest:/var/lib/projectiond/manifest:ro" \
-    -v "$WORK/media:/var/lib/projectiond/media:ro" \
-    -v "$WORK/cache:/var/lib/projectiond/cache" \
-    -v "$WORK/daemon-inputs:/var/lib/projectiond/inputs:ro" \
-    -v "$WORK/config.json:/etc/projectiond/config.json:ro" \
-    -v "$WORK/mnt:/mnt/projection:rshared" \
-    "$IMAGE" --config /etc/projectiond/config.json --poll "$DAEMON_POLL" \
-    --strict-direct-mount --auto-remount --auto-recover >/dev/null
+  WE_OWN_THE_APPLIANCE=1
+  alpha install || true
+  test "$ALPHA_STATUS" -eq 0 || { sed 's/^/  /' "$WORK/out/alpha-install-${CYCLE_ID:-setup}.txt" >&2 || true
+    die "the shipped install refused, so this run has no appliance to measure"; }
+  alpha start || true
+  test "$ALPHA_STATUS" -eq 0 || { sed 's/^/  /' "$WORK/out/alpha-start-${CYCLE_ID:-setup}.txt" >&2 || true
+    logs_tail "$MOUNT_CONTAINER"
+    die "the shipped start did not bring the appliance to readiness"; }
   local up=0 n=0
   while [ "$n" -lt 120 ]; do
     if [ "$(docker inspect -f '{{.State.Running}}' "$MOUNT_CONTAINER" 2>/dev/null)" = "true" ]; then
@@ -1672,6 +1779,8 @@ start_resolver() {
     n=$((n + 1)); sleep 0.5
   done
   test "$ready" -eq 1 || { logs_tail "$RESOLVER_CONTAINER"; die "the resolver never came up"; }
+  RESOLVER_DAEMON_ID="$(docker inspect -f '{{.Id}}' "$MOUNT_CONTAINER" 2>/dev/null || true)"
+  RESOLVER_MANAGED=1
 }
 
 stop_resolver() {
@@ -1799,15 +1908,12 @@ await_recovery() {
 }
 recovered() { [ -n "$RECOVERY_MS" ]; }
 
-# A daemon restart is three steps, always in this order, because the resolver lives in the daemon's network
-# namespace and a restarted daemon has a new one.
-# HOW LONG THE DAEMON IS GIVEN TO PUT ITS OWN MOUNT DOWN. It is generously above everything the shipped
-# shutdown path can spend — one unmount syscall, one mount-table read, one detach and a bounded wait for a
-# request loop a consumer may still be holding — so a stop that runs out of time is a product fault to
-# investigate rather than an instrument that did not wait.
-DAEMON_STOP_TIMEOUT_S="${DAEMON_STOP_TIMEOUT_S:-25}"
-
-# THE OUTGOING DAEMON'S OWN NUMBERS, SET BY `stop_daemon` AND READ BY THE ARM THAT ASKED FOR THE RESTART.
+# HOW LONG THE DAEMON IS GIVEN TO PUT ITS OWN MOUNT DOWN IS NO LONGER THIS GATE'S NUMBER, AND THAT IS THE
+# POINT OF §13. `deploy/projection-alpha.sh stop` is `compose down`, whose grace period is the shipped one; a
+# gate that supplied its own would be measuring a shutdown no operator ever gets. What is still this gate's
+# business is what the mount point looks like afterwards, and the settle loop below is that.
+#
+# THE OUTGOING DAEMON'S OWN NUMBERS, SET BY `stop_daemon` AND READ BY THE STEP THAT ASKED FOR THE STOP.
 STOP_LAYERS_BEFORE=""; STOP_LAYERS_AFTER=""
 
 # STOPPING THE DAEMON THE WAY THE APPLIANCE STOPS IT, AND THE REASON IS §11.4 #16.
@@ -1832,13 +1938,15 @@ STOP_LAYERS_BEFORE=""; STOP_LAYERS_AFTER=""
 # operator on purpose — it prints `clear-stale-mount` instead. §8.7 records that as the limitation it is.
 stop_daemon() {
   STOP_LAYERS_BEFORE="$(count_our_layers)"
-  docker stop -t "$DAEMON_STOP_TIMEOUT_S" "$MOUNT_CONTAINER" >/dev/null 2>&1 || true
   # ITS OWN ACCOUNT, TAKEN WHILE THE CONTAINER STILL EXISTS. `docker logs` dies with the container, and the
   # lines this gate most needs from a stop — what the daemon did with its own mount on the way out — are
   # written in the last second of its life. §11.3.5 named the absence of exactly this as the one diagnostic
-  # that would have settled #16 without a second run.
+  # that would have settled #16 without a second run. It is taken BEFORE the stop for the same reason: the
+  # shipped `stop` is a `compose down`, which removes the container and its log together.
   docker logs "$MOUNT_CONTAINER" > "$WORK/out/daemon-previous.log" 2>&1 || true
-  docker rm -f "$MOUNT_CONTAINER" >/dev/null 2>&1 || true
+  # AND THE STOP ITSELF IS THE SHIPPED VERB, NOT A DOCKER COMMAND SHAPED LIKE IT. §13: the operator command is
+  # the only owner of this daemon, on the way down as much as on the way up.
+  alpha stop || true
   # THE COUNT IS SETTLED RATHER THAN SNAPPED, AND THE LOOP CAN ONLY EVER END EARLIER THAN ITS BOUND. A mount
   # namespace is torn down when the last process in it exits, and `docker stop` returning is not by itself a
   # promise that the host's mount table has caught up. So this waits — briefly — for the count to reach the
@@ -1855,11 +1963,39 @@ stop_daemon() {
   done
 }
 
-restart_daemon() {
+# TAKING THE SUBJECT DOWN AND BRINGING IT BACK, AND THE RESOLVER IS PART OF BOTH BECAUSE OF WHERE IT LIVES.
+#
+# THE RESOLVER RUNS INSIDE THE DAEMON'S NETWORK NAMESPACE — `--network container:<daemon>` — which is what
+# makes it loopback-only and unreachable from anything else on the host. A namespace dies with the container
+# that owns it, so a shipped `stop` is also the death of the resolver, and a shipped `start` produces a
+# namespace the old resolver container can never rejoin. This was invisible while the gate ran a daemon of its
+# own that the shipped verbs could not touch; the moment the operator command became the sole owner it became
+# the difference between a cycle 2 that can resolve and one that cannot.
+alpha_stop_subject() {
   stop_resolver
   stop_daemon
-  start_daemon
+}
+alpha_start_subject() {
+  alpha start || true
+  test "$ALPHA_STATUS" -eq 0 || { sed 's/^/  /' "$WORK/out/alpha-start-${CYCLE_ID:-setup}.txt" >&2 || true
+    die "the shipped start did not bring the appliance back"; }
   start_resolver
+}
+
+# ...AND THE ONE THAT ASKS RATHER THAN ASSUMES. `upgrade` and `rollback` are `compose up -d`, which recreates
+# the container only when something about it has changed — so whether the resolver's namespace survived them
+# is a fact to read, not a rule to apply. This compares the daemon container this resolver was started against
+# with the one that is there now, and cycles the resolver when they differ or when the resolver has died.
+ensure_resolver() {
+  [ "$RESOLVER_MANAGED" = "1" ] || return 0
+  local now
+  now="$(docker inspect -f '{{.Id}}' "$MOUNT_CONTAINER" 2>/dev/null || true)"
+  [ -n "$now" ] || return 0
+  if [ "$now" != "$RESOLVER_DAEMON_ID" ] \
+     || [ "$(docker inspect -f '{{.State.Running}}' "${RESOLVER_CONTAINER:-none}" 2>/dev/null)" != "true" ]; then
+    stop_resolver
+    start_resolver
+  fi
 }
 
 record() { node "$REL_GATE_ROOT/record-$$.cjs" "$RESULTS_REL" "$@"; }
@@ -2773,64 +2909,19 @@ verify_after_cycle() {
 # THE ONE INJECTED FAULT A CYCLE CARRIES — S5, which is Phase 7 R1s own injector
 # ----------------------------------------------------------------------------------------------------------
 
-# THE CORPSE CHECK, from a sibling container, the same way the daemon's own probe looks at it: statfs — which
-# FUSE never caches, so a dead connection answers ENOTCONN immediately — plus a mountinfo read that must still
-# name the mount `fuse.projectiond`. A stale mount keeps statting fine while its attribute cache is warm, so a
-# stat-based check would prove nothing.
-corpse_is_stale() {
-  local stderr count
-  if docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" df -P /mnt >/dev/null 2>&1; then
-    echo "not-stale"; return 0
-  fi
-  stderr="$(docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" df -P /mnt 2>&1 || true)"
-  # A MESSAGE IS NOT A CONTRACT, THE ERRNO IS — and shell cannot read one numerically here, so what is matched
-  # is the SET of libc spellings of ENOTCONN. The pinned verify image is musl and says "Socket not connected";
-  # glibc says "Transport endpoint is not connected". A wrong errno matches neither.
-  case "$(printf '%s' "$stderr" | tr '[:upper:]' '[:lower:]')" in
-    *"transport endpoint is not connected"*) ;;
-    *"socket not connected"*)                ;;
-    *) echo "wrong-errno"; return 0 ;;
-  esac
-  count="$(docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" \
-    sh -c "grep -c 'fuse.projectiond' /proc/self/mountinfo || true")"
-  [ "${count:-0}" -ge 1 ] || { echo "not-in-mountinfo"; return 0; }
-  echo "stale"
-}
-
-# THE SECOND PROJECTIOND, WHICH IS HOW A CORPSE IS PRODUCED WITHOUT KILLING THE SUBJECT.
+# NEITHER A CORPSE CHECK NOR A SECOND PROJECTIOND LIVES HERE ANY MORE, AND THE ABSENCE IS THE DECISION.
 #
-# It is `RC4`'s own injector and the reasoning is Phase 6's: a second daemon is stacked ABOVE the subject and
-# ITS connection is torn down, so what the subject OBSERVES is `stale-projectiond` while its own serve loop
-# never notices — which is the whole point. That is the fault the SERVE supervisor cannot see, and therefore
-# the one the recovery loop exists for.
-BLOCKER_CONTAINER="projection-p8-blocker-$$"
-start_blocker() {
-  docker run -d --name "$BLOCKER_CONTAINER" \
-    --network "$NETWORK" --user 0:0 \
-    --cap-drop ALL --cap-add SYS_ADMIN --security-opt apparmor:unconfined \
-    --device /dev/fuse:/dev/fuse \
-    -v "$WORK/manifest:/var/lib/projectiond/manifest:ro" \
-    -v "$WORK/media:/var/lib/projectiond/media:ro" \
-    -v "$WORK/blocker-cache:/var/lib/projectiond/cache" \
-    -v "$WORK/daemon-inputs:/var/lib/projectiond/inputs:ro" \
-    -v "$WORK/config.json:/etc/projectiond/config.json:ro" \
-    -v "$WORK/mnt:/mnt/projection:rshared" \
-    "$IMAGE" --config /etc/projectiond/config.json --poll 60s >/dev/null
-  # BOTH GUARDS: the count of OUR mounts at the path goes up AND the top of the stack is a different mount.
-  # Either alone can be satisfied by something that is not the blocker landing.
-  local before="$1" landed=0 n=0
-  while [ "$n" -lt 120 ]; do
-    if [ "$(count_our_layers)" -gt "$before" ]; then landed=1; break; fi
-    n=$((n + 1)); sleep 0.5
-  done
-  if [ "$landed" -ne 1 ]; then
-    docker logs "$BLOCKER_CONTAINER" 2>&1 | tail -10 | sed 's/^/  blocker: /' >&2 || true
-    docker rm -f "$BLOCKER_CONTAINER" >/dev/null 2>&1 || true
-    return 1
-  fi
-  return 0
-}
-stop_blocker() { docker rm -f "$BLOCKER_CONTAINER" >/dev/null 2>&1 || true; }
+# WHAT WAS HERE. `corpse_is_stale`, and `start_blocker`/`stop_blocker` — RC4's injector, which stacks a
+# SECOND daemon above the subject at the same mount point and tears its connection down. All three were
+# carried over whole from Phase 7 and NONE of them was ever called by this gate: Phase 8 injects exactly one
+# fault, S5, and S5 removes the mount rather than stacking over it.
+#
+# WHY DEAD CODE WAS WORTH DELETING RATHER THAN LEAVING. §13 makes the shipped operator command the SOLE
+# owner of the subject daemon and its mount point, and `start_blocker` is a `docker run` that mounts
+# `rshared` at exactly that mount point. A reader — or an audit reading these bytes — cannot tell an
+# unreachable second owner from a reachable one, and a rule that holds only because nothing calls the code
+# is a rule one call undoes. The injector still exists where it is used and measured:
+# `deploy/projection-recovery-gate.sh` RC4.
 
 # HOW LONG THE SUPERVISOR IS GIVEN TO ACT, AND IT IS THE CONTRACT'S OWN BUDGET RATHER THAN A ROUND NUMBER.
 # One extra second of polling slack is added so the LAST poll of the window is inside it; the budget itself is
@@ -3072,21 +3163,6 @@ intervened() {
 # ----------------------------------------------------------------------------------------------------------
 # THE TEN STEPS OF ONE CYCLE
 # ----------------------------------------------------------------------------------------------------------
-alpha() {
-  # THE SHIPPED OPERATOR COMMAND, RUN THE WAY AN OPERATOR RUNS IT, with this run's own environment and nothing
-  # else. Its output is kept so a step can assert on what the operator would actually have seen.
-  local verb="$1"
-  set +e
-  PROJECTIOND_ALPHA_MOUNT="$WORK/mnt" \
-  PROJECTIOND_ALPHA_CACHE="$WORK/cache" \
-  PROJECTIOND_ALPHA_MANIFEST="$WORK/manifest" \
-  PROJECTIOND_ALPHA_IMAGE="$IMAGE" \
-    bash deploy/projection-alpha.sh "$verb" > "$WORK/out/alpha-$verb-$CYCLE_ID.txt" 2>&1
-  ALPHA_STATUS=$?
-  set -e
-  return 0
-}
-
 step_S1_preflight() {
   # PREFLIGHT, ASKED OF A MOUNT POINT THAT HAS BEEN USED BEFORE. On cycle 1 that is a fresh directory; on
   # cycles 2 and 3 it is one this soak has already mounted, unmounted and remounted, which is the state no
@@ -3122,6 +3198,7 @@ step_S2_install_start_status() {
   alpha install; installed="$ALPHA_STATUS"
   alpha start; first="$ALPHA_STATUS"
   alpha start; second="$ALPHA_STATUS"
+  ensure_resolver
   record "P8-S2-install-idempotent:$CYCLE_ID" bool "$( [ "$installed" -eq 0 ] && echo 1 || echo 0 )" "" \
     "the shipped install exited $installed over an appliance this soak has already installed once, with \
 three media servers holding the mount; an install that only works when nothing is using it is not idempotent" \
@@ -3196,16 +3273,16 @@ step_S7_stop_start() {
   # THE ORDINARY PATH, AND THE ONE PHASE 7 §12.4 #2 IS ABOUT. The three servers are not touched, and what is
   # asserted is that the stop left nothing of ours at the mount point and the start brought it back.
   local before after started
-  before="$(count_our_layers)"
-  alpha stop
-  local settle=0
-  after="$(count_our_layers)"
-  while [ "$settle" -lt 20 ] && [ "$after" -gt "$MOUNT_LAYER_FLOOR" ]; do
-    sleep 0.5; settle=$(( settle + 1 )); after="$(count_our_layers)"
-  done
+  # THE STOP AND THE START ARE THE SHIPPED VERBS, TAKEN THROUGH THE ONE PAIR OF HELPERS THAT ALSO CARRY THE
+  # RESOLVER. That is not bookkeeping: the resolver lives in the daemon's network namespace, so a stop that
+  # left it running would leave a container bound to a dead sandbox and the NEXT cycle's S3 and S4 would fail
+  # on a provider that had never been unreachable.
+  alpha_stop_subject
+  before="$STOP_LAYERS_BEFORE"
+  after="$STOP_LAYERS_AFTER"
   record "P8-S7-stop-left-no-layer:$CYCLE_ID" eq "$after" "$MOUNT_LAYER_FLOOR" \
     "of ours at the mount point after the shipped stop (it held $before while it was running)" || true
-  alpha start
+  alpha_start_subject
   started=0
   await_readable 240 && started=1
   record "P8-S7-started-again:$CYCLE_ID" bool "$started" "" \
@@ -3260,6 +3337,7 @@ step_S9_upgrade_rollback() {
   target_before=""
   [ -s "$rollback_target" ] && target_before="$(cat "$rollback_target" 2>/dev/null || true)"
   alpha upgrade
+  ensure_resolver
   local target_after
   target_after=""
   [ -s "$rollback_target" ] && target_after="$(cat "$rollback_target" 2>/dev/null || true)"
@@ -3267,6 +3345,7 @@ step_S9_upgrade_rollback() {
     "$( [ -n "$target_after" ] && echo 1 || echo 0 )" "" \
     "upgrade recorded a rollback target before it changed anything: '${target_after:-absent}'" || true
   alpha rollback
+  ensure_resolver
   local readable=0
   await_readable 240 && readable=1
   record "P8-S9-rollback-returned:$CYCLE_ID" bool "$readable" "" \
@@ -3435,8 +3514,12 @@ step "TEARDOWN — the namespace goes away with three media servers holding it"
 # ----------------------------------------------------------------------------------------------------------
 docker rm -f "$PLEX_CONTAINER" "$JF_CONTAINER" "$EMBY_CONTAINER" >/dev/null 2>&1 || true
 stop_resolver
-docker stop -t 30 "$MOUNT_CONTAINER" >/dev/null 2>&1 || true
+# THE APPLIANCE GOES DOWN THE WAY AN OPERATOR TAKES IT DOWN, and the fallbacks below are only for a `stop`
+# that did not finish — they are not a second owner, they are the cleanup of a failure.
+alpha stop || true
 docker rm -f "$MOUNT_CONTAINER" >/dev/null 2>&1 || true
+docker network rm "$ALPHA_NETWORK" >/dev/null 2>&1 || true
+WE_OWN_THE_APPLIANCE=0
 docker compose -f "$COMPOSE_FILE" down -v --remove-orphans >/dev/null 2>&1 || true
 
 # ----------------------------------------------------------------------------------------------------------

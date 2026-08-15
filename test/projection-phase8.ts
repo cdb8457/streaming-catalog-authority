@@ -357,6 +357,201 @@ test('the gate injects no SIGKILL, reboots nothing and never writes the operator
     'the gate writes the operator endpoint file');
 });
 
+// ---------------------------------------------------------------------------------------------------------
+console.log('\nsection 13 — one owner, and the contract and the instrument agree about which one');
+// ---------------------------------------------------------------------------------------------------------
+//
+// WHY THESE PINS EXIST AT ALL. The blocker §12 recorded was not a bug in a line; it was a STRUCTURAL
+// disagreement between §3 and the gate that ran for two sessions without anything being able to see it. §3
+// said five of the ten steps were the shipped operator command; the gate ran a daemon of its own at the same
+// mount point and handed that command an environment it refused outright. Both halves were readable from the
+// bytes the whole time and no suite read them.
+//
+// SO EVERY PIN BELOW READS BYTES RATHER THAN PROSE. The contract is checked for the decision; the gate for
+// whether it takes it; the shipped command and its profile for whether they can express what §4's budgets
+// assume. A pin over a paragraph would pass on a document that describes a design nothing implements, which
+// is precisely the failure this section was written to close.
+
+const ALPHA = read('deploy/projection-alpha.sh');
+const ALPHA_PROFILE = read('docker-compose.projection-alpha.yml');
+const REHEARSAL = read('deploy/projection-phase8-rehearsal.sh');
+const ACCEPTANCE = read('deploy/projection-alpha-acceptance.sh');
+
+/** The gate with every whole-line comment removed. A rule about behaviour must be read from behaviour. */
+const gateCode = gate.split('\n').filter((line) => !line.trim().startsWith('#')).join('\n');
+
+test('the contract carries the superseding design, and it supersedes rather than erases', () => {
+  const document = read(CONTRACT);
+  assert(/^## 13\. The superseding design/m.test(document),
+    'the contract has no §13, so the ownership decision is taken nowhere a reader can check it');
+  assert(/SOLE owner of the subject `projectiond` daemon/.test(document),
+    'the contract no longer names the shipped operator command as the sole owner');
+  // THE SUPERSEDED DESIGN IS KEPT WHOLE. This repository records what a clause SAID and marks it superseded;
+  // a document that deleted §12's reasoning would be one nobody could audit the decision from.
+  assert(/THE TWO-OWNER DESIGN IS SUPERSEDED AND IS NOT DELETED/.test(document),
+    'the contract no longer keeps the superseded two-owner design');
+  assert(document.includes('# **NO-GO.**'),
+    'the previous readiness decision has been deleted rather than superseded');
+  // AND THE THRESHOLDS DID NOT MOVE, WHICH IS WHAT §4 FORBIDS ABOVE EVERYTHING ELSE.
+  assert(/NO\s+THRESHOLD IN §4 MOVES\. NO CYCLE IS SHORTENED/.test(document.replace(/\n/g, ' ')),
+    'the contract no longer states that §13 moves no threshold and shortens no cycle');
+});
+
+test('the gate owns no daemon: it binds the projected path into nothing of its own', () => {
+  // THE SEARCH IS FOR THE BIND AND NOT FOR A CONTAINER NAME. A name can be renamed; a bind of the projected
+  // path into a container is a second owner whatever it is called.
+  const owners = gateCode.split('\n').filter((line) => /^\s*-v .*:\/mnt\/projection:rshared/.test(line));
+  assertEq(owners.length, 0,
+    `the gate binds the projected path into ${owners.length} container(s) of its own, so one mount point `
+    + 'would have two owners');
+  // ...AND THE DEAD INJECTOR IS GONE RATHER THAN MERELY UNREACHABLE. A rule that holds only because nothing
+  // calls the code is a rule one call undoes.
+  assert(!/start_blocker|stop_blocker\(\)|corpse_is_stale\(\)/.test(gateCode),
+    'the second-daemon injector is back in the Phase 8 gate, reachable or not');
+});
+
+test('the gate drives the shipped verbs, and its subject is the container the shipped profile names', () => {
+  assert(/^MOUNT_CONTAINER="projection-alpha-projectiond"$/m.test(gate),
+    'the gate watches a container that is not the one the shipped compose profile brings up');
+  for (const verb of ['install', 'start', 'stop', 'upgrade', 'rollback']) {
+    assert(new RegExp(`^\\s*alpha ${verb}\\b`, 'm').test(gateCode),
+      `the gate never invokes the shipped ${verb}, so §3's steps are not the ones the contract defines`);
+  }
+  // AND IT REFUSES A NAME THAT IS ALREADY TAKEN, rather than stopping, replacing or adopting an appliance it
+  // did not install. This is a safety rule before it is a hygiene one: the name is fixed, so a gate that
+  // adopted one would eventually adopt a production appliance.
+  assert(/an appliance is already installed on this host as/.test(gate),
+    'the gate no longer refuses to run when the operator appliance name is already taken');
+});
+
+test('the gate hands the shipped command exactly the environment that command defines', () => {
+  // THE TWO LISTS ARE READ FROM THE TWO FILES AND COMPARED, which is the check the rehearsal makes at run
+  // time and this one makes everywhere. §11.3 #11 is what happens without it: `_CACHE` for `_CACHE_DIR`,
+  // `_MANIFEST` for `_MANIFEST_DIR`, and three required names absent entirely.
+  // THE ASSIGNMENT IS JOINED BEFORE IT IS READ. Two of these lists are continued over a second line with a
+  // trailing backslash, and a reader that stopped at the first newline would see a shorter environment
+  // contract than the command actually has — which is the same class of mistake as the defect it pins.
+  const backslash = String.fromCharCode(92);
+  const listed = (name: string, source: string): string[] => {
+    const lines = source.split(String.fromCharCode(10));
+    const start = lines.findIndex((line) => line.startsWith(`${name}=`));
+    if (start === -1) return [];
+    let joined = '';
+    for (let index = start; index < lines.length; index += 1) {
+      const line = lines[index] ?? '';
+      joined += `${line} `;
+      if (!line.endsWith(backslash)) break;
+    }
+    return joined.match(/PROJECTIOND_ALPHA_[A-Z_]+/g) ?? [];
+  };
+  const required = [...listed('REQUIRED_DIRS', ALPHA), ...listed('REQUIRED_FILES', ALPHA),
+    ...listed('REQUIRED_OTHER', ALPHA)];
+  const optional = listed('OPTIONAL_INPUTS', ALPHA);
+  assert(required.length >= 7, `the shipped command declares only ${required.length} required inputs`);
+  assert(optional.length >= 1, 'the shipped command declares no optional bounded inputs at all');
+  const body = /^alpha\(\) \{[\s\S]*?^\}$/m.exec(gate);
+  assert(body !== null, 'the gate has no alpha() function, so it invokes the shipped command nowhere');
+  const supplied = new Set(body[0].match(/PROJECTIOND_ALPHA_[A-Z_]+(?==)/g) ?? []);
+  const missing = required.filter((name) => !supplied.has(name));
+  assertEq(missing.length, 0, `the gate sets none of: ${missing.join(', ')}`);
+  const accepted = new Set([...required, ...optional]);
+  const unknown = [...supplied].filter((name) => !accepted.has(name));
+  assertEq(unknown.length, 0, `the gate sets names the shipped command defines nowhere: ${unknown.join(', ')}`);
+});
+
+test('the shipped profile can express the configuration §4s budgets assume', () => {
+  // §12's other half. Renaming the variables was never sufficient: an appliance running at the profile's
+  // hard-coded 5s with no strict-direct-mount is not the appliance Phase 7 measured, so a soak driving the
+  // shipped command would have measured a differently configured daemon from the product being claimed.
+  assert(ALPHA_PROFILE.includes('--poll=${PROJECTIOND_ALPHA_POLL:-5s}'),
+    'the alpha profile no longer takes the poll interval as a bounded operator input');
+  assert(/^\s+- --strict-direct-mount$/m.test(ALPHA_PROFILE),
+    'the alpha profile no longer passes --strict-direct-mount, which every arm of Phase 7 measured');
+  // THE DEFAULT IS THE APPLIANCE AN OPERATOR ALREADY HAD. A bounded input whose default moved would be a
+  // product change wearing a compatibility argument.
+  assert(ALPHA_PROFILE.includes(':-5s}'), 'the poll default is no longer the 5s this profile always carried');
+  assert(ALPHA.includes('POLL_DEFAULT="5s"'), 'the shipped command no longer defaults the poll to 5s');
+  // AND THE GATE HANDS OVER THE SAME NUMBER ITS BUDGETS ARE DERIVED FROM, rather than a second spelling of it.
+  assert(gate.includes('PROJECTIOND_ALPHA_POLL="$DAEMON_POLL"'),
+    'the gate configures the appliance at an interval its own budgets do not assume');
+  assert(/DAEMON_POLL="\$\(\( P8_POLL_INTERVAL_MS \/ 1000 \)\)s"/.test(gate),
+    'the gate no longer derives the poll flag from the imported poll interval');
+});
+
+test('the poll interval is validated and bounded, and every invalid spelling is refused', () => {
+  assert(ALPHA.includes('check_poll_shape'), 'the shipped command no longer validates the poll interval');
+  assert(/POLL_MIN_SECONDS=1\b/.test(ALPHA) && /POLL_MAX_SECONDS=60\b/.test(ALPHA),
+    'the poll interval is no longer bounded at both ends');
+  assert(ALPHA.includes('must name whole seconds'),
+    'a poll interval that is not whole seconds is no longer refused, so the gate and the product could '
+    + 'disagree about the same number');
+  // THE VALIDATION HAPPENS IN THE VERB THAT CHANGES NOTHING, which is where an operator can afford to learn.
+  const preflight = /^preflight\(\) \{[\s\S]*?^\}$/m.exec(ALPHA);
+  assert(preflight !== null, 'the shipped command has no preflight');
+  assert(preflight[0].includes('check_poll_shape') && preflight[0].includes('check_state_dir_shape'),
+    'the bounded inputs are not validated by preflight, so an operator finds out from a restart loop');
+});
+
+test('ownership metadata lives OUTSIDE the namespace it governs — defect #14', () => {
+  // THE ONE-LINE STATEMENT OF THE DEFECT: a marker written into a directory this appliance mounts OVER is a
+  // marker this appliance can never read again, and the guard that could not see it aimed a write at a
+  // read-only filesystem. `install` therefore succeeded exactly once and failed on every later invocation
+  // while the appliance was running.
+  assert(/^MARKED_DIRS="PROJECTIOND_ALPHA_CACHE_DIR"$/m.test(ALPHA),
+    'the marked-directory list is not the cache alone, so a marker can land under the mount point again');
+  const install = /^install_appliance\(\) \{[\s\S]*?^\}$/m.exec(ALPHA);
+  assert(install !== null, 'the shipped command has no install');
+  assert(install[0].includes('for name in $MARKED_DIRS'),
+    'install writes a marker into every OWNED directory again, mount point included');
+  assert(!install[0].includes('for name in $OWNED_DIRS'),
+    'install still iterates the OWNED list when writing markers');
+  assert(install[0].includes('write_ownership_record'),
+    'install writes no durable ownership record outside the projected namespace');
+  // ATOMIC, RESTRICTIVE, AND EXACT.
+  assert(/mv -f "\$tmp" "\$record"/.test(ALPHA), 'the ownership record is no longer written atomically');
+  assert(/chmod 700 "\$dir"/.test(ALPHA) && /chmod 600 "\$tmp"/.test(ALPHA),
+    'the ownership record or its directory is no longer written with restrictive permissions');
+  assert(ALPHA.includes("printf 'foreign'"),
+    'the ownership check no longer has a FOREIGN answer, so a record naming another installation could be '
+    + 'adopted');
+  assert(/OWNERSHIP_RECORD_VERSION="2"/.test(ALPHA), 'the ownership record carries no version');
+  // NOTHING IS EVER WRITTEN INTO OR UNMOUNTED FROM THE PROJECTED TREE TO RECOVER A MARKER.
+  // AN UNMOUNT THIS COMMAND RUNS, NOT ONE IT PRINTS. `preflight` deliberately PRINTS `umount -l <your mount
+  // point>` as the `clear-stale-mount` remediation and refuses to perform it — that refusal is the product
+  // contract, and a sweep that read the printed instruction as the act would fail on being correct. What is
+  // forbidden is a line whose COMMAND is an unmount.
+  const alphaLines = ALPHA.split(String.fromCharCode(10))
+    .filter((line) => !line.trim().startsWith('#'));
+  const performed = alphaLines.filter((line) => /^\s*(sudo\s+)?(umount|fusermount3?)\b/.test(line));
+  assertEq(performed.length, 0,
+    `the shipped command now PERFORMS an unmount: ${performed.join(' | ')}`);
+  assert(ALPHA.includes('is inside the mount point, where this appliance'),
+    'a state directory inside the mount point is no longer refused');
+});
+
+test('the redesign carries positive AND negative regressions, and the controls are named', () => {
+  // A CONTROL THAT IS NOT RUN IS A CLAIM. Each of these is a specific refusal the rehearsal or the install
+  // matrix must obtain, and §13.6 is the table they come from.
+  for (const needle of ['A6b CONTROL', 'A7 ', 'A8 ', 'SOLE OWNERSHIP',
+    'PROJECTIOND_ALPHA_POLL "0s"', 'PROJECTIOND_ALPHA_POLL "1500ms"',
+    'PROJECTIOND_ALPHA_STATE_DIR "$WORK/mnt/state"',
+    'naming a DIFFERENT installation is REFUSED']) {
+    assert(REHEARSAL.includes(needle), `the rehearsal no longer exercises: ${needle}`);
+  }
+  // AND THE POSITIVE CONTROL THAT MAKES THE REFUSALS ATTRIBUTABLE. Before the consumers are attached,
+  // preflight refuses everything for a reason that has nothing to do with the input under test.
+  const validAt = REHEARSAL.indexOf('C1a with every input valid');
+  const firstRefusalAt = REHEARSAL.indexOf('refuses_with "C1a');
+  assert(validAt > 0 && firstRefusalAt > validAt,
+    'the rehearsal no longer proves a VALID environment passes before it proves invalid ones are refused, '
+    + 'so all seven refusals could be vacuous');
+  for (const arm of ['AA12', 'AA13', 'AA14']) {
+    assert(ACCEPTANCE.includes(arm), `the install matrix no longer holds ${arm}`);
+  }
+  assert(ACCEPTANCE.includes('install FAILED over a serving appliance'),
+    'the install matrix no longer asserts that install is idempotent while the appliance is SERVING');
+});
+
 test('this suite is wired into the offline inventory, so a rename cannot silently end the coverage', () => {
   assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/projection-phase8.ts'), 'suite in npm test');
   const inventory = JSON.parse(read('test/suite-inventory.json')) as {

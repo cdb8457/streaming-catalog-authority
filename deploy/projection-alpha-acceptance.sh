@@ -247,6 +247,88 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+step "AA12 — install is idempotent WHILE THE APPLIANCE IS SERVING, which is the half AA3 could not ask"
+# ----------------------------------------------------------------------------------------------------------
+# WHAT THIS ARM EXISTS BECAUSE OF. AA3 runs `install`, `install`, `start`, `start` — so both installs happen
+# while the mount point is still a plain directory, and the question "is install idempotent on day two?" was
+# never asked by anything. The Phase 8 provider-free rehearsal asked it on the real host and the answer was
+# NO: `OWNED_DIRS` included the mount point, `install` wrote a marker into every owned directory, the FUSE
+# namespace was mounted over it, the `[ ! -e ... ]` guard was therefore true, and the write hit a read-only
+# filesystem. `Read-only file system`, `set -e`, exit 1 — for an appliance that was working perfectly.
+#
+# THE REPAIR IS THAT OWNERSHIP MOVED OUT OF THE NAMESPACE IT GOVERNS, and this arm is what stops it moving
+# back. It asserts the successful install, the record where the repair puts it, its permissions, and — the
+# part that matters most — that NOTHING was written under the mount point to get there.
+alpha install > "$WORK/out/install-3.log" 2>&1 || die "AA12: install FAILED over a serving appliance, which \
+is the defect this arm exists for: an appliance that is idempotent only when nothing is using it is not \
+idempotent"
+AA12_RECORD="$WORK/cache/.projection-alpha-state/owned"
+AA12_RECORD_MOUNT="$(sed -n 's/^mount //p' "$AA12_RECORD" 2>/dev/null | head -1 || true)"
+AA12_RECORD_PERMS="$(stat -c '%a' "$AA12_RECORD" 2>/dev/null || echo absent)"
+AA12_DIR_PERMS="$(stat -c '%a' "$WORK/cache/.projection-alpha-state" 2>/dev/null || echo absent)"
+# THE MOUNT POINT IS READ THROUGH THE LIVE NAMESPACE, WHICH IS THE ONLY HONEST WAY TO ASK IT. A marker
+# written before the mount is invisible now; what this asserts is that the appliance did not attempt to write
+# one THROUGH the read-only filesystem, which is what the successful install above already proves, and that
+# the projected namespace carries nothing of the appliance's own.
+AA12_NOTHING_UNDER_MOUNT=1
+docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" test -e /mnt/.projection-alpha >/dev/null 2>&1 \
+  && AA12_NOTHING_UNDER_MOUNT=0
+if [ "$AA12_RECORD_MOUNT" = "$WORK/mnt" ] && [ "$AA12_RECORD_PERMS" = "600" ] \
+   && [ "$AA12_DIR_PERMS" = "700" ] && [ "$AA12_NOTHING_UNDER_MOUNT" -eq 1 ]; then
+  pass "AA12 install succeeded over a SERVING appliance, and what it owns is recorded at 0600 inside a 0700"        "directory OUTSIDE the namespace it mounts, with nothing of this appliance's under the mount point"
+else
+  fail "AA12 record='${AA12_RECORD_MOUNT:-absent}' mode=$AA12_RECORD_PERMS dirMode=$AA12_DIR_PERMS"        "nothingUnderMount=$AA12_NOTHING_UNDER_MOUNT"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+step "AA13 — an ownership record naming a DIFFERENT installation is REFUSED, not adopted"
+# ----------------------------------------------------------------------------------------------------------
+# "NOT OURS" AND "NOBODY'S" ARE DIFFERENT ANSWERS AND ONLY THE SECOND MAY BE ADOPTED. An operator reaches
+# this by pointing a second appliance's state directory at the first one's, or by moving a cache between
+# installations. A command that collapsed the two would put its name on somebody else's directories, which is
+# the class of accident this whole script exists to make impossible.
+AA13_FOREIGN="$WORK/foreign-state"
+mkdir -p "$AA13_FOREIGN"
+printf 'version 2\nmount /somewhere/else/mnt\ncache /somewhere/else/cache\n' > "$AA13_FOREIGN/owned"
+AA13_OK=1
+env "PROJECTIOND_ALPHA_STATE_DIR=$AA13_FOREIGN" bash "$HERE/projection-alpha.sh" preflight >/dev/null 2>&1 \
+  && AA13_OK=0
+printf 'version 2\nmount %s\ncache %s\n' "$WORK/mnt" "$WORK/cache" > "$AA13_FOREIGN/owned"
+AA13_MINE_ACCEPTED=0
+env "PROJECTIOND_ALPHA_STATE_DIR=$AA13_FOREIGN" bash "$HERE/projection-alpha.sh" preflight >/dev/null 2>&1 \
+  && AA13_MINE_ACCEPTED=1
+rm -rf "$AA13_FOREIGN"
+if [ "$AA13_OK" -eq 1 ] && [ "$AA13_MINE_ACCEPTED" -eq 1 ]; then
+  pass "AA13 a foreign ownership record is REFUSED and the same record naming THIS installation is accepted,"        "so the refusal is about whose record it is rather than about there being one"
+else
+  fail "AA13 foreignRefused=$AA13_OK ownRecordAccepted=$AA13_MINE_ACCEPTED"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+step "AA14 — every bounded runtime input is validated, and an invalid one is refused rather than resolved"
+# ----------------------------------------------------------------------------------------------------------
+# §13 of the Phase 8 contract gives this appliance two optional inputs so that the configuration a gate
+# measures can be the configuration the product ships. A knob whose invalid values are accepted would turn a
+# validated operator input into an undeclared way to run a different daemon.
+AA14_OK=1
+for spec in "PROJECTIOND_ALPHA_POLL=abc" "PROJECTIOND_ALPHA_POLL=0s" "PROJECTIOND_ALPHA_POLL=600s" \
+            "PROJECTIOND_ALPHA_POLL=1500ms" "PROJECTIOND_ALPHA_STATE_DIR=state" \
+            "PROJECTIOND_ALPHA_STATE_DIR=$WORK/mnt/state" "PROJECTIOND_ALPHA_STATE_DIR=$WORK/media/state"; do
+  if env "$spec" bash "$HERE/projection-alpha.sh" preflight >/dev/null 2>&1; then
+    echo "  ACCEPTED and should not have been: ${spec%%=*}" >&2
+    AA14_OK=0
+  fi
+done
+AA14_VALID_ACCEPTED=0
+env "PROJECTIOND_ALPHA_POLL=2s" bash "$HERE/projection-alpha.sh" preflight >/dev/null 2>&1 \
+  && AA14_VALID_ACCEPTED=1
+if [ "$AA14_OK" -eq 1 ] && [ "$AA14_VALID_ACCEPTED" -eq 1 ]; then
+  pass "AA14 seven invalid bounded inputs were REFUSED and a valid poll interval inside the bound was"        "accepted, so the validation discriminates rather than refusing everything"
+else
+  fail "AA14 allInvalidRefused=$AA14_OK validAccepted=$AA14_VALID_ACCEPTED"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 step "AA4 — the consumer reads real BYTES through the appliance"
 # ----------------------------------------------------------------------------------------------------------
 # BYTES, NEVER A METADATA SUBSTITUTE. A dead FUSE mount answers `stat` from a warm attribute cache while every
