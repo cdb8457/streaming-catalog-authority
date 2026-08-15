@@ -919,6 +919,33 @@ step "C9 — S5's ONE injected fault, against the SHIPPED appliance, provider-fr
 # AND IT MAKES NO TIMING CLAIM ANY DOCUMENT MAY CITE. The elapsed milliseconds are printed because a number
 # nobody can see is a number nobody can act on; §11.6 of the contract governs what may be said about them,
 # and what is ASSERTED here is the shape of the recovery, not its speed.
+#
+# AND ONE CONSUMER MUST HOLD AN OPEN DESCRIPTOR, WHICH IS THE DIFFERENCE BETWEEN REHEARSING S5 AND REHEARSING
+# SOMETHING ELSE — measured here, the first time this step ran, rather than assumed.
+#
+# `umount -l` DETACHES THE MOUNT AND LEAVES THE FUSE SUPERBLOCK ALIVE ONLY WHILE SOMETHING REFERENCES IT.
+# Phase 7's R1 relies on three REAL media servers to be that something: with them holding it, the serve loop
+# never notices, the daemon observes a mount point that is no longer its own, and the RECOVERY SUPERVISOR is
+# what acts — `recover-mount-underlay`, which is the assertion the arm turns on. This rehearsal's consumers
+# are three `alpine` containers holding a bind and nothing else, so the first run of this step detached the
+# superblock completely: the serve loop died, `--auto-remount` put it back in **1,192 ms**, and the recovery
+# supervisor spent **zero** actions. Both are correct product behaviour and they are DIFFERENT MECHANISMS —
+# and the one S5 measures is the second.
+#
+# SO A CONSUMER IS ASKED TO HOLD A FILE OPEN FIRST, which is what a media server holds while it is playing.
+# Phase 6 §11.9 reached the same conclusion about the recovery gate's own injector, for the same reason.
+C9_HOLD_SECONDS=180
+docker exec -d "$JF_CONTAINER" sh -c "exec 9< \"/media/projection/$SEED_PATH\"; sleep $C9_HOLD_SECONDS" \
+  >/dev/null 2>&1 || true
+sleep 2
+if docker exec "$JF_CONTAINER" sh -c "ls -l /proc/*/fd/9 2>/dev/null | grep -q projection"; then
+  pass "C9 a consumer holds an OPEN DESCRIPTOR on a file inside the mount, which is what a media server holds \
+while it is playing and what makes this S5's fault rather than a different one"
+else
+  fail "C9 no consumer holds an open descriptor, so the lazy detach below would tear the connection down and \
+this step would measure --auto-remount instead of the recovery supervisor"
+fi
+C9_SERVE_DEATHS_BEFORE="$(docker logs "$ALPHA_CONTAINER" 2>&1 | grep -c 'serve loop died' || true)"
 C9_ID_BEFORE="$(docker inspect -f '{{.Id}}' "$ALPHA_CONTAINER" 2>/dev/null || true)"
 C9_RESTARTS_BEFORE="$(docker inspect -f '{{.RestartCount}}' "$ALPHA_CONTAINER" 2>/dev/null || echo x)"
 C9_ACTIONS_BEFORE="$(docker logs "$ALPHA_CONTAINER" 2>&1 | grep -cE 'projectiond: recovery: recover-' || true)"
@@ -937,10 +964,20 @@ never signalled"
 else
   fail "C9 the fault did not land — the mount is still there, so nothing below measures a recovery"
 fi
+# THE SUPERVISOR IS WAITED FOR, RATHER THAN SAMPLED ONCE. Its own budget is a contract number and this is a
+# rehearsal, so what is used here is a generous bound: a wait that ended early would report a supervisor that
+# had not yet acted as one that never would.
+C9_WAIT=0
+while [ "$C9_WAIT" -lt 80 ]; do
+  if [ "$(docker logs "$ALPHA_CONTAINER" 2>&1 | grep -cE 'projectiond: recovery: recover-' || true)" \
+       -gt "$C9_ACTIONS_BEFORE" ]; then break; fi
+  C9_WAIT=$(( C9_WAIT + 1 )); sleep 0.5
+done
 C9_READABLE=0
 await_readable 240 && C9_READABLE=1
 C9_READY_MS=$(( $(date +%s%3N) - C9_STARTED ))
 C9_ACTIONS_AFTER="$(docker logs "$ALPHA_CONTAINER" 2>&1 | grep -cE 'projectiond: recovery: recover-' || true)"
+C9_SERVE_DEATHS_AFTER="$(docker logs "$ALPHA_CONTAINER" 2>&1 | grep -c 'serve loop died' || true)"
 C9_LAST="$(docker logs "$ALPHA_CONTAINER" 2>&1 | grep -oE 'projectiond: recovery: recover-[a-z-]+' | tail -1 || true)"
 C9_ID_AFTER="$(docker inspect -f '{{.Id}}' "$ALPHA_CONTAINER" 2>/dev/null || true)"
 C9_RESTARTS_AFTER="$(docker inspect -f '{{.RestartCount}}' "$ALPHA_CONTAINER" 2>/dev/null || echo y)"
@@ -964,10 +1001,14 @@ else
 be the one the contract names"
 fi
 C9_TAKEN=$(( C9_ACTIONS_AFTER - C9_ACTIONS_BEFORE ))
+C9_DEATHS=$(( C9_SERVE_DEATHS_AFTER - C9_SERVE_DEATHS_BEFORE ))
 if [ "$C9_TAKEN" -eq 1 ]; then
-  pass "C9 the supervisor spent exactly ONE recovery action on one fault, which is single-flight"
+  pass "C9 the supervisor spent exactly ONE recovery action on one fault, which is single-flight (serve-loop \
+deaths across the fault: $C9_DEATHS)"
 else
-  fail "C9 the supervisor started $C9_TAKEN recovery action(s) for one fault"
+  fail "C9 the supervisor started $C9_TAKEN recovery action(s) for one fault, with $C9_DEATHS serve-loop \
+death(s) across it — a death here means the descriptor was not held and --auto-remount repaired it first, \
+which is a DIFFERENT mechanism from the one S5 measures"
 fi
 if [ "$C9_LAST" = "projectiond: recovery: recover-mount-underlay" ]; then
   pass "C9 and the action it took is the one §8.4 predeclares for a mount removed beneath it: \
@@ -990,6 +1031,10 @@ if [ "$ALPHA_STATUS" -eq 0 ]; then
 else
   fail "C9 the shipped reset-recovery exited $ALPHA_STATUS after a real recovery"
 fi
+# AND THE HOLDER IS RELEASED, because an open descriptor left inside a consumer would block the shutdown C6
+# is about and turn a safety assertion into a timeout.
+docker exec "$JF_CONTAINER" sh -c "pkill -f 'sleep $C9_HOLD_SECONDS'" >/dev/null 2>&1 || true
+sleep 1
 
 # ----------------------------------------------------------------------------------------------------------
 step "C6 — a FOREIGN overlay on top is refused at shutdown, left mounted and byte-unmodified"
