@@ -442,8 +442,8 @@ alpha-candidate checkpoint with every remaining blocker precisely named. It does
 | tracked manifest | `36e971ea74090cff` over **1,649** files, byte-identical in both directions vs `/mnt/user/appdata/catalog-p6` |
 | image | `sha256:a5f12b92d80464a6e3e280498f22a3bd86e732718cee554b549c6ef58e53aef9` |
 | host | Unraid `tower` |
-| OPERATOR SOURCE DIGEST | `6dbb238d51f6415f0b323b95ddee7cc642b1690bcad147524eec4f5710791f73` |
-| GATE SOURCE DIGEST | `8a48b77c2cd65384dcc8dd3b7013ca355571b400ea3ef0ab184c8e69fff83362` — **MOVED ONCE, AFTER CLOSURE, AND RE-RUN. §11.9** |
+| OPERATOR SOURCE DIGEST | `9940edfcb50a6a27199d17630bb579bf3e3c97efd028131c437f39b8e5dcc406` — **MOVED ONCE, AFTER CLOSURE, AND RE-RUN. §11.10.** Previously `6dbb238d51f6415f0b323b95ddee7cc642b1690bcad147524eec4f5710791f73` |
+| GATE SOURCE DIGEST | `d7795bdf803efd9da8388e3f030073c7a25352185844e0be80cdec086266a7ba` — **MOVED TWICE, AFTER CLOSURE, AND RE-RUN BOTH TIMES. §11.9 and §11.10.** Previously `8a48b77c2cd65384dcc8dd3b7013ca355571b400ea3ef0ab184c8e69fff83362` |
 
 **THE COMMIT AND TREE WERE HELD WHILE THIS WAS A CANDIDATE, BECAUSE A DOCUMENT CANNOT NAME THE COMMIT THAT
 CONTAINS IT.** The source frozen and staged to the host is `c70ecb0` — the commit this file was committed as
@@ -786,6 +786,64 @@ refusal, which is the arm an operator’s own bind depends on and the one most e
 
 **SO THE DIGEST IN §11.1 IS UPDATED TO THE SOURCE THAT WAS ACTUALLY RE-RUN**, which is the only circumstance
 in which it may be touched at all.
+
+### 11.10 THE OPERATOR COMMAND ITSELF MOVED, AND THE RE-RUN THAT PAYS FOR IT
+
+**§11.9 WAS A GATE CHANGE. THIS IS THE SHIPPED PRODUCT, WHICH IS A HEAVIER THING, AND THE RULE IS THE SAME
+RULE.** `test/projection-bounded-recovery.ts` recomputes both source digests from the working tree on every
+run and fails with exactly that instruction: *"Re-freeze, re-run the affected acceptance, and update the
+digest — do not edit the digest to match."* It failed on `OPERATOR SOURCE DIGEST`. This is what happened.
+
+**WHAT MOVED, AND EVERY ONE OF THE THREE WAS FORCED BY A DECISION TAKEN IN A LATER TRANCHE.**
+`docs/PROJECTION_PHASE_8_OPERATOR_SOAK.md` §13 makes `deploy/projection-alpha.sh` the **sole owner** of the
+daemon and mount point under test, because §3 of that contract already defined five of the ten steps of an
+operator cycle as this command and the gate could not both drive it and run a daemon of its own. Three
+changes to this product follow from that, and §13.4 is the full argument for each:
+
+1. **`PROJECTIOND_ALPHA_POLL`** — the pointer poll becomes a bounded, validated operator input, whole seconds
+   between 1s and 60s, **defaulting to the `5s` this profile has always hard-coded**. Every readiness budget
+   this product publishes is derived as one pointer poll plus one read deadline, so an appliance that could
+   not be told its interval could not be measured against its own budgets.
+2. **`--strict-direct-mount`** joins the profile unconditionally. The runtime stage of the shipped image is
+   distroless and holds no `fusermount` helper, so the fallback the flag forbids could never have succeeded
+   here; without it a failed direct mount reports the wrong cause. It is also what every arm of Phase 7 drove.
+3. **THE OWNERSHIP MARKER LEAVES THE NAMESPACE IT GOVERNS**, which is a **defect repair** and not an
+   accommodation. `OWNED_DIRS` included the mount point and `install` wrote a marker into every owned
+   directory; once the appliance started, its own read-only FUSE namespace covered that marker, the
+   `[ ! -e ... ]` guard went true, and the rewrite was aimed at a filesystem that refuses every mutation
+   syscall — so **`install` succeeded exactly once and failed forever after while the appliance was
+   running**, with `Read-only file system`. What this appliance owns is now recorded once, in an operator
+   state directory outside the projected tree, 0600 inside 0700, written atomically, verified exactly, with
+   three answers — ours, absent, foreign — and only `absent` adopted. A v1 installation migrates in place.
+
+**WHAT WAS NOT DONE ABOUT IT.** No arm of the install matrix was loosened, reworded or removed. `AA1` to
+`AA11` are byte-for-byte the arms that closed this tranche, and all eleven passed again unchanged. **THREE
+ARMS WERE ADDED**, which is the opposite of loosening: `AA12` runs `install` over a **serving** appliance and
+asserts the record's location and permissions and that nothing of this appliance's is under the mount point;
+`AA13` refuses an ownership record naming a different installation and accepts the same record naming this
+one; `AA14` refuses seven invalid bounded inputs and accepts a valid poll interval, so the validation is
+shown to discriminate rather than to refuse everything.
+
+**THE RE-RUN, FROM THE CANDIDATE THAT CARRIES ALL THREE CHANGES:** `npm run go:alpha-acceptance` with
+`PROJECTIOND_IMAGE=projectiond:phase8b-frozen`
+(`sha256:216f1ae6f298781b34b0855f1b5201d5db51eec816b8ccf894876797a7a21a46`), from commit
+`687bab60325f4a073ab10e59533bcfb9618da550`, tree `58c67000f1ec6f215f7f5001d122d7fd78bc3f29`, staged
+byte-identically in both directions over 1,677
+files into an emptied `/mnt/user/appdata/catalog-p8g` — **exit 0, 14 of 14 arms**, on Unraid `tower`, with
+the host's container, network and volume sets identical before and after and this run's mountpoints and
+directory asserted gone. `npm run go:restart-topology-gate` from the same tree is **8 of 8, exit 0**,
+including `RT4`'s control and `RT5`'s foreign-overlay refusal.
+
+**AND THE IMAGE DID NOT MOVE, WHICH IS THE CHECK THAT THE DAEMON DID NOT.** The image built from this tree on
+Unraid is `sha256:216f1ae6…` — the same one Phase 7 §11.1.1 records against its last two candidates and the
+same one the Phase 8 record names. `projectiond/` is untouched by all of this: what changed is the operator
+command, its profile and its environment contract example.
+
+**SO THE DIGESTS IN §11.1 ARE UPDATED TO THE SOURCE THAT WAS ACTUALLY RE-RUN**, which is the only
+circumstance in which they may be touched at all. **§12's GO IS UNCHANGED AND IS NOT RE-DERIVED HERE**: the
+verdict rests on the measurements below it, every one of which was re-taken against this source, and the one
+rough edge this section removes — `install` on day two — is recorded as removed rather than as never having
+existed.
 
 ## 12. The alpha readiness decision
 
