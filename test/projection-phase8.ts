@@ -674,6 +674,46 @@ test('no call site hands a gate function fewer arguments than it declares', () =
     `under set -u a missing positional is not a wrong measurement, it is a dead run: ${problems.join('; ')}`);
 });
 
+test('no TOP-LEVEL statement calls a gate function before the line that defines it', () => {
+  // A SHELL FUNCTION DOES NOT EXIST UNTIL ITS DEFINITION HAS BEEN EXECUTED, and this gate has now lost two
+  // things to that. `container_for` was once defined two hundred lines below the call that needed it, so the
+  // bind baseline every arm was compared against recorded `UNREADABLE` three times and the assertion could
+  // never pass. And the repair for the churn defect — a baseline catalogue round in setup — was placed above
+  // `phase_catalogue`'s own definition, so the very next soak died with `command not found` before cycle 1.
+  //
+  // IT IS TOP-LEVEL ONLY, DELIBERATELY. A function body may legitimately call one defined later, because the
+  // call happens at run time when both exist; a statement at the top level cannot.
+  const lines = gateCode.split('\n');
+  const definedAt = new Map<string, number>();
+  const insideFunction: boolean[] = [];
+  let depth = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? '';
+    const match = /^([a-z_][a-z0-9_]*)\(\)\s*\{?/.exec(line);
+    if (match?.[1] !== undefined && /\(\)/.test(line)) {
+      if (!definedAt.has(match[1])) definedAt.set(match[1], index);
+      insideFunction[index] = true;
+      // A one-line definition opens and closes on the same line.
+      if (!/\}\s*$/.test(line) || /\{\s*$/.test(line)) depth = 1;
+      continue;
+    }
+    insideFunction[index] = depth > 0;
+    if (depth > 0 && line === '}') depth = 0;
+  }
+  const problems: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (insideFunction[index] === true) continue;
+    const call = /^([a-z_][a-z0-9_]*)(\s|$)/.exec(lines[index] ?? '');
+    const name = call?.[1];
+    if (name === undefined) continue;
+    const at = definedAt.get(name);
+    if (at === undefined || at < index) continue;
+    problems.push(`line ${index + 1} calls ${name}, which is defined at line ${at + 1}`);
+  }
+  assertEq(problems.length, 0,
+    `a top-level call above its own definition is "command not found" at run time: ${problems.join('; ')}`);
+});
+
 test('the setup takes the item ids every playback needs, and S4 plays with a cycle label', () => {
   // THE TWO SPECIFIC DEFECTS, PINNED BY NAME AS WELL AS BY SHAPE. The general pins above would catch either
   // one again; these say what they were, so the next reader does not have to infer it from a regex.

@@ -2478,31 +2478,6 @@ else
 real-provider corpus is 1-3 files the operator is entitled to AND has chosen as playable video"
 fi
 
-# THE ITEM IDS EVERY PLAYBACK NEEDS, TAKEN ONCE, HERE — AND THE FIRST SOAK EVER RUN IS WHY THIS LINE EXISTS.
-#
-# `ensure_items` was DEFINED in this gate and CALLED BY NOTHING. Phase 7 calls it once, immediately before its
-# own playback stage; this gate carried the function over and dropped the call. So `items-<server>.json` was
-# never written, and cycle 1's S4 handed all three drivers a path that does not exist: three `ENOENT`s, three
-# `P8-S4-seeks:<server>:C1 0/10` failures against a product that had done nothing wrong, and — because the
-# next thing S4 does is the paced play — the run then died on an unbound variable before any of it could be
-# read as a pattern. **Every playback assertion in every cycle of every soak would have failed the same way.**
-#
-# ONCE, NOT PER CYCLE, AND THAT IS PHASE 7's ANSWER RATHER THAN A SAVING. The three servers are never
-# restarted, re-bound or re-created for the whole soak — §2's most important row — so their library item ids
-# are the same objects in cycle 3 as in cycle 1. `ITEMS_READY` makes a second call a no-op rather than a
-# second scan, so a later cycle that ever needs one can ask without paying twice.
-ensure_items
-
-# THE BASELINE CATALOGUE ROUND, AND THE FIRST SOAK THAT REACHED IT IS WHY THIS LINE EXISTS TOO.
-#
-# `phase_churn` compares round N against round N-1. Cycle 1's `verify_after_cycle` takes round 1 and then
-# asks for the churn against round **0** — a directory nothing has ever created — so all three servers
-# recorded `P8-cycle-churn:<server>:C1` from a node program that had died on `ENOENT`. Phase 7 takes exactly
-# this baseline round in its own setup, for exactly this reason.
-#
-# IT IS ALSO THE HONEST PLACE FOR IT. Churn is "items added or removed ACROSS the cycle", so the round it is
-# measured against has to be taken BEFORE the cycle rather than at its start.
-phase_catalogue P8-A-catalogue "" "the baseline round, before the first cycle"
 
 # ----------------------------------------------------------------------------------------------------------
 # THE PHASES
@@ -3396,6 +3371,32 @@ step_S10_cleanup_accounting() {
     "$P8_OPERATOR_INTERVENTIONS_MAX" \
     "things a human had to do for this cycle to work, counted across the soak so far" || true
 }
+
+# THE ITEM IDS EVERY PLAYBACK NEEDS, TAKEN ONCE, HERE — AND THE FIRST SOAK EVER RUN IS WHY THIS LINE EXISTS.
+#
+# `ensure_items` was DEFINED in this gate and CALLED BY NOTHING. Phase 7 calls it once, immediately before its
+# own playback stage; this gate carried the function over and dropped the call. So `items-<server>.json` was
+# never written, and cycle 1's S4 handed all three drivers a path that does not exist: three `ENOENT`s, three
+# `P8-S4-seeks:<server>:C1 0/10` failures against a product that had done nothing wrong, and — because the
+# next thing S4 does is the paced play — the run then died on an unbound variable before any of it could be
+# read as a pattern. **Every playback assertion in every cycle of every soak would have failed the same way.**
+#
+# ONCE, NOT PER CYCLE, AND THAT IS PHASE 7's ANSWER RATHER THAN A SAVING. The three servers are never
+# restarted, re-bound or re-created for the whole soak — §2's most important row — so their library item ids
+# are the same objects in cycle 3 as in cycle 1. `ITEMS_READY` makes a second call a no-op rather than a
+# second scan, so a later cycle that ever needs one can ask without paying twice.
+ensure_items
+
+# THE BASELINE CATALOGUE ROUND, AND THE FIRST SOAK THAT REACHED IT IS WHY THIS LINE EXISTS TOO.
+#
+# `phase_churn` compares round N against round N-1. Cycle 1's `verify_after_cycle` takes round 1 and then
+# asks for the churn against round **0** — a directory nothing has ever created — so all three servers
+# recorded `P8-cycle-churn:<server>:C1` from a node program that had died on `ENOENT`. Phase 7 takes exactly
+# this baseline round in its own setup, for exactly this reason.
+#
+# IT IS ALSO THE HONEST PLACE FOR IT. Churn is "items added or removed ACROSS the cycle", so the round it is
+# measured against has to be taken BEFORE the cycle rather than at its start.
+phase_catalogue P8-A-catalogue "" "the baseline round, before the first cycle"
 
 # ----------------------------------------------------------------------------------------------------------
 step "THE SOAK — three operator cycles, and NOTHING is recreated between them"
