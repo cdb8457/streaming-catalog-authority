@@ -372,13 +372,26 @@ console.log('\nsection 13 — one owner, and the contract and the instrument agr
 // assume. A pin over a paragraph would pass on a document that describes a design nothing implements, which
 // is precisely the failure this section was written to close.
 
-const ALPHA = read('deploy/projection-alpha.sh');
-const ALPHA_PROFILE = read('docker-compose.projection-alpha.yml');
-const REHEARSAL = read('deploy/projection-phase8-rehearsal.sh');
-const ACCEPTANCE = read('deploy/projection-alpha-acceptance.sh');
+/**
+ * Read a shipped file with its line endings normalised, and it is not tidiness.
+ *
+ * `.gitattributes` forces LF on `*.sh` and `*.go` and nothing else, so `git archive` hands the Unraid host a
+ * **CRLF** copy of `docker-compose.projection-alpha.yml` — which is exactly the file these pins read with
+ * `$`-anchored patterns. Measured: the provider-free rehearsal's `A7` failed on that host, and only on that
+ * host, reporting that the alpha profile no longer passes `--strict-direct-mount` while the flag was sitting
+ * there followed by a carriage return. A pin that fails on the host the tranche closes on, for a line ending,
+ * is a pin that teaches the next person to weaken it.
+ */
+const readLf = (relative: string): string => read(relative).replace(/\r\n/g, '\n');
+
+const ALPHA = readLf('deploy/projection-alpha.sh');
+const ALPHA_PROFILE = readLf('docker-compose.projection-alpha.yml');
+const REHEARSAL = readLf('deploy/projection-phase8-rehearsal.sh');
+const ACCEPTANCE = readLf('deploy/projection-alpha-acceptance.sh');
 
 /** The gate with every whole-line comment removed. A rule about behaviour must be read from behaviour. */
-const gateCode = gate.split('\n').filter((line) => !line.trim().startsWith('#')).join('\n');
+const gateCode = gate.replace(/\r\n/g, '\n').split('\n')
+  .filter((line) => !line.trim().startsWith('#')).join('\n');
 
 test('the contract carries the superseding design, and it supersedes rather than erases', () => {
   const document = read(CONTRACT);

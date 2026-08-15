@@ -289,10 +289,16 @@ rm -f "$GATE_ROOT/tamper-$$.sh"
 # so is not the appliance Phase 7 measured". §13 resolves it in the product rather than in the gate — the poll
 # interval became a bounded, validated operator input and the strict flag became part of the profile — so
 # what is checked here is that the product really can express it and that the gate really hands it over.
+#
+# THE PATTERNS BELOW END AT THE FLAG, NOT AT A LINE END, AND A REAL RUN IS WHY. `.gitattributes` forces LF on
+# `*.sh` and `*.go` and on nothing else, so `git archive` stages this compose file to the Unraid host with
+# CRLF line endings. A `$`-anchored `grep` therefore reported that the profile no longer passes
+# `--strict-direct-mount` while the flag was sitting there followed by a carriage return — a rehearsal failing
+# on the one host that matters, for a line ending, which is how a correct pin gets weakened by the next person.
 A7_OK=1
 grep -q -- '- --poll=\${PROJECTIOND_ALPHA_POLL:-5s}' docker-compose.projection-alpha.yml \
   || { A7_OK=0; echo "    the alpha profile no longer takes the poll interval as a bounded input" >&2; }
-grep -qE '^\s+- --strict-direct-mount$' docker-compose.projection-alpha.yml \
+grep -qE '^[[:space:]]+- --strict-direct-mount[[:space:]]*$' docker-compose.projection-alpha.yml \
   || { A7_OK=0; echo "    the alpha profile no longer passes --strict-direct-mount" >&2; }
 grep -q 'PROJECTIOND_ALPHA_POLL="\$DAEMON_POLL"' "$GATE_SOURCE" \
   || { A7_OK=0; echo "    the gate does not hand the shipped command the interval its budgets assume" >&2; }
