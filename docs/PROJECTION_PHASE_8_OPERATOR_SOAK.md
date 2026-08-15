@@ -1,7 +1,8 @@
 # Projection Phase 8 — the operator soak
 
-**Status: NO-GO — TWO of the three consecutive fresh soaks §4.1 requires have passed, with 199 verdicts and
-zero failures each; the third was BLOCKED by the provider's CDN allowlist and counts toward nothing. §2 to
+**Status: NO-GO — two complete soaks have passed from one frozen candidate with 199 verdicts and zero
+failures each, but `go:phase8-gate:three` completed ONE of its three runs and its second was BLOCKED by the
+provider's CDN allowlist, which §7 counts toward nothing. §2 to
 §10 are the contract and every one of them was written and committed BEFORE the first
 measured run. §11 is the run record, §12 is the decision as it stood at commit `f482f31`, §13 is the
 superseding design and §14 is the current decision.** No threshold in §4 may move after the first
@@ -988,9 +989,16 @@ estimated; the same logic applies to a product change nobody has run.
 
 **§4.1 CLAUSE 1 IS UNSATISFIED AND NOTHING ELSE MATTERS UNTIL IT IS.** It requires
 `npm run go:phase8-gate:three` to complete **three consecutive fresh soaks, exit 0, zero failures, zero
-skips**, from one frozen commit, tree and image. **Two of the three passed.** The third died in cycle 1 on
-the TorBox egress allowlist and is **BLOCKED, not failed**, by §7's own rule. §4.2 makes *"fewer than three
-consecutive fresh passing soaks"* a NO-GO in terms, and this document does not manufacture the third.
+skips**, from one frozen commit, tree and image. **THAT WRAPPER COMPLETED ONE OF ITS THREE RUNS.** Its second
+died in cycle 1 on the TorBox egress allowlist and is **BLOCKED, not failed**, by §7's own rule; its third
+never started.
+
+**AND THE OTHER PASSING SOAK WAS A STANDALONE `go:phase8-gate`, WHICH IS NOT THE SAME THING AS A SECOND RUN
+OF THE WRAPPER, AND THE DIFFERENCE IS NOT PEDANTRY.** Two complete soaks passed from the same frozen
+candidate, back to back, each with 199 of 199 — but clause 1 is a claim about **one wrapper invocation
+completing three consecutive runs**, because that is what makes "consecutive" mean something a reader can
+check rather than something a session asserts. §4.2 makes *"fewer than three consecutive fresh passing
+soaks"* a NO-GO in terms, and this document does not manufacture the other two.
 
 **WHAT IS DIFFERENT FROM §12, AND IT IS ALMOST EVERYTHING.** That decision said the gate *"has never run a
 soak"* and named a structural mismatch between §3 and the instrument that no small edit could reconcile. That
@@ -1011,10 +1019,9 @@ Clause 11's checks pass and clause 10 is **partly** paid — §11.10.
 
 **WHAT IS NOT ESTABLISHED, AND WHY SAYING SO IS THE POINT.** Clause 1 needs **three** and there are **two**.
 Clause 10 needs Phase 7's `go:phase7-gate:three` re-run from this candidate and it has **not** been run,
-because it is provider-facing and the same rotation blocks it. **TWO CONSECUTIVE PASSING SOAKS ARE NOT
-THREE.** §5 gives the reason the number is three rather than one: *"three soaks of three answer whether it
+because it is provider-facing and the same rotation blocks it. **TWO COMPLETE PASSING SOAKS ARE NOT ONE WRAPPER INVOCATION THAT COMPLETED THREE.** §5 gives the reason the number is three rather than one: *"three soaks of three answer whether it
 degrades AND whether that answer reproduces. Only the second is a property of the product rather than of an
-afternoon."* Two is one reproduction, not two, and this document will not round it up.
+afternoon."* Two complete soaks are one reproduction, not two, and this document will not round it up.
 
 **THE BLOCKER, NAMED EXACTLY.** The provider rotated its CDN origin out of the operator's six-entry allowlist
 mid-sequence. Digests only, from the official recheck: allowed at `b16331429dc1` and `3cfc7340a785` while the
