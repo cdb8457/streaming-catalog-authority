@@ -904,6 +904,94 @@ distinguish a refusal from a failed lookup"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+step "C9 — S5's ONE injected fault, against the SHIPPED appliance, provider-free"
+# ----------------------------------------------------------------------------------------------------------
+# WHY THIS IS HERE AND WHY IT IS NEW. §3's S5 is the only fault a cycle injects: the mount removed from
+# beneath a LIVING daemon. Phase 7 measured that arm against a daemon THAT GATE ran; §13 makes the subject the
+# appliance the shipped compose profile brings up, and that profile differs in ways the recovery path could
+# plausibly care about — `read_only: true`, a tmpfs `/tmp`, and `restart: unless-stopped`, which is a policy
+# no gate-owned daemon has ever carried. **If the shipped appliance answers this fault by having Docker
+# restart the container rather than by recovering in place, a soak fails at S5 of cycle 1** — and finding that
+# out here costs minutes rather than a provider-facing attempt.
+#
+# IT IS THE LOCAL SEED ENTRY THROUGHOUT, so no provider is involved and none could be.
+#
+# AND IT MAKES NO TIMING CLAIM ANY DOCUMENT MAY CITE. The elapsed milliseconds are printed because a number
+# nobody can see is a number nobody can act on; §11.6 of the contract governs what may be said about them,
+# and what is ASSERTED here is the shape of the recovery, not its speed.
+C9_ID_BEFORE="$(docker inspect -f '{{.Id}}' "$ALPHA_CONTAINER" 2>/dev/null || true)"
+C9_RESTARTS_BEFORE="$(docker inspect -f '{{.RestartCount}}' "$ALPHA_CONTAINER" 2>/dev/null || echo x)"
+C9_ACTIONS_BEFORE="$(docker logs "$ALPHA_CONTAINER" 2>&1 | grep -cE 'projectiond: recovery: recover-' || true)"
+C9_LAYERS_BEFORE="$(count_our_layers)"
+C9_STARTED="$(date +%s%3N)"
+umount -l "$WORK/mnt" 2>/dev/null || true
+C9_GONE=0
+n=0
+while [ "$n" -lt 40 ]; do
+  if [ "$(count_our_layers)" -lt "$C9_LAYERS_BEFORE" ]; then C9_GONE=1; break; fi
+  n=$(( n + 1 )); sleep 0.5
+done
+if [ "$C9_GONE" -eq 1 ]; then
+  pass "C9 the fault landed: the appliance's own mount is no longer at the mount point and its process was \
+never signalled"
+else
+  fail "C9 the fault did not land — the mount is still there, so nothing below measures a recovery"
+fi
+C9_READABLE=0
+await_readable 240 && C9_READABLE=1
+C9_READY_MS=$(( $(date +%s%3N) - C9_STARTED ))
+C9_ACTIONS_AFTER="$(docker logs "$ALPHA_CONTAINER" 2>&1 | grep -cE 'projectiond: recovery: recover-' || true)"
+C9_LAST="$(docker logs "$ALPHA_CONTAINER" 2>&1 | grep -oE 'projectiond: recovery: recover-[a-z-]+' | tail -1 || true)"
+C9_ID_AFTER="$(docker inspect -f '{{.Id}}' "$ALPHA_CONTAINER" 2>/dev/null || true)"
+C9_RESTARTS_AFTER="$(docker inspect -f '{{.RestartCount}}' "$ALPHA_CONTAINER" 2>/dev/null || echo y)"
+if [ "$C9_READABLE" -eq 1 ]; then
+  pass "C9 a sibling container reads a byte through the mount again after the fault (${C9_READY_MS} ms, \
+which is an instrument reading and not a claim about the appliance)"
+else
+  fail "C9 the mount never became readable again ${C9_READY_MS} ms after the fault"
+fi
+# THE PART THE SHIPPED PROFILE PUT AT RISK, AND IT IS THE WHOLE REASON THIS STEP EXISTS.
+if [ -n "$C9_ID_BEFORE" ] && [ "$C9_ID_BEFORE" = "$C9_ID_AFTER" ] \
+   && [ "$C9_RESTARTS_BEFORE" = "$C9_RESTARTS_AFTER" ]; then
+  # NO BACKTICKS IN THIS STRING, AND IT IS NOT A STYLE RULE. Inside a double-quoted shell string a backtick
+  # opens a command substitution, so quoting the policy name the way the prose everywhere else does would
+  # have this line try to EXECUTE it. `bash -n` cannot see that; a run would.
+  pass "C9 the SAME container recovered IN PLACE: the appliance restart policy did not fire, because a lost \
+mount is not a crash and the supervisor inside the process is what acts"
+else
+  fail "C9 the appliance container changed identity or was restarted by Docker across the fault \
+(restartCount ${C9_RESTARTS_BEFORE} then ${C9_RESTARTS_AFTER}); the recovery a soak would measure would not \
+be the one the contract names"
+fi
+C9_TAKEN=$(( C9_ACTIONS_AFTER - C9_ACTIONS_BEFORE ))
+if [ "$C9_TAKEN" -eq 1 ]; then
+  pass "C9 the supervisor spent exactly ONE recovery action on one fault, which is single-flight"
+else
+  fail "C9 the supervisor started $C9_TAKEN recovery action(s) for one fault"
+fi
+if [ "$C9_LAST" = "projectiond: recovery: recover-mount-underlay" ]; then
+  pass "C9 and the action it took is the one §8.4 predeclares for a mount removed beneath it: \
+recover-mount-underlay"
+else
+  fail "C9 the action taken was '${C9_LAST:-none}', not recover-mount-underlay"
+fi
+# AND THE TOPOLOGY DID NOT GROW, which is §8.1's whole subject asked once at the point it is most at risk.
+C9_AFTER_LAYERS="$(count_our_layers)"
+if [ "$C9_AFTER_LAYERS" -eq $(( MOUNT_LAYER_FLOOR + 1 )) ]; then
+  pass "C9 exactly one layer of ours above the floor after the recovery — the recovery did not stack"
+else
+  fail "C9 $C9_AFTER_LAYERS layer(s) of ours against a floor of $MOUNT_LAYER_FLOOR after the recovery"
+fi
+# THE LEDGER IS SPENT AND THE SHIPPED RESET IS WHAT CLEARS IT, which is also what leaves the appliance in the
+# state C6 below expects rather than one carrying a used budget into a shutdown assertion.
+alpha reset-recovery
+if [ "$ALPHA_STATUS" -eq 0 ]; then
+  pass "C9 the shipped reset-recovery cleared the budget the recovery spent"
+else
+  fail "C9 the shipped reset-recovery exited $ALPHA_STATUS after a real recovery"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 step "C6 — a FOREIGN overlay on top is refused at shutdown, left mounted and byte-unmodified"
 # ----------------------------------------------------------------------------------------------------------
 # THE SAFETY BOUNDARY, REHEARSED IN THE ORDINARY PATH. §8.7's removal is authorised by an IDENTITY: the one
