@@ -422,11 +422,53 @@ hardware — and it is a fact about the rehearsal, not about a soak.**
 
 ### 11.5 The provider-facing attempt ledger
 
-**ZERO.** No soak has been attempted, `npm run go:phase8-gate` has still never run, `npm run
-go:phase8-gate:three` has still never run, and **the provider was not contacted at any point in this
-tranche.** `deploy/projection-provider-origin-recheck.sh` was therefore not run either: §7 requires it
-immediately before each soak, and there was no soak to run it before. `endpoint.json` was not read, not
-written and not touched.
+**HISTORICALLY, AT COMMIT `f482f31` — SUPERSEDED BY §11.5.1, AND KEPT WHOLE:** *"**ZERO.** No soak has been
+attempted, `npm run go:phase8-gate` has still never run, `npm run go:phase8-gate:three` has still never run,
+and **the provider was not contacted at any point in this tranche.** `deploy/projection-provider-origin-recheck.sh`
+was therefore not run either: §7 requires it immediately before each soak, and there was no soak to run it
+before. `endpoint.json` was not read, not written and not touched."*
+
+#### 11.5.1 The ledger as it now stands
+
+**`endpoint.json` HAS STILL NOT BEEN READ, WRITTEN OR TOUCHED BY ANYTHING IN THIS TRANCHE**, and no origin,
+URL, reference or credential appears anywhere in this document or in anything any run preserved. That part is
+unchanged and is stated first because it is the part that matters most.
+
+| # | What | Verdict | Cost |
+|---|---|---|---|
+| 1 | `deploy/projection-provider-origin-recheck.sh`, run before anything | `disallowed`, `allowedOriginCount=6`, `resolvedOriginDigest=d24a544ecef3`, `resolvedOriginInAllowlist=NO` | none. It contacts the resolver and reads nothing |
+| 2 | `bash deploy/projection-phase8-gate.sh` — **the first execution of this gate, ever** | **BLOCKED, not failed.** §7 | counts toward nothing in either direction |
+
+**ATTEMPT 2 IS WORTH A PARAGRAPH BECAUSE IT WAS DELIBERATE AND BECAUSE OF HOW FAR IT GOT.** It was launched
+**knowing** the recheck said `disallowed`, for the reason §11.2 gives about the rehearsal: 3,600 lines that
+have never executed are lines nobody can debug, and a run that dies on the allowlist costs nothing and
+exercises everything before the first byte. **It reached the last step before the first provider read.**
+
+Everything up to that point ran and passed: the thresholds evaluated out of the module; every preflight check
+that needs no Docker; the host's four sets recorded; the image built; a throwaway PostgreSQL migrated;
+generation 1 published; **all three real, digest-pinned media servers started and stood up through their own
+drivers** — Jellyfin 10.10.7, Emby 4-9-5-0 with its first-run wizard completed non-interactively and its
+pinned-version check green, Plex unclaimed with 19 of 19 preferences applied; **the appliance installed and
+started by the shipped operator command**, §13's whole subject, with the resolver in its network namespace;
+`P8-A-resolver-loopback-only` **PASSED** from the appliance's own network, which is the assertion §11.7 #16
+and #17 were about; the seed namespace visible to a sibling container; the same mount added as a Movies
+library on all three servers with every internet metadata fetcher off; the seed corpus matched 1/1 with zero
+missing, wrong-size, non-ordinary, duplicated or unexpected files and every identity resolved offline; and
+generation 2 published with the operator's real object.
+
+**IT DIED AT `P8-A-entry-is-decodable-video`, WITH `Input/output error` FROM THE DECODER**, which is the
+sentence the gate's own diagnostic block predicts for exactly this state: *"the namespace is fine and the
+bytes are refused. Check whether the provider has rotated the CDN origin out of the operator's
+allowedOrigins — that is the egress allowlist working, not a product fault, and only the operator can refresh
+it."* The recheck before it had already said so. **THE HOST WAS EXACTLY AS IT WAS FOUND**: 44 containers, the
+same networks and volumes, **zero** `fuse.projectiond` mountpoints, no run directory, and only the bounded
+evidence the cleanup contract preserves.
+
+**WHAT THAT RUN IS AND IS NOT.** It is **not** a soak, not a partial soak and not evidence about the
+appliance under repetition; not one `P8-` cycle verdict was recorded and §4.1's eleven clauses are untouched
+by it. It is evidence that **the gate's setup path, which had never executed, executes** — and that the one
+thing standing between this tranche and a measured soak is a CDN origin the operator's allowlist does not
+carry.
 
 ### 11.6 What has NOT been claimed anywhere in this document
 
