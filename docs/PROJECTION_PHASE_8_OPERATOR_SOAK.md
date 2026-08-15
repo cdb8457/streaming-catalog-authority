@@ -694,12 +694,26 @@ and named what must happen if a measured cycle forced one; §13.4 forced three. 
 
 **AND THE HOST'S SETS WERE IDENTICAL BEFORE AND AFTER THE WHOLE MATRIX.**
 
-**WHAT IS STILL OWED AND IS NOT PRETENDED AWAY: `npm run go:phase7-gate:three`.** §13.7 requires it from this
-candidate and it is **provider-facing**, so it is blocked by the same rotation that blocked soak 3. Phase 7's
-own gate source and `projectiond/` are byte-unmoved — `git diff 8822dae..HEAD` over both is empty — and the
-ten-gate matrix that tranche closed on has just been re-run green from this candidate, including the install
-matrix its stage F drives. **That is not the same as re-running its six-arm sequence and this document does
-not claim it is.**
+**`npm run go:phase7-gate:three` WAS ATTEMPTED FROM THIS CANDIDATE THE MOMENT THE WINDOW REOPENED, AND IT IS
+BLOCKED IN THE SAME PLACE FOR THE SAME REASON.**
+
+**RUN 1 OF 3 PASSED IN FULL** — all six arms `R1` to `R6`, the alpha install matrix at **14 of 14** inside
+it, every leak scan clean, and the host's sets identical. That is Phase 7's own six-arm sequence, with three
+real digest-pinned media servers and real provider bytes, green against the operator source §13.4 moved.
+
+**RUN 2 DIED AT ARM `R3` WHEN THE PROVIDER ROTATED AGAIN**, about fifty minutes into the window: `P7-R3-recovery-ms`
+read **122,595 ms against 80,000** and `P7-arm-windows:R3` read **1 of 4** with **3 problems in 231 ms**,
+while every other assertion of that arm passed — `P7-R3-refusal-ms` at **2 ms against 5,000** and
+`P7-R3-hold-resolver-requests` at **0**. The recheck immediately afterwards says `verdict=disallowed`,
+`resolvedOriginDigest=d24a544ecef3`. **R3 measures the first read after a provider restoration**, so a
+rotation landing inside it produces exactly this shape, and it is the same shape Phase 7 §11.13 already
+records happening to the same arm.
+
+**SO IT IS BLOCKED, NOT FAILED**, on §7's rule, and the host was left exactly as it was found. **§13.7's
+obligation is therefore PARTLY discharged and this document says which part:** the ten-gate matrix is green
+from this candidate, Phase 7's own gate source and `projectiond/` are byte-unmoved — `git diff 8822dae..HEAD`
+over both is empty — and one of that sequence's three runs is green. **One of three is not three, and §4.1's
+clause 10 is not satisfied by it.**
 
 **THE OTHER CHECKS §4.1 CLAUSE 11 ASKS FOR, FROM THE SAME CANDIDATE:** `npm run typecheck` clean on the
 development host; `gofmt -l`, `go vet ./...` and `go build ./...` clean on Unraid with **all eleven Go
@@ -1017,17 +1031,25 @@ the host's four sets were identical before and after every run and the gate root
 (8); and no secret, stable reference, CDN host or operator label appeared in anything any soak preserved (9).
 Clause 11's checks pass and clause 10 is **partly** paid — §11.10.
 
-**WHAT IS NOT ESTABLISHED, AND WHY SAYING SO IS THE POINT.** Clause 1 needs **three** and there are **two**.
-Clause 10 needs Phase 7's `go:phase7-gate:three` re-run from this candidate and it has **not** been run,
-because it is provider-facing and the same rotation blocks it. **TWO COMPLETE PASSING SOAKS ARE NOT ONE WRAPPER INVOCATION THAT COMPLETED THREE.** §5 gives the reason the number is three rather than one: *"three soaks of three answer whether it
-degrades AND whether that answer reproduces. Only the second is a property of the product rather than of an
-afternoon."* Two complete soaks are one reproduction, not two, and this document will not round it up.
+**WHAT IS NOT ESTABLISHED, AND WHY SAYING SO IS THE POINT.** Clause 1 needs one wrapper invocation completing
+**three** consecutive fresh soaks and the wrapper completed **one**. Clause 10 needs Phase 7's
+`go:phase7-gate:three` from this candidate and **that wrapper also completed one of three**, blocked at `R3`
+by a second rotation in the same window. **TWO COMPLETE PASSING SOAKS ARE NOT ONE WRAPPER INVOCATION THAT
+COMPLETED THREE.** §5 gives the reason the number is three rather than one: *"three soaks of three answer
+whether it degrades AND whether that answer reproduces. Only the second is a property of the product rather
+than of an afternoon."* Two complete soaks are one reproduction, not two, and this document will not round it
+up.
 
-**THE BLOCKER, NAMED EXACTLY.** The provider rotated its CDN origin out of the operator's six-entry allowlist
-mid-sequence. Digests only, from the official recheck: allowed at `b16331429dc1` and `3cfc7340a785` while the
-two passing soaks ran, `disallowed` at `4b416e9283c3` from cycle 1 of soak 3 onward. **This is the egress
-allowlist working, not a product fault**, and §7 forbids any automated part of this tranche from writing
-`endpoint.json` on its own initiative. It was not read, not written and not touched at any point.
+**THE BLOCKER, NAMED EXACTLY, AND IT BIT TWICE IN ONE SESSION.** The provider rotated its CDN origin out of
+the operator's six-entry allowlist **mid-sequence, twice**. Digests only, from the official recheck:
+`disallowed` at `d24a544ecef3` for the first two and a half hours; **allowed** at `b16331429dc1` and
+`3cfc7340a785` while both passing soaks ran; `disallowed` at `4b416e9283c3` from cycle 1 of the wrapper's
+run 2; **allowed** again at `3cfc7340a785` about forty minutes later, which is the window Phase 7's sequence
+was launched into; and `disallowed` at `d24a544ecef3` again roughly fifty minutes after that, inside Phase
+7's `R3`. **This is the egress allowlist working, not a product fault** — §7 says so and predicted this
+tranche would be more exposed to it than Phase 7 was, because a soak is three cycles and a sequence is nine.
+§7 forbids any automated part of this tranche from writing `endpoint.json` on its own initiative, and it was
+not read, not written and not touched at any point.
 
 **AND THERE IS A SECOND, SMALLER BLOCKER THAT IS AN OPERATOR DECISION RATHER THAN A DEFECT.** This
 continuation was authorised **at most six full Phase 8 soak invocations** and six have been spent — one dying
@@ -1041,8 +1063,12 @@ because a numeric limit an operator set is not one this document may raise for i
 1. **A provider window and three more soak invocations.** `deploy/projection-provider-origin-recheck.sh` on a
    fifteen-minute cadence, launching `npm run go:phase8-gate:three` on the first `allowed` verdict. Nothing
    else needs to change: the candidate is frozen, staged, byte-proved and green.
-2. **Then `npm run go:phase7-gate:three` from the same candidate**, which §13.7 owes and which the same
-   window serves. The ten-gate matrix it belongs to is already green from this candidate — §11.10.
+2. **And the same for `npm run go:phase7-gate:three`**, whose run 1 of 3 is already green from this
+   candidate — §11.10. **BOTH WRAPPERS NEED A WINDOW THAT STAYS OPEN, WHICH THIS ONE DID NOT:** two
+   rotations in five hours, each landing inside a run, is what this tranche's §7 warned it would be more
+   exposed to than Phase 7 was. A poller that launches on `allowed` is necessary and is not sufficient; the
+   thing that would make it sufficient is an allowlist that covers the pool, which is the operator's
+   decision and nobody else's.
 3. **Then the verdict**, which at that point turns on nothing this session has left undone.
 
 **WHAT IS NOT BLOCKING IT, BECAUSE IT WAS DONE:**
