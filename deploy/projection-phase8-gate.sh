@@ -1623,6 +1623,11 @@ host_volumes()    { docker volume ls --format '{{.Name}}' | LC_ALL=C sort; }
 # THEY ARE CAPTURED OUTSIDE THE RUN DIRECTORY, because the cleanup contract deletes that directory before
 # the comparison happens — and a comparison whose left-hand side the gate itself removed is not one.
 host_containers > "$GATE_ROOT/host-containers-before-$$.txt"
+# ...AND THE SAME SET AGAIN, UNFILTERED, WHERE S10 LOOKS FOR IT. `host_containers` subtracts this run's own
+# names because the END-OF-RUN comparison is about the host baseline; S10 asks a different question every
+# cycle — "is every container here either one the soak declared or one that was already running?" — and needs
+# the raw set for it. Nothing wrote this file before, so S10 compared against an empty left-hand side.
+docker ps -a --format '{{.Names}}' | LC_ALL=C sort > "$WORK/out/containers-before.txt"
 host_networks   > "$GATE_ROOT/host-networks-before-$$.txt"
 host_volumes    > "$GATE_ROOT/host-volumes-before-$$.txt"
 echo "  $(wc -l < "$GATE_ROOT/host-containers-before-$$.txt" | tr -d ' ') container(s), \
@@ -2487,6 +2492,17 @@ fi
 # are the same objects in cycle 3 as in cycle 1. `ITEMS_READY` makes a second call a no-op rather than a
 # second scan, so a later cycle that ever needs one can ask without paying twice.
 ensure_items
+
+# THE BASELINE CATALOGUE ROUND, AND THE FIRST SOAK THAT REACHED IT IS WHY THIS LINE EXISTS TOO.
+#
+# `phase_churn` compares round N against round N-1. Cycle 1's `verify_after_cycle` takes round 1 and then
+# asks for the churn against round **0** — a directory nothing has ever created — so all three servers
+# recorded `P8-cycle-churn:<server>:C1` from a node program that had died on `ENOENT`. Phase 7 takes exactly
+# this baseline round in its own setup, for exactly this reason.
+#
+# IT IS ALSO THE HONEST PLACE FOR IT. Churn is "items added or removed ACROSS the cycle", so the round it is
+# measured against has to be taken BEFORE the cycle rather than at its start.
+phase_catalogue P8-A-catalogue "" "the baseline round, before the first cycle"
 
 # ----------------------------------------------------------------------------------------------------------
 # THE PHASES
@@ -3355,9 +3371,20 @@ step_S10_cleanup_accounting() {
   local expected
   expected="$(printf '%s\n' "$MOUNT_CONTAINER" "$JF_CONTAINER" "$PLEX_CONTAINER" "$EMBY_CONTAINER" \
     "$RESOLVER_CONTAINER" "${NETWORK}-postgres-1" | LC_ALL=C sort)"
+  # BOTH SIDES SORTED, AND THE LEFT ONE READ FROM A FILE THAT IS ACTUALLY WRITTEN — TWO DEFECTS IN ONE LINE,
+  # BOTH FOUND BY THE FIRST SOAK THAT REACHED S10.
+  #
+  # `$WORK/out/containers-before.txt` WAS NEVER CREATED BY ANYTHING. `cat` of a missing file writes nothing to
+  # stdout, the `2>/dev/null` on the substitution swallowed the complaint, and the left-hand side of the
+  # comparison became just this soak's own expected names. Every container on the host was therefore reported
+  # as one this cycle did not account for — thirty-seven of somebody else's services, printed as a leak, in
+  # every cycle of every soak.
+  #
+  # AND `comm` REQUIRES SORTED INPUT, which a `cat` followed by a `printf` is not. Even once the file existed,
+  # concatenating two sorted lists does not produce one, so the comparison would have been wrong in a quieter
+  # way — which is worse, because thirty-seven names are obviously a defect and one name is not.
   local unexpected
-  unexpected="$(comm -13 <(cat "$WORK/out/containers-before.txt" ; printf '%s\n' "$expected") \
-    <(printf '%s\n' "$containers") 2>/dev/null | grep -v '^$' || true)"
+  unexpected="$(comm -13 <(cat "$WORK/out/containers-before.txt" <(printf '%s\n' "$expected") | LC_ALL=C sort -u) <(printf '%s\n' "$containers") | grep -v '^$' || true)"
   [ -z "$unexpected" ] || ok=0
   if [ "$ok" -ne 1 ]; then
     echo "  containers this cycle did not account for:" >&2
