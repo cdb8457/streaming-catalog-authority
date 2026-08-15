@@ -565,6 +565,126 @@ test('the redesign carries positive AND negative regressions, and the controls a
     'the install matrix no longer asserts that install is idempotent while the appliance is SERVING');
 });
 
+// ---------------------------------------------------------------------------------------------------------
+console.log('\nevery function the gate defines is CALLED, and called with the arguments it declares');
+// ---------------------------------------------------------------------------------------------------------
+//
+// WHAT THIS EXISTS BECAUSE OF, AND IT IS TWO DEFECTS FROM ONE RUN. The first soak ever attempted died three
+// steps into cycle 1, and both halves were readable from these bytes the whole time:
+//
+//   * `ensure_items` was DEFINED and CALLED BY NOTHING. Phase 7 calls it once before its playback stage; this
+//     gate inherited the function and dropped the call, so `items-<server>.json` was never written and all
+//     three drivers were handed a path that does not exist. Three `ENOENT`s and three `P8-S4-seeks 0/10`
+//     against a product that had done nothing wrong — in EVERY cycle of EVERY soak.
+//   * `play_all_three` declares `local label="$1" id_prefix="$2"` and S4 called it with NEITHER. Under
+//     `set -u` that is not a wrong measurement, it is a DEAD RUN: the gate ended on the spot.
+//
+// NEITHER IS VISIBLE TO `bash -n`, and neither is visible to the id-level audit, which models what a gate
+// RECORDS rather than whether its functions can run. This pin reads arity and reachability instead, which is
+// the other half of the same question.
+//
+// THE ARITY IS TAKEN FROM THE FIRST `local` LINE ONLY, deliberately. That is where every function in this
+// repository declares its parameters, and a body that re-uses `$1` after `set --` — which `play_all_three`
+// does on purpose, to wait on each child individually — would otherwise inflate the count and make a correct
+// function fail.
+
+test('every function the Phase 8 gate defines is referenced somewhere else in it', () => {
+  const lines = gateCode.split('\n');
+  const defined: string[] = [];
+  for (const line of lines) {
+    const match = /^([a-z_][a-z0-9_]*)\(\)\s*\{/.exec(line);
+    if (match?.[1] !== undefined) defined.push(match[1]);
+  }
+  assert(defined.length > 30, `only ${defined.length} functions were found, so this pin parsed nothing`);
+  const orphans = defined.filter((name) => {
+    const uses = gateCode.split(new RegExp(`\\b${name}\\b`)).length - 1;
+    // One occurrence is the definition itself. A function used nowhere else is one no run can reach.
+    return uses <= 1;
+  });
+  assertEq(orphans.length, 0,
+    `the gate defines these and calls them nowhere, so whatever they were written to do does not happen: `
+    + orphans.join(', '));
+});
+
+test('no call site hands a gate function fewer arguments than it declares', () => {
+  const lines = gateCode.split('\n');
+  const arity = new Map<string, number>();
+  const bodyEnd = new Map<string, number>();
+  const bodyStart = new Map<string, number>();
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = /^([a-z_][a-z0-9_]*)\(\)\s*\{/.exec(lines[index] ?? '');
+    const name = match?.[1];
+    if (name === undefined) continue;
+    bodyStart.set(name, index);
+    let end = index;
+    while (end < lines.length && lines[end] !== '}') end += 1;
+    bodyEnd.set(name, end);
+    // THE FIRST `local` LINE IS THE DECLARATION. Nothing else in the body is read for arity.
+    let declared = 0;
+    for (let scan = index + 1; scan <= end; scan += 1) {
+      const line = lines[scan] ?? '';
+      if (!/^\s*local\s/.test(line)) continue;
+      for (const hit of line.match(/\$\{?([1-9])\b/g) ?? []) {
+        declared = Math.max(declared, Number(hit.replace(/\D/g, '')));
+      }
+      break;
+    }
+    if (declared > 0) arity.set(name, declared);
+  }
+  assert(arity.size > 5, `only ${arity.size} functions declare positional parameters; this pin parsed nothing`);
+
+  // CONTINUATIONS ARE JOINED BEFORE ARGUMENTS ARE COUNTED, and the first version of this pin is why.
+  // `compare_sets` and `phase_bytes` are both called across two lines with a trailing backslash, and reading
+  // one line at a time reported four correct call sites as under-supplied — a pin that fails on being right
+  // teaches the next person to delete it.
+  const joined: Array<{ text: string; line: number }> = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    let text = lines[index] ?? '';
+    const at = index;
+    while (/\\\s*$/.test(text) && index + 1 < lines.length) {
+      index += 1;
+      text = `${text.replace(/\\\s*$/, ' ')}${(lines[index] ?? '').trim()}`;
+    }
+    joined.push({ text, line: at });
+  }
+
+  const problems: string[] = [];
+  for (const { text, line: sourceLine } of joined) {
+    const index = sourceLine;
+    const line = text;
+    // A CALL SITE IS A COMMAND, not a mention: the name at the start of a statement, optionally after a
+    // `;`, `&&`, `||`, `then`, `else`, `do` or an opening brace.
+    const call = /(?:^|[;&|]\s*|\bthen\s+|\belse\s+|\bdo\s+)([a-z_][a-z0-9_]*)((?:\s+[^\s;&|]+)*)\s*$/
+      .exec(line.trim());
+    const name = call?.[1];
+    if (name === undefined) continue;
+    const declared = arity.get(name);
+    if (declared === undefined) continue;
+    const start = bodyStart.get(name) ?? -1;
+    const end = bodyEnd.get(name) ?? -1;
+    if (index >= start && index <= end) continue;   // its own body
+    if (/^\s*(function\s+)?[a-z_][a-z0-9_]*\(\)/.test(line)) continue;
+    const args = (call?.[2] ?? '').trim();
+    const given = args === '' ? 0 : args.split(/\s+/).length;
+    if (given < declared) {
+      problems.push(`line ${index + 1}: ${name} declares ${declared} argument(s) and is called with ${given}`);
+    }
+  }
+  assertEq(problems.length, 0,
+    `under set -u a missing positional is not a wrong measurement, it is a dead run: ${problems.join('; ')}`);
+});
+
+test('the setup takes the item ids every playback needs, and S4 plays with a cycle label', () => {
+  // THE TWO SPECIFIC DEFECTS, PINNED BY NAME AS WELL AS BY SHAPE. The general pins above would catch either
+  // one again; these say what they were, so the next reader does not have to infer it from a regex.
+  assert(/^ensure_items$/m.test(gateCode),
+    'the gate defines ensure_items and never calls it, so items-<server>.json is never written and every '
+    + 'playback assertion in every cycle fails against a product that did nothing wrong');
+  assert(/^\s*play_all_three "\$CYCLE_ID" P8-B$/m.test(gateCode),
+    'S4 no longer plays with this cycle as the label and P8-B as the id prefix, so either two cycles share '
+    + 'one trace file or the two budgeted play ids are never recorded at all');
+});
+
 test('this suite is wired into the offline inventory, so a rename cannot silently end the coverage', () => {
   assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/projection-phase8.ts'), 'suite in npm test');
   const inventory = JSON.parse(read('test/suite-inventory.json')) as {

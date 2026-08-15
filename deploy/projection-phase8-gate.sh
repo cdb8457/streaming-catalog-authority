@@ -1800,16 +1800,6 @@ stop_resolver() {
   RESOLVER_CONTAINER=""
 }
 
-# EVERY REQUEST THE RESOLVER HAS SEEN, counted from its own log rather than inferred from anything else.
-#
-# A "REQUEST" IS EVERY OUTCOME IT CAN HAVE, not just the successful one. Counting only resolutions would let
-# A4's "zero provider traffic while the breaker is open" pass over a hold in which the daemon hammered a
-# resolver that refused every call.
-resolver_requests() {
-  docker logs "$RESOLVER_CONTAINER" 2>&1 \
-    | grep -cE 'torbox-resolver: (resolved a |refusing every request|rejected a request|refused a malformed|the provider did not yield|resolution failed)' \
-    || true
-}
 resolver_resolutions() {
   docker logs "$RESOLVER_CONTAINER" 2>&1 \
     | grep -cE 'torbox-resolver: resolved a (torrent|webdl|usenet) reference in [0-9]+ attempt' || true
@@ -1903,21 +1893,6 @@ await_readable() {
 #
 # Empty rather than -1 because `record.cjs` fails a measurement that is not a number, while `-1 <= 22000` is
 # perfectly true. An arm that takes no measurement must fail, not pass by arithmetic.
-RECOVERY_MS=""
-await_recovery() {
-  local started="$1"
-  if [ -z "$started" ]; then
-    RECOVERY_MS=""
-    return 1
-  fi
-  if await_readable 240; then
-    RECOVERY_MS=$(( $(date +%s%3N) - started ))
-    return 0
-  fi
-  RECOVERY_MS=""
-  return 1
-}
-recovered() { [ -n "$RECOVERY_MS" ]; }
 
 # HOW LONG THE DAEMON IS GIVEN TO PUT ITS OWN MOUNT DOWN IS NO LONGER THIS GATE'S NUMBER, AND THAT IS THE
 # POINT OF §13. `deploy/projection-alpha.sh stop` is `compose down`, whose grace period is the shipped one; a
@@ -2047,23 +2022,10 @@ sample() {
   fi
 }
 
-# WHAT THE TWO SUPERVISORS HAVE ACTUALLY DONE, READ FROM THE DAEMON'S OWN LOG RATHER THAN CAUGHT ON /readyz.
-#
-# The status surface publishes an action only WHILE IT IS IN FLIGHT — about a second — and every reading here
-# costs a container start. Phase 6's second Tower run measured exactly that: the generation advanced 0 -> 1
-# and the arm reported `sawAction=0`. The log lines are written by the supervisor at the moment it acts and
-# are durable, so the fact is read where it cannot be missed.
-serve_deaths()      { docker logs "$MOUNT_CONTAINER" 2>&1 | grep -c 'serve loop died' || true; }
-# `remount attempt 1/3` occurs on THREE lines of one attempt, so an unanchored count reports one remount as
-# three — measured on the real host during Phase 6's RC10. Anchoring counts the announcement and nothing else.
-remount_starts()    { docker logs "$MOUNT_CONTAINER" 2>&1 | grep -cE 'remount attempt 1/3$' || true; }
 recovery_actions()  { docker logs "$MOUNT_CONTAINER" 2>&1 | grep -cE 'projectiond: recovery: recover-' || true; }
 recovery_last_action() {
   docker logs "$MOUNT_CONTAINER" 2>&1 | grep -oE 'projectiond: recovery: recover-[a-z-]+' | tail -1 \
     | sed 's/^projectiond: recovery: //'
-}
-recovery_refusals() {
-  docker logs "$MOUNT_CONTAINER" 2>&1 | grep -cE 'projectiond: recovery not started: ' || true
 }
 
 # ----------------------------------------------------------------------------------------------------------
@@ -2167,24 +2129,6 @@ bind_fingerprint() {
 # A RUN THAT PRODUCED NEITHER TOKEN DIES RATHER THAN BEING SCORED AS EITHER. That is the class of defect
 # Phase 2 §7 found four times and Phase 1 found four more: a step that reports a result the product was
 # never consulted for.
-TIMED_READ_MS=0
-TIMED_READ_VERDICT=""
-timed_read() {
-  local out
-  set +e
-  out="$(node "$REL/out/oneread.cjs" "$REL/out/corpus.json" "$REL/mnt" 2>&1 | tail -1)"
-  set -e
-  TIMED_READ_MS="$(printf '%s' "$out" | sed -n 's/.*elapsedMs=\([0-9][0-9]*\).*/\1/p')"
-  case "$out" in
-    read:ok*)       TIMED_READ_VERDICT="ok" ;;
-    read:mismatch*) TIMED_READ_VERDICT="mismatch" ;;
-    read:eio*)      TIMED_READ_VERDICT="eio" ;;
-    *)              TIMED_READ_VERDICT="" ;;
-  esac
-  [ -n "$TIMED_READ_VERDICT" ] && [ -n "$TIMED_READ_MS" ] \
-    || die "a timed read produced neither verdict nor an elapsed time, so nothing was measured: \
-$(printf '%s' "$out" | tr '\n' ' ')"
-}
 
 # EACH IS STARTED THE WAY ITS OWN GATE STARTS IT, AND THE THREE COMMANDS ARE DELIBERATELY NOT UNIFIED.
 # Jellyfin runs under `--user 1000:1000` with all capabilities dropped; Emby CANNOT, because its entrypoint
@@ -2528,6 +2472,21 @@ else
   die "the operator's object does not present as playable video through the mount; the acceptance plan's \
 real-provider corpus is 1-3 files the operator is entitled to AND has chosen as playable video"
 fi
+
+# THE ITEM IDS EVERY PLAYBACK NEEDS, TAKEN ONCE, HERE — AND THE FIRST SOAK EVER RUN IS WHY THIS LINE EXISTS.
+#
+# `ensure_items` was DEFINED in this gate and CALLED BY NOTHING. Phase 7 calls it once, immediately before its
+# own playback stage; this gate carried the function over and dropped the call. So `items-<server>.json` was
+# never written, and cycle 1's S4 handed all three drivers a path that does not exist: three `ENOENT`s, three
+# `P8-S4-seeks:<server>:C1 0/10` failures against a product that had done nothing wrong, and — because the
+# next thing S4 does is the paced play — the run then died on an unbound variable before any of it could be
+# read as a pattern. **Every playback assertion in every cycle of every soak would have failed the same way.**
+#
+# ONCE, NOT PER CYCLE, AND THAT IS PHASE 7's ANSWER RATHER THAN A SAVING. The three servers are never
+# restarted, re-bound or re-created for the whole soak — §2's most important row — so their library item ids
+# are the same objects in cycle 3 as in cycle 1. `ITEMS_READY` makes a second call a no-op rather than a
+# second scan, so a later cycle that ever needs one can ask without paying twice.
+ensure_items
 
 # ----------------------------------------------------------------------------------------------------------
 # THE PHASES
@@ -3273,7 +3232,15 @@ step_S4_playback() {
   # USEFUL PLAYBACK, AT THE DURATIONS PHASE 1 ALREADY MEASURED AND PHASE 7 ALREADY CLOSED ON. The drivers,
   # the verifiers and the pacing are the shipped ones; nothing here is a stand-in.
   for server in $P8_SERVERS; do seeks_for "$server"; done
-  play_all_three
+  # `play_all_three` TAKES TWO ARGUMENTS AND THIS STEP PASSED NEITHER, which under `set -u` is not a wrong
+  # measurement but a DEAD RUN: `local label="$1"` with nothing in `$1` ends the gate on the spot, three
+  # steps into cycle 1, and that is exactly how the first soak ever attempted died.
+  #
+  # THE LABEL IS THE CYCLE AND THE PREFIX IS `P8-B`, and both matter. The label names this cycle's own play
+  # output files, so cycle 2 cannot read cycle 1's trace and call it its own; the prefix is what selects the
+  # branch that records `P8-S4-play-start-ms` and `P8-S4-play-decoded-seconds` — the two ids §4's budgets are
+  # about — rather than the bare boolean the post-recovery re-play in Phase 7 records under its own name.
+  play_all_three "$CYCLE_ID" P8-B
   for server in $P8_SERVERS; do transcode_for "$server"; done
 }
 
