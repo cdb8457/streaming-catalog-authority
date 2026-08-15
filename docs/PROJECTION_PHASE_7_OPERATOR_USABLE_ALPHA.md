@@ -837,6 +837,22 @@ matrix attributable: the shipped operator command an operator runs did not move 
 The full digest is `33005b52c989645586c0fbe35fdf4572489b7a74ec97785f22b20e89435cf2f3`; the abbreviations above
 are its first sixteen characters and the same convention is used for the other two columns.
 
+**AND THE OPERATOR SOURCE HAS MOVED SINCE THIS TRANCHE CLOSED, WHICH IS RECORDED HERE RATHER THAN LEFT FOR
+A READER TO DISCOVER.** Every candidate above carries `6dbb238d51f6415f` and that is still what those runs
+measured; the shipped operator command an operator would deploy today is `9940edfcb50a6a27`.
+`docs/PROJECTION_PHASE_8_OPERATOR_SOAK.md` §13.4 is the list of what changed and why — a bounded, validated
+poll interval defaulting to the 5s the profile always carried, `--strict-direct-mount` made unconditional in
+a profile whose image contains no `fusermount` helper to fall back to, and the repair of an `install` that
+succeeded exactly once and failed forever after while the appliance was running.
+
+**WHAT THAT COSTS, STATED AS AN OBLIGATION RATHER THAN AS A CAVEAT.** §13.7 of that document requires
+`npm run go:phase7-gate:three` **and** the ten-gate regression matrix to be re-frozen and re-run from the
+final candidate carrying those changes, and Phase 8 may not claim a GO until they are. **NOTHING IN THIS
+DOCUMENT IS RELABELLED BY THAT.** Every run in §11 stays exactly where it is, attributed to the candidate that
+produced it; what changes is that a later tranche owes a re-run, and this paragraph is where a reader can see
+that the debt was recorded rather than forgotten. The `projectiond/` tree and the image are untouched by all
+of it: `sha256:216f1ae6…` is the same image candidates 12 and 13 were measured against.
+
 **THE GATE SOURCE MOVED BETWEEN CANDIDATE 3 AND 4**, which is why attempt 3 and attempt 4 are recorded as two
 attempts and not as one repeated: `2697dde` added the R1 diagnostic preservation of §11.4 #6. It changes what
 the gate KEEPS on a failing path and nothing it asserts, and §11.3.2 is what that change bought.

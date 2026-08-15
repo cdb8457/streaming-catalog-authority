@@ -445,6 +445,104 @@ this tranche measures none, claims none and simulates none.
 terms, §11.1's unmoved operator and Phase 7 gate digests are how a reader checks that nothing it measures has
 changed, and this section is where a reader can see that it was kept.
 
+
+### 11.7 The redesign's own provider-free verification, from the §13 candidate
+
+**EVERYTHING IN THIS SECTION IS PROVIDER-FREE AND NONE OF IT IS EVIDENCE ABOUT A SOAK.** §11.6 applies to it
+word for word: no figure here comes from a soak, no media-server behaviour was measured or simulated, and
+nothing below may be cited as evidence about the appliance under repetition. It is evidence about **the
+instrument and the shipped operator command**, taken after §13 changed both.
+
+**THE FROZEN SOURCE IT COMES FROM**, staged with `git archive` into an emptied `/mnt/user/appdata/catalog-p8g`
+and proved byte-identical **in both directions** by independently computed per-file sha256 manifests over
+**1,677 tracked files**, with an empty diff:
+
+| | Value |
+|---|---|
+| commit | `82c96e7`, and the two candidates before it are named per row below |
+| image built from that tree, on Unraid | `sha256:216f1ae6f298781b34b0855f1b5201d5db51eec816b8ccf894876797a7a21a46` |
+| OPERATOR SOURCE | `9940edfcb50a6a27` — **MOVED**, from `6dbb238d51f6415f`, and §13.4 is the list of what moved and why |
+| `projectiond/` image digest | **UNMOVED** — the same `sha256:216f1ae6…` §11.1 records, which is the check that the daemon did not move |
+
+**THE OPERATOR SOURCE MOVING IS THE POINT OF THAT TABLE.** §9 said this tranche changes no shipped product
+source; §13.2 supersedes that in terms and §13.7 is the re-run obligation it incurs. Phase 6 §11.10 is where
+that re-run is recorded, because Phase 6 is the tranche whose closure the operator source belongs to.
+
+| What | Where | Result |
+|---|---|---|
+| `bash -n`, gate + three-runner + optional wrapper | Unraid | **clean** |
+| the static wiring audit over the gate's bytes | Unraid + dev | **0 problems**, and it still **refuses** a tampered copy |
+| `deploy/projection-phase8-rehearsal.sh` — parts A, B and C | Unraid | **86 of 86, exit 0**, from `82c96e7`. Its previous best was 60 of 64 with four failures |
+| `npm run go:alpha-acceptance` — the Phase 6 install matrix | Unraid | **14 of 14, exit 0** — `AA1`–`AA11` unchanged and `AA12`–`AA14` new. Phase 6 §11.10 |
+| `npm run go:restart-topology-gate` | Unraid | **8 of 8, exit 0** — RT1 to RT6, including RT4's control |
+| `gofmt -l`, `go vet ./...`, `go build ./...` | Unraid | **clean** |
+| `go test ./...` | Unraid | **all 11 packages ok** |
+| `npm run typecheck` | dev | **clean** |
+| `test/projection-phase8.ts` | dev + Unraid | **34 of 34** — 26 before, plus the nine §13 pins |
+| `test/projection-phase8-gate-audit.ts` | dev + Unraid | **17 of 17**, six of them controls |
+| **ten temporary tampers against the §13 pins** | dev | **all ten BIT**, and all ten were reverted |
+| the host's container, network, volume sets and `fuse.projectiond` mountpoints | Unraid | **identical before and after every run**: 44 containers, 28 running, 18 networks, 46 volumes, **0** projection mounts, no run directory left |
+
+**THE FOUR FAILURES §11.4 RECORDED ARE GONE, AND THEY WERE THREE FACTS.** `A4` and `A6` were the two halves
+of #11 and are now the two assertions that say §13 is implemented rather than described. `C3.2` and `C3.3`
+were #14 reproduced, and they are now the two cycles that prove `install` succeeds **over an appliance that
+is already serving** — the question §3 wrote S2 to ask, answered the other way.
+
+**WHAT THE REHEARSAL ADDED RATHER THAN WHAT IT STOPPED FAILING**, because a suite that only stopped failing
+would be a suite that had been edited into agreement with a result:
+
+- **`A6b`** puts a second-owner bind back and requires the same search to find it;
+- **`A7`** reads the shipped profile and the gate together and requires the appliance the gate would drive to
+  be configured the way §4's budgets assume;
+- **`A8`** reads the shipped command's bytes for the #14 repair;
+- **`C1a`** proves a valid environment PASSES `preflight` with three consumers attached, and then refuses
+  seven invalid bounded inputs, a foreign ownership record and an unreadable one — with the same record
+  naming **this** installation accepted, so the refusals are about whose record it is rather than about there
+  being one;
+- **every cycle** asserts **sole ownership** — one appliance container serving the mount point, no other
+  container on the host projecting at it, exactly one layer of ours above the floor — and the ownership
+  record's exact path, mode and directory mode;
+- **a v1 marker is left inside the mount point before the first mount**, so all three cycles are a
+  **migration** rather than a first install;
+- **`C8`** lifts the gate's own reachability probe out of its bytes and proves the appliance resolves by name
+  from its own network, **controlled** by a name that does not exist and must return "nothing was measured".
+
+**THREE MORE DEFECTS WERE FOUND BY RUNNING IT, AND ALL THREE WERE IN THE INSTRUMENT.** They are numbered here
+as a continuation of §11.3's ledger rather than folded into it, because that ledger is what fourteen findings
+looked like when they were found:
+
+| # | Where | What, and what it would have cost |
+|---|---|---|
+| 15 | rehearsal `A7` | a `$`-anchored `grep` for `--strict-direct-mount` in a compose file `git archive` stages with **CRLF**, because `.gitattributes` forces LF on `*.sh` and `*.go` and nothing else. It reported the flag missing while the flag was there followed by a carriage return — **a pin failing on the one host this tranche closes on, for a line ending** |
+| 16 | gate, resolver reachability | the probe still asked from the **gate** network, where the subject's name no longer resolves at all now that the appliance is on the network its own compose profile declares. `probe-reachable.cjs` returns 2 for that and the gate treats 2 as fatal: **a soak would have died in SETUP, on a name lookup, having measured nothing** |
+| 17 | gate, `probe-reachable.cjs` | and it could not reliably tell the two apart: it inferred "unresolvable" from an `ENOTFOUND` connect error and mapped everything else — **`EAI_AGAIN` included, which is what Docker's embedded DNS can answer a failed lookup with** — to 1, the PASSING verdict. A subject whose name did not resolve would have been recorded as loopback-only, having measured nothing. It now resolves the name explicitly first |
+
+**#16 AND #17 ARE THE ARGUMENT FOR THE REHEARSAL ALL OVER AGAIN.** Neither is visible to `bash -n`, neither
+is visible to the static audit, and both are only reachable by running the thing. #16 would have ended a
+provider-facing attempt in setup; #17 would have let a green verdict be recorded for a measurement that never
+happened.
+
+### 11.8 The offline inventory, on both hosts, and the one number that moved
+
+**DEV HOST: 316 SELECTED, 316 PASSED, 0 FAILED, 0 REQUIRED-BUT-SKIPPED.** The count is unchanged at 316
+because this session adds no suite; the nine §13 pins are new tests inside `test/projection-phase8.ts`, which
+goes from 26 assertions to 34.
+
+**UNRAID HOST: THE NINE THAT HOST ALWAYS HAS**, enumerated exactly as §11.4 and Phase 7 §12.2 enumerate them:
+`custodian-contract`, `sidecar-runtime-prototype`, `sidecar-durable-state-evidence`, `kek-correction-gates`,
+`custodian-storage-ipc-gates` and `custody-transition` fail **closed** on a host whose `shfs` will not honour
+the restrictive modes or present the links they need to certify it; and `projection-gate-embedded-programs`,
+`projection-mount-hardening` and `projection-multi-frontend` copy a shipped `.sh` to a temp directory and exec
+it directly, which is status 126 because every shipped script is mode 644 in git and is always invoked as
+`bash script.sh`. **Not one of them is a suite this session touches and not one of them is new.**
+
+**AND ONE MORE APPEARED IN ONE RUN AND IS NOT A TENTH.** `kek-rotation.ts` failed once, under the full
+parallel inventory, with *"the rotation is refused: null"* — and **passes on its own in the same staged tree
+on the same host**, as it does in two previously staged trees there. It is recorded rather than summarised
+because a failure nobody could explain is worse than one that is: it is a flake under parallel load on a
+suite this session does not touch, and it is named here so that the next person who sees it knows it has been
+seen.
+
 ## 12. The readiness decision — **as it stood at commit `f482f31`, and §13 is what changed**
 
 **THIS SECTION IS KEPT WHOLE AND IS NOT EDITED.** It is the decision this tranche took when the blocker was
