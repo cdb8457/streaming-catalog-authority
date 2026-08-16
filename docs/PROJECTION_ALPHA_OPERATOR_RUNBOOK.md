@@ -8,8 +8,18 @@ rough edges and every one of them is real. Read it before you install, not after
 
 **Where the evidence is.** `docs/PROJECTION_PHASE_6_DEPLOYABLE_ALPHA.md` §11 is what was measured about the
 appliance and the operator command; `docs/PROJECTION_PHASE_7_OPERATOR_USABLE_ALPHA.md` §11 is what was
-measured about it **with three real media servers attached and playing**. Neither is a marketing page: if a
+measured about it **with three real media servers attached and playing**; and
+`docs/PROJECTION_PHASE_8_OPERATOR_SOAK.md` §11.15 is what was measured about it **being used over and over,
+with nothing recreated in between** — three consecutive fresh soaks of three inherited cycles each, from one
+frozen candidate, 199 verdicts and zero failures in every one. None of the three is a marketing page: if a
 thing is not in one of those run records, it has not been measured.
+
+**AND THE SOAK CHANGES ONE THING YOU WILL CARE ABOUT AND NOTHING ELSE.** `install` is now measured as
+**idempotent over an appliance that is already serving**, with three real media servers holding the mount, in
+nine consecutive cycles — §6.7 is the defect that used to make it fail on the second day and the repair that
+ended it. Everything else in §6 still ships exactly as rough as it says, the mount-layer count still held at
+**one** after every cycle, and **zero** operator interventions were needed between any two of them. It remains
+an alpha, on one host, with one provider.
 
 ---
 
@@ -275,7 +285,11 @@ directories. Point `PROJECTIOND_ALPHA_STATE_DIR` at this installation's own stat
 record on purpose.
 
 `docs/PROJECTION_PHASE_8_OPERATOR_SOAK.md` §13.4 is the design record, and the cost of the repair — re-running
-Phase 6's install matrix and Phase 7's whole regression matrix from a re-frozen candidate — is §13.7.
+Phase 6's install matrix and Phase 7's whole regression matrix from a re-frozen candidate — is §13.7. **THAT
+COST WAS PAID IN FULL**: §11.13 is the eleven-gate matrix green from the final candidate, §11.14 is Phase 7's
+own three-run sequence at three of three from the same one, and §11.15 is the repair measured under the exact
+condition that produced the defect — `install` succeeding over a **serving** appliance with three real media
+servers holding the mount, in **all nine cycles** of three consecutive fresh soaks.
 
 ## 7. What to do when a media server stops seeing files
 

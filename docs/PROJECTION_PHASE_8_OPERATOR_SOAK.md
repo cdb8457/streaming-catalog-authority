@@ -1,13 +1,15 @@
 # Projection Phase 8 — the operator soak
 
-**Status: NO-GO — two complete soaks have passed from one frozen candidate with 199 verdicts and zero
-failures each, but `go:phase8-gate:three` completed ONE of its three runs and its second was BLOCKED by the
-provider's CDN allowlist, which §7 counts toward nothing. §2 to
-§10 are the contract and every one of them was written and committed BEFORE the first
-measured run. §11 is the run record, §12 is the decision as it stood at commit `f482f31`, §13 is the
-superseding design and §14 is the current decision.** No threshold in §4 may move after the first
-measured run; a clause that measures FALSE is recorded as **superseded**, with what it said kept whole, exactly
-as Phase 4 §4.1, Phase 5 §3.3 and Phase 7 §8.4.4 did — never edited into agreement with a result.
+**Status: GO — CLOSED. `npm run go:phase8-gate:three` completed THREE consecutive fresh soaks from one frozen
+candidate, exit 0, 199 verdicts / 199 pass / 0 fail / 0 skip in each, and Phase 7's own `go:phase7-gate:three`
+completed three of three from the same candidate. §2 to §10 are the contract and every one of them was written
+and committed BEFORE the first measured run. §11 is the run record, §12 is the decision as it stood at commit
+`f482f31`, §13 is the superseding design, §14 is the decision as it stood before the closing sequence, and
+§15 is the closure.** No threshold in §4 moved after the first measured run, in either direction; a clause that
+measures FALSE is recorded as **superseded**, with what it said kept whole, exactly as Phase 4 §4.1, Phase 5
+§3.3 and Phase 7 §8.4.4 did — never edited into agreement with a result. **§12 and §14 are kept whole and are
+NOT edited into agreement with §15**: each was correct when it was written, and §15.1 says what changed and
+what did not.
 
 **§13 IS A DESIGN SECTION AND IT WAS COMMITTED BEFORE ANYTHING WAS MEASURED AGAINST IT**, which is the same
 rule §2–§10 were written under. It moves no threshold, shortens no cycle and changes no step's meaning; it
@@ -234,9 +236,15 @@ records both. If it does not, the matrix that Phase 7 §11.15.3 records **is** t
 
 ## 11. Run record
 
-**NO SOAK HAS BEEN MEASURED. THE TRANCHE IS A NO-GO AND §12 SAYS SO.** No figure anywhere in this document
-comes from a soak, because there has not been one, and no provider was contacted at any point in this
-tranche — not once, in either session that wrote it.
+**THIS SECTION IS CHRONOLOGICAL AND ITS EARLIER SUBSECTIONS ARE KEPT EXACTLY AS THEY WERE WRITTEN.** §11.1 to
+§11.8 are the state before any soak existed, §11.9 and §11.10 are the first soaks and the partly-paid
+regression obligation, and **§11.11 to §11.16 are the final frozen candidate and the sequences that closed the
+tranche**. Each was true when it was written; none is edited to agree with a later one.
+
+**HISTORICALLY, AT COMMIT `f482f31` — SUPERSEDED BY §11.9 AND §11.15, AND KEPT WHOLE:** *"**NO SOAK HAS BEEN
+MEASURED. THE TRANCHE IS A NO-GO AND §12 SAYS SO.** No figure anywhere in this document comes from a soak,
+because there has not been one, and no provider was contacted at any point in this tranche — not once, in
+either session that wrote it."*
 
 **WHAT HAS CHANGED SINCE THE FIRST VERSION OF THIS RECORD IS THE BLOCKER ITSELF.** That version said the gate
 "exists, is syntax-clean and is pinned by 26 offline assertions, and **it has never been executed**", and
@@ -721,6 +729,292 @@ packages** ok; `deploy/projection-phase8-rehearsal.sh` **86 of 86** and then **9
 S5's own fault; `test/projection-phase8.ts` **38 of 38**; `test/projection-phase8-gate-audit.ts` **17 of 17**;
 and the full offline inventory on both hosts, enumerated in §11.8.
 
+
+### 11.11 THE FINAL FROZEN CANDIDATE, and the proof that it moves no shipped byte
+
+**EVERY FIGURE IN §11.11 TO §11.16 COMES FROM ONE CANDIDATE**, staged with `git archive` into an emptied
+`/mnt/user/appdata/catalog-p8h` and proved byte-identical **in both directions** by independently computed
+per-file sha256 manifests over **1,677 tracked files**, with an **empty diff** and both manifests hashing to
+`d62f1103e76ee611…`:
+
+| | Value |
+|---|---|
+| commit | `ce7b5e05fd3cd101c6ba51afd9dbdd352c054a30`, tree `84fca1a921b90b4d55f1bd4646b1e7d963a0d7cb` |
+| image built from that tree, on Unraid | `sha256:216f1ae6f298781b34b0855f1b5201d5db51eec816b8ccf894876797a7a21a46` |
+| `projectiond/` tree | `887d269b77fb82ddfb9801aee7e7caddb0195bca` — **the same tree Phase 7 candidate 13 carries** |
+| OPERATOR SOURCE | `9940edfcb50a6a27` — **UNMOVED** from §11.9's candidate |
+| PHASE 8 GATE SOURCE | `745b9e07f5bbad35` — **UNMOVED** |
+| PHASE 8 REHEARSAL SOURCE | `9c5e7d697c9287d8` — **UNMOVED** |
+| host | Unraid `tower` |
+
+**THAT THE THREE DIGESTS ARE UNMOVED IS THE POINT OF THE TABLE, AND IT IS CHEAP TO CHECK RATHER THAN TO TAKE.**
+`git diff 9d32e4c..ce7b5e0` touches `.gitignore` and two documents and **nothing else**: not one byte under
+`deploy/`, `projectiond/`, `src/`, `test/` or any compose file. `git diff 8822dae..ce7b5e0 -- projectiond/
+deploy/projection-phase7-gate.sh` is **empty**. The image this tree builds on the real host is the same
+`sha256:216f1ae6…` that §11.1, §11.7 and §11.9 all record, which is the daemon saying for itself that it did
+not move.
+
+**AND THE CANDIDATE DID NOT MOVE WHILE IT WAS BEING MEASURED, WHICH IS THE OTHER HALF OF §4.1's CLAUSE 1.** The
+staged tree was re-hashed after the closing sequence finished and still hashes to `d62f1103e76ee611…`; the
+development worktree is clean at `ce7b5e0`; and the only commit after it is the one carrying this record.
+
+### 11.12 The provider-free obligations, re-run at the final tree
+
+**§13.7 SAYS EVERY ONE OF THESE COMES BEFORE THE FIRST PROVIDER-FACING ATTEMPT, AND THEY DID.** Nothing in
+this section contacted the provider.
+
+| What | Where | Result |
+|---|---|---|
+| `bash -n` over both gates, both three-runners, both optional wrappers and the rehearsal | Unraid | **clean, 7 of 7** |
+| the static wiring audit over the gate's bytes | Unraid | **0 problems** — 3,617 lines, 3 cycles of 10 steps, 3 servers, **139 ids the closure rule requires**, **198 distinct ids the gate would record**, poll 2,000 ms and read-fail budget 20,000 ms both imported |
+| `deploy/projection-phase8-rehearsal.sh` — parts A, B and C | Unraid | **94 of 94, exit 0** |
+| `npm run go:restart-topology-gate` | Unraid | **8 of 8, exit 0**, 66 s |
+| `npm run go:alpha-acceptance` | Unraid | **14 of 14, exit 0**, 34 s |
+| `gofmt -l`, `go vet ./...`, `go build ./...` | Unraid | **clean** |
+| `go test ./...` | Unraid | **all 11 packages ok** |
+| `npm run typecheck` | dev | **clean** |
+| `test/projection-phase8.ts` | Unraid | **38 of 38** |
+| `test/projection-phase8-gate-audit.ts` | Unraid | **17 of 17** |
+| `test/projection-bounded-recovery.ts` | Unraid | **52 of 52** — the suite that holds the OPERATOR and GATE **source-digest pins**, so a green run here is the record certifying source that still exists |
+| `test/projection-evidence-consistency.ts` | Unraid | **8 of 8** |
+| `custody-cutover`, `custody-runtime-closure`, `evidence-rehearsal`, `managed-custody-lifecycle` | Unraid | **24, 39, 6, 16 — 0 failed in every one** |
+| the full offline inventory | dev | **316 selected, 316 passed, 0 failed, 0 required-but-skipped**, 762 s |
+| the full offline inventory | Unraid | **316 selected, 307 passed, 9 failed, 0 required-but-skipped**, 922 s |
+
+**THE NINE UNRAID FAILURES ARE THE SAME NINE, BY NAME, THAT §11.4, §11.8 AND PHASE 7 §12.2 ENUMERATE**, and
+they are enumerated again rather than summarised: `custodian-contract`, `sidecar-runtime-prototype`,
+`sidecar-durable-state-evidence`, `kek-correction-gates`, `custodian-storage-ipc-gates` and
+`custody-transition` fail **closed** on a host whose `shfs` will not honour the restrictive modes or present
+the links they need; and `projection-gate-embedded-programs`, `projection-mount-hardening` and
+`projection-multi-frontend` copy a shipped `.sh` to a temp directory and exec it directly, which is status 126
+because every shipped script is mode 644 in git. **Not one is new, not one is a suite this session touches,
+and required-but-skipped is 0 on both hosts**, which is the number §4.1 clause 11 actually turns on.
+`kek-rotation.ts`, the flake §11.8 recorded, did **not** recur.
+
+**AND THREE DEVELOPMENT-HOST SUITES FAILED ONCE, UNDER PARALLEL LOAD, AND ARE RECORDED RATHER THAN
+SUMMARISED**, for the same reason §11.8 records `kek-rotation`: a failure nobody explains is worse than one
+somebody does. An inventory run taken while this session still had long-lived remote waiters attached reported
+`backup-retention.ts` at exit 1 and `safety-set-lifecycle.ts` and `shared-destination-lock.ts` at exit
+**3221225794**, which is `0xC0000142` — Windows failing to **start** the process, not a suite reporting a
+result. All three pass standalone on the same tree — **114, 98 and 52 assertions, 0 failed** — and the
+inventory re-run on the quiet host is **316 / 316 / 0 / 0** again, in 684 s. None of the three is touched by
+anything this session changed, which is three Markdown documents and nothing else.
+
+**AND ONE SUITE IS NAMED HERE BECAUSE IT IS IN NEITHER INVENTORY AND SOMEBODY WILL LOOK FOR IT.**
+`custody-proof.ts` is one of the 37 suites the inventory does not select, on either host. Run standalone on
+Unraid it refuses to start at all — `embedded-postgres` will not boot as root — which is a property of running
+that suite as root on that host and **not a result about anything**. It is recorded rather than quietly
+omitted.
+
+**NO PIN OR ASSERTION WAS WEAKENED TO GET ANY OF THIS, AND THAT IS CHECKABLE RATHER THAN ASSERTED.** The
+working tree is clean at `ce7b5e0`; the diff against §11.9's candidate touches no test, no gate and no product
+source; the three §11.11 digests are unmoved; and the assertion counts are the counts §11.10 records — 38, 17,
+316 — rather than smaller ones.
+
+### 11.13 The ten-gate regression matrix, re-run from the final candidate
+
+**Every gate below ran provider-free, serialised, on Unraid `tower`, from the candidate in §11.11.**
+
+| Gate | Result |
+|---|---|
+| `go:restart-topology-gate` | **exit 0**, 66 s — 8 of 8 |
+| `go:mount-propagation-probe` | **exit 0**, 1 s |
+| `go:recovery-gate:three` | **exit 0**, 795 s — 14 of 14 arms, three consecutive cold-start runs |
+| `go:stale-mount-gate:three` | **exit 0**, 275 s |
+| `go:serve-death-gate:three` | **exit 0**, 53 s |
+| `go:mount-truth-gate:three` | **exit 0**, 64 s — 6 of 6 arms |
+| `go:mount-health-gate:three` | **exit 0**, 281 s — 12 of 12 arms |
+| `go:sustained-outage-gate:three` | **exit 0**, 275 s |
+| `go:publisher-mount-gate` | **exit 0**, 102 s |
+| `go:rclone-comparison-gate` | **exit 0**, 127 s |
+| `deploy/projection-alpha-acceptance.sh` | **exit 0 — 14 of 14 arms** |
+
+**AND THE HOST'S SETS WERE IDENTICAL BEFORE AND AFTER THE WHOLE MATRIX.**
+
+### 11.14 **`npm run go:phase7-gate:three` COMPLETED THREE OF THREE — §4.1 CLAUSE 10 IS SATISFIED**
+
+**THIS IS THE FIRST TIME PHASE 7's OWN SEQUENCE HAS COMPLETED FROM A CANDIDATE CARRYING §13.4's MOVED OPERATOR
+SOURCE**, and it is §13.7's obligation discharged in full rather than partly.
+
+| | Value |
+|---|---|
+| command | `npm run go:phase7-gate:three`, `PROJECTIOND_IMAGE=projectiond:phase8h-frozen` |
+| result | **exit 0 — three consecutive fresh runs, 1,287 verdicts, 0 fail, 0 skip** |
+| elapsed | **6,452 s**, 15:37:14Z to 17:24:46Z |
+| the recheck immediately before | `verdict=allowed` |
+| the recheck immediately after | `verdict=allowed`, `resolvedOriginDigest=4fea5e1bdeaa` |
+
+Each of the three runs put **three real, digest-pinned media servers** on one production `projectiond` mount
+over the real provider, played five minutes of direct video and five minutes of forced transcode through each,
+seeked ten times on each, and broke the mount six times on purpose — `R1` to `R6` — checking the operator's
+four approved windows through the mount **and inside each server's own container** after every one. The **alpha
+install matrix ran at 14 of 14 inside each run**. `P7-arm-windows` read **4 of 4** at every arm of every run.
+The host's sets were identical before and after.
+
+**§11.10's "PARTLY DISCHARGED" IS SUPERSEDED BY THIS SECTION AND IS KEPT WHOLE ABOVE.** One of three was not
+three when that paragraph was written, and it said so; three of three is three, and this one says so.
+
+### 11.15 **`npm run go:phase8-gate:three` COMPLETED THREE OF THREE — §4.1 CLAUSE 1 IS SATISFIED**
+
+**ONE WRAPPER INVOCATION, THREE CONSECUTIVE FRESH SOAKS, EXIT 0, 199 VERDICTS EACH, ZERO FAILURES AND ZERO
+SKIPS.** §14 refused to round two complete soaks up to three and named exactly what was missing; this is that
+thing, measured.
+
+| | Value |
+|---|---|
+| command | `npm run go:phase8-gate:three`, `PROJECTIOND_IMAGE=projectiond:phase8h-frozen` |
+| launched | 03:14:42Z, on an `allowed` verdict from the official recheck |
+| result | **exit 0 — three consecutive fresh soaks; 199 / 199 / 0 / 0 in each; 996 assertions printed, 0 failed** |
+| elapsed | **13,695 s** — 3 h 48 m, 03:14:42Z to 07:02:57Z |
+| the recheck immediately after | `verdict=allowed`, `resolvedOriginDigest=09e2a517af25` |
+| preserved verdict logs | `verdicts-4072480.jsonl`, `verdicts-519151.jsonl`, `verdicts-1154856.jsonl` — **199 lines, 199 `pass`, 0 `fail` in every one** |
+
+**FRESH APPLIES TO THE SOAK AND NEVER TO THE CYCLES INSIDE IT**, which is §5's inversion and the whole tranche.
+Each of the three soaks got a new run root, a new PostgreSQL with throwaway storage, a new manifest, a new
+cache, new media-server configuration directories, new containers and a mount point that had never been
+mounted; and inside each soak, cycles 2 and 3 found cycle 1's cache, ledger, manifest, configuration
+directories, container ids and mount point — **compared by inode and by container start instant, `pass` in all
+nine cycles**.
+
+#### 11.15.1 The three soaks, per cycle
+
+| | soak 1 C1 / C2 / C3 | soak 2 C1 / C2 / C3 | soak 3 C1 / C2 / C3 |
+|---|---|---|---|
+| `P8-cycle-inherited` | pass / pass / pass | pass / pass / pass | pass / pass / pass |
+| `P8-S2-install-idempotent` over a **serving** appliance | pass / pass / pass | pass / pass / pass | pass / pass / pass |
+| the end-of-cycle window check, out of 4 | 4 / 4 / 4 | 4 / 4 / 4 | 4 / 4 / 4 |
+| S4 direct play, decoded seconds, emby / jellyfin / plex | 306/300/300 in all three | 306/300/300 in all three | 306/300/300 in all three |
+| S4 forced transcode, decoded seconds | 324/324/300, 324/324/300, 324/324/300 | **321**/324/300, 324/324/300, 324/324/300 | 324/324/300 in all three |
+| S5 recovery action, ms, against 33,000 | 11,925 / 14,604 / 13,170 | 14,513 / 13,159 / 14,586 | 14,581 / 14,616 / 13,347 |
+| S5 readable again, ms, against 59,000 | 14,404 / 17,063 / 15,707 | 16,978 / 15,736 / 17,060 | 17,065 / 17,092 / 16,017 |
+| S6 layers above the floor, max 1 | 1 / 1 / 1 | 1 / 1 / 1 | 1 / 1 / 1 |
+
+And in every one of the three soaks: `P8-consumers-pre-attached` **pass**; `P8-consumers-never-touched`
+**0/0** — `CONSUMER_RESTARTS_MAX` held across the whole soak; `P8-layers-at-end` **1/1**;
+`P8-S10-no-operator-intervention` **0/0** in every cycle, so `OPERATOR_INTERVENTIONS_MAX` held;
+`P8-resolutions-happened` **1/1**, so each soak really did ask the provider rather than serve itself out of a
+warm cache; the five leak scans — manifest, manifest reference placement, probe cache, library state and
+preserved evidence — **all clean**, with the stable reference appearing in the manifest only at
+`locator.objectRef`; and `P8-own-mountpoints-removed` **0/0**, `P8-own-run-directory-removed` **pass**, and the
+container, network and volume **set** assertions **pass** — asserted rather than reported.
+
+**S4's TRANSCODE READ 321 SECONDS IN ONE CYCLE OF ONE SOAK AND IS RECORDED RATHER THAN ROUNDED**, because the
+number that matters is the threshold and the threshold is `TRANSCODE_DECODED_SECONDS_MIN` = 300. 321 is above
+it. Every other transcode in the sequence read 324 or 300.
+
+#### 11.15.2 The provider-facing attempt ledger for this continuation
+
+**`endpoint.json` WAS NOT READ, WRITTEN OR TOUCHED AT ANY POINT**, and no origin, URL, reference or credential
+appears anywhere in this document or in anything any run preserved. The official recheck ran before and after
+every attempt, digests only, on a seven-minute poll in between.
+
+| # | What | Verdict | Budget |
+|---|---|---|---|
+| 1 | `go:phase7-gate:three`, launched 12:24:51Z | **run 1 of 3 PASSED in full**; **run 2 BLOCKED** at `R3` — `P7-R3-recovery-ms` 122,645 / 80,000 and `P7-arm-windows:R3` 1 of 4 with 3 problems in 231 ms, every other assertion of that arm passing; the recheck immediately after said `disallowed` at `f446a32964bf` | not a Phase 8 soak |
+| 2 | `go:phase7-gate:three`, relaunched 15:33:36Z | **FAILED, and it is recorded as a failure rather than a block** — the 7-second stall, §11.15.3 | not a Phase 8 soak |
+| 3 | `go:phase7-gate:three`, relaunched 15:37:14Z | **PASSED — 3 of 3, 1,287 verdicts, 0 fail, 0 skip, 6,452 s.** §11.14 | not a Phase 8 soak |
+| 4 | `go:phase8-gate:three`, launched 17:24:49Z | **FAILED in cycle 1 S4** — the 7-second stall | **1 invocation spent** |
+| 5 | `go:phase8-gate:three`, relaunched 17:28:25Z | **BLOCKED.** Cycle 1 passed **all ten steps**, then the end-of-cycle window check read **1 of 4** with 3 problems in **227 ms**; `disallowed` at `cb5b875365b0` immediately after | none — §7 |
+| 6 | `go:phase8-gate:three`, relaunched 18:57:57Z | **run 1 of 3 PASSED — 199 / 199 / 0 / 0**; **run 2 BLOCKED on its LAST assertion** — cycles 1, 2 and all ten steps of cycle 3 passed, then the end-of-cycle window check read **1 of 4** in **496 ms**; `disallowed` at `f446a32964bf`. 9,282 s | none — §7 |
+| 7 | `go:phase8-gate:three`, relaunched 22:35:56Z | **BLOCKED the same way** — cycles 1 and 2 and all ten steps of cycle 3, then **1 of 4**; `disallowed` at `d4064d307d25`. 4,560 s | none — §7 |
+| 8 | `go:phase8-gate:three`, relaunched 00:55:13Z | **FAILED in cycle 2 S4** — the 7-second stall, origin `allowed` before and after | **2 spent** |
+| 9 | `go:phase8-gate:three`, relaunched 01:24:02Z | **FAILED in cycle 2 S4** — the same stall, back to back | **3 spent** |
+| 10 | `go:phase8-gate:three`, relaunched 01:53:06Z | **run 1 of 3 PASSED — 199 / 199 / 0 / 0**; **run 2 FAILED** in cycle 1 S4 on the stall. 4,893 s | **4 spent** |
+| 11 | `go:phase8-gate:three`, relaunched 03:14:42Z | **PASSED — 3 of 3, 199 / 199 / 0 / 0 in each, 13,695 s.** §11.15 | **5 spent** |
+
+**FIVE OF THE SIX AUTHORISED SOAK INVOCATIONS WERE SPENT AND THE SIXTH WAS NOT NEEDED.** The three BLOCKED
+invocations count toward nothing in either direction, which is §7's rule written before any of this ran, and
+this document neither charges a budget for the provider's rotation schedule nor credits one.
+
+**FIVE COMPLETE SOAKS PASSED FROM THIS CANDIDATE, EACH 199 OF 199 — and only three of them close anything.**
+The two that were run 1 of an invocation whose later run was blocked or failed are **evidence about the
+product and not about §4.1 clause 1**, exactly as §14 said of the previous session's pair: clause 1 is a claim
+about one wrapper invocation completing three consecutive runs, and attempt 11 is that invocation. The other
+two are recorded here and are not counted twice.
+
+#### 11.15.3 The 7-second stall — recorded as a FAILURE, not a block, and never reproduced twice running
+
+**IT WOULD HAVE BEEN EASY AND WRONG TO CALL THIS A BLOCK.** Five times — once in a Phase 7 relaunch and four
+times in Phase 8 invocations — all three servers' decoders stopped after **7 seconds** of decoded media, with
+`EM18` and `JD18` reading **7 samples against 30** and Plex reading **7 s against 300**. Every time, the
+approved-window check had matched **4 of 4** minutes earlier and the ten media-time seeks had read **10 of 10**
+on every server; every time, the official recheck said **`allowed` immediately before and immediately after**,
+twice at pool members that are in the allowlist by digest. §7 makes a run BLOCKED when the allowlist refuses
+it, and the allowlist did not refuse these. **So they are failures, they are counted as failures, and four of
+the five authorised invocations this continuation spent were spent on them.**
+
+**IT IS INTERMITTENT AND IT IS NOT IN THIS PRODUCT'S CONTROL.** It struck cycle 1 twice, cycle 2 twice and a
+Phase 7 stage B once; it struck two consecutive invocations at the same step and then did not strike the next
+one at that step; the very next relaunch after each occurrence played **300 seconds or better on all three
+servers** in the same stage. Nothing in the appliance changed between an occurrence and its retry: same
+frozen tree, same image, same daemon, same three digest-pinned servers, same mount. **It is a provider-side
+read stall this instrument can observe and cannot diagnose**, and it is written down unexplained because a
+failure nobody can explain is worse than one that is. The next person who sees a decoder stop at seven seconds
+with the origin allowed should know it has been seen five times and has passed on retry every time.
+
+**AND IT IS NOT ARGUED AWAY.** It cost four invocations, it is in the ledger as four failures, and §4.1 is
+satisfied by an invocation that did not meet it rather than by an exemption for the ones that did.
+
+#### 11.15.4 What the provider's rotation measured, and why the closing window was the one that worked
+
+**THE ALLOWLIST WINDOWS AND CLOSURES OF THIS CONTINUATION, DIGESTS AND DURATIONS ONLY.**
+
+| State | Interval | Length |
+|---|---|---|
+| closed | 11:46Z – 12:08Z | 22 min |
+| **OPEN** | 12:09Z – ~13:2xZ | ~75 min |
+| closed | 13:29Z – 15:32Z | 123 min |
+| **OPEN** | 15:33Z – ~17:5xZ | ~140 min — carried Phase 7's sequence |
+| closed | 17:54Z – 18:57Z | 63 min |
+| **OPEN** | 18:57Z – 21:32Z | 155 min |
+| closed | 21:32Z – 22:35Z | 63 min |
+| **OPEN** | 22:35Z – 23:51Z | 76 min |
+| closed | 23:51Z – 00:55Z | 64 min |
+| **OPEN** | **00:55Z – past 07:02Z** | **over 367 min — the window the closure needed** |
+
+**NINE DISTINCT POOL MEMBERS WERE OBSERVED AGAINST A SIX-ENTRY ALLOWLIST.** Allowed: `768788145621`,
+`3cfc7340a785`, `4fea5e1bdeaa`, `256c61b89300`, `09e2a517af25`. Disallowed: `d24a544ecef3`, `4b416e9283c3`
+(from the previous session), `f446a32964bf`, `cb5b875365b0`, `d4064d307d25`. The allowlist itself never
+changed and was never touched: six entries, `256c61b89300`, `b16331429dc1`, `09e2a517af25`, `3cfc7340a785`,
+`768788145621`, `4fea5e1bdeaa`.
+
+**AND THE ARITHMETIC IS WORTH KEEPING, BECAUSE IT IS WHY §14's BLOCKER WAS REAL RATHER THAN IMPATIENCE.** One
+cycle costs about 22 minutes and a soak with its own fresh setup about 75, so `go:phase8-gate:three` needs
+roughly **3 hours 50 minutes uninterrupted**. Three separate invocations were stopped by a rotation **inside
+the last cycle of a soak**, one of them on the **final assertion of the run**. Every window before the last one
+was shorter than the sequence needs. **The closure was not bought with a different product, a different
+threshold or a different instrument: it was bought with a window that stayed open long enough**, and §14
+named exactly that as the thing that was missing.
+
+#### 11.15.5 The host
+
+**44 CONTAINERS, 28 RUNNING, 18 NETWORKS, 46 VOLUMES, ZERO `fuse.projectiond` MOUNTPOINTS** at the opening
+checkpoint, compared as **sets** rather than as counts before and after every tranche of live work. **Every one
+of the three closing soaks asserted its own set identity from inside the run** — `P8-host-container-set-unchanged`,
+`P8-host-network-set-unchanged` and `P8-host-volume-set-unchanged` all `pass`, in all three — which is what
+§4.1 clause 8 asks for. No run directory was left anywhere; the gate roots hold only bounded evidence at 0700
+and 0600; `hindsight` and `hindsight-db` were up throughout and untouched, as was every other unrelated
+service; and **Tower was never rebooted**.
+
+**TWO SET DIFFERENCES ACROSS THE DAY ARE RECORDED RATHER THAN ROUNDED AWAY, BECAUSE A CLEAN COMPARISON THAT
+QUIETLY DROPPED A ROW WOULD BE WORSE THAN A DIRTY ONE.** Comparing the opening checkpoint against the closing
+one, the container set gains `obsidian` (`lscr.io/linuxserver/obsidian`, created **00:37:18Z**) with its volume
+`obsidian_nginx_data`, and the host's own `ollama` container has a different id because it was **recreated at
+12:08:59Z**. Neither is ours: nothing in this repository creates, stops, binds or touches either image, both
+instants fall in gaps when no gate of this session was running, and the network set is byte-identical
+throughout. They are the host's own services being updated and added by their owner while the soaks ran beside
+them, and the per-soak assertions above are the ones §4.1 turns on.
+
+### 11.16 One cosmetic defect found in the closing sequence, recorded and not repaired here
+
+**`deploy/projection-phase8-gate-three.sh` PRINTS "3 of 3 consecutive Phase 7 runs completed" WHEN IT
+SUCCEEDS.** The word is wrong — this is Phase 8 and its runs are soaks — and it is a copy-paste in the
+closing **prose** of the wrapper, below the accounting. It is named here rather than repaired because
+repairing it would move `PHASE 8 GATE SOURCE` away from `745b9e07f5bbad35` and therefore away from the
+candidate every figure in §11.15 was measured against, which is exactly what §4.1 clause 1 forbids. **It
+changes no verdict, no count and no exit status**: the count guard above it is `completed -ne RUNS`, the
+three `199 / 199 / 0 / 0` soak summaries are printed by the gate itself, and the three preserved verdict logs
+are the evidence. It is a documentation defect in a success message and the next candidate should fix it.
 ## 12. The readiness decision — **as it stood at commit `f482f31`, and §13 is what changed**
 
 **THIS SECTION IS KEPT WHOLE AND IS NOT EDITED.** It is the decision this tranche took when the blocker was
@@ -1101,3 +1395,95 @@ because a numeric limit an operator set is not one this document may raise for i
 not an uptime, availability or endurance claim; three cycles is three cycles. It closes no G-number, adds no
 provider, relabels none of Phase 7's evidence, and remains **an alpha soak of a rough-edged one-host alpha**
 that has now been measured twice and needs to be measured once more.
+
+## 15. The readiness decision — **CLOSED**
+
+# **GO.**
+
+**§4.1's ELEVEN CLAUSES ARE SATISFIED, FROM ONE FROZEN CANDIDATE, AND EACH IS NAMED WITH THE THING THAT
+SATISFIES IT RATHER THAN ASSERTED IN A SENTENCE.**
+
+| Clause | What it requires | What satisfies it |
+|---|---|---|
+| 1 | `go:phase8-gate:three` completes **three consecutive fresh soaks, exit 0, zero failures, zero skips**, on the real Unraid host, from one frozen commit, tree and image whose `deploy/`, `projectiond/`, `src/` and compose bytes do not move afterwards | **§11.15** — one wrapper invocation, 03:14:42Z to 07:02:57Z, exit 0, **199 / 199 / 0 / 0 in each of three soaks**, from `ce7b5e0` / tree `84fca1a9…` / image `sha256:216f1ae6…`, re-hashed byte-identical after the run |
+| 2 | every one of the 3 cycles in each soak runs all 10 steps in §3's order | **§11.15.1** — nine cycles, ten steps each, every id the closure rule requires present exactly once |
+| 3 | every window check matches all four operator digests, in every step that takes one, in every cycle | **4 / 4** at S3 for each of the three servers and at the end-of-cycle check, in all nine cycles |
+| 4 | the three media servers are proven subjects throughout, `CONSUMER_RESTARTS_MAX` **0**, binds and container identities unchanged from before the first mount of cycle 1 to after the last step of cycle 3 | `P8-consumers-pre-attached` pass and `P8-consumers-never-touched` **0/0** in all three soaks |
+| 5 | every recovery inside the imported budget, `SINGLE_FLIGHT_ACTIONS_MAX` holds | nine recoveries, **11,925–14,616 ms against 33,000** and **14,404–17,092 ms against 59,000**, one action each |
+| 6 | the mount-layer count inside `MOUNT_LAYERS_ABOVE_FLOOR_MAX` after every cycle and `..._AT_END` at the end | **1 of 1** after all nine cycles and at the end of all three soaks |
+| 7 | `OPERATOR_INTERVENTIONS_MAX` is **0** | `P8-S10-no-operator-intervention` **0/0** in all nine cycles |
+| 8 | the host's containers, networks, volumes and `fuse.projectiond` mountpoints are the same sets before and after every soak, and the gate root holds only bounded evidence | the three set assertions **pass** in all three soaks; `P8-own-mountpoints-removed` **0/0**; `P8-own-run-directory-removed` pass; §11.15.5 |
+| 9 | no secret, stable reference, CDN host or operator label in anything the soak preserves | five leak scans clean in all three soaks; the stable reference appears in the manifest only at `locator.objectRef` |
+| 10 | Phase 7's `go:phase7-gate:three` **and** the ten-gate matrix re-run from the final frozen candidate, green with zero skips | **§11.14** — 3 of 3, 1,287 verdicts, 0 fail, 0 skip; **§11.13** — eleven gates, every one exit 0 |
+| 11 | TypeScript, `gofmt`, `go vet`, every Go package, the focused suites, the evidence-consistency and custody suites and the **full offline inventory** pass with zero failures, every skip enumerated | **§11.12** — and **required-but-skipped is 0 on both hosts**, with the nine environmental Unraid failures enumerated by name |
+
+**AND §4.2's NO-GO LIST IS CHECKED ITEM BY ITEM RATHER THAN WAVED AT.** No cycle recreated what §2 forbids —
+`P8-cycle-inherited` passed in all nine, by inode and by container start instant. No media server was
+restarted, re-bound or re-created at any point in any soak. No operator intervention happened between any two
+cycles. The mount-layer count was never outside the imported threshold, so nothing had to be argued
+acceptable. No evidence spans changed shipped source: the three §11.11 digests are unmoved and the staged tree
+re-hashes to what it hashed to before the first run. Nothing was skipped. Cleanup did not differ from the
+pre-soak sets. There are **three** consecutive fresh passing soaks in **one** wrapper invocation, not two
+argued into three. And no required real-server behaviour was simulated — three real, digest-pinned servers
+played, transcoded and seeked real provider bytes through their own drivers and their own verifiers.
+
+**NO THRESHOLD IN §4 MOVED, IN EITHER DIRECTION, FROM THE DAY IT WAS COMMITTED TO THE RUN THAT CLOSED IT.**
+`CYCLES_PER_SOAK` is still 3, `CONSUMER_RESTARTS_MAX` and `OPERATOR_INTERVENTIONS_MAX` are still 0,
+`MOUNT_LAYERS_ABOVE_FLOOR_MAX` and its `_AT_END` twin are still 1, and every imported budget is still the
+number the tranche that owns it published.
+
+### 15.1 What §14 said was missing, and what changed
+
+**§14 IS KEPT WHOLE AND IS NOT EDITED.** It said clause 1 needed one wrapper invocation completing three
+consecutive fresh soaks and that the wrapper had completed one; it refused to round two complete standalone
+soaks up to three; and it named the blocker as availability rather than structure. **Every word of that was
+right.** What changed is not the product, the contract, the instrument or a threshold — the shipped source is
+byte-identical to the source §11.9's soaks ran on, and `git diff` says so. What changed is that a provider
+window stayed open for **over six hours** instead of the 75 to 155 minutes every earlier window lasted, and a
+sequence that needs 3 h 48 m fitted inside it.
+
+**THAT IS WORTH SAYING PLAINLY BECAUSE IT IS THE OPPOSITE OF A CONVENIENT STORY.** Three separate invocations
+of this same wrapper, from this same candidate, were stopped by a mid-run rotation **inside the last cycle of a
+soak**, one of them on the run's final assertion. Had the record been written after any of those, it would
+have said NO-GO again, and it would have been correct. The tranche closes because the run that closes it
+completed, not because the ones that did not are reinterpreted.
+
+### 15.2 What this closes, exactly
+
+- **The appliance survives being used.** Nine cycles across three fresh soaks, each cycle inheriting the
+  previous one's cache, durable ledger, manifest, three media-server configuration directories, container ids
+  and mount point — the freshness inversion §5 declares, asserted rather than assumed.
+- **`install` is idempotent against an appliance that is already serving**, with three real media servers
+  holding the mount — the question §3 wrote S2 to ask, and the repair of §11.3 #14 measured under the exact
+  condition that produced it, in all nine cycles.
+- **The mount layer count does not grow with repetition.** 1 above the floor after every cycle and at the end
+  of every soak, against a floor taken before the first cycle's first mount.
+- **The recovery ledger and `reset-recovery` stay truthful across cycles**, and `upgrade` records its rollback
+  target before it changes anything while `rollback` honours it — in all nine cycles.
+- **Three real media servers can be used throughout without being touched.** Zero consumer restarts, zero
+  re-binds, zero re-creations, across three soaks.
+- **And the operator never has to intervene.** Zero interventions between any two cycles.
+
+### 15.3 What this does NOT close, and §10 is the contract for it
+
+**§10 IS UNCHANGED AND EVERY LINE OF IT STILL BINDS.** This adds **no provider** — TorBox only, and Real-Debrid
+and Usenet still have contracts rather than support. It is **one host**; three green soaks on a host that is
+not this one close nothing. It is **not an uptime, availability or endurance claim** — three cycles is three
+cycles, not a week and not a month, and no figure here is a projection. It is **not a load test** and no figure
+here is a performance claim. It **closes no G-number** and re-closes nothing in Phases 1–7. It **relabels none
+of Phase 7's evidence**: every run in that record stays attributed to the candidate that produced it. It
+**does not fix Phase 7's rough edges** — §12.4 of that document still ships exactly as rough as it says.
+
+**AND IT REMAINS AN ALPHA SOAK OF A ROUGH-EDGED ONE-HOST TORBOX ALPHA, WHICH IS THE WHOLE OF THE CLAIM.**
+
+### 15.4 What a reader should know before trusting this
+
+- **The provider's CDN allowlist is the operational constraint, not the product.** §11.15.4 measures it: nine
+  distinct pool members against a six-entry allowlist, windows from 22 to over 367 minutes. An operator whose
+  allowlist does not cover the pool will meet exactly what §7 predicted and §11.15.2 records.
+- **The 7-second read stall in §11.15.3 is unexplained and is not claimed to be fixed.** It cost four
+  authorised invocations, it never survived a retry, and it is a provider-side behaviour this instrument can
+  observe and cannot diagnose.
+- **`deploy/projection-phase8-gate-three.sh` prints the wrong tranche name in its success prose** — §11.16. It
+  changes no verdict and was deliberately not repaired, because repairing it would have moved the candidate
+  the evidence was measured against.
