@@ -1,0 +1,105 @@
+# Projection Phase 9 §3, SIXTH DELIVERABLE — THE CANONICAL UNRAID PROFILE EXTENSION FOR THE USENET WORKER.
+#
+# THIS IS AN EXTENSION, NOT A REPLACEMENT. `docker-compose.projection-alpha.yml` is still the profile that
+# runs the appliance, and Phase 9 changes nothing in it: the daemon's image, flags, binds, healthcheck and
+# restart policy are Phase 6's and Phase 8 closed on them. This file adds one service beside it — the Usenet
+# worker — and one shared directory, and that is the whole of the deployment change.
+#
+# HOW AN OPERATOR RUNS BOTH:
+#
+#   docker compose -f docker-compose.projection-alpha.yml -f docker-compose.projection-usenet.yml up -d
+#
+# ...or, on Unraid, through `deploy/projection-alpha.sh` for the appliance and this file for the worker. They
+# are deliberately separable: a Usenet outage must not be able to take the projection namespace with it, and
+# two services in one file that share a `depends_on` is one of the ways that happens.
+#
+# WHAT IT NEEDS FROM THE HOST — every one of them validated by `usenet-command-cli.ts preflight`, which
+# refuses an ambiguous or relative path rather than resolving one:
+#
+#   PROJECTION_USENET_IMAGE          the pinned SABnzbd image reference. NO DEFAULT, deliberately: a worker
+#                                    whose image tag floats is a worker whose API this project has not read
+#   PROJECTION_USENET_CONFIG_DIR     SABnzbd's own configuration and admin directory. THE OPERATOR'S NNTP
+#                                    CREDENTIALS LIVE HERE AND THIS PROJECT NEVER READS IT — §4's seventh
+#                                    hard refusal is that no NNTP or SABnzbd credential enters the projection
+#                                    daemon, and the way that is kept is that nothing but SABnzbd mounts this
+#   PROJECTION_USENET_INCOMPLETE_DIR a DEDICATED incomplete directory. Never the operator's general one:
+#                                    §2 says a dedicated category and dedicated directories rather than
+#                                    scanning an operator's download tree
+#   PROJECTION_USENET_COMPLETE_DIR   a DEDICATED completed directory, which MUST be a subdirectory of the
+#                                    media root the appliance already serves — see the long note below
+#   PROJECTION_USENET_SECRETS_DIR    the directory holding the API key FILE. A credential is a PATH here and
+#                                    never a value: there is no variable in this contract that holds one, so
+#                                    an environment that leaked could not leak one
+#   PROJECTION_USENET_PORT           the loopback port the worker's API is published on. 127.0.0.1 ONLY
+#   PROJECTION_USENET_UID / _GID     the ids the worker writes its output as. They must be ids the projection
+#                                    daemon's uid can READ, or an admitted file is one nothing can open
+#
+# WHY THE COMPLETE DIRECTORY MUST BE UNDER THE MEDIA ROOT, AND WHY THAT IS NOT A CONVENIENCE. An admitted
+# Usenet file is published as a `local` source, and a `local` locator is a root id plus a RELATIVE PATH under
+# that root. A completed directory outside the media root cannot be named by one at all — there is no locator
+# this contract can express for it — so the admission would be refused at the boundary rather than failing
+# later. `usenet-command-cli.ts preflight` says so before an operator submits anything.
+#
+# WHAT IS DELIBERATELY ABSENT FROM THIS FILE.
+#
+#   NO API KEY, ANYWHERE. Not as an environment variable, not as a command argument, not as a Compose secret
+#   with an inline value. The key is a file under PROJECTION_USENET_SECRETS_DIR whose mode grants nothing to
+#   group or other, and the control plane is given its PATH.
+#
+#   NO NNTP SERVER, USERNAME OR PASSWORD. Those belong to the operator and live inside SABnzbd's own
+#   configuration. This project does not read them, does not template them and does not want them.
+#
+#   NO `depends_on` ON THE DAEMON. §1: a Usenet failure shall not empty, rename or make unavailable any
+#   already-admitted TorBox or Usenet entry. A worker that could hold the appliance's start-up hostage would
+#   be a Usenet failure with reach into the projection namespace.
+#
+#   NO WRITE ACCESS TO THE MEDIA ROOT. The worker writes to its own completed subdirectory and nothing else.
+
+name: projection-usenet
+
+services:
+  sabnzbd:
+    # NO DEFAULT TAG. `${VAR:?message}` makes an unset image a refusal with a sentence rather than a silent
+    # start of whatever `sabnzbd:latest` happens to be on this host. Pin it by digest in production.
+    image: ${PROJECTION_USENET_IMAGE:?set PROJECTION_USENET_IMAGE to a pinned SABnzbd image reference}
+    container_name: projection-usenet-sabnzbd
+    # The worker unpacks archives written by strangers. It gets no capabilities at all, cannot gain
+    # privileges, and runs as the operator's own uid rather than as root.
+    user: "${PROJECTION_USENET_UID:?set PROJECTION_USENET_UID}:${PROJECTION_USENET_GID:?set PROJECTION_USENET_GID}"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      # Timezone only. There is no credential-shaped variable in this service, and there is not meant to be.
+      TZ: ${TZ:-UTC}
+    ports:
+      # LOOPBACK ONLY, AND THE ADDRESS IS PART OF THE CONTRACT RATHER THAN A DEFAULT. SABnzbd authenticates
+      # with an API key in a query string; on a LAN-visible port that key is in every intermediary's access
+      # log. The control plane reaches it over loopback and nothing else needs to.
+      - "127.0.0.1:${PROJECTION_USENET_PORT:-8080}:8080"
+    volumes:
+      - ${PROJECTION_USENET_CONFIG_DIR:?set PROJECTION_USENET_CONFIG_DIR}:/config
+      - ${PROJECTION_USENET_INCOMPLETE_DIR:?set PROJECTION_USENET_INCOMPLETE_DIR}:/incomplete-downloads
+      - ${PROJECTION_USENET_COMPLETE_DIR:?set PROJECTION_USENET_COMPLETE_DIR}:/downloads
+    healthcheck:
+      # The worker's own liveness, asked of the API this project actually uses. It carries no key, so an
+      # unauthenticated 401 is a healthy answer: the process is up and answering.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/api?mode=version || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    # A CRASH RESTARTS; A FAILING HEALTHCHECK DOES NOT. Docker's restart policies do not react to health
+    # status, which is the same thing `docker-compose.projection-alpha.yml` says about its own.
+    restart: unless-stopped
+
+  # THE CONTROL PLANE'S RECONCILIATION IS NOT A SERVICE HERE, AND THAT IS DELIBERATE.
+  #
+  # It was one in the first draft — a small container running `usenet-command-cli.ts reconcile` on a timer.
+  # That is wrong for this phase: reconciliation publishes into the catalog database, which means it needs the
+  # control plane's connection string, which means this file would have to hold one. An operator runs
+  # `reconcile` from wherever they already run `catalog-import` and the other operator commands, and
+  # `docs/PROJECTION_PHASE_9_USENET_RUNBOOK.md` says how to put it on a timer there.
+
+networks:
+  default:
+    name: projection-usenet

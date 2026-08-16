@@ -7,7 +7,8 @@
     "_launch-proofing-evidence.ts",
     "aggregate-suite.ts",
     "projection-delivery-wording.ts",
-    "jellyfin-fake-server.ts"
+    "jellyfin-fake-server.ts",
+    "usenet-kit.ts"
   ],
   "suites": [
     {
@@ -1580,6 +1581,58 @@
       "args": [
         "5460"
       ]
+    },
+    {
+      "file": "usenet-sealed.ts",
+      "group": "offline"
+    },
+    {
+      "file": "usenet-sab-contract.ts",
+      "group": "offline"
+    },
+    {
+      "file": "usenet-sab-api-key.ts",
+      "group": "offline"
+    },
+    {
+      "file": "usenet-sab-client.ts",
+      "group": "offline"
+    },
+    {
+      "file": "usenet-job-ledger.ts",
+      "group": "offline"
+    },
+    {
+      "file": "usenet-completed-output.ts",
+      "group": "offline"
+    },
+    {
+      "file": "usenet-manifest-bridge.ts",
+      "group": "offline"
+    },
+    {
+      "file": "usenet-admission.ts",
+      "group": "offline"
+    },
+    {
+      "file": "usenet-status-report.ts",
+      "group": "offline"
+    },
+    {
+      "file": "usenet-command.ts",
+      "group": "offline"
+    },
+    {
+      "file": "projection-phase9.ts",
+      "group": "offline"
+    },
+    {
+      "file": "projection-phase9-gate-audit.ts",
+      "group": "offline"
+    },
+    {
+      "file": "usenet-rehearsal.ts",
+      "group": "offline"
     }
   ]
 }

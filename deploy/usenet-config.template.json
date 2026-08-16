@@ -1,0 +1,36 @@
+{
+  "__": [
+    "Projection Phase 9 — the Usenet control-plane configuration, as a template.",
+    "",
+    "COPY IT, EDIT THE PATHS, AND KEEP IT OUT OF THE REPOSITORY. Every value here is a PATH or an address.",
+    "There is no field in this document that holds a credential, an NZB URL or an indexer key, and there is",
+    "not meant to be: the API key is a file this names, and an NZB source is a file you name per submission.",
+    "A configuration that leaked would leak your host layout and nothing else.",
+    "",
+    "EVERY PATH MUST BE ABSOLUTE AND POSIX. A relative one would resolve against whatever directory the",
+    "command happened to be run from, and `usenet-command-cli.ts preflight` refuses one rather than guessing.",
+    "",
+    "THE COMPLETED ROOT MUST BE STRICTLY BELOW THE MEDIA ROOT. An admitted file is published as a `local`",
+    "source, and a local locator is a configured root id plus a relative path under it — so a completed",
+    "directory outside the media root cannot be named by one at all. Preflight says so before you submit.",
+    "",
+    "THE STATE DIRECTORY MUST BE DURABLE, AND MUST NOT BE THE DAEMON'S CACHE DIRECTORY. The job ledger lives",
+    "in `usenet-ledger/` beneath it and is the only reason a restart does not submit your download a second",
+    "time. projectiond sweeps the top level of its cache directory at startup; a ledger there would be an",
+    "exactly-once guarantee that silently resets every time the appliance restarts.",
+    "",
+    "Delete this `__` key or leave it; the parser refuses unknown keys, so it must be removed before use."
+  ],
+  "worker": {
+    "host": "127.0.0.1",
+    "port": 8080,
+    "scheme": "http"
+  },
+  "apiKeyFile": "/mnt/user/appdata/projection-usenet/secrets/sabnzbd-api.key",
+  "category": "projection",
+  "completedRoot": "/mnt/user/media/usenet-complete",
+  "mediaRoot": "/mnt/user/media",
+  "rootId": "media",
+  "stateDir": "/mnt/user/appdata/projection-usenet/state",
+  "pathPrefix": "usenet"
+}

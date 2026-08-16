@@ -720,7 +720,17 @@
     "go:phase8-gate-audit": "tsx src/ops/projection-phase8-gate-audit-cli.ts",
     "go:phase8-gate": "bash deploy/projection-phase8-gate.sh",
     "go:phase8-gate:three": "bash deploy/projection-phase8-gate-three.sh",
-    "go:phase8-gate:optional": "bash deploy/projection-phase8-gate-optional.sh"
+    "go:phase8-gate:optional": "bash deploy/projection-phase8-gate-optional.sh",
+    "ops:usenet": "tsx src/ops/usenet-command-cli.ts",
+    "ops:usenet-preflight": "tsx src/ops/usenet-command-cli.ts preflight",
+    "ops:usenet-status": "tsx src/ops/usenet-command-cli.ts status",
+    "ops:usenet-reconcile": "tsx src/ops/usenet-command-cli.ts reconcile",
+    "ops:usenet-diagnose": "tsx src/ops/usenet-command-cli.ts diagnose",
+    "go:phase9-rehearsal-driver": "tsx src/ops/usenet-rehearsal-cli.ts",
+    "go:phase9-rehearsal": "bash deploy/projection-phase9-rehearsal.sh",
+    "go:phase9-rehearsal:three": "bash deploy/projection-phase9-rehearsal-three.sh",
+    "go:phase9-rehearsal:optional": "bash deploy/projection-phase9-rehearsal-optional.sh",
+    "test:phase9": "tsx src/ops/test-runner-cli.ts --group offline --filter usenet --filter phase9"
   },
   "dependencies": {
     "pg": "^8.13.1",

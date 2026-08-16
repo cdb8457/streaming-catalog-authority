@@ -1,0 +1,47 @@
+# Projection Phase 9 — a real, migrated PostgreSQL for the MIXED TORBOX-PLUS-USENET rehearsal.
+#
+# WHY A TENTH DATABASE COMPOSE FILE. Every gate in this repository binds a fixed loopback port so that two of
+# them cannot silently lend each other state, and so that a second copy of one dies on an allocated port
+# rather than on a mystery. The block `deploy/` already claims is
+# 5432/5460/5470/5480/5490/5500/5510/5515/5540/5550/5560/5570/5573/5576/5580/5590/5600/5610/5611/5612/5620/
+# 5630/5640/5650, and `test/projection-phase9.ts` cross-checks this file's port against every other compose
+# file rather than trusting this comment. 5660 is the next one outside it.
+#
+# NEITHER THE DAEMON, THE WORKER, THE RESOLVER NOR ANY MEDIA SERVER IS HERE, and the omission is the same one
+# `docker-compose.projection-torbox.yml` and `…-phase8.yml` make for the same reason. The arrangement the
+# rehearsal builds is a measurement rig and not a deployment; written into a Compose file it would read as
+# something to copy, and copying it is exactly wrong. The deployable Usenet worker profile is
+# `docker-compose.projection-usenet.yml`, which is a separate file precisely because it IS meant to be copied.
+#
+# SABNZBD IS NOT HERE EITHER, AND THAT IS THE POINT OF THE WORD "REHEARSAL". This gate drives a fake
+# SABnzbd-compatible service that the rehearsal starts inside its own process on an ephemeral loopback port.
+# It contacts no Usenet provider, no indexer and no TorBox endpoint, so it can be run by anybody, on any host,
+# at any time — and so it cannot close the four §5 claims that need a real provider, which is a refusal
+# `src/core/projection/phase9.ts` enforces rather than a caveat this comment asks you to remember.
+
+name: projection-phase9-gate
+
+services:
+  postgres:
+    # PINNED BY DIGEST, like every other external image these gates touch. A moving tag would mean three
+    # consecutive runs were three runs of possibly different things, which is not what the repetition is for.
+    image: postgres:16@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20
+    environment:
+      POSTGRES_DB: catalog
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "${PROJECTION_PHASE9_GATE_PG_PORT:-5660}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d catalog"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    tmpfs:
+      # Throwaway, and it says so in the only way that cannot be forgotten: its storage does not survive the
+      # container. Three consecutive runs mean three runs from nothing, or they mean very little.
+      - /var/lib/postgresql/data
+
+networks:
+  default:
+    name: projection-phase9-gate
