@@ -58,6 +58,12 @@ export function createRealOutputFileSystem(): OutputFileSystem {
           .map((window) => ({ ...window, hash: createHash('sha256') }));
 
         const chunk = Buffer.allocUnsafe(USENET_ADMISSION_BOUNDS.DIGEST_CHUNK_BYTES);
+        // THE READ IS BOUNDED, NOT MERELY THE FILE. `proveOutput` refuses a file whose stat says it is larger
+        // than `MAX_OUTPUT_BYTES`, but that stat was taken before this open, and a worker or an unpacker that
+        // keeps appending never returns a zero-length read: the loop would run for as long as something keeps
+        // writing. Stopping at the ceiling turns that into `output-mutated-during-digest`, because the size
+        // this returns then disagrees with the size that was proved stable.
+        const ceiling = USENET_ADMISSION_BOUNDS.MAX_OUTPUT_BYTES + USENET_ADMISSION_BOUNDS.DIGEST_CHUNK_BYTES;
         let position = 0;
         let read = 0;
         do {
@@ -72,7 +78,7 @@ export function createRealOutputFileSystem(): OutputFileSystem {
             if (end > start) window.hash.update(slice.subarray(start - position, end - position));
           }
           position += read;
-        } while (read > 0);
+        } while (read > 0 && position < ceiling);
 
         const stat = await handle.stat({ bigint: true });
         return {

@@ -270,6 +270,9 @@ export const USENET_REFUSAL_REASONS = Object.freeze([
   'ledger-state-conflict',
   'submission-not-reserved',
   'catalog-record-missing',
+  // §4's sixth hard refusal, as a reason rather than only as a guard: a Usenet publish that moved the TorBox
+  // half of the namespace is refused and recorded, and the admission is NOT written down.
+  'torbox-namespace-drifted',
   // --- what the operator supplied -------------------------------------------------------------------------
   'credential-file-unreadable',
   'credential-file-permissive',
@@ -326,6 +329,18 @@ export const SAB_CLIENT_BOUNDS = Object.freeze({
   MAX_SLOTS: 2_000,
   /** How many history entries one page asks for. SABnzbd defaults to a short page; this is explicit. */
   HISTORY_PAGE_LIMIT: 200,
+  /**
+   * How many history pages one reading will walk before it refuses rather than returning a partial answer.
+   *
+   * WHY PAGING IS A SAFETY PROPERTY AND NOT A CONVENIENCE. `admission.ts` reads "absent from the queue AND
+   * absent from the history" as proof that a submission never reached the worker, and acts on that proof by
+   * recording the reservation as LOST — which is the one state in which an operator may submit the same
+   * source a second time. A single 200-entry page makes that proof false for any operator whose dedicated
+   * category holds more than 200 completed jobs: the job is at the worker, it is simply on page two. So a
+   * history reading walks every page, and a reading that cannot be completed inside these bounds is a
+   * REFUSAL rather than a short answer that a caller would read as absence.
+   */
+  MAX_HISTORY_PAGES: 10,
   /** Read operations may be retried. `submit-url` may not, at any count, ever. */
   MAX_READ_ATTEMPTS: 3,
   RETRY_BASE_DELAY_MS: 200,

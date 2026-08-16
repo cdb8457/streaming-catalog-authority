@@ -13,7 +13,7 @@ import {
   runSubmit,
   type UsenetCommandConfig,
 } from './usenet-command.js';
-import { assertSealedSafe } from '../core/usenet/sealed.js';
+import { assertSealedSafe, sealedProblems } from '../core/usenet/sealed.js';
 
 // Projection Phase 9 — the operator's entry point. Argv parsing, and nothing else.
 //
@@ -118,6 +118,29 @@ export function loadConfig(path: string): UsenetCommandConfig {
   return parseUsenetConfig(raw);
 }
 
+/**
+ * The one line this command writes that it did not compose itself, held to the same rule as the ones it did.
+ *
+ * `emit` scans every DOCUMENT before printing it, and that was the whole of the guarantee — which left the
+ * error path, the one path whose text this project does not write. A `node:fs` rejection carries the absolute
+ * path it failed on; a driver error can carry a connection string; a `JSON.parse` failure quotes the input.
+ * Every one of those is exactly the shape closure rule 9 says appears in no preserved evidence, and an
+ * operator's terminal scrollback is where this tranche's evidence is collected from.
+ *
+ * So a message that carries one of the shapes `sealedProblems` recognises is REPLACED, not rewritten: the
+ * code still names what went wrong, and the codes are constants. Silently trimming the offending substring
+ * would leave a reader believing they had been told everything.
+ */
+function safeErrorMessage(error: unknown): string {
+  const message = typeof (error as Error | undefined)?.message === 'string' ? (error as Error).message : '';
+  if (message.length === 0) return 'the command failed without a message';
+  if (sealedProblems(message).length > 0) {
+    return 'the command failed, and its message carried a path, a URL or a worker identifier, so it was '
+      + 'withheld rather than printed';
+  }
+  return message;
+}
+
 function emit(document: unknown, lines: readonly string[], json: boolean): void {
   assertSealedSafe(document, 'output');
   assertSealedSafe(lines, 'output');
@@ -193,7 +216,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     // reads.
     return outcomes.some((outcome) => outcome.state === 'refused') ? 1 : 0;
   } catch (error) {
-    console.error(`${(error as UsenetCommandError).code ?? 'ERROR'}: ${(error as Error).message}`);
+    console.error(`${(error as UsenetCommandError).code ?? 'ERROR'}: ${safeErrorMessage(error)}`);
     return 1;
   }
 }
@@ -201,7 +224,7 @@ export async function main(argv: readonly string[]): Promise<number> {
 const invokedDirectly = process.argv[1] !== undefined && process.argv[1].endsWith('usenet-command-cli.ts');
 if (invokedDirectly) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }).catch((error: unknown) => {
-    console.error(`ERROR: ${(error as Error).message}`);
+    console.error(`ERROR: ${safeErrorMessage(error)}`);
     process.exitCode = 1;
   });
 }

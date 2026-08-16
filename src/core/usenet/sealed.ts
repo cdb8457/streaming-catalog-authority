@@ -201,6 +201,41 @@ function walk(value: unknown, at: string, problems: string[], seen: Set<unknown>
     }
     return;
   }
+  // AN ERROR IS SCANNED BY ITS MESSAGE, WHICH `Object.entries` CANNOT SEE. `message`, `name` and `stack` are
+  // non-enumerable own properties, so an `Error` reached the loop below and came back clean whatever it said
+  // — and a thrown `Error` whose message interpolates a path or a URL is the single most likely way one of
+  // them reaches a report, because it is the one string in this project that this project did not compose.
+  if (value instanceof Error) {
+    walk(value.message, `${at}.message`, problems, seen, depth + 1);
+    walk(value.name, `${at}.name`, problems, seen, depth + 1);
+    if (typeof (value as { cause?: unknown }).cause !== 'undefined') {
+      walk((value as { cause?: unknown }).cause, `${at}.cause`, problems, seen, depth + 1);
+    }
+    // `stack` is deliberately NOT scanned: it names source files by absolute path on every host, so every
+    // error would report a `RAW_ABSOLUTE_PATH` and the check would be turned off within a week. A stack is
+    // never part of the evidence these surfaces emit; a message routinely is.
+  }
+  // A `Map` OR A `Set` IS WALKED BY ITS CONTENTS. `Object.entries` on either returns nothing at all, so a
+  // structure that carried a raw URL inside one passed this scanner — the last line of defence — clean.
+  if (value instanceof Map) {
+    let index = 0;
+    for (const [key, child] of value.entries()) {
+      walk(key, `${at}.key[${index}]`, problems, seen, depth + 1);
+      walk(child, `${at}.value[${index}]`, problems, seen, depth + 1);
+      index += 1;
+      if (problems.length >= 50) return;
+    }
+    return;
+  }
+  if (value instanceof Set) {
+    let index = 0;
+    for (const child of value.values()) {
+      walk(child, `${at}.member[${index}]`, problems, seen, depth + 1);
+      index += 1;
+      if (problems.length >= 50) return;
+    }
+    return;
+  }
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
     walk(child, `${at}.${key}`, problems, seen, depth + 1);
   }

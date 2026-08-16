@@ -102,6 +102,7 @@ export const USENET_REFUSAL_MEANINGS: Readonly<Record<UsenetRefusalReason, strin
   'ledger-state-conflict': 'the ledger and the reading disagree; reconciliation will look again',
   'submission-not-reserved': 'an output was found for a submission this control plane has no record of making',
   'catalog-record-missing': 'the submission names no catalog record, so an admitted entry would have no logical media id',
+  'torbox-namespace-drifted': 'publishing this Usenet entry moved a TorBox-backed entry, which this phase forbids; nothing was recorded as admitted',
   'credential-file-unreadable': 'the API key file is missing or could not be read',
   'credential-file-permissive': 'the API key file grants access beyond its owner, or is a link',
   'credential-file-malformed': 'the API key file does not hold a single opaque key',

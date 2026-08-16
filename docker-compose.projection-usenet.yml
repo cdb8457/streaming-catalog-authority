@@ -27,9 +27,19 @@
 #                                    scanning an operator's download tree
 #   PROJECTION_USENET_COMPLETE_DIR   a DEDICATED completed directory, which MUST be a subdirectory of the
 #                                    media root the appliance already serves — see the long note below
-#   PROJECTION_USENET_SECRETS_DIR    the directory holding the API key FILE. A credential is a PATH here and
-#                                    never a value: there is no variable in this contract that holds one, so
-#                                    an environment that leaked could not leak one
+#
+# ...and one that is DELIBERATELY NOT USED BY THIS FILE, listed here because an operator setting up Phase 9
+# has to know about it and would otherwise look for it in the wrong place:
+#
+#   PROJECTION_USENET_SECRETS_DIR    the directory holding the API key FILE. It is NOT mounted into the
+#                                    worker and there is no volume for it below, because the worker does not
+#                                    read it — the CONTROL PLANE does, and it reads it by the `apiKeyFile`
+#                                    path in its own usenet configuration document (see
+#                                    `deploy/usenet-config.template.json`). A credential is a PATH in this
+#                                    contract and never a value: there is no variable here that holds one,
+#                                    so an environment that leaked could not leak one. Mounting the secrets
+#                                    directory into the worker would put a credential inside a container
+#                                    that unpacks archives written by strangers, for no purpose at all.
 #   PROJECTION_USENET_PORT           the loopback port the worker's API is published on. 127.0.0.1 ONLY
 #   PROJECTION_USENET_UID / _GID     the ids the worker writes its output as. They must be ids the projection
 #                                    daemon's uid can READ, or an admitted file is one nothing can open
@@ -83,7 +93,13 @@ services:
     healthcheck:
       # The worker's own liveness, asked of the API this project actually uses. It carries no key, so an
       # unauthenticated 401 is a healthy answer: the process is up and answering.
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/api?mode=version || exit 1"]
+      #
+      # AND THE COMMAND HAS TO IMPLEMENT THAT, NOT MERELY SAY IT. `wget -q -O /dev/null URL` exits non-zero
+      # on any non-2xx, so the previous form reported a worker that answered 401 — exactly the answer this
+      # comment calls healthy — as unhealthy, on every interval, forever. Asking for the status line and
+      # matching `HTTP/` treats ANY answer as liveness, which is what "the process is up and answering"
+      # means. The URL is quoted because `?` is a glob character to the shell this runs in.
+      test: ["CMD-SHELL", "wget -q -S -O /dev/null 'http://127.0.0.1:8080/api?mode=version' 2>&1 | grep -q 'HTTP/'"]
       interval: 30s
       timeout: 10s
       start_period: 30s

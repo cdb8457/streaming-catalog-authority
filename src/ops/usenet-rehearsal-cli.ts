@@ -1,5 +1,5 @@
 import { rehearse, renderRehearsal } from './usenet-rehearsal.js';
-import { assertSealedSafe } from '../core/usenet/sealed.js';
+import { assertSealedSafe, sealedProblems } from '../core/usenet/sealed.js';
 
 // Projection Phase 9 — the provider-free mixed rehearsal, as a command.
 //
@@ -14,12 +14,17 @@ import { assertSealedSafe } from '../core/usenet/sealed.js';
 
 export async function main(argv: readonly string[]): Promise<number> {
   const json = argv.includes('--json');
-  if (argv.some((arg) => arg !== '--json')) {
-    console.error('usage: usenet-rehearsal-cli.ts [--json]');
+  // THE FLAG IS AN ASSERTION BY THE CALLER, AND ONLY THE GATE SCRIPT IS ENTITLED TO MAKE IT. §5.1 and §5.8
+  // are claims about suite runs this driver does not perform; `deploy/projection-phase9-rehearsal.sh` runs
+  // both suite sets and fails before reaching this command if either does not pass. Without the flag both
+  // claims are left without a verdict, which `phase9ClosureProblems` reports as not a pass.
+  const offlineSuitesVerified = argv.includes('--offline-suites-verified');
+  if (argv.some((arg) => arg !== '--json' && arg !== '--offline-suites-verified')) {
+    console.error('usage: usenet-rehearsal-cli.ts [--json] [--offline-suites-verified]');
     return 2;
   }
 
-  const report = await rehearse();
+  const report = await rehearse({ offlineSuitesVerified });
   assertSealedSafe(report, 'rehearsal');
   if (json) console.log(JSON.stringify(report, null, 2));
   else for (const line of renderRehearsal(report)) console.log(line);
@@ -38,7 +43,13 @@ export async function main(argv: readonly string[]): Promise<number> {
 const invokedDirectly = process.argv[1] !== undefined && process.argv[1].endsWith('usenet-rehearsal-cli.ts');
 if (invokedDirectly) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }).catch((error: unknown) => {
-    console.error(`ERROR: ${(error as Error).message}`);
+    // THE MESSAGE IS SCANNED BEFORE IT IS PRINTED, exactly as every document this tranche emits is. An
+    // uncaught error is the one string here that this project did not compose, and a `node:fs` or driver
+    // message routinely carries the absolute path it failed on.
+    const message = typeof (error as Error | undefined)?.message === 'string' ? (error as Error).message : '';
+    console.error(`ERROR: ${message.length > 0 && sealedProblems(message).length === 0
+      ? message
+      : 'the rehearsal failed, and its message was withheld because it carried a path, a URL or an identifier'}`);
     process.exitCode = 1;
   });
 }

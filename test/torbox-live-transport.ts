@@ -279,13 +279,21 @@ await test('adapter factory remains injected-only and TorBox source allowlist is
     'src/ops/torbox-fixture-cli.ts',
     'test/torbox-resolver.ts',
     // PROJECTION PHASE 9 - TORBOX PLUS USENET. docs/PROJECTION_PHASE_9_TORBOX_USENET.md is the phase that
-    // authorises these six. NONE of them contacts TorBox, implements a TorBox operation, holds a TorBox
+    // authorises these eight. NONE of them contacts TorBox, implements a TorBox operation, holds a TorBox
     // credential or resolves a TorBox link. They name it because §4's sixth hard refusal is "let a Usenet
     // outage alter the TorBox namespace", and keeping that promise means comparing the TorBox half of the
     // namespace before and after every Usenet publish. A guard that may not name the thing it guards
     // cannot guard it, which is the same argument src/ops/release-readiness.ts is on this list for.
     'src/core/usenet/sab-contract.ts',
     'src/core/usenet/manifest-bridge.ts',
+    // admission.ts and status-report.ts joined this list when the drift guard
+    // moved INTO the publish path: `admit()` compares the namespace around every
+    // publish and refuses `torbox-namespace-drifted`, and status-report.ts is where
+    // that refusal is explained to an operator. Neither contacts TorBox, resolves a
+    // link or holds a credential; both name it because the guard and its diagnostic
+    // have to say what they are guarding.
+    'src/core/usenet/admission.ts',
+    'src/core/usenet/status-report.ts',
     'src/core/projection/phase9.ts',
     'src/ops/usenet-command.ts',
     'src/ops/usenet-rehearsal.ts',

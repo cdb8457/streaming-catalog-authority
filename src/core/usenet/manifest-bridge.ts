@@ -23,8 +23,12 @@ import type { ProvenOutput } from './completed-output.js';
 //
 // THE TORBOX HALF IS UNTOUCHED, AND THAT IS ASSERTED RATHER THAN INTENDED. §4's sixth hard refusal is "let a
 // Usenet outage alter the TorBox namespace". A Usenet path that never writes to a TorBox entry is the
-// mechanism; `torBoxDrift` is the proof, and it is run by the admission service before every publish, so a
-// bug that reordered, re-derived or dropped an http-range entry is a refusal instead of a namespace change.
+// mechanism; `torBoxDrift` is the proof. The admission service runs it around every publish for which the
+// publisher can present the namespace — `AdmissionPublisher.namespaceSnapshot` — so a bug that reordered,
+// re-derived or dropped an http-range entry is a named, PERMANENT refusal and an admission that is never
+// recorded, instead of a namespace change nobody noticed. A publisher that cannot present the namespace is
+// not quietly given a weaker guarantee: `admittedWithoutDriftCheck` on the outcome says the comparison was
+// not made.
 //
 // IT CONTACTS NOTHING AND OPENS NOTHING. It takes a value and returns a value, exactly as `manifest-v1.ts`
 // does, and for the same reason.

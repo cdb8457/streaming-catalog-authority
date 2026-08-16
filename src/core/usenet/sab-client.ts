@@ -199,6 +199,16 @@ export class SabClient {
     if (slots.length > SAB_CLIENT_BOUNDS.MAX_SLOTS) {
       return fail('worker-response-too-large', 'the queue reports more slots than one reading is bounded to');
     }
+    // A TRUNCATED QUEUE IS REFUSED, NOT SHORTENED. `admission.ts` treats absence from the queue as part of
+    // the evidence that a job is not in flight, so a reading that silently dropped the tail would be a
+    // reading whose absences are not absences. SABnzbd states the true count in `noofslots`; when it says
+    // more than it sent, this reading is incomplete and says so.
+    const queueTotal = wholeCount(queue['noofslots']);
+    if (queueTotal !== null && queueTotal > slots.length) {
+      return fail('worker-response-too-large',
+        'the worker holds more queued jobs than one bounded reading returned, so absence from this reading '
+        + 'would not be absence from the queue');
+    }
 
     const parsed: SabQueueSlot[] = [];
     for (const raw of slots) {
@@ -223,48 +233,101 @@ export class SabClient {
     return ok(parsed);
   }
 
+  /**
+   * The WHOLE history of the dedicated category, walked page by page, or a refusal.
+   *
+   * THIS METHOD'S COMPLETENESS IS A SAFETY PROPERTY, NOT A CONVENIENCE. `admission.ts` reads "absent from the
+   * queue and absent from the history" as proof that a submission never reached the worker, and the action it
+   * takes on that proof — recording the reservation as LOST — is the single state in which the same source may
+   * be submitted a second time. A one-page reading makes that proof false for any operator whose dedicated
+   * category holds more than one page of completed jobs, and the failure is silent and expensive: a second
+   * download of the same bytes on somebody's metered account.
+   *
+   * SO EVERY ANSWER THIS METHOD RETURNS SUCCESSFULLY IS COMPLETE BY CONSTRUCTION. It pages until the worker
+   * returns a short page, and every other outcome — too many pages, too many slots, a worker that hands back
+   * the same page for a different offset — is a named REFUSAL. A refusal costs a reconciliation cycle; a
+   * partial reading costs a duplicate download.
+   */
   async history(): Promise<SabResult<readonly SabHistorySlot[]>> {
-    const response = await this.send('history', 'GET', {
-      limit: String(SAB_CLIENT_BOUNDS.HISTORY_PAGE_LIMIT),
-      category: this.category,
-    });
-    if (!response.ok) return response;
-    const history = isRecord(response.value) ? response.value['history'] : undefined;
-    if (!isRecord(history)) return fail('worker-response-malformed', 'the worker did not report a history document');
-    const slots = history['slots'];
-    if (!Array.isArray(slots)) return fail('worker-response-malformed', 'the history document carries no slot list');
-    if (slots.length > SAB_CLIENT_BOUNDS.MAX_SLOTS) {
-      return fail('worker-response-too-large', 'the history reports more slots than one reading is bounded to');
-    }
-
+    const limit = SAB_CLIENT_BOUNDS.HISTORY_PAGE_LIMIT;
     const parsed: SabHistorySlot[] = [];
-    for (const raw of slots) {
-      if (!isRecord(raw)) return fail('worker-response-malformed', 'a history slot is not an object');
-      const jobRef = readJobRef(raw['nzo_id']);
-      if (jobRef === null) return fail('worker-response-malformed', 'a history slot carries no job reference');
-      const status = canonicalSabStatus(String(raw['status'] ?? ''));
-      if (!isSabHistoryStatus(status)) {
-        return fail('worker-state-unrecognised', 'the worker reported a history state this contract does not define');
-      }
-      const storage = raw['storage'];
-      const failMessage = raw['fail_message'];
-      parsed.push({
-        jobRef,
-        status,
-        marker: readMarker(raw['nzb_name'] ?? raw['name']),
-        category: readCategory(raw['category']),
-        // SEALED THE MOMENT IT ENTERS THE PROCESS. There is no window in which the completed path exists here
-        // as a bare string that something could print.
-        storagePath: typeof storage === 'string' && storage.length > 0 && storage.length <= 4096
-          ? seal('completed-path', storage)
-          : null,
-        bytes: readWholeBytes(raw['bytes']),
-        // THE MESSAGE IS READ AS A BOOLEAN AND DISCARDED. SABnzbd's failure messages quote the release name
-        // and sometimes the server; carrying one would put both in every report that mentioned the job.
-        failed: typeof failMessage === 'string' && failMessage.trim().length > 0,
+    const seen = new Set<string>();
+
+    for (let page = 0; page < SAB_CLIENT_BOUNDS.MAX_HISTORY_PAGES; page += 1) {
+      const response = await this.send('history', 'GET', {
+        start: String(page * limit),
+        limit: String(limit),
+        category: this.category,
       });
+      if (!response.ok) return response;
+      const history = isRecord(response.value) ? response.value['history'] : undefined;
+      if (!isRecord(history)) return fail('worker-response-malformed', 'the worker did not report a history document');
+      const slots = history['slots'];
+      if (!Array.isArray(slots)) return fail('worker-response-malformed', 'the history document carries no slot list');
+      if (slots.length > limit) {
+        return fail('worker-response-too-large', 'the worker returned more history slots than the page it was asked for');
+      }
+
+      let added = 0;
+      for (const raw of slots) {
+        if (!isRecord(raw)) return fail('worker-response-malformed', 'a history slot is not an object');
+        const jobRef = readJobRef(raw['nzo_id']);
+        if (jobRef === null) return fail('worker-response-malformed', 'a history slot carries no job reference');
+        const status = canonicalSabStatus(String(raw['status'] ?? ''));
+        if (!isSabHistoryStatus(status)) {
+          return fail('worker-state-unrecognised', 'the worker reported a history state this contract does not define');
+        }
+        // THE FINGERPRINT, NOT THE REFERENCE. Two pages that overlap are de-duplicated without the worker's
+        // own job id ever being compared as a bare string.
+        const identity = jobRef.fingerprint();
+        if (seen.has(identity)) continue;
+        seen.add(identity);
+        added += 1;
+
+        const storage = raw['storage'];
+        const failMessage = raw['fail_message'];
+        parsed.push({
+          jobRef,
+          status,
+          marker: readMarker(raw['nzb_name'] ?? raw['name']),
+          category: readCategory(raw['category']),
+          // SEALED THE MOMENT IT ENTERS THE PROCESS. There is no window in which the completed path exists
+          // here as a bare string that something could print.
+          storagePath: typeof storage === 'string' && storage.length > 0 && storage.length <= 4096
+            ? seal('completed-path', storage)
+            : null,
+          bytes: readWholeBytes(raw['bytes']),
+          // THE MESSAGE IS READ AS A BOOLEAN AND DISCARDED. SABnzbd's failure messages quote the release name
+          // and sometimes the server; carrying one would put both in every report that mentioned the job.
+          failed: typeof failMessage === 'string' && failMessage.trim().length > 0,
+        });
+      }
+
+      if (parsed.length > SAB_CLIENT_BOUNDS.MAX_SLOTS) {
+        return fail('worker-response-too-large', 'the history holds more entries than one reading is bounded to');
+      }
+      // A SHORT PAGE IS THE ONLY THING THAT ENDS THIS LOOP SUCCESSFULLY, because it is the only answer that
+      // means "there is no more". `noofslots`, when the worker states it, has to agree.
+      if (slots.length < limit) {
+        const total = wholeCount(history['noofslots']);
+        if (total !== null && total > parsed.length) {
+          return fail('worker-response-too-large',
+            'the worker states more history entries than it returned, so absence from this reading would '
+            + 'not be absence from the history');
+        }
+        return ok(parsed);
+      }
+      if (added === 0) {
+        // A FULL PAGE THAT ADDED NOTHING MEANS THE WORKER IGNORED `start`. Reading on would loop over the
+        // same page; returning what is in hand would call a first page the whole history.
+        return fail('worker-response-malformed',
+          'the worker returned the same history page for a different offset, so its history cannot be read '
+          + 'completely and absence from it proves nothing');
+      }
     }
-    return ok(parsed);
+    return fail('worker-response-too-large',
+      'the dedicated category holds more history pages than one reading walks; nothing has been assumed about '
+      + 'any job from a reading that could not be completed');
   }
 
   /**
@@ -434,6 +497,19 @@ function readCategory(value: unknown): string {
   if (typeof value !== 'string') return '';
   const trimmed = value.trim();
   return /^[A-Za-z0-9._-]{1,64}$/.test(trimmed) ? trimmed : '';
+}
+
+/**
+ * A worker-stated total count, or null when it stated none.
+ *
+ * SABnzbd writes `noofslots` as a number in some versions and as a decimal string in others. Anything that is
+ * not a whole non-negative count is read as "the worker did not say", which is the safe reading: the caller
+ * then falls back on the page-length rule rather than trusting a number it could not parse.
+ */
+function wholeCount(value: unknown): number | null {
+  const numeric = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN;
+  if (!Number.isFinite(numeric) || !Number.isInteger(numeric) || numeric < 0) return null;
+  return numeric;
 }
 
 function readWholeBytes(value: unknown): number {

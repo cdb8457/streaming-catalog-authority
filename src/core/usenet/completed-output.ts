@@ -437,6 +437,18 @@ export async function proveOutput(
   if (!sameFile(previous, after.value)) {
     return refuse('output-mutated-during-digest', 'the completed path named a different file after it was read');
   }
+  // THE LINK COUNT IS ASKED AGAIN, ON BOTH LATER OBSERVATIONS, AND NOT ONLY ON THE FIRST.
+  //
+  // `sameFile` deliberately compares kind, device, inode, size and mtime — and `link(2)` changes none of
+  // those. So a second name created after the first stat is invisible to every check between here and there:
+  // the file is the same file, at the same size, with the same mtime, and it now has another name through
+  // which its bytes can be replaced the instant this function returns. The first check is the cheap one that
+  // refuses the ordinary case before anything is read; these two close the window it leaves open.
+  if (digested.observed.nlink > 1 || after.value.nlink > 1) {
+    return refuse('output-multiply-linked',
+      'the completed output gained a second name while it was being proved, so something other than the '
+      + 'worker can still replace its bytes');
+  }
 
   const expectedProbes = probeOffsetsFor(digested.sizeBytes, PROJECTION_PROBE_PLAN.WINDOW_BYTES);
   if (digested.probes.length !== expectedProbes.length) {

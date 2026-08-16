@@ -183,6 +183,15 @@ It exits non-zero when a job is refused, so a monitor can notice. Refusals that 
 file still being written, an unpack artefact still present, an unreachable worker — are marked *retryable* and
 are cleared by the next run.
 
+**One command at a time, and the timer above is exactly why.** `submit` and `reconcile` both take an
+exclusive lock on the job ledger for the whole of their run, because both decide what to do by reading the
+state they replayed when they opened it: a `submit` you typed while the ten-minute timer was mid-`reconcile`
+would otherwise be two commands that each saw no reservation and each sent the same NZB. If you meet
+`LEDGER_LOCKED`, another command is holding it — wait and run yours again. A lock left behind by a killed
+process is broken automatically after fifteen minutes; you never have to delete
+`<stateDir>/usenet-ledger/jobs.lock` by hand, and you should not, because a lock that is still live belongs
+to a command that is still running.
+
 ### 4.4 Understand a refusal
 
 ```sh
@@ -203,6 +212,14 @@ meet:
 - **`job-absent-from-worker`** — the job is in neither the queue nor the history. This is **never** read as
   success. If the reservation was never confirmed, it is recorded as lost and you may submit it again.
 - **`worker-rejected-credential`** — check the key file and its permissions.
+- **`torbox-namespace-drifted`** — publishing this Usenet entry moved a TorBox-backed entry, which §4 forbids
+  outright. The admission was **not** recorded and the refusal is permanent: this is a defect in the control
+  plane, not something you can fix by looking again. Report it with the entry prefix the refusal names.
+- **`worker-response-too-large`** on every job at once — the worker's dedicated-category history is longer
+  than one reading walks (ten pages of two hundred). Nothing has been assumed about any job: a reading that
+  could not be completed is refused rather than treated as "these are all the jobs there are", because
+  "absent from the history" is what lets a reservation be submitted again. Purging the worker's history is
+  **yours** to decide (§4 forbids this project doing it), and it costs nothing already admitted.
 
 ---
 

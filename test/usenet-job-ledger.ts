@@ -12,7 +12,9 @@ import {
   createFileLedgerStorage,
   createMemoryLedgerStorage,
   deriveSubmissionKey,
+  usenetLedgerLockPath,
   usenetLedgerPath,
+  withUsenetLedgerLock,
   type LedgerClock,
 } from '../src/core/usenet/job-ledger.js';
 import { seal } from '../src/core/usenet/sealed.js';
@@ -426,6 +428,109 @@ test('an admission with a digest or a size that is not one is a programming refu
   await assertThrows(() => ledger.recordAdmitted(job.key, {
     sha256: DIGEST, sizeBytes: 0, projectedPath: 'p', versionKey: 'v', projectedEntryId: 'pe',
   }), /LEDGER_SIZE_INVALID/, 'a zero size');
+});
+
+h.section('ONE COMMAND AT A TIME, because two that both replayed an empty ledger both submit');
+
+test('THE SECOND COMMAND WAITS; IT DOES NOT RESERVE ALONGSIDE THE FIRST', async () => {
+  // THE DEFECT THIS PINS, AND WHY FSYNC DOES NOT COVER IT. `reserve()` decides whether to send by reading
+  // the state it replayed WHEN IT OPENED. Two operator commands at the same moment — `submit` typed twice, a
+  // `submit` racing the reconciliation timer the runbook puts on a schedule — both replay a ledger with no
+  // reservation, both append one, and both send the same NZB. Each append is perfectly durable; there are
+  // simply two of them. Worse, two `reserved` records under one key is an invariant replay refuses, so the
+  // loser does not merely double-submit: it leaves a ledger no later command can open at all.
+  await withTempDir(async (dir) => {
+    const order: string[] = [];
+    let releaseFirst = (): void => undefined;
+    const firstInside = new Promise<void>((resolve) => {
+      const gate = new Promise<void>((release) => { releaseFirst = () => { release(); }; });
+      void withUsenetLedgerLock(dir, async () => {
+        order.push('first-entered');
+        resolve();
+        await gate;
+        order.push('first-left');
+      });
+    });
+
+    await firstInside;
+    let secondEntered = false;
+    const second = withUsenetLedgerLock(dir, async () => {
+      secondEntered = true;
+      order.push('second-entered');
+    });
+    // The second command is genuinely blocked, not merely slower: it has not entered while the first holds.
+    await new Promise<void>((resolve) => { setTimeout(resolve, 250); });
+    assertEq(secondEntered, false, 'both commands were inside the ledger at once');
+
+    releaseFirst();
+    await second;
+    assertEq(order.join(' '), 'first-entered first-left second-entered', 'the commands were not serialised');
+  });
+});
+
+test('the lock is released when the command THROWS, so one failure does not wedge the next command', async () => {
+  await withTempDir(async (dir) => {
+    await assertThrows(async () => {
+      await withUsenetLedgerLock(dir, async () => { throw new Error('the command failed'); });
+    }, /the command failed/, 'the failing command');
+    assert(!existsSync(usenetLedgerLockPath(dir)), 'a failed command left the ledger locked');
+    let ran = false;
+    await withUsenetLedgerLock(dir, async () => { ran = true; });
+    assert(ran, 'the next command could not take a lock the failed one left behind');
+  });
+});
+
+test('a LIVE holder is waited for and then refused; it is never simply ignored', async () => {
+  await withTempDir(async (dir) => {
+    let release = (): void => undefined;
+    const gate = new Promise<void>((resolve) => { release = () => { resolve(); }; });
+    const held = withUsenetLedgerLock(dir, async () => { await gate; });
+    await new Promise<void>((resolve) => { setTimeout(resolve, 50); });
+
+    await assertThrows(
+      // A short wait and a long stale bound: the holder is alive, so this must refuse rather than break in.
+      async () => { await withUsenetLedgerLock(dir, async () => undefined, { waitMs: 300, staleMs: 600_000 }); },
+      /LEDGER_LOCKED/,
+      'a command that could not take the lock',
+    );
+    release();
+    await held;
+  });
+});
+
+test('a STALE lock is broken, so a killed process does not wedge the control plane forever', async () => {
+  await withTempDir(async (dir) => {
+    // A lock file with nobody behind it, exactly as a `docker kill` mid-command leaves.
+    mkdirSync(join(dir, USENET_LEDGER_SUBDIR), { recursive: true });
+    writeFileSync(usenetLedgerLockPath(dir), '{"pid":1,"at":"1970-01-01T00:00:00.000Z"}\n', 'utf8');
+    let ran = false;
+    await withUsenetLedgerLock(dir, async () => { ran = true; }, { waitMs: 2_000, staleMs: 0 });
+    assert(ran, 'a lock left by a dead process wedged every later command');
+    assert(!existsSync(usenetLedgerLockPath(dir)), 'the broken lock was not released');
+  });
+});
+
+test('the lock lives in the ledger\'s own sub-directory, never at the top of a swept state directory', () => {
+  const path = usenetLedgerLockPath('/var/lib/projection');
+  assert(path.replace(/\\/g, '/').includes(`/${USENET_LEDGER_SUBDIR}/`),
+    'the lock sits where another component\'s startup sweep would delete it');
+});
+
+test('both mutating operator verbs take the lock, and the ledger is opened INSIDE it', () => {
+  // ASSERTED ON THE SOURCE BECAUSE THE ORDER IS THE WHOLE PROPERTY. A lock taken after `openLedger` would
+  // serialise the appends and still let both commands decide to submit from the same replayed state.
+  // Comment lines are stripped first: both functions EXPLAIN the ordering in a comment that names
+  // `openService`, and a check that read those would be a check that punished the explanation.
+  const source = read('src/ops/usenet-command.ts')
+    .split('\n').filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line)).join('\n');
+  for (const verb of ['runSubmit', 'runReconcile']) {
+    const at = source.indexOf(`export async function ${verb}`);
+    assert(at > 0, `${verb} is missing`);
+    const body = source.slice(at, at + 1200);
+    assert(body.includes('withUsenetLedgerLock'), `${verb} does not take the ledger lock`);
+    assert(body.indexOf('withUsenetLedgerLock') < body.indexOf('openService'),
+      `${verb} opens the ledger before it takes the lock, which serialises the writes and not the decision`);
+  }
 });
 
 h.section('wiring');

@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs';
+import {
+  closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import type { SealedValue } from './sealed.js';
@@ -58,6 +60,103 @@ export const USENET_LEDGER_SUBDIR = 'usenet-ledger';
 
 export function usenetLedgerPath(stateDir: string): string {
   return join(stateDir, USENET_LEDGER_SUBDIR, USENET_LEDGER_FILE);
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Mutual exclusion
+// ---------------------------------------------------------------------------------------------------------
+//
+// WHY A LOCK EXISTS AT ALL, WHEN THE APPEND IS ALREADY FSYNCED. Durability and exclusivity are different
+// properties and this ledger needs both. `reserve()` decides whether to submit by reading the state it
+// replayed WHEN IT OPENED, so two operator commands running at the same moment — `submit` typed twice, a
+// `submit` racing the reconciliation timer the runbook puts on a schedule — both replay a ledger with no
+// reservation, both append one, and both send the same NZB to the worker. That is the exact outcome the
+// whole module exists to prevent, and no amount of fsync prevents it: each append is perfectly durable and
+// there are two of them.
+//
+// IT IS ALSO WHAT KEEPS THE LEDGER READABLE. Two `reserved` records under one key is an invariant violation
+// that replay refuses, correctly and permanently — so without exclusion the losing race does not merely
+// double-submit, it leaves a ledger that no later command can open at all.
+//
+// THE LOCK IS A FILE CREATED WITH `wx`, which is atomic on every filesystem this appliance runs on, and it
+// carries the holder's pid and start time so a lock left by a killed process can be identified rather than
+// waited on forever. A lock older than the stale bound is broken with a written record of the breaking.
+
+export const USENET_LEDGER_LOCK_FILE = 'jobs.lock';
+/** How long a lock may be held before a later command treats its holder as dead. */
+export const USENET_LEDGER_LOCK_STALE_MS = 15 * 60 * 1000;
+/** How long a command waits for a live holder before refusing rather than queueing indefinitely. */
+export const USENET_LEDGER_LOCK_WAIT_MS = 30_000;
+const LOCK_POLL_MS = 100;
+
+export function usenetLedgerLockPath(stateDir: string): string {
+  return join(stateDir, USENET_LEDGER_SUBDIR, USENET_LEDGER_LOCK_FILE);
+}
+
+/**
+ * Hold the ledger exclusively for the whole of one operator command.
+ *
+ * THE SCOPE IS THE COMMAND, NOT THE APPEND. Locking each append would make every individual write atomic and
+ * still permit the interleaving above, because the decision to submit is made from state read before the
+ * write. So the lock is taken before the ledger is opened and released after the last record is written, and
+ * `openLedger` is called INSIDE it.
+ */
+export async function withUsenetLedgerLock<T>(
+  stateDir: string,
+  fn: () => Promise<T>,
+  options: { readonly waitMs?: number; readonly staleMs?: number; readonly now?: () => number } = {},
+): Promise<T> {
+  const path = usenetLedgerLockPath(stateDir);
+  const now = options.now ?? (() => Date.now());
+  const waitMs = options.waitMs ?? USENET_LEDGER_LOCK_WAIT_MS;
+  const staleMs = options.staleMs ?? USENET_LEDGER_LOCK_STALE_MS;
+  const deadline = now() + waitMs;
+
+  mkdirSync(dirname(path), { recursive: true });
+  for (;;) {
+    let fd: number | undefined;
+    try {
+      fd = openSync(path, 'wx');
+    } catch {
+      fd = undefined;
+    }
+    if (fd !== undefined) {
+      try {
+        writeSync(fd, `${JSON.stringify({ pid: process.pid, at: new Date(now()).toISOString() })}\n`, null, 'utf8');
+      } finally {
+        closeSync(fd);
+      }
+      try {
+        return await fn();
+      } finally {
+        // THE LOCK IS RELEASED ON EVERY PATH, INCLUDING A THROW. A command that failed still has to leave the
+        // ledger usable by the next one; a lock that only unlocked on success would turn one bad submission
+        // into a control plane that cannot submit again for fifteen minutes.
+        try { rmSync(path, { force: true }); } catch { /* the stale bound is the backstop */ }
+      }
+    }
+
+    let ageMs = 0;
+    try {
+      ageMs = now() - statSync(path).mtimeMs;
+    } catch {
+      // The holder released it between the failed create and this stat. Try again immediately.
+      continue;
+    }
+    if (ageMs > staleMs) {
+      // A LOCK OLDER THAN THE BOUND IS BROKEN, AND ONLY THEN. A control plane whose process was killed mid
+      // command must not wedge every later one, and a bound this long cannot be reached by a command that is
+      // merely slow: the longest thing done under this lock is one reconciliation pass.
+      try { rmSync(path, { force: true }); } catch { /* another waiter won the race; the loop retries */ }
+      continue;
+    }
+    if (now() >= deadline) {
+      throw new LedgerError('LEDGER_LOCKED',
+        'another projection Usenet command is holding the job ledger; exactly-once submission depends on one '
+        + 'command at a time, so this one refused rather than reading a ledger that is being written');
+    }
+    await new Promise<void>((resolve) => { setTimeout(resolve, LOCK_POLL_MS); });
+  }
 }
 
 const SUBMISSION_KEY_DOMAIN = 'projection.phase9.submission.v1';
@@ -464,7 +563,15 @@ export class UsenetJobLedger {
       if (existing !== undefined) {
         // A SECOND RESERVATION AFTER A LOST SUBMISSION IS LEGITIMATE; one over a live job is not.
         if (existing.phase !== 'refused') {
-          throw new LedgerError('LEDGER_DUPLICATE_RESERVATION', 'the ledger reserves a submission key once');
+          // THE MESSAGE NAMES THE CAUSE, because this is the one refusal an operator meets with a ledger
+          // that will not open at all. Two `reserved` records under one key can only be written by two
+          // commands that ran at the same moment against the same state directory — which
+          // `withUsenetLedgerLock` now prevents, and which a ledger written before that lock existed, or one
+          // reached through two different state directories pointing at one file, could still hold.
+          throw new LedgerError('LEDGER_DUPLICATE_RESERVATION',
+            'the ledger reserves a submission key once, and this one is reserved twice — which means two '
+            + 'control-plane commands ran against it at the same moment, so the same source may have been '
+            + 'submitted twice. Read the worker\'s own history for the marker before removing either record.');
         }
       }
       this.jobs.set(record.key, {

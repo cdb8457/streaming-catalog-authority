@@ -7,7 +7,7 @@ import {
   SMALL_MEDIA_BYTES, type FakeNode,
 } from './usenet-kit.js';
 import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
-import { UsenetAdmissionService, stateOf } from '../src/core/usenet/admission.js';
+import { UsenetAdmissionService, stateOf, type AdmissionPublisher } from '../src/core/usenet/admission.js';
 import { SabClient } from '../src/core/usenet/sab-client.js';
 import { createSabHttpTransport } from '../src/core/usenet/sab-http-transport.js';
 import { startFakeSabnzbd, type FakeSabService } from '../src/core/usenet/sab-fake-service.js';
@@ -16,7 +16,8 @@ import {
 } from '../src/core/usenet/job-ledger.js';
 import { seal } from '../src/core/usenet/sealed.js';
 import { USENET_DEDICATED_CATEGORY } from '../src/core/usenet/sab-contract.js';
-import { deriveProjectedEntryId } from '../src/core/projection/manifest-v1.js';
+import { deriveProjectedEntryId, type ProjectedEntry } from '../src/core/projection/manifest-v1.js';
+import { rehearsalTorBoxEntry } from '../src/ops/usenet-rehearsal.js';
 
 // Projection Phase 9 — reconciliation and admission, end to end and provider-free.
 //
@@ -477,6 +478,108 @@ test('a reservation whose submission never landed is recorded as lost and may be
     assertEq(rig.ledger.get(reservation.job.key)?.phase, 'reserved', 'the phase after a lost submission');
     assertEq(rig.worker.submitCount(), 0, 'reconciliation submitted rather than looked');
   }, { storage });
+});
+
+h.section('§4 — the TorBox half, guarded IN THE PUBLISH PATH rather than only in a rehearsal');
+
+/**
+ * Drive one admission against a publisher that presents the namespace, and let the caller move it.
+ *
+ * `mutate` is what a defect looks like from the guard's point of view: something that ran during a Usenet
+ * publish and left a provider-backed entry different from how it found it.
+ */
+async function withSnapshotPublisher(
+  mutate: (entries: ProjectedEntry[]) => void,
+  fn: (rig: {
+    service: UsenetAdmissionService; ledger: UsenetJobLedger; worker: FakeSabService; publishes: () => number;
+  }) => Promise<void>,
+): Promise<void> {
+  const worker = await startFakeSabnzbd({ apiKey: API_KEY });
+  try {
+    const entries: ProjectedEntry[] = [rehearsalTorBoxEntry(ITEM)];
+    let publishes = 0;
+    const publisher: AdmissionPublisher = {
+      async publish(plan) {
+        publishes += 1;
+        mutate(entries);
+        return { projectedEntryId: deriveProjectedEntryId(plan.projectedPath) };
+      },
+      async namespaceSnapshot() { return entries.map((entry) => ({ ...entry })); },
+    };
+    const ledger = UsenetJobLedger.open(createMemoryLedgerStorage());
+    const service = new UsenetAdmissionService({
+      client: new SabClient({
+        endpoint: worker.endpoint, apiKey: seal('sab-api-key', API_KEY),
+        transport: createSabHttpTransport(), sleep: async () => undefined,
+      }),
+      ledger,
+      fs: createFakeFileSystem(baseTree()),
+      clock: createFakeClock(),
+      publisher,
+      completedRoot: ROOT,
+      rootId: 'media',
+      completedRootUnderMediaRoot: ['usenet-complete'],
+      category: USENET_DEDICATED_CATEGORY,
+    });
+    await fn({ service, ledger, worker, publishes: () => publishes });
+  } finally {
+    await worker.close();
+  }
+}
+
+test('A PUBLISH THAT MOVED A TORBOX ENTRY IS REFUSED, and no admission is recorded', async () => {
+  // WHY THIS IS AN ADMISSION-PATH TEST AND NOT A BRIDGE TEST. `torBoxDrift` was exercised only by the
+  // rehearsal, which compared the namespace itself, after the fact — so the guard proved a property of the
+  // rehearsal rather than of the product. §4's sixth hard refusal is about what a Usenet publish does, and
+  // the place to catch that is around the publish.
+  await withSnapshotPublisher(
+    (entries) => {
+      // The QUIET case: the entry still exists, still has one source, still has the same id, and now points
+      // somewhere else. A count-based comparison sees nothing wrong with it.
+      const torbox = entries[0] as ProjectedEntry;
+      entries[0] = {
+        ...torbox,
+        sources: torbox.sources.map((source) => ({ ...source, locator: { endpointId: 'torbox', objectRef: 'moved' } })),
+      };
+    },
+    async (rig) => {
+      const submitted = await rig.service.submit(SOURCE, ITEM);
+      rig.worker.complete(submitted.marker, { storagePath: `${ROOT}/Some.Job`, bytes: SMALL_MEDIA_BYTES });
+      const outcomes = await rig.service.reconcileAll();
+      assertEq(outcomes[0]?.state, 'refused', 'a publish that moved the TorBox half was admitted');
+      assertEq(outcomes[0]?.reason, 'torbox-namespace-drifted', 'the reason');
+      assertEq(rig.ledger.get(submitted.key)?.admitted, null, 'the admission was recorded despite the drift');
+      assertEq(rig.ledger.get(submitted.key)?.refusal?.transient, false,
+        'a namespace that moved is not something looking again fixes, and a transient refusal would republish it');
+    },
+  );
+});
+
+test('a publish that leaves the TorBox half alone is admitted, and the guard is not merely always-on', async () => {
+  await withSnapshotPublisher(
+    (entries) => { void entries; },
+    async (rig) => {
+      const submitted = await rig.service.submit(SOURCE, ITEM);
+      rig.worker.complete(submitted.marker, { storagePath: `${ROOT}/Some.Job`, bytes: SMALL_MEDIA_BYTES });
+      const outcomes = await rig.service.reconcileAll();
+      assertEq(outcomes[0]?.state, 'admitted', `a clean publish was refused: ${outcomes[0]?.reason ?? ''}`);
+      assertEq(outcomes[0]?.admittedWithoutDriftCheck, undefined, 'a publisher that CAN be compared was not');
+      assertEq(rig.publishes(), 1, 'the publish count');
+    },
+  );
+});
+
+test('a publisher that cannot present the namespace SAYS SO rather than being silently trusted', async () => {
+  await withRig(async (rig) => {
+    const submitted = await rig.service.submit(SOURCE, ITEM);
+    rig.worker.complete(submitted.marker, { storagePath: `${ROOT}/Some.Job`, bytes: SMALL_MEDIA_BYTES });
+    const outcomes = await rig.service.reconcileAll();
+    assertEq(outcomes[0]?.state, 'admitted', 'the admission');
+    // The alternative — omitting the flag — would make "the drift comparison passed" and "the drift
+    // comparison was never made" the same report.
+    assertEq(outcomes[0]?.admittedWithoutDriftCheck, true,
+      'an admission published without a drift comparison read as one that had passed it');
+  });
 });
 
 h.section('§5.7 — the worker going away');

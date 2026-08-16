@@ -68,6 +68,17 @@ export interface FakeSabFaults {
   slotsMissingJobRef?: boolean;
   /** Answer queue and history with a document that is not shaped like one. */
   malformedDocument?: boolean;
+  /**
+   * Ignore `start` and answer every history page with the first one.
+   *
+   * A REAL FAILURE MODE OF A REAL PROXY. An operator who fronts SABnzbd with a caching reverse proxy, or a
+   * fork whose history endpoint does not implement `start`, produces exactly this — and a client that read
+   * the repeated first page as the whole history would then read "not on page one" as "not at the worker",
+   * which is the reading that permits a second submission.
+   */
+  historyIgnoresStart?: boolean;
+  /** State a `noofslots` larger than the slots actually returned, as a truncating worker does. */
+  understatesSlots?: boolean;
 }
 
 export interface FakeSabOptions {
@@ -189,7 +200,8 @@ export async function startFakeSabnzbd(options: FakeSabOptions): Promise<FakeSab
       case 'fullstatus':
         return { status: { status: 'Idle', paused: false, uptime: '1d' } };
       case 'queue': {
-        const slots = [...jobs.values()].filter((job) => job.place === 'queue').map((job) => ({
+        const queued = [...jobs.values()].filter((job) => job.place === 'queue');
+        const slots = queued.map((job) => ({
           ...(faults.slotsMissingJobRef === true ? {} : { nzo_id: job.nzoId }),
           status: faults.unknownQueueStatus ?? job.queueStatus,
           filename: `${job.marker}.nzb`,
@@ -198,10 +210,27 @@ export async function startFakeSabnzbd(options: FakeSabOptions): Promise<FakeSab
           mb: job.bytes / (1024 * 1024),
           percentage: '0',
         }));
-        return { queue: { status: 'Downloading', speed: '0 ', slots } };
+        return {
+          queue: {
+            status: 'Downloading',
+            speed: '0 ',
+            slots,
+            noofslots: faults.understatesSlots === true ? queued.length + 1 : queued.length,
+          },
+        };
       }
       case 'history': {
-        const slots = [...jobs.values()].filter((job) => job.place === 'history').map((job) => ({
+        // PAGED, AS SABNZBD PAGES. A fake that answered every `start` with the whole list would leave the
+        // client's paging — and therefore the soundness of "absent from the history" — untested, and this
+        // service exists precisely so that no part of the client is exercised only against a polite answer.
+        const all = [...jobs.values()].filter((job) => job.place === 'history');
+        const requestedStart = Number(url.searchParams.get('start') ?? '0');
+        const requestedLimit = Number(url.searchParams.get('limit') ?? '0');
+        const start = faults.historyIgnoresStart === true || !Number.isInteger(requestedStart) || requestedStart < 0
+          ? 0
+          : requestedStart;
+        const limit = Number.isInteger(requestedLimit) && requestedLimit > 0 ? requestedLimit : all.length;
+        const slots = all.slice(start, start + limit).map((job) => ({
           ...(faults.slotsMissingJobRef === true ? {} : { nzo_id: job.nzoId }),
           status: faults.unknownHistoryStatus ?? job.historyStatus,
           name: job.marker,
@@ -211,7 +240,13 @@ export async function startFakeSabnzbd(options: FakeSabOptions): Promise<FakeSab
           bytes: job.bytes,
           fail_message: job.failMessage ?? '',
         }));
-        return { history: { total_size: '0 B', slots } };
+        return {
+          history: {
+            total_size: '0 B',
+            slots,
+            noofslots: faults.understatesSlots === true ? all.length + 1 : all.length,
+          },
+        };
       }
       case 'addurl': {
         if (faults.submitDeclines === true) return { status: false, error: 'unusable NZB' };

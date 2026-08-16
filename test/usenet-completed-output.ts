@@ -370,6 +370,36 @@ test('a file with a SECOND HARD LINK is refused, because something else can stil
   assert(!result.transient, 'a second hard link is not a transient condition');
 });
 
+test('A SECOND HARD LINK CREATED DURING THE DIGEST IS CAUGHT, which `sameFile` cannot see', async () => {
+  // THE WINDOW THIS CLOSES. The link count is checked once, on the first stat, and `link(2)` changes NONE of
+  // the five fields `sameFile` compares — not kind, device, inode, size or mtime. So a second name created
+  // any time after that first stat was invisible to every later check: the file is the same file, at the same
+  // size, with the same mtime, and it now has another name through which its bytes can be replaced the
+  // instant the admission is recorded. The refusal has to be re-asked on the observations that come after.
+  const fs = createFakeFileSystem(tree(), {
+    duringDigest: (path) => { fs.set(path, { kind: 'file', bytes: MEDIA, nlink: 2 }); },
+  });
+  const result = await proveOutput(fs, createFakeClock(), ROOT, ['Some.Job', 'feature.mkv']);
+  assert(!result.ok, 'a file that gained a second name while it was read was proved');
+  assertEq(result.reason, 'output-multiply-linked', 'the reason');
+  assert(!result.transient, 'a second hard link is not a transient condition');
+});
+
+test('a second hard link that appears only AFTER the read is still caught by the final lstat', async () => {
+  // The other half of the same window: the descriptor's `fstat` saw one name, and the path was linked
+  // between that stat and the last one. The final `lstat` is the observation that catches it.
+  let digested = false;
+  const fs = createFakeFileSystem(tree(), {
+    beforeStat: (path) => {
+      if (digested && path.endsWith('feature.mkv')) fs.set(path, { kind: 'file', bytes: MEDIA, nlink: 2 });
+    },
+    duringDigest: () => { digested = true; },
+  });
+  const result = await proveOutput(fs, createFakeClock(), ROOT, ['Some.Job', 'feature.mkv']);
+  assert(!result.ok, 'a file linked after the read was proved');
+  assertEq(result.reason, 'output-multiply-linked', 'the reason');
+});
+
 test('a file below the minimum and one above the maximum are both refused, by their own reasons', async () => {
   const small = createFakeFileSystem(tree({ [`${ROOT}/Some.Job/feature.mkv`]: file(Buffer.alloc(1024)) }));
   const smallResult = await proveOutput(small, createFakeClock(), ROOT, ['Some.Job', 'feature.mkv']);

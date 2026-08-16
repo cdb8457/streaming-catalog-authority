@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -181,6 +181,34 @@ test('a world-readable source file is refused, because an indexer URL carries an
   });
 });
 
+test('A SYMLINK IS REFUSED, AND THE READ ITSELF IS NO-FOLLOW rather than the check alone', async () => {
+  // THE RACE THIS CLOSES. An `lstat` that refuses a link followed by a plain `readFile` is the classic
+  // time-of-check race: the path can be replaced with a link between the two, and `readFile` follows it
+  // silently. `readSabApiKeyFile` opens its credential with `O_NOFOLLOW` for exactly this reason, and an
+  // indexer URL carries the operator's indexer key — the same class of secret, and it was not getting the
+  // same treatment.
+  const source = read('src/ops/usenet-command.ts');
+  const at = source.indexOf('export async function readSealedSource');
+  assert(at > 0, 'readSealedSource is missing');
+  const body = source.slice(at, source.indexOf('export interface ServiceHandles'));
+  assert(body.includes('O_NOFOLLOW'), 'the source file is read with an open that follows a link');
+  assert(/handle\.stat\(\)/.test(body),
+    'nothing re-asks the descriptor what it actually opened, so the size and mode checks describe a path '
+    + 'rather than the bytes that were read');
+  assert(!/fsPromises\.readFile\(path/.test(body), 'a path-based read is still present beside the no-follow open');
+
+  // ...and the refusal itself, driven, on a host that can make a link.
+  if (process.platform === 'win32') return; // Windows needs a privilege to create one; the Unraid gate covers it.
+  await withTempDir(async (dir) => {
+    const target = join(dir, 'real.url');
+    writeFileSync(target, 'https://indexer.example/getnzb?id=42&apikey=abc\n', 'utf8');
+    chmodSync(target, 0o600);
+    const link = join(dir, 'source.url');
+    symlinkSync(target, link);
+    await assertThrows(() => readSealedSource(link), /SOURCE_FILE_PERMISSIVE/, 'a symlinked source file');
+  });
+});
+
 h.section('preflight');
 
 /**
@@ -328,6 +356,37 @@ test('an unreadable configuration is a named refusal with a non-zero exit, not a
     console.error = originalError;
   }
   assert(errors.join('\n').includes('CONFIG_UNREADABLE'), 'the failure was not named');
+  assert(!errors.join('\n').includes('/definitely/not/here.json'),
+    'the failure line echoed the path it was given back at the operator');
+});
+
+test('AN ERROR MESSAGE IS SCANNED BEFORE IT IS PRINTED, exactly as every document is', async () => {
+  // THE GAP THIS CLOSES. `emit` scans every DOCUMENT this command composes — and that was the whole of the
+  // guarantee, which left the one path whose text this project does not write. A `node:fs` rejection carries
+  // the absolute path it failed on; a driver error can carry a connection string. Closure rule 9 says those
+  // appear in no preserved evidence, and an operator's scrollback is where this tranche's evidence comes
+  // from. So the error path is held to the same rule the success path already was.
+  const source = read('src/ops/usenet-command-cli.ts');
+  assert(/function safeErrorMessage/.test(source), 'the CLI has no scan on its error path');
+  assert(!/console\.error\(`\$\{\(error as UsenetCommandError\)\.code \?\? 'ERROR'\}: \$\{\(error as Error\)\.message\}`\)/
+    .test(source), 'an unscanned error message is still printed somewhere');
+  const catches = (source.match(/catch \(error/g) ?? []).length;
+  const scans = (source.match(/safeErrorMessage\(error\)/g) ?? []).length;
+  assert(scans >= catches - 1,
+    `${catches} catch blocks and only ${scans} scanned messages; one of them prints whatever it was handed`);
+
+  // And driven: a configuration whose path is a real directory produces a `node:fs` message carrying it.
+  await withTempDir(async (dir) => {
+    const errors: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => { errors.push(args.map(String).join(' ')); };
+    try {
+      assertEq(await main(['status', '--config', dir]), 1, 'the exit code');
+    } finally {
+      console.error = originalError;
+    }
+    assert(!errors.join('\n').includes(dir), `the error line carried the path it failed on: ${errors.join('\n')}`);
+  });
 });
 
 test('a configuration file on disk loads through the same parser the suite drives', async () => {

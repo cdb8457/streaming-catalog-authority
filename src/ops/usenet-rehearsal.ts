@@ -7,7 +7,7 @@ import { SabClient } from '../core/usenet/sab-client.js';
 import { createSabHttpTransport } from '../core/usenet/sab-http-transport.js';
 import { startFakeSabnzbd, type FakeSabService } from '../core/usenet/sab-fake-service.js';
 import { UsenetJobLedger, createFileLedgerStorage, usenetLedgerPath } from '../core/usenet/job-ledger.js';
-import { seal } from '../core/usenet/sealed.js';
+import { seal, sealedProblems } from '../core/usenet/sealed.js';
 import { USENET_DEDICATED_CATEGORY } from '../core/usenet/sab-contract.js';
 import { mixedNamespaceCensus, torBoxDrift } from '../core/usenet/manifest-bridge.js';
 import type { OutputFileSystem } from '../core/usenet/completed-output.js';
@@ -54,6 +54,23 @@ export interface RehearsalOptions {
   readonly publisher?: AdmissionPublisher;
   /** The catalog record admitted entries belong to. */
   readonly itemId?: string;
+  /**
+   * Whether the CALLER has already run the offline boundary suites and the existing projection regression
+   * gates, and they passed.
+   *
+   * WHY THIS IS AN INPUT RATHER THAN A CONSTANT, AND WHY IT DEFAULTS TO FALSE. §5.1 ("every offline
+   * boundary, redaction, path-safety, idempotency and restart test passes") and §5.8 ("the existing focused
+   * regression gates remain green") are claims about test runs that this driver does not perform: it starts
+   * a fake worker and drives one sequence. An earlier version emitted `pass` for both regardless, which made
+   * two of §5's eleven claims closable by a command that had measured neither — the precise shape of the
+   * vacuous gate this tranche's own audit suite exists to catch elsewhere.
+   *
+   * So the driver emits a verdict for them only when told that the evidence exists, and the thing that tells
+   * it is `deploy/projection-phase9-rehearsal.sh`, which runs both suite sets FIRST and fails before ever
+   * reaching this driver if either does not pass. Run on its own, the driver leaves both claims without a
+   * verdict — and `phase9ClosureProblems` reports an absent verdict as not a pass.
+   */
+  readonly offlineSuitesVerified?: boolean;
 }
 
 export interface RehearsalStep {
@@ -156,6 +173,10 @@ export function createRehearsalNamespace(itemId: string = DEFAULT_ITEM): Admissi
       else entries.push(entry);
       return { projectedEntryId: plan.projectedEntryId };
     },
+    // THE ADMISSION SERVICE'S OWN DRIFT GUARD IS FED FROM HERE. `namespaceSnapshot` is what makes
+    // `torBoxDrift` run inside the publish path rather than only in this file's R5 step afterwards — so the
+    // rehearsal exercises the guard the product uses, not a second implementation of the same idea.
+    async namespaceSnapshot() { return entries.map((entry) => ({ ...entry })); },
     entries: () => entries.map((entry) => ({ ...entry })),
     publishCount: () => publishes,
   };
@@ -322,14 +343,32 @@ export async function rehearse(options: RehearsalOptions = {}): Promise<Rehearsa
       `outcome=${again.outcome} submissions=${worker.submitCount()} publishes=${countable.publishCount?.() ?? 0}`);
 
     // --- R8: evidence carries no identity ---------------------------------------------------------------
-    const evidence = JSON.stringify({ steps, results, entries: after });
-    const clean = !/rehearsal\.invalid|SABnzbd_nzo|\/rehearsal\/media/.test(evidence);
-    record('R8-evidence-carries-no-identity', clean, clean ? 'no identity in the evidence' : 'identity leaked');
+    // TWO CHECKS, BECAUSE THEY FAIL DIFFERENTLY. The literals catch THIS run's own known values — the
+    // rehearsal's URL, its worker job ids, its completed root — and would catch them wherever they appeared.
+    // The shape scan catches the ones a future edit introduces that nobody thought to add to a literal list:
+    // any URL, any absolute download path, any article id, any `apikey=`. A run that passed only the first is
+    // a run whose redaction check knows exactly as much as its author remembered.
+    const evidence = { steps, results, entries: after };
+    const literals = !/rehearsal\.invalid|SABnzbd_nzo|\/rehearsal\/media/.test(JSON.stringify(evidence));
+    const shapes = sealedProblems(evidence, 'rehearsal.evidence');
+    const clean = literals && shapes.length === 0;
+    record('R8-evidence-carries-no-identity', clean,
+      clean ? 'no identity in the evidence, by literal and by shape'
+        : `literals=${literals ? 'clean' : 'LEAKED'} shapes=${shapes.join('; ') || 'clean'}`);
     results.push({ gate: 'P9-9-evidence-carries-no-identity', verdict: clean ? 'pass' : 'fail', rehearsal: true });
 
-    // The two claims this rehearsal answers by construction rather than by measurement.
-    results.push({ gate: 'P9-1-offline-boundary-suite', verdict: 'pass', rehearsal: true });
-    results.push({ gate: 'P9-8-existing-regression-gates-green', verdict: 'pass', rehearsal: true });
+    // THE TWO CLAIMS THIS DRIVER DOES NOT MEASURE, AND THEREFORE DOES NOT ANSWER UNLESS TOLD.
+    //
+    // A verdict emitted here without the caller's evidence would be a `pass` for a test run that never
+    // happened — and both of these are on the provider-free list, so `phase9ClosureProblems` would accept
+    // them. See `RehearsalOptions.offlineSuitesVerified`. The gate script runs both suite sets before this
+    // driver and passes the flag; run without it, both claims stay open and the report says so.
+    // Left unanswered rather than answered wrongly, so `closureProblemsRemaining` names them and the render
+    // prints them under "still open" beside the four that need a provider.
+    if (options.offlineSuitesVerified === true) {
+      results.push({ gate: 'P9-1-offline-boundary-suite', verdict: 'pass', rehearsal: true });
+      results.push({ gate: 'P9-8-existing-regression-gates-green', verdict: 'pass', rehearsal: true });
+    }
   } finally {
     if (worker !== undefined) await worker.close();
     if (owned) rmSync(workDir, { recursive: true, force: true });

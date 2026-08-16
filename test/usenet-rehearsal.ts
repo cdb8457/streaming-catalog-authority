@@ -37,7 +37,12 @@ const read = (relative: string): string => readFileSync(join(repoRoot, relative)
 
 // The rehearsal is run ONCE and every test reads its report: it starts a real HTTP listener and runs the
 // whole sequence, and running it per-test would be eight listeners for one set of facts.
-const report = await rehearse();
+//
+// `offlineSuitesVerified` IS SET HERE BECAUSE THIS FILE IS ONE OF THE SUITES IT NAMES. §5.1 and §5.8 are
+// claims about offline suite runs, and this assertion is running inside one; the gate script makes the same
+// assertion after running both suite sets. What the flag must NOT do is default to true — a driver that
+// claimed §5.1 with nothing measured is the vacuous verdict the section below drives directly.
+const report = await rehearse({ offlineSuitesVerified: true });
 
 h.section('the sequence');
 
@@ -106,6 +111,28 @@ test('THE REHEARSAL STILL LEAVES THE PHASE OPEN, and names exactly the four clai
   }
   assertEq(report.closureProblemsRemaining.length, PHASE9_PROVIDER_REQUIRED_GATE_IDS.length,
     'the rehearsal leaves open something other than exactly the provider-required claims');
+});
+
+test('A DRIVER THAT MEASURED NO SUITE CLAIMS NO SUITE, and §5.1 and §5.8 stay open when it did not', async () => {
+  // THE VACUOUS-VERDICT CASE, DRIVEN RATHER THAN REASONED ABOUT. §5.1 ("every offline boundary, redaction,
+  // path-safety, idempotency and restart test passes") and §5.8 ("the existing focused regression gates
+  // remain green") are claims about test runs that the rehearsal driver does not perform — it starts a fake
+  // worker and drives one sequence. Both are on the provider-free list, so `phase9ClosureProblems` ACCEPTS a
+  // rehearsal verdict for them: a driver that emitted `pass` unconditionally would close two of §5's eleven
+  // claims having measured neither. So the default is to answer neither, and this drives the default.
+  const bare = await rehearse();
+  const emitted = new Set(bare.results.map((result) => result.gate));
+  assert(!emitted.has('P9-1-offline-boundary-suite'),
+    'the driver claimed the offline boundary suite passed without any suite having been run for it');
+  assert(!emitted.has('P9-8-existing-regression-gates-green'),
+    'the driver claimed the existing regression gates were green without having run one');
+  for (const id of ['P9-1-offline-boundary-suite', 'P9-8-existing-regression-gates-green']) {
+    assert(bare.closureProblemsRemaining.some((problem) => problem.includes(id) && problem.includes('no verdict')),
+      `${id} was neither answered nor reported open, so it would read as closed`);
+  }
+  // AND THE SEQUENCE STILL PASSED. The absent verdicts are a statement about what was not measured, not a
+  // failure of what was — a driver that failed outright would make the distinction impossible to use.
+  assert(bare.steps.every((step) => step.ok), 'the unflagged rehearsal failed a step it should still pass');
 });
 
 h.section('what it produced');

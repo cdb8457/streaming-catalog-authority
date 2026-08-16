@@ -16,7 +16,8 @@ import {
   type AdmissionClock,
   type OutputFileSystem,
 } from './completed-output.js';
-import { planLocalSource, type UsenetLocalSourcePlan } from './manifest-bridge.js';
+import { planLocalSource, torBoxDrift, type UsenetLocalSourcePlan } from './manifest-bridge.js';
+import type { ProjectedEntry } from '../projection/manifest-v1.js';
 
 // Projection Phase 9 — reconciliation and admission, which is where every other module in this directory is
 // finally allowed to have an effect.
@@ -51,6 +52,16 @@ export interface AdmissionPublisher {
    * `registerEntry` derive their ids from their inputs and upsert.
    */
   publish(plan: UsenetLocalSourcePlan, itemId: string): Promise<{ readonly projectedEntryId: string }>;
+  /**
+   * The namespace as it stands, when the publisher can present it.
+   *
+   * WHY IT IS OPTIONAL AND WHY IT IS HERE AT ALL. §4's sixth hard refusal is "let a Usenet outage alter the
+   * TorBox namespace", and `torBoxDrift` is the check that proves it — but a check that only ever runs in a
+   * rehearsal proves a property of the rehearsal. So the admission path runs it around every publish, for
+   * every publisher that can answer this question. A publisher that cannot answer it does not get a weaker
+   * guard silently: `admittedWithoutDriftCheck` on the outcome says so, and the operator surface carries it.
+   */
+  namespaceSnapshot?(): Promise<readonly ProjectedEntry[]>;
 }
 
 export interface AdmissionServiceConfig {
@@ -94,6 +105,11 @@ export interface ReconcileOutcome {
     readonly sizeBytes: number;
     readonly sha256: string;
   };
+  /**
+   * True when this admission was published by a publisher that cannot present the namespace, so the TorBox
+   * drift comparison could not be made. It is reported rather than assumed either way.
+   */
+  readonly admittedWithoutDriftCheck?: boolean;
 }
 
 export class UsenetAdmissionService {
@@ -337,6 +353,18 @@ export class UsenetAdmissionService {
       return { ...base, state: 'refused', changed: true, reason: plan.reason, detail: plan.detail };
     }
 
+    // THE TORBOX HALF, READ BEFORE THE PUBLISH. A snapshot taken here and compared after is the mechanism
+    // §4's sixth hard refusal is kept by; taking it inside the `try` would mean a publisher that threw left
+    // no `before` to compare against.
+    let before: readonly ProjectedEntry[] | null = null;
+    if (this.config.publisher.namespaceSnapshot !== undefined) {
+      try {
+        before = await this.config.publisher.namespaceSnapshot();
+      } catch {
+        before = null;
+      }
+    }
+
     let published: { readonly projectedEntryId: string };
     try {
       published = await this.config.publisher.publish(plan.value, job.itemId);
@@ -350,6 +378,27 @@ export class UsenetAdmissionService {
       };
     }
 
+    // AND READ AGAIN, BEFORE THE ADMISSION IS RECORDED. A publish that moved a provider-backed entry is not
+    // an admission this control plane will write down: recording it would leave a ledger asserting that a
+    // Usenet file was published cleanly while a TorBox entry it had no business touching had moved. The
+    // refusal is PERMANENT, so reconciliation stops rather than re-publishing the same drift every cycle.
+    if (before !== null && this.config.publisher.namespaceSnapshot !== undefined) {
+      let drift: readonly { readonly code: string }[];
+      try {
+        drift = torBoxDrift(before, await this.config.publisher.namespaceSnapshot());
+      } catch {
+        drift = [{ code: 'TORBOX_SNAPSHOT_UNREADABLE' }];
+      }
+      if (drift.length > 0) {
+        this.config.ledger.recordRefused(job.key, 'torbox-namespace-drifted', false);
+        return {
+          ...base, state: 'refused', changed: true, reason: 'torbox-namespace-drifted',
+          detail: `publishing this entry moved the TorBox half of the namespace (${drift.map((problem) => problem.code).join(', ')}); `
+            + 'the admission was not recorded',
+        };
+      }
+    }
+
     const recorded = this.config.ledger.recordAdmitted(job.key, {
       sha256: plan.value.sha256,
       sizeBytes: plan.value.sizeBytes,
@@ -359,12 +408,21 @@ export class UsenetAdmissionService {
     });
 
     if (!recorded.admitted) {
+      // EACH REASON GETS ITS OWN SENTENCE. A two-branch ternary here printed "already admitted with a
+      // different proof" over `submission-not-reserved`, which is a different fact about a different
+      // problem — and a refusal diagnostic that describes the wrong cause sends an operator to the wrong
+      // place. §3's last deliverable is a surface that distinguishes; that starts here.
+      const detail = recorded.reason === 'already-admitted'
+        ? 'this job was already admitted with the same proof; nothing was published twice'
+        : recorded.reason === 'admitted-digest-mismatch'
+          ? 'this job is already admitted with a different proof, so neither reading is trusted'
+          : recorded.reason === 'submission-not-reserved'
+            ? 'an output was proved for a submission this control plane has no confirmed record of making'
+            : 'the ledger refused to record this admission';
       return {
         ...base, state: recorded.reason === 'already-admitted' ? 'admitted' : 'refused', changed: false,
         ...(recorded.reason === undefined ? {} : { reason: recorded.reason }),
-        detail: recorded.reason === 'already-admitted'
-          ? 'this job was already admitted with the same proof; nothing was published twice'
-          : 'this job is already admitted with a different proof, so neither reading is trusted',
+        detail,
       };
     }
 
@@ -372,6 +430,7 @@ export class UsenetAdmissionService {
       ...base,
       state: 'admitted',
       changed: true,
+      ...(before === null ? { admittedWithoutDriftCheck: true } : {}),
       admitted: {
         projectedPath: plan.value.projectedPath,
         projectedEntryId: published.projectedEntryId,

@@ -69,9 +69,12 @@ echo "$completed of $RUNS consecutive Phase 9 rehearsals completed, none skipped
 echo
 echo "WHAT THIS DOES AND DOES NOT CLOSE."
 echo
-echo "  Each run started from nothing: a fresh ledger, a fresh fake worker, a fresh temporary tree and a"
-echo "  fresh throwaway database. Each one submitted once, admitted once, compared the namespace before and"
-echo "  after, survived a restart and an outage, and left nothing behind."
+echo "  Each run started from nothing: a fresh ledger, a fresh fake worker and a fresh temporary tree. Each"
+echo "  one submitted once, admitted once, compared the namespace before and after, survived a restart and"
+echo "  an outage, and left nothing behind — including the throwaway container, network and volume each run"
+echo "  created so that §5.10's cleanup claim had something real to be about. The admitted entry was"
+echo "  published into an in-memory namespace, NOT into a database: publishing through the real registration"
+echo "  boundary needs a migrated schema and an operator's catalog record, and neither is claimed here."
 echo
 echo "  IT CLOSES NO PART OF PHASE 9. §5.11 asks for three consecutive fresh runs of the complete"
 echo "  MIXED-PROVIDER sequence. No Usenet provider, no indexer, no TorBox endpoint and no operator content"

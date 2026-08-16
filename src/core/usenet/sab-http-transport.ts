@@ -44,9 +44,25 @@ export function createSabHttpTransport(options: SabHttpTransportOptions = {}): S
         const send = request.endpoint.scheme === 'https' ? httpsRequest : httpRequest;
 
         let settled = false;
+        // THE OVERALL DEADLINE, WHICH `setTimeout` BELOW IS NOT.
+        //
+        // `ClientRequest.setTimeout` arms the SOCKET's inactivity timer: it fires when nothing has been sent
+        // or received for that long, and every byte that arrives resets it. A worker — or anything between
+        // this process and it — that answers with one byte every four seconds therefore keeps a five-second
+        // request alive indefinitely, up to the eight-megabyte response bound, and `SAB_CLIENT_BOUNDS` calls
+        // its number "per-request". So the number is also enforced as a wall-clock deadline on the whole
+        // exchange, which is what a bound on a request means, and the socket is destroyed when it passes.
+        const deadline = setTimeout(() => {
+          clientRequest.destroy();
+          finish(() => { reject(new SabTransportError('the worker did not answer inside the request timeout')); });
+        }, request.timeoutMs);
+        // The timer must not hold the process open on its own; the request already keeps the loop alive for
+        // exactly as long as it is in flight.
+        deadline.unref?.();
         const finish = (fn: () => void): void => {
           if (settled) return;
           settled = true;
+          clearTimeout(deadline);
           fn();
         };
 

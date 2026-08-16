@@ -83,12 +83,25 @@ cleanup() {
 trap cleanup EXIT
 
 # ---------------------------------------------------------------------------------------------------------
-# The database, when there is one. It is throwaway, on its own port, in its own project and on its own
-# network, so no other gate and no installation can lend this run state.
+# The database, when there is one.
+#
+# WHAT IT IS FOR, STATED PRECISELY, BECAUSE AN EARLIER VERSION OF THIS COMMENT OVERSTATED IT. The rehearsal
+# driver publishes into an IN-MEMORY namespace, not into this database: `src/ops/usenet-rehearsal.ts` uses
+# `createRehearsalNamespace`, and nothing in this run opens a connection. So this container is NOT the thing
+# the admitted entry is written to, and no sentence here or in the closing message may say that it is.
+#
+# It is started because §5.10 — "cleanup leaves zero phase-owned mounts, transient containers, networks and
+# volumes" — is only a claim worth making if the run creates a container, a network and a volume for cleanup
+# to remove. A gate that created nothing would satisfy §5.10 vacuously. It is throwaway, on its own port, in
+# its own project and on its own network, so no other gate and no installation can lend this run state.
+#
+# Publishing through the REAL registration boundary needs a migrated schema and a catalog record for the
+# admitted entry's `logicalMediaId` to belong to; both are operator inputs, and `usenet-command-cli.ts
+# diagnose` lists them. That is provider-required work and it is not claimed here.
 # ---------------------------------------------------------------------------------------------------------
 
 if [ "$USE_DOCKER" -eq 1 ]; then
-  say "starting a throwaway PostgreSQL on 127.0.0.1:$PG_PORT"
+  say "starting a throwaway PostgreSQL on 127.0.0.1:$PG_PORT (so §5.10 has a real container to leave nothing of)"
   PROJECTION_PHASE9_GATE_PG_PORT="$PG_PORT" \
     docker compose -f "$COMPOSE_FILE" -p "$PROJECT" up -d --wait \
     || fail "the throwaway PostgreSQL did not become healthy"
@@ -101,12 +114,29 @@ fi
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"; cleanup' EXIT
 
+# ---------------------------------------------------------------------------------------------------------
+# The focused offline regression suites §5.1 and §5.8 are stated in terms of.
+#
+# THEY RUN BEFORE THE DRIVER, AND THE ORDER IS THE POINT. The driver emits a verdict for §5.1 and §5.8 only
+# when it is told the evidence exists, and the flag below is the telling. Running the suites AFTERWARDS — as
+# an earlier version of this script did — meant the driver had already claimed both while nothing had been
+# measured, and a driver run on its own claimed them with nothing measured at all.
+# ---------------------------------------------------------------------------------------------------------
+
+say "running the Phase 9 offline suites"
+( cd "$ROOT" && npx tsx src/ops/test-runner-cli.ts --group offline --filter usenet ) \
+  || fail "the Phase 9 offline suites did not pass"
+
+say "running the projection offline suites"
+( cd "$ROOT" && npx tsx src/ops/test-runner-cli.ts --group offline --filter projection ) \
+  || fail "the projection offline suites did not pass"
+
 say "running the provider-free mixed rehearsal"
 if [ -n "$REHEARSAL_COMMAND" ]; then
   bash "$REHEARSAL_COMMAND" > "$OUT/rehearsal.txt" 2>&1
   status=$?
 else
-  ( cd "$ROOT" && npx tsx src/ops/usenet-rehearsal-cli.ts ) > "$OUT/rehearsal.txt" 2>&1
+  ( cd "$ROOT" && npx tsx src/ops/usenet-rehearsal-cli.ts --offline-suites-verified ) > "$OUT/rehearsal.txt" 2>&1
   status=$?
 fi
 cat "$OUT/rehearsal.txt"
@@ -131,18 +161,6 @@ for claim in P9-2-real-job-admitted-once P9-3-failed-job-refused-and-absent \
   grep -q "$claim" "$OUT/rehearsal.txt" \
     || fail "the rehearsal did not name $claim as still open"
 done
-
-# ---------------------------------------------------------------------------------------------------------
-# The focused offline regression suites §5.1 and §5.8 are stated in terms of.
-# ---------------------------------------------------------------------------------------------------------
-
-say "running the Phase 9 offline suites"
-( cd "$ROOT" && npx tsx src/ops/test-runner-cli.ts --group offline --filter usenet ) \
-  || fail "the Phase 9 offline suites did not pass"
-
-say "running the projection offline suites"
-( cd "$ROOT" && npx tsx src/ops/test-runner-cli.ts --group offline --filter projection ) \
-  || fail "the projection offline suites did not pass"
 
 echo
 echo "############################################################"

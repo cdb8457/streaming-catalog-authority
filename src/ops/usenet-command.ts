@@ -5,7 +5,14 @@ import { UsenetAdmissionService, stateOf, type AdmissionPublisher, type Reconcil
 import { SabClient, type SabEndpoint } from '../core/usenet/sab-client.js';
 import { createSabHttpTransport } from '../core/usenet/sab-http-transport.js';
 import { createRealOutputFileSystem } from '../core/usenet/output-fs.js';
-import { createFileLedgerStorage, UsenetJobLedger, usenetLedgerPath, type LedgerJob } from '../core/usenet/job-ledger.js';
+import {
+  createFileLedgerStorage,
+  UsenetJobLedger,
+  USENET_LEDGER_SUBDIR,
+  usenetLedgerPath,
+  withUsenetLedgerLock,
+  type LedgerJob,
+} from '../core/usenet/job-ledger.js';
 import { readSabApiKeyFile, type ApiKeyFileKind, type ApiKeyFileStat, type ApiKeyFileSystem } from '../core/usenet/sab-api-key.js';
 import { relativeSegmentsUnderRoot } from '../core/usenet/completed-output.js';
 import { seal, type SealedValue } from '../core/usenet/sealed.js';
@@ -320,7 +327,9 @@ export async function preflight(
   }
 
   try {
-    await deps.ensureDirectory(`${config.stateDir}/usenet-ledger`);
+    // THE SUBDIRECTORY NAME COMES FROM THE LEDGER MODULE, NEVER FROM A LITERAL HERE. Two spellings of the
+    // same directory is how a preflight ends up creating one place and the ledger writing to another.
+    await deps.ensureDirectory(`${config.stateDir}/${USENET_LEDGER_SUBDIR}`);
   } catch {
     problems.push({
       code: 'STATE_DIR_NOT_WRITABLE',
@@ -370,7 +379,42 @@ export async function readSealedSource(path: string): Promise<SealedValue> {
   if (stat.size === 0 || stat.size > 8192) {
     throw new UsenetCommandError('SOURCE_FILE_MALFORMED', 'the NZB source file does not hold a single URL');
   }
-  const text = (await fsPromises.readFile(path, 'utf8')).trim();
+
+  // THE CHECKS ABOVE DESCRIBE THE PATH A MOMENT AGO; THE OPEN IS NOW, AND THE TWO ARE BOUND TOGETHER HERE.
+  //
+  // An `lstat` that refused a symlink followed by a plain `readFile` is the classic time-of-check race: the
+  // path can be replaced with a link in between, and `readFile` follows it silently. `readSabApiKeyFile`
+  // already opens its credential with `O_NOFOLLOW` for exactly this reason, and an indexer URL carries the
+  // operator's indexer key — it is the same class of secret and gets the same treatment. The descriptor's own
+  // `fstat` then re-answers every question the `lstat` answered, about the thing that was actually opened.
+  const noFollow = (constants as Record<string, number | undefined>)['O_NOFOLLOW'] ?? 0;
+  let text: string;
+  try {
+    const handle = await fsPromises.open(path, constants.O_RDONLY | noFollow);
+    try {
+      const opened = await handle.stat();
+      if (!opened.isFile()) {
+        throw new UsenetCommandError('SOURCE_FILE_UNREADABLE', 'the NZB source path is not a regular file');
+      }
+      if (process.platform !== 'win32' && (opened.mode & 0o077) !== 0) {
+        throw new UsenetCommandError('SOURCE_FILE_PERMISSIVE',
+          'the NZB source file grants access to group or other; an indexer URL carries an indexer key and is a '
+          + 'credential whatever it is called');
+      }
+      if (opened.size === 0 || opened.size > 8192) {
+        throw new UsenetCommandError('SOURCE_FILE_MALFORMED', 'the NZB source file does not hold a single URL');
+      }
+      text = (await handle.readFile('utf8')).trim();
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    // A `UsenetCommandError` raised above is the specific answer and is kept. Anything else is an open that
+    // failed — including the `ELOOP` that `O_NOFOLLOW` raises on a link swapped in since the `lstat` — and it
+    // is reported without the underlying message, which carries the path.
+    if (error instanceof UsenetCommandError) throw error;
+    throw new UsenetCommandError('SOURCE_FILE_UNREADABLE', 'the NZB source file could not be read');
+  }
   if (!/^https?:\/\/[^\s"'<>]{8,4096}$/.test(text)) {
     throw new UsenetCommandError('SOURCE_FILE_MALFORMED',
       'the NZB source file must hold exactly one http or https URL on one line and nothing else');
@@ -420,10 +464,13 @@ export async function runSubmit(
     throw new UsenetCommandError('ITEM_ID_INVALID', 'a submission names the catalog record its output will belong to');
   }
   const sealedSource = await readSealedSource(input.sourceFile);
-  return withRegistry(async (db) => {
+  // THE LOCK WRAPS THE WHOLE COMMAND, INCLUDING THE LEDGER REPLAY INSIDE `openService`. `reserve()` decides
+  // whether to send by reading the state it replayed on open, so two commands that both replayed an empty
+  // ledger would both send. See `withUsenetLedgerLock`.
+  return withUsenetLedgerLock(config.stateDir, () => withRegistry(async (db) => {
     const { service } = await openService(config, db);
     return service.submit(sealedSource, input.itemId);
-  }, connectionString);
+  }, connectionString));
 }
 
 export async function runReconcile(
@@ -431,11 +478,13 @@ export async function runReconcile(
   filter?: string,
   connectionString?: string,
 ): Promise<readonly ReconcileOutcome[]> {
-  return withRegistry(async (db) => {
+  // RECONCILIATION TAKES THE SAME LOCK AS SUBMISSION, and it has to: it is the only verb that may declare a
+  // reservation LOST, and a submission racing that declaration is a submission that could be sent twice.
+  return withUsenetLedgerLock(config.stateDir, () => withRegistry(async (db) => {
     const { service } = await openService(config, db);
     const outcomes = await service.reconcileAll();
     return filter === undefined ? outcomes : outcomes.filter((outcome) => outcome.key.startsWith(filter));
-  }, connectionString);
+  }, connectionString));
 }
 
 /** The status document, built from the ledger alone. It contacts nothing, so it works during an outage. */

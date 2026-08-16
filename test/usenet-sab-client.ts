@@ -1,4 +1,5 @@
 import { readFileSync, readdirSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -346,6 +347,134 @@ test('the transport composes its URL with no interpolation anywhere in the file'
     assert(!error.includes('${'), 'a transport error message interpolates, and its inputs include the URL');
   }
   assert(!/console\.(log|error|warn)/.test(text), 'the transport logs, and the only thing it holds is a URL with a key in it');
+});
+
+h.section('the request timeout is a DEADLINE, not a silence timer');
+
+test('A WORKER THAT DRIPS ONE BYTE AT A TIME IS CUT OFF AT THE TIMEOUT, not kept alive by it', async () => {
+  // THE DEFECT THIS PINS. `ClientRequest.setTimeout` arms the SOCKET's inactivity timer: it fires when
+  // nothing has moved for that long, and every byte received resets it. So a peer that answers with one byte
+  // every fraction of the timeout holds the request open indefinitely — up to the eight-megabyte response
+  // bound — while `SAB_CLIENT_BOUNDS` calls its number "per-request". A control plane whose reconciliation
+  // pass can be held open by a wedged proxy is a control plane that stops reconciling anything.
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    // Well under the timeout, so the inactivity timer alone would never fire.
+    const drip = setInterval(() => { response.write('{'); }, 50);
+    response.on('close', () => { clearInterval(drip); });
+  });
+  await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', () => { resolve(); }); });
+  const address = server.address();
+  assert(address !== null && typeof address !== 'string', 'the drip server did not bind');
+  try {
+    const client = new SabClient({
+      endpoint: { host: '127.0.0.1', port: (address as { port: number }).port, scheme: 'http' },
+      apiKey: KEY,
+      transport: createSabHttpTransport(),
+      timeoutMs: SAB_CLIENT_BOUNDS.TIMEOUT_MS.min,
+      sleep: async () => undefined,
+    });
+    const startedAt = Date.now();
+    const version = await client.version();
+    const elapsed = Date.now() - startedAt;
+    assert(!version.ok, 'a request that never finished produced a reading');
+    assertEq(version.reason, 'worker-unreachable', 'the reason');
+    // Three read attempts, each bounded by the deadline, plus the backoff the client was told to skip. A
+    // generous ceiling: what is being asserted is that it ENDS, not how fast.
+    assert(elapsed < 10_000, `the request was not bounded by its own timeout: ${elapsed}ms`);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => { server.close(() => { resolve(); }); });
+  }
+});
+
+h.section('a history reading is COMPLETE or it is a refusal, because absence is used as proof');
+
+/**
+ * Fill the fake worker's history with `count` completed jobs it did not have to be submitted to hold.
+ *
+ * The submissions go through `addurl` exactly as a real one would, so every slot the client later reads is a
+ * slot the fake composes the ordinary way.
+ */
+async function seedHistory(worker: FakeSabService, count: number): Promise<string[]> {
+  const markers: string[] = [];
+  const client = new SabClient({
+    endpoint: worker.endpoint, apiKey: KEY, transport: createSabHttpTransport(), sleep: async () => undefined,
+  });
+  for (let index = 0; index < count; index += 1) {
+    const marker = submissionMarkerFor(index.toString(16).padStart(32, '0'));
+    const accepted = await client.submitUrl(SOURCE, marker);
+    assert(accepted.ok, `the fake worker declined seed submission ${index}`);
+    worker.complete(marker, { storagePath: `${STORAGE}.${index}`, bytes: 1024 });
+    markers.push(marker);
+  }
+  return markers;
+}
+
+test('A HISTORY LONGER THAN ONE PAGE IS READ WHOLE, so a job on page two is not read as absent', async () => {
+  // THE DEFECT THIS PINS. `admission.ts` reads "absent from the queue and absent from the history" as proof
+  // that a submission never reached the worker, and acts on that proof by recording the reservation LOST —
+  // the one state in which the same source may be sent again. A single-page reading made that proof false
+  // for any operator whose dedicated category held more than one page of completed jobs: the job is at the
+  // worker, it is on page two, and the control plane would have told them to download it a second time.
+  const worker = await startFakeSabnzbd({ apiKey: API_KEY });
+  try {
+    const total = SAB_CLIENT_BOUNDS.HISTORY_PAGE_LIMIT + 7;
+    const markers = await seedHistory(worker, total);
+    const client = new SabClient({
+      endpoint: worker.endpoint, apiKey: KEY, transport: createSabHttpTransport(), sleep: async () => undefined,
+    });
+    const history = await client.history();
+    assert(history.ok, `a multi-page history was refused: ${history.ok ? '' : history.reason}`);
+    assertEq(history.value.length, total, 'the reading did not carry every history entry');
+
+    const seen = new Set(history.value.map((slot) => slot.marker));
+    const last = markers[markers.length - 1] as string;
+    assert(seen.has(last), 'the entry beyond the first page is missing, so absence from this reading is not absence');
+    assertEq(new Set(history.value.map((slot) => slot.jobRef.fingerprint())).size, total,
+      'the pages overlapped and the reading double-counted a job');
+  } finally {
+    await worker.close();
+  }
+});
+
+test('a worker that ignores `start` is REFUSED rather than having its first page read as the whole history', async () => {
+  const worker = await startFakeSabnzbd({ apiKey: API_KEY });
+  try {
+    await seedHistory(worker, SAB_CLIENT_BOUNDS.HISTORY_PAGE_LIMIT + 3);
+    worker.setFaults({ historyIgnoresStart: true });
+    const client = new SabClient({
+      endpoint: worker.endpoint, apiKey: KEY, transport: createSabHttpTransport(), sleep: async () => undefined,
+    });
+    const history = await client.history();
+    assert(!history.ok, 'a worker that cannot be paged produced a reading anyway');
+    assertEq(history.reason, 'worker-response-malformed', 'the reason');
+  } finally {
+    await worker.close();
+  }
+});
+
+test('a worker that states more history than it returned is refused', async () => {
+  await withWorker(async (client, worker) => {
+    const accepted = await client.submitUrl(SOURCE, MARKER);
+    assert(accepted.ok, 'the submission was declined');
+    worker.complete(MARKER, { storagePath: STORAGE, bytes: 1024 });
+    worker.setFaults({ understatesSlots: true });
+    const history = await client.history();
+    assert(!history.ok, 'a truncated history was read as a complete one');
+    assertEq(history.reason, 'worker-response-too-large', 'the reason');
+  });
+});
+
+test('a queue that states more slots than it returned is refused, for the same reason', async () => {
+  await withWorker(async (client, worker) => {
+    const accepted = await client.submitUrl(SOURCE, MARKER);
+    assert(accepted.ok, 'the submission was declined');
+    worker.setFaults({ understatesSlots: true });
+    const queue = await client.queue();
+    assert(!queue.ok, 'a truncated queue was read as a complete one');
+    assertEq(queue.reason, 'worker-response-too-large', 'the reason');
+  });
 });
 
 h.section('bounds and wiring');

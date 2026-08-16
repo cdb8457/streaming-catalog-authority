@@ -160,6 +160,41 @@ test('assertSealedSafe throws on a leak and returns quietly on a clean document'
   assertSealedSafe({ job: 'a1b2c3d4e5f' });
 });
 
+h.section('the containers a shape scan silently walked past');
+
+test('AN ERROR IS SCANNED BY ITS MESSAGE, which `Object.entries` cannot see', () => {
+  // THE HOLE THIS CLOSES. `message`, `name` and `stack` are NON-ENUMERABLE own properties of an `Error`, so
+  // the object walk returned nothing for one and every `Error` came back clean whatever it said. And an
+  // error message is the single most likely carrier: it is the one string in this tranche that this project
+  // does not compose — `node:fs` writes the path it failed on into it, drivers write connection details.
+  const problems = sealedProblems({ failure: new Error('ENOENT: no such file, open /downloads/complete/x.mkv') });
+  assert(problems.length > 0, 'an Error carrying an absolute download path was reported clean');
+  assert(problems.some((problem) => problem.startsWith('RAW_ABSOLUTE_PATH')), `the shape: ${problems.join('; ')}`);
+
+  const chained = sealedProblems({ failure: new Error('the request failed', { cause: new Error('https://indexer.example/getnzb?id=1') }) });
+  assert(chained.some((problem) => problem.startsWith('RAW_URL')), `a cause chain: ${chained.join('; ')}`);
+
+  // A STACK IS DELIBERATELY NOT SCANNED. It names this repository's own source files by absolute path on
+  // every host, so scanning it would report a leak for every error ever raised — and a check that fires on
+  // everything is a check somebody turns off within a week.
+  assertEq(sealedProblems({ failure: new Error('nothing identifying here') }).length, 0,
+    'an ordinary error was reported as a leak, which would make the scanner unusable');
+});
+
+test('a Map and a Set are walked by their CONTENTS, which the object walk returns nothing for', () => {
+  const inMap = sealedProblems({ byJob: new Map([['a1b2c3', 'https://indexer.example/getnzb?id=1']]) });
+  assert(inMap.some((problem) => problem.startsWith('RAW_URL')), `a Map value: ${inMap.join('; ')}`);
+
+  const keyedByUrl = sealedProblems({ byJob: new Map([['/downloads/complete/x.mkv', 'admitted']]) });
+  assert(keyedByUrl.some((problem) => problem.startsWith('RAW_ABSOLUTE_PATH')), `a Map key: ${keyedByUrl.join('; ')}`);
+
+  const inSet = sealedProblems({ sources: new Set(['SABnzbd_nzo_9aB3xY']) });
+  assert(inSet.some((problem) => problem.startsWith('RAW_NZO_ID')), `a Set member: ${inSet.join('; ')}`);
+
+  assertEq(sealedProblems({ ok: new Map([['a1b2c3', 'admitted']]), seen: new Set(['downloading']) }).length, 0,
+    'a clean Map and Set were reported as leaks');
+});
+
 h.section('wiring');
 
 test('this suite is in the offline inventory, so a rename cannot silently end the coverage', async () => {
