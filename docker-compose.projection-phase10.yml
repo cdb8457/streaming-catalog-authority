@@ -1,0 +1,59 @@
+# Projection Phase 10 — a real, migrated PostgreSQL for the PROVIDER-FREE OPERATOR CONTENT-PLANE rehearsal.
+#
+# WHY AN ELEVENTH DATABASE COMPOSE FILE. Every gate in this repository binds a fixed loopback port so that two
+# of them cannot silently lend each other state, and so that a second copy of one dies on an allocated port
+# rather than on a mystery. The block `deploy/` already claims is
+# 5432/5460/5470/5480/5490/5500/5510/5515/5540/5550/5560/5570/5573/5576/5580/5590/5600/5610/5611/5612/5620/
+# 5630/5640/5650/5660, and `test/projection-phase10.ts` cross-checks this file's port against every other
+# compose file rather than trusting this comment. 5670 is the next one outside it.
+#
+# NEITHER THE DAEMON, THE WORKER, THE RESOLVER NOR ANY MEDIA SERVER IS HERE, and the omission is the same one
+# `docker-compose.projection-phase9.yml` and `…-phase8.yml` make for the same reason. The arrangement the
+# rehearsal builds is a measurement rig and not a deployment; written into a Compose file it would read as
+# something to copy, and copying it is exactly wrong.
+#
+# AND THE CONTENT PLANE DOES NOT NEED ONE. Phase 10's whole subject is the CONTROL PLANE — a registry, a
+# generation, a pointer and an artifact directory. A daemon would be something to read the result WITH, and
+# reading the result is Phase 11's question. Every one of §5's ten claims is answerable against this container
+# and a directory.
+#
+# NO PROVIDER IS REACHABLE FROM IT. There is no TorBox endpoint, no CDN origin, no indexer, no SABnzbd and no
+# NNTP server in this file or on its network, and `endpoint.json` is neither mounted nor named. Phase 10 is
+# provider-free BY CONSTRUCTION, which is a property of what exists rather than of what the rehearsal
+# remembers not to call.
+
+name: projection-phase10-gate
+
+services:
+  postgres:
+    # PINNED BY DIGEST, like every other external image these gates touch. A moving tag would mean three
+    # consecutive runs were three runs of possibly different things, which is not what the repetition is for.
+    # It is the SAME digest `docker-compose.projection-phase9.yml` pins, so the two tranches differ in what
+    # they measure rather than in what they measure it on.
+    image: postgres:16@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20
+    environment:
+      POSTGRES_DB: catalog
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      # BOUND TO LOOPBACK — PHASE 12 §6.2, AND IT IS ONE LINE FOR ONE REASON. Phase 12 runs this rehearsal on
+      # the real Unraid host, and `5670:5432` published `postgres`/`postgres` on EVERY interface of that host
+      # for the life of the run. `deploy/projection-phase10-rehearsal.sh` reaches it at `127.0.0.1:5670` and
+      # always has, so this narrows what the file publishes and changes nothing the rehearsal does. No port,
+      # no image, no credential and no threshold moves, and Phase 10's own §5 is untouched.
+      - "127.0.0.1:${PROJECTION_PHASE10_GATE_PG_PORT:-5670}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d catalog"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    tmpfs:
+      # Throwaway, and it says so in the only way that cannot be forgotten: its storage does not survive the
+      # container. Three consecutive runs mean three runs from nothing, or they mean very little — and on this
+      # tranche the specific inheritance risk is a REGISTRY that survived into the next run, which would make
+      # the second run's `add` report an already-published entry and prove idempotence it never exercised.
+      - /var/lib/postgresql/data
+
+networks:
+  default:
+    name: projection-phase10-gate

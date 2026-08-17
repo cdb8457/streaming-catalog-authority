@@ -1,0 +1,68 @@
+# Projection Phase 11 — a real, migrated PostgreSQL for the MIXED-SOURCE ACCEPTANCE gate.
+#
+# WHY A TWELFTH DATABASE COMPOSE FILE. Every gate in this repository binds a fixed loopback port so that two
+# of them cannot silently lend each other state, and so that a second copy of one dies on an allocated port
+# rather than on a mystery. The block `deploy/` already claims is
+# 5432/5460/5470/5480/5490/5500/5510/5515/5540/5550/5560/5570/5573/5576/5580/5590/5600/5610/5611/5612/5620/
+# 5630/5640/5650/5660/5670, and `test/projection-phase11.ts` cross-checks this file's port against every
+# other compose file rather than trusting this comment. 5680 is the next one outside it.
+#
+# THERE IS NO DAEMON SERVICE IN THIS FILE, AND ITS ABSENCE IS A REFUSAL RATHER THAN AN OMISSION.
+#
+# Phase 10's own compose file says a daemon "would be something to read the result WITH, and reading the
+# result is Phase 11's question" — so a reader could reasonably expect one here. The answer is that Phase 11
+# reads the result through the appliance an OPERATOR runs, which is `deploy/projection-alpha.sh`, and §4's
+# fourth hard refusal forbids this tranche from standing up a second one. Phase 8 §13's ownership rule is
+# that one mount point has exactly one owner; a `projectiond` service written into this file would be a
+# second owner, and it would read as something to copy. The gate invokes the shipped script instead.
+#
+# NEITHER THE WORKER NOR THE RANGE ORIGIN IS HERE EITHER, and for a different reason: both are FAKES the gate
+# starts and stops inside its own run. `startFakeSabnzbd` is an in-process loopback listener with no image at
+# all, and the fake range origin is `go run ./cmd/fakerange` in the pinned Go toolchain image — the same one
+# every other gate in this repository builds it with, and deliberately not in the projectiond image, because
+# the production artifact ships one binary and a fault injector does not belong in it.
+#
+# NO PROVIDER IS REACHABLE FROM IT. There is no TorBox endpoint, no CDN origin, no indexer, no real SABnzbd
+# and no NNTP server in this file or on its network, and `endpoint.json` is neither mounted nor named. Phase
+# 11's tier one is provider-free BY CONSTRUCTION, which is a property of what exists rather than of what the
+# gate remembers not to call.
+#
+# AND NO MEDIA SERVER, AND NONE SIMULATED. §5.2's P11-R2 asks whether Plex, Jellyfin and Emby scan and read
+# both halves. Three containers standing in for them would produce a green run that says something true about
+# containers and nothing at all about Plex, so this file has none and the claim stays NOT RUN.
+
+name: projection-phase11-gate
+
+services:
+  postgres:
+    # PINNED BY DIGEST, like every other external image these gates touch. A moving tag would mean three
+    # consecutive runs were three runs of possibly different things, which is not what the repetition is for.
+    # It is the SAME digest `docker-compose.projection-phase10.yml` and `…-phase9.yml` pin, so the tranches
+    # differ in what they measure rather than in what they measure it on.
+    image: postgres:16@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20
+    environment:
+      POSTGRES_DB: catalog
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      # BOUND TO LOOPBACK, AND ON THE HOST §9.1 NAMES THAT IS THE DIFFERENCE BETWEEN A THROWAWAY DATABASE AND
+      # A SUPERUSER DATABASE ON THE OPERATOR'S LAN. The header above already says these gates "bind a fixed
+      # loopback port"; the mapping did not, so `5680:5432` published `postgres`/`postgres` on EVERY interface
+      # for the life of the run. The gate reaches it at `127.0.0.1:5680` and always has, so this narrows what
+      # the file publishes and changes nothing the gate does.
+      - "127.0.0.1:${PROJECTION_PHASE11_GATE_PG_PORT:-5680}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d catalog"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    tmpfs:
+      # Throwaway, and it says so in the only way that cannot be forgotten: its storage does not survive the
+      # container. Three consecutive runs mean three runs from nothing, or they mean very little — and on this
+      # tranche the specific inheritance risk is a REGISTRY that survived into the next run, which would make
+      # the second run's mixed generation already assembled and P11-M1 pass by having nothing left to do.
+      - /var/lib/postgresql/data
+
+networks:
+  default:
+    name: projection-phase11-gate

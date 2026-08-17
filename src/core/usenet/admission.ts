@@ -60,6 +60,14 @@ export interface AdmissionPublisher {
    * rehearsal proves a property of the rehearsal. So the admission path runs it around every publish, for
    * every publisher that can answer this question. A publisher that cannot answer it does not get a weaker
    * guard silently: `admittedWithoutDriftCheck` on the outcome says so, and the operator surface carries it.
+   *
+   * IT IS STILL OPTIONAL, AND AFTER PROJECTION PHASE 10 D10.1 THE SHIPPED PUBLISHER IMPLEMENTS IT. Phase 10
+   * §2.1 found that `createRegistryPublisher` — the only publisher `openService` ever builds — did not, so on
+   * a real appliance `before` was always null and this guard never ran on a single real admission. It now
+   * implements it over `src/core/projection/namespace-snapshot.ts`. The method stays optional because a
+   * caller that builds an admission service against something that structurally has no namespace to present
+   * should say so in the type rather than throw at run time — but DECLARING it and then failing is a
+   * REFUSAL now, not a silent fallback. See `admit()`.
    */
   namespaceSnapshot?(): Promise<readonly ProjectedEntry[]>;
 }
@@ -108,6 +116,12 @@ export interface ReconcileOutcome {
   /**
    * True when this admission was published by a publisher that cannot present the namespace, so the TorBox
    * drift comparison could not be made. It is reported rather than assumed either way.
+   *
+   * AFTER PROJECTION PHASE 10 D10.1 THIS IS UNREACHABLE FROM THE SHIPPED PATH. It is set only when
+   * `namespaceSnapshot` is `undefined` — a publisher that structurally cannot present a namespace — and
+   * `createRegistryPublisher` now implements it. A publisher that declares the method and then fails refuses
+   * the admission instead of reaching here, so this field can no longer be produced by a database that
+   * blinked. Phase 10 P10-3 is the claim that measures it against a real migrated PostgreSQL.
    */
   readonly admittedWithoutDriftCheck?: boolean;
 }
@@ -361,7 +375,25 @@ export class UsenetAdmissionService {
       try {
         before = await this.config.publisher.namespaceSnapshot();
       } catch {
-        before = null;
+        // A PUBLISHER THAT OFFERS THE COMPARISON AND THEN CANNOT MAKE IT DOES NOT GET TO PUBLISH ANYWAY.
+        //
+        // PROJECTION PHASE 10 D10.1. Until Phase 10 this branch set `before = null`, which fell through to an
+        // admission recorded `admittedWithoutDriftCheck: true`. That was defensible while NO shipped publisher
+        // could present a namespace — the flag was the whole truth. It stops being defensible the moment one
+        // can: a database that blinked for one query would silently buy an admission the same weaker guarantee
+        // that Phase 10 §2.1 exists to remove, and it would do it exactly when the control plane is least sure
+        // what the namespace looks like.
+        //
+        // So this is a REFUSAL, and a TRANSIENT one: nothing has been published yet, `publish` and the proof
+        // before it are both idempotent, and the next reconciliation re-proves and re-publishes. That is the
+        // opposite of the post-publish drift refusal below, which is PERMANENT because something already moved
+        // and repeating it would move it again.
+        this.config.ledger.recordRefused(job.key, 'torbox-namespace-drifted', true);
+        return {
+          ...base, state: 'refused', changed: true, reason: 'torbox-namespace-drifted',
+          detail: 'the namespace could not be read before this publish (TORBOX_SNAPSHOT_UNREADABLE), so the '
+            + 'TorBox half could not be protected; nothing was published and reconciliation will try again',
+        };
       }
     }
 

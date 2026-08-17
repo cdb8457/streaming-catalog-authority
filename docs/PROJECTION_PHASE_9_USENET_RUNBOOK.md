@@ -22,6 +22,31 @@ until the download is complete.
 visibility or their locators. That is checked before every publish, by comparing the namespace before and
 after, and a publish that would move one is refused instead.
 
+### 1.1 TWO SENTENCES ABOVE WERE WRONG, AND THEY ARE KEPT HERE WHOLE — **SUPERSEDED BY PROJECTION PHASE 10**
+
+**THE TEXT ABOVE IS LEFT EXACTLY AS IT WAS WRITTEN**, because a page that quietly deleted a claim it once made
+is a page you cannot trust about the ones it still makes. What is written below is what changed.
+
+**"A Usenet file becomes visible when it is `admitted`, and never before."** The second half is true. The
+first half is **false on a real appliance**. `admitted` means the control plane proved the file and wrote it
+into the **registry**, which is not the namespace: no media server can see anything until a **generation** is
+published and the pointer is written, and **nothing in the Usenet path has ever published one**.
+`grep -n "publishGeneration" src/ops/usenet-command.ts src/core/usenet/` returns nothing.
+`docs/PROJECTION_PHASE_10_OPERATOR_CONTENT_PLANE.md` §2.2 is the record.
+
+**WHAT TO DO ABOUT IT: run `publish`.** Projection Phase 10 ships `deploy/projection-content.sh`, and its
+`publish` verb is what turns everything registered — TorBox entries and admitted Usenet files alike — into a
+generation your media servers can read. `projection-content.sh status` names any entry that is registered and
+in no generation as **`admitted-not-published`**, and `reconcile` reports it.
+`docs/PROJECTION_CONTENT_OPERATOR_RUNBOOK.md` is the page for all of it.
+
+**"That is checked before every publish."** It was checked in the provider-free rehearsal and in one unit
+test, and **it did not run on your appliance**. The publisher the shipped `ops:usenet` verbs build could not
+present the namespace, so the comparison was skipped and every real admission was recorded
+`admittedWithoutDriftCheck`. **Phase 10 D10.1 repaired it** — the shipped publisher now reads the namespace
+over its own short-lived read-only connection, and a publish it cannot compare around is **refused rather than
+made anyway**. From a Phase 10 build the sentence above is true. On an earlier build it was not.
+
 ---
 
 ## 2. What you must supply
@@ -163,6 +188,26 @@ Six states, and there is no seventh:
 | `refused` | the control plane will not publish this, for the named reason | read the reason |
 
 `status` contacts nothing, so it still works during a worker outage.
+
+#### 4.2.1 THE `admitted` ROW ABOVE IS WRONG AND IS KEPT WHOLE — **SUPERSEDED BY PROJECTION PHASE 10**
+
+**"nothing; it is in the namespace" IS FALSE.** `admitted` means the control plane proved the file and
+registered it. Registration is not publication, and until a generation carries the entry **no media server can
+see it**. §1.1 is the full record.
+
+**"Six states, and there is no seventh" IS STILL TRUE, AND THAT IS THE POINT.** The six states describe what
+the **worker** did with a job, and they remain the whole of that vocabulary — Phase 10 adds no seventh and
+changes `USENET_JOB_STATES` in no way. Whether the namespace has published the result is a **different
+question about a different thing**, and it has its own axis:
+
+| `admitted` + | What it means | What you do |
+| --- | --- | --- |
+| `admitted-not-published` | proved and registered, and in **no** generation. Invisible to every media server. | `deploy/projection-content.sh publish` |
+| `published` | in the current generation. **Now** it is in the namespace. | nothing |
+
+Read that axis with `deploy/projection-content.sh status`, which marks every unpublished entry with a `!`, or
+with `deploy/projection-content.sh reconcile`, which reports it as `registry-ahead-of-generation` **and
+changes nothing**. `docs/PROJECTION_CONTENT_OPERATOR_RUNBOOK.md` is the page.
 
 ### 4.3 Advance everything
 

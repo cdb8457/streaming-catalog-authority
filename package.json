@@ -98,6 +98,17 @@
     "test:projectiond-wiring": "tsx test/projectiond-wiring.ts",
     "test:projection-publisher": "tsx test/projection-publisher.ts",
     "test:projection-publisher-db": "tsx test/projection-publisher-db.ts 5460",
+    "test:projection-drift-guard-db": "tsx test/projection-drift-guard-db.ts 5468",
+    "test:projection-content-db": "tsx test/projection-content-db.ts 5469",
+    "ops:projection-content": "tsx src/ops/projection-content-cli.ts",
+    "go:phase10-rehearsal": "bash deploy/projection-phase10-rehearsal.sh",
+    "go:phase10-rehearsal:three": "bash deploy/projection-phase10-rehearsal-three.sh",
+    "go:phase10-rehearsal:optional": "bash deploy/projection-phase10-rehearsal-optional.sh",
+    "test:phase10": "tsx src/ops/test-runner-cli.ts --group offline --filter phase10 --filter content --filter namespace-snapshot",
+    "test:phase11": "tsx src/ops/test-runner-cli.ts --group offline --filter phase11",
+    "go:phase11-mixed-gate": "bash deploy/projection-phase11-mixed-gate.sh",
+    "go:phase11-mixed-gate:three": "bash deploy/projection-phase11-mixed-gate-three.sh",
+    "go:phase11-mixed-gate:optional": "bash deploy/projection-phase11-mixed-gate-optional.sh",
     "test:projection-jellyfin-dataplane": "tsx test/projection-jellyfin-dataplane.ts",
     "test:projection-plex-dataplane": "tsx test/projection-plex-dataplane.ts",
     "test:projection-emby-dataplane": "tsx test/projection-emby-dataplane.ts",
@@ -730,7 +741,9 @@
     "go:phase9-rehearsal": "bash deploy/projection-phase9-rehearsal.sh",
     "go:phase9-rehearsal:three": "bash deploy/projection-phase9-rehearsal-three.sh",
     "go:phase9-rehearsal:optional": "bash deploy/projection-phase9-rehearsal-optional.sh",
-    "test:phase9": "tsx src/ops/test-runner-cli.ts --group offline --filter usenet --filter phase9"
+    "test:phase9": "tsx src/ops/test-runner-cli.ts --group offline --filter usenet --filter phase9",
+    "go:phase12-stage": "bash deploy/projection-phase12-stage.sh",
+    "test:phase12": "tsx src/ops/test-runner-cli.ts --group offline --filter phase12"
   },
   "dependencies": {
     "pg": "^8.13.1",

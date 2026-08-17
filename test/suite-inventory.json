@@ -1584,6 +1584,20 @@
       ]
     },
     {
+      "file": "projection-drift-guard-db.ts",
+      "group": "db",
+      "args": [
+        "5468"
+      ]
+    },
+    {
+      "file": "projection-content-db.ts",
+      "group": "db",
+      "args": [
+        "5469"
+      ]
+    },
+    {
       "file": "usenet-sealed.ts",
       "group": "offline"
     },
@@ -1633,6 +1647,34 @@
     },
     {
       "file": "usenet-rehearsal.ts",
+      "group": "offline"
+    },
+    {
+      "file": "projection-namespace-snapshot.ts",
+      "group": "offline"
+    },
+    {
+      "file": "projection-content-command.ts",
+      "group": "offline"
+    },
+    {
+      "file": "projection-phase10.ts",
+      "group": "offline"
+    },
+    {
+      "file": "projection-phase10-gate-audit.ts",
+      "group": "offline"
+    },
+    {
+      "file": "projection-phase11.ts",
+      "group": "offline"
+    },
+    {
+      "file": "projection-phase11-gate-audit.ts",
+      "group": "offline"
+    },
+    {
+      "file": "projection-phase12.ts",
       "group": "offline"
     }
   ]
