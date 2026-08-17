@@ -747,6 +747,30 @@ test('the file-identity probe answers on THIS host, and its answer is a fact abo
   assertEq(run.out, '', 'the identity probe printed something, and a probe that prints is a probe that leaks');
 });
 
+test('the arm-list helper really does read the SIX ids out of the contract\'s own module', () => {
+  // P11-M6's DENOMINATOR, DRIVEN. Every other part of that arm is arithmetic over this program's output, so
+  // a helper that printed nothing would make "zero arms unreached" true of an empty list — the most
+  // comfortable wrong answer available to this tranche.
+  const helper = join(freshDir(), 'arms.mts');
+  const body = read(GATE);
+  const start = body.indexOf("<<'ARMS'\n");
+  const end = body.indexOf('\nARMS\n', start);
+  assert(start > 0 && end > start, 'the gate no longer writes an arm-list helper');
+  writeFileSync(helper, `${body.slice(start + "<<'ARMS'\n".length, end)}\n`);
+
+  // THE REPOSITORY ROOT, NOT THIS SUITE'S DIRECTORY. `new URL('.', import.meta.url)` is `test/`, and handing
+  // that over made the helper look for `test/src/core/projection/phase11.ts` — which this arm caught on its
+  // first execution, which is the whole reason it drives the program instead of reading it.
+  const rootUrl = new URL('../', import.meta.url).href;
+  // tsx is resolved BY PATH so this suite never depends on `npx` reaching a network.
+  const run = spawnSync(process.execPath, [
+    join(repoRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs'), helper,
+  ], { encoding: 'utf8', env: { ...process.env, PHASE11_ROOT_URL: rootUrl } });
+  assertEq(run.status, 0, `the arm-list helper failed: ${run.stdout}${run.stderr}`);
+  assertEq(`${run.stdout}`.trim().split(/\r?\n/).join(','), [...PHASE11_ARM_GATE_IDS].join(','),
+    'the helper does not print the contract\'s six arm ids in the contract\'s order');
+});
+
 test('the corpus helper writes bytes that are not all one value', () => {
   // A probe window over a constant buffer is a meaningless digest, and a gate whose two halves both digest to
   // the same thing is a gate that cannot tell them apart.

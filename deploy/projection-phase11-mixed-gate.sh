@@ -456,7 +456,13 @@ FIELD_CONTROL="$(node "$WORK/fielddiff.cjs" "$WORK/control-before.json" "$WORK/c
 [ "$FIELD_CONTROL" -eq 1 ] \
   || fail "the field-difference counter cannot count, so the zero P11-M4 would report proves nothing"
 
-ROOT_URL="file:///$(printf '%s' "$ROOT" | sed 's|^/\([A-Za-z]\)/|\1:/|')/"
+# THE REPOSITORY AS A URL THE NODE RUNTIME CAN IMPORT FROM, and `pwd -W` is what makes it right on both
+# platforms rather than nearly right on one. MSYS answers the Windows spelling; every other shell does not
+# have the switch and the POSIX path is already correct. The earlier form rewrote a leading `/x/` into `x:/`
+# with a regular expression, which is correct under Git Bash and WRONG on a Linux host whose repository sits
+# under a single-letter top-level directory — a defect that would have appeared only on the appliance.
+ROOT_NATIVE="$( (cd "$ROOT" && pwd -W) 2>/dev/null || printf '%s' "$ROOT" )"
+ROOT_URL="file:///$(printf '%s' "$ROOT_NATIVE" | sed 's|^/||')/"
 ( cd "$ROOT" && PHASE11_ROOT_URL="$ROOT_URL" npx tsx "$WORK/arms.mts" > "$WORK/arms-declared.txt" ) \
   || fail "the contract's own arm list could not be read, so P11-M6 has no denominator"
 DECLARED_COUNT="$(grep -c . "$WORK/arms-declared.txt")"
