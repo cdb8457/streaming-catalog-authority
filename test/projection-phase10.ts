@@ -303,6 +303,44 @@ test('the contract still states every non-claim, so a summary cannot grow one', 
   }
 });
 
+h.section('PHASE 12 §11 D7 — the operator path begins at zero, and the zero is asserted');
+
+test('the registry is RESET between P10-3 and the operator path, and the reset is CHECKED', () => {
+  // THE DEFECT, FOUND BY THE FIRST RUN THAT EVER REACHED A REAL HOST. `test/projection-drift-guard-db.ts`
+  // inherits the rehearsal's exported `DATABASE_URL` — deliberately, because P10-3's whole subject is the
+  // shipped publisher against a REAL migrated database — and leaves its own roots, versions and entries in
+  // the registry P10-4 then measures. P10-4 read FIVE registered entries after adding one, its `add-torbox`
+  // collided with the suite's own `remote-one` version and returned a bare SQLSTATE `P0001`, and P10-5
+  // inherited the same five. Two arms red, one cause, and both steps individually correct.
+  const code = read(REHEARSAL).replace(/^\s*#.*$/gm, '');
+  const driftAt = code.indexOf('npx tsx test/projection-drift-guard-db.ts');
+  // THE REGION IS SLICED BETWEEN THE DRIFT SUITE AND THE OPERATOR INPUTS, not searched for from the top of
+  // the file: `down -v --remove-orphans` also appears in the EXIT trap, several hundred lines earlier, and an
+  // `indexOf` from the start would have found the trap's copy and passed on a rehearsal with no reset at all.
+  const inputsAt = code.indexOf('MEDIA_ROOT="$WORK/media"');
+  assert(driftAt > 0, 'the rehearsal no longer drives the drift suite, which is P10-3 itself');
+  assert(inputsAt > driftAt, 'the operator inputs are no longer prepared after P10-3');
+  const between = code.slice(driftAt, inputsAt);
+  assert(between.includes('down -v --remove-orphans'),
+    'the throwaway database is not destroyed between the drift suite writing to it and the operator path '
+    + 'measuring it');
+  assert(between.includes('migrate-cli.ts'),
+    'the re-created database is never migrated, so every verb below it would fail on a missing schema');
+  const resetAt = driftAt + between.indexOf('down -v --remove-orphans');
+
+  // AND THE ZERO IS ASSERTED RATHER THAN ASSUMED, which is the half that would have CAUGHT this rather than
+  // merely repaired it. A reset nobody checks is a reset that stops working silently.
+  const zeroAt = code.indexOf('counts.registered 0');
+  assert(zeroAt > resetAt, 'nothing asserts that the operator path begins at zero');
+  const firstAdd = code.indexOf('content add-local --file "$LOCAL_OBJECTS"');
+  assert(firstAdd > 0 && zeroAt < firstAdd,
+    'the zero is asserted after the first add, so it is a statement about the run rather than about its start');
+  // IT IS A `fail` AND NOT A VERDICT, because it is a PRECONDITION of the measurement rather than one of the
+  // ten claims: a run that begins with entries in the registry is not measuring the operator path at all.
+  assert(/counts\.registered 0 \\\n\s*\|\| fail /.test(read(REHEARSAL)),
+    'a non-zero starting registry is recorded as a claim\'s verdict rather than aborting the measurement');
+});
+
 h.section('the compose file and its port');
 
 test('the rehearsal port collides with no other compose file, and the project is its own', () => {

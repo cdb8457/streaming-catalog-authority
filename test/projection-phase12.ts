@@ -224,12 +224,14 @@ test('THIS TRANCHE SHIPS NO PRODUCT SOURCE, and the files it touches outside its
   const own = new Set([CONTRACT, 'src/core/projection/phase12.ts', STAGE, 'test/projection-phase12.ts']);
   const foreign = PHASE12_TRANCHE_PATHS.filter((path) => !own.has(path));
   assertEq([...foreign].sort().join('\n'), [
+    'deploy/projection-phase10-rehearsal.sh',
     'deploy/projection-phase11-mixed-gate.sh',
     'docker-compose.projection-phase10.yml',
     'docker-compose.projection-phase11.yml',
     'docs/PROJECTION_PHASE_10_OPERATOR_CONTENT_PLANE.md',
     'docs/PROJECTION_PHASE_11_MIXED_SOURCE_ACCEPTANCE.md',
     'package.json',
+    'test/projection-phase10.ts',
     'test/projection-phase11-gate-audit.ts',
     'test/projection-phase11.ts',
     'test/suite-inventory.json',

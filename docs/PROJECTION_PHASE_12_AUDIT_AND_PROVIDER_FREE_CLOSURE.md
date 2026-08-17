@@ -229,6 +229,19 @@ has invented a budget. `phase12ClosureProblems` refuses both directions.
 | `docs/PROJECTION_PHASE_11_MIXED_SOURCE_ACCEPTANCE.md` | **§10 and a new §11 ONLY.** No §1–§9 sentence, threshold, refusal, claim id or claim wording is edited, which is `P12-A3`. |
 | `docs/PROJECTION_PHASE_10_OPERATOR_CONTENT_PLANE.md` | **its own run record ONLY**, and only where Phase 10's own closure function permits it. |
 | `docker-compose.projection-phase10.yml` | **one line**: the host interface the throwaway database publishes on. §11 records the reason; it is a safety property of running on the real host and it changes no port, no image, no credential and no threshold. |
+| `deploy/projection-phase10-rehearsal.sh` | **the registry reset between `P10-3` and the operator path, and the assertion that the operator path begins at zero.** §11's D7 records what was found; this row was **added to this table after the contract's first commit**, by the amendment recorded immediately below, because the defect is one only a run could find and the run is what Phase 12 is for. |
+| `test/projection-phase10.ts` | **the regression control for that repair, and nothing else.** It belongs beside Phase 10's other assertions about its own rehearsal, which is where somebody looking for it will look. |
+
+**AMENDMENT, RECORDED RATHER THAN MADE QUIETLY — §8's own procedure.** The two rows above were not in this
+table when this document was first committed. They were added by a commit that changed **this document
+first**, states what moved and why, and re-runs everything already measured. What moved: two files joined
+§6.2's bounded-modification list. What did **not** move: no §5.4 threshold, no §4 refusal, no claim id, no
+claim wording, and nothing on §6.3's untouchable list — §8 freezes those and this amendment does not reach
+them. **Why:** `P12-R1` asks the Phase 10 rehearsal to run end to end on the real host, and the first run that
+ever tried found that it cannot: `P10-3` seeds the shared throwaway database and `P10-4` then counts as though
+the registry were empty. A tranche that recorded that and stopped would be a tranche that let a two-line
+defect close the claim it exists to answer; a tranche that repaired it without amending this table first would
+be a tranche whose file list means nothing.
 | `package.json` | new scripts only. No existing script's meaning changes. |
 | `test/suite-inventory.json` | one new offline suite only. |
 

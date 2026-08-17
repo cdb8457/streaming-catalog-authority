@@ -394,6 +394,11 @@ export const PHASE12_TRANCHE_PATHS: readonly string[] = Object.freeze([
   // this tranche's to widen.
   'docker-compose.projection-phase10.yml',
   'docs/PROJECTION_PHASE_10_OPERATOR_CONTENT_PLANE.md',
+  // THE PHASE 10 REHEARSAL'S REGISTRY RESET AND ITS CONTROL. §6.2's amendment records why these two joined
+  // the list after this contract's first commit: the first run that ever reached the real host found that
+  // P10-3 seeds the shared throwaway database and P10-4 then counts as though the registry were empty.
+  'deploy/projection-phase10-rehearsal.sh',
+  'test/projection-phase10.ts',
   'test/suite-inventory.json',
   'package.json',
 ]);

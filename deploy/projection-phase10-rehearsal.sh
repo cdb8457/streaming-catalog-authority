@@ -250,6 +250,38 @@ else
 fi
 
 # ---------------------------------------------------------------------------------------------------------
+step "the registry returns to ZERO before the operator path begins"
+# ---------------------------------------------------------------------------------------------------------
+# PHASE 12 §11 D7 — THE DEFECT THE FIRST RUN THAT EVER REACHED A REAL HOST FOUND, AND IT IS WHY THIS
+# REHEARSAL HAS NEVER RUN END TO END ANYWHERE.
+#
+# `test/projection-drift-guard-db.ts` inherits the `DATABASE_URL` exported above — deliberately, because
+# P10-3's whole subject is the shipped publisher driving a REAL migrated database. It therefore leaves its own
+# roots, versions and entries behind in the registry P10-4 is about to measure. P10-4's first count then read
+# FIVE registered entries after adding one, P10-4's `add-torbox` collided with the suite's own `remote-one`
+# version and came back as a bare SQLSTATE `P0001`, and P10-5's count inherited the same five. Two arms red,
+# one cause, and no structural check could see it: the two steps are individually correct and the database
+# between them is shared.
+#
+# THE REPAIR IS TO GIVE P10-4 THE ZERO ITS OWN CLAIM NAMES. "Zero to a readable namespace" is the claim, and
+# a registry that already holds five entries is not zero. The throwaway database is destroyed and re-created
+# — it is a `tmpfs` container whose whole purpose is that its storage does not survive it — and migrated
+# again, so the operator path begins where P10-4 says it begins.
+#
+# AND THE ZERO IS ASSERTED RATHER THAN ASSUMED, which is the half that would have caught this. A reset nobody
+# checks is a reset that stops working silently.
+
+docker compose -f "$COMPOSE_FILE" -p "$PROJECT" down -v --remove-orphans >/dev/null 2>&1 || true
+PROJECTION_PHASE10_GATE_PG_PORT="$PG_PORT" \
+  docker compose -f "$COMPOSE_FILE" -p "$PROJECT" up -d --wait \
+  || fail "the throwaway PostgreSQL did not come back for the operator path"
+( cd "$ROOT" && npx tsx src/ops/migrate-cli.ts >"$WORK/migrate-2.txt" 2>&1 ) || {
+  tail -20 "$WORK/migrate-2.txt" >&2
+  fail "the re-created throwaway database could not be migrated"
+}
+say "the registry was destroyed and re-created after P10-3"
+
+# ---------------------------------------------------------------------------------------------------------
 step "the operator's inputs, prepared the way an operator would prepare them"
 # ---------------------------------------------------------------------------------------------------------
 
@@ -303,6 +335,16 @@ OBJECTS
 chmod 600 "$TORBOX_OBJECTS" 2>/dev/null || true
 
 content() { bash "$CONTENT_COMMAND" "$@" --config "$CONFIG_FILE" --database-url "$DATABASE_URL"; }
+
+# THE ZERO, ASSERTED FROM THE SHIPPED STATUS SURFACE RATHER THAN ASSUMED FROM THE RESET ABOVE. This is the
+# check that was missing, and it is the one that turns P10-4's counts from arithmetic over an unknown starting
+# point into arithmetic over a stated one. It is a `fail` rather than a verdict because it is a PRECONDITION
+# of the measurement: a run that begins with entries in the registry is not measuring the operator path.
+content status --json >"$WORK/status-0.json" 2>&1 \
+  || { cat "$WORK/status-0.json" >&2; fail "the registry could not be read before the operator path began"; }
+node "$WORK/expect.cjs" "$WORK/status-0.json" counts.registered 0 \
+  || fail "the operator path does not begin at zero: the registry already holds entries that P10-4's counts \
+would attribute to the shipped verbs"
 
 # ---------------------------------------------------------------------------------------------------------
 # P10-4's MEASUREMENT, DERIVED FROM THE RUN RATHER THAN DECLARED.
