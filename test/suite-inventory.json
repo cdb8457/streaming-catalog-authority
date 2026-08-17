@@ -1584,6 +1584,13 @@
       ]
     },
     {
+      "file": "projection-drift-guard-db.ts",
+      "group": "db",
+      "args": [
+        "5468"
+      ]
+    },
+    {
       "file": "usenet-sealed.ts",
       "group": "offline"
     },
@@ -1633,6 +1640,10 @@
     },
     {
       "file": "usenet-rehearsal.ts",
+      "group": "offline"
+    },
+    {
+      "file": "projection-namespace-snapshot.ts",
       "group": "offline"
     }
   ]

@@ -168,13 +168,19 @@ export function snapshotDigestOf(snapshot: PublishSnapshot): string {
   return `sha256:${createHash('sha256').update(body, 'utf8').digest('hex')}`;
 }
 
-function locatorFor(source: SnapshotSource): LocalLocator | HttpRangeLocator {
+/**
+ * EXPORTED FOR PHASE 10 D10.1. `namespace-snapshot.ts` composes the same picture this producer does, and
+ * composing it from the producer's OWN functions is what stops a second, silently diverging derivation of a
+ * locator from existing. No behaviour change; `buildGeneration` calls it in exactly the same place.
+ */
+export function locatorFor(source: SnapshotSource): LocalLocator | HttpRangeLocator {
   return source.kind === 'local'
     ? { rootId: source.rootId, relativePath: source.objectRef }
     : { endpointId: source.rootId, objectRef: source.objectRef };
 }
 
-function byteIdentityFor(version: SnapshotVersion): ByteIdentity | null {
+/** EXPORTED FOR PHASE 10 D10.1, for the same reason as `locatorFor` above. No behaviour change. */
+export function byteIdentityFor(version: SnapshotVersion): ByteIdentity | null {
   if (version.probes === null || version.probeWindowBytes === null) return null;
   const probes: ProbeDigest[] = version.probes.map((probe) => ({
     position: probe.position as ProbeDigest['position'],

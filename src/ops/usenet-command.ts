@@ -1,6 +1,7 @@
 import { constants, promises as fsPromises } from 'node:fs';
 
 import { registerEntry, registerVersion, withRegistry, type Queryable } from '../core/projection/source-registry.js';
+import { readNamespaceSnapshot } from '../core/projection/namespace-snapshot.js';
 import { UsenetAdmissionService, stateOf, type AdmissionPublisher, type ReconcileOutcome, type SubmitOutcome } from '../core/usenet/admission.js';
 import { SabClient, type SabEndpoint } from '../core/usenet/sab-client.js';
 import { createSabHttpTransport } from '../core/usenet/sab-http-transport.js';
@@ -214,8 +215,24 @@ export function createRealApiKeyFileSystem(): ApiKeyFileSystem {
  * Phase 1. That is what §2's "publish it as a local source through the existing manifest contract" means, and
  * it is why the TorBox half needs no change at all.
  */
-export function createRegistryPublisher(db: Queryable): AdmissionPublisher {
+export function createRegistryPublisher(db: Queryable, connectionString?: string): AdmissionPublisher {
   return {
+    // PROJECTION PHASE 10 D10.1 — THE DRIFT GUARD NOW RUNS ON A REAL APPLIANCE.
+    //
+    // Until Phase 10 this publisher returned `{ publish }` and nothing else, so `admit()` had no `before` to
+    // compare against, skipped `torBoxDrift` on every real admission, and recorded every one of them
+    // `admittedWithoutDriftCheck: true`. Phase 9 §4's sixth hard refusal — a Usenet outage may not alter the
+    // TorBox namespace — was therefore a property of the rehearsal rather than of the product. Phase 10 §2.1
+    // is the finding and this method is the repair.
+    //
+    // IT DOES NOT USE `db`. That client is the one `registerVersion` and `registerEntry` are about to write
+    // on; the snapshot takes its own short-lived read-only connection so it can never issue BEGIN/COMMIT on
+    // somebody else's transaction. `src/core/projection/namespace-snapshot.ts` is where that is argued, and
+    // the connection string is threaded from the caller so a gate pointed at a throwaway database does not
+    // silently read the appliance's real one.
+    async namespaceSnapshot() {
+      return readNamespaceSnapshot(connectionString);
+    },
     async publish(plan, itemId) {
       if (!UUID.test(itemId)) {
         throw new UsenetCommandError('PUBLISH_ITEM_ID_INVALID', 'an admitted entry belongs to a catalog record');
@@ -427,8 +444,17 @@ export interface ServiceHandles {
   readonly ledger: UsenetJobLedger;
 }
 
-/** Build the admission service against the real worker, the real filesystem and the real registry. */
-export async function openService(config: UsenetCommandConfig, db: Queryable): Promise<ServiceHandles> {
+/**
+ * Build the admission service against the real worker, the real filesystem and the real registry.
+ *
+ * `connectionString` is threaded through for PHASE 10 D10.1 ALONE: the drift guard's namespace snapshot opens
+ * its own connection, and a gate pointed at a throwaway database whose snapshot silently read the appliance's
+ * real one would be a guard comparing the wrong namespace. It is optional and defaults exactly as
+ * `withRegistry` does, so a caller that already relied on the default is unchanged.
+ */
+export async function openService(
+  config: UsenetCommandConfig, db: Queryable, connectionString?: string,
+): Promise<ServiceHandles> {
   const apiKey = await loadSealedApiKey(config);
   const ledger = openLedger(config);
   const client = new SabClient({
@@ -445,7 +471,7 @@ export async function openService(config: UsenetCommandConfig, db: Queryable): P
       now: () => Date.now(),
       sleep: (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
     },
-    publisher: createRegistryPublisher(db),
+    publisher: createRegistryPublisher(db, connectionString),
     completedRoot: config.completedRoot,
     rootId: config.rootId,
     completedRootUnderMediaRoot: completedRootSegments(config),
@@ -468,7 +494,7 @@ export async function runSubmit(
   // whether to send by reading the state it replayed on open, so two commands that both replayed an empty
   // ledger would both send. See `withUsenetLedgerLock`.
   return withUsenetLedgerLock(config.stateDir, () => withRegistry(async (db) => {
-    const { service } = await openService(config, db);
+    const { service } = await openService(config, db, connectionString);
     return service.submit(sealedSource, input.itemId);
   }, connectionString));
 }
@@ -481,7 +507,7 @@ export async function runReconcile(
   // RECONCILIATION TAKES THE SAME LOCK AS SUBMISSION, and it has to: it is the only verb that may declare a
   // reservation LOST, and a submission racing that declaration is a submission that could be sent twice.
   return withUsenetLedgerLock(config.stateDir, () => withRegistry(async (db) => {
-    const { service } = await openService(config, db);
+    const { service } = await openService(config, db, connectionString);
     const outcomes = await service.reconcileAll();
     return filter === undefined ? outcomes : outcomes.filter((outcome) => outcome.key.startsWith(filter));
   }, connectionString));

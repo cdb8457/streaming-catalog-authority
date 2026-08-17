@@ -569,6 +569,59 @@ test('a publish that leaves the TorBox half alone is admitted, and the guard is 
   );
 });
 
+test('PHASE 10 D10.1 — a publisher that OFFERS the comparison and cannot make it refuses, transiently', async () => {
+  // WHY THIS TEST ARRIVED WITH PHASE 10 AND NOT WITH PHASE 9. While no shipped publisher could present a
+  // namespace, `before = null` was the whole truth and `admittedWithoutDriftCheck` said it out loud. Phase 10
+  // D10.1 makes `createRegistryPublisher` present one — over a database — so from now on the same fallback
+  // would mean a database that blinked for a single query silently bought that admission the weaker
+  // guarantee, at the exact moment the control plane was least sure what the namespace looked like.
+  //
+  // TRANSIENT, unlike the post-publish drift refusal. Nothing was published, the proof and the publish are
+  // both idempotent, and the next reconciliation tries again. A permanent refusal here would strand a job on
+  // one bad second.
+  const worker = await startFakeSabnzbd({ apiKey: API_KEY });
+  try {
+    let publishes = 0;
+    const publisher: AdmissionPublisher = {
+      async publish(plan) { publishes += 1; return { projectedEntryId: deriveProjectedEntryId(plan.projectedPath) }; },
+      async namespaceSnapshot(): Promise<readonly ProjectedEntry[]> {
+        throw new Error('the control plane could not read the namespace');
+      },
+    };
+    const ledger = UsenetJobLedger.open(createMemoryLedgerStorage());
+    const service = new UsenetAdmissionService({
+      client: new SabClient({
+        endpoint: worker.endpoint, apiKey: seal('sab-api-key', API_KEY),
+        transport: createSabHttpTransport(), sleep: async () => undefined,
+      }),
+      ledger,
+      fs: createFakeFileSystem(baseTree()),
+      clock: createFakeClock(),
+      publisher,
+      completedRoot: ROOT,
+      rootId: 'media',
+      completedRootUnderMediaRoot: ['usenet-complete'],
+      category: USENET_DEDICATED_CATEGORY,
+    });
+
+    const submitted = await service.submit(SOURCE, ITEM);
+    worker.complete(submitted.marker, { storagePath: `${ROOT}/Some.Job`, bytes: SMALL_MEDIA_BYTES });
+    const outcomes = await service.reconcileAll();
+
+    assertEq(outcomes[0]?.state, 'refused', 'an unreadable namespace still published');
+    assertEq(outcomes[0]?.reason, 'torbox-namespace-drifted', 'the reason');
+    assertEq(outcomes[0]?.admittedWithoutDriftCheck, undefined,
+      'the outcome carried the old weaker-guarantee flag instead of refusing');
+    assertEq(publishes, 0, 'the entry was published even though the TorBox half could not be protected');
+    assertEq(ledger.get(submitted.key)?.admitted, null, 'an admission was recorded');
+    assertEq(ledger.get(submitted.key)?.refusal?.transient, true,
+      'a job was stranded permanently on one unreadable read; nothing was published, so looking again is the '
+      + 'correct remedy');
+  } finally {
+    await worker.close();
+  }
+});
+
 test('a publisher that cannot present the namespace SAYS SO rather than being silently trusted', async () => {
   await withRig(async (rig) => {
     const submitted = await rig.service.submit(SOURCE, ITEM);
