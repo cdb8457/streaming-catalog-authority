@@ -101,7 +101,11 @@ shift
 case "$VERB" in
   preflight|add-torbox|add-local|publish|reconcile|hold|release|status) ;;
   -h|--help|help) usage ;;
-  *) die "unknown verb: $VERB" ;;
+  # THE ARGUMENT IS NOT ECHOED. `die` writes to stderr and stderr is collected, and the slot an unknown verb
+  # arrives in is the slot an operator mistypes a PATH into. The usage above names the eight verbs, and the
+  # operator can see what they typed; what an echo buys is a media path, or a whole `--database-url=<value>`
+  # typed as one token, in somebody's log.
+  *) die "that is not one of the eight verbs this command has; run it with --help" ;;
 esac
 
 # `--config` is lifted out because it has an environment fallback and the CLI has none; every other flag is

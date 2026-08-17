@@ -305,11 +305,33 @@ chmod 600 "$TORBOX_OBJECTS" 2>/dev/null || true
 content() { bash "$CONTENT_COMMAND" "$@" --config "$CONFIG_FILE" --database-url "$DATABASE_URL"; }
 
 # ---------------------------------------------------------------------------------------------------------
+# P10-4's MEASUREMENT, DERIVED FROM THE RUN RATHER THAN DECLARED.
+#
+# `HAND_RUN_COMMANDS_MAX` is 0 and the earlier draft of this script set `HAND_RUN=0` and then asserted it was
+# zero. No line anywhere in the file could move that variable, so the budget was measured by nothing: adding a
+# hand-run `npx tsx src/ops/projection-register-cli.ts …` to the section below would have left the claim
+# passing while reporting the same 0. A number a run cannot fail to meet is not a measurement.
+#
+# It is now COUNTED OUT OF THE P10-4 SECTION OF THIS FILE — every hand-run invocation between the step and its
+# verdict — so adding one makes the claim fail rather than lie. It is computed HERE, before the step, so the
+# pattern that finds such an invocation is not itself inside the range it searches.
+#
+# AND THE COUNTER IS PROVED TO COUNT before it is trusted, because a `grep -c` that matched nothing for the
+# wrong reason would report the same zero as a section that had none.
+# ---------------------------------------------------------------------------------------------------------
+
+HAND_RUN_CONTROL="$(printf '%s\n' 'npx tsx src/ops/projection-register-cli.ts --root media' \
+  | grep -cE 'npx tsx|npm run ops:')"
+[ "$HAND_RUN_CONTROL" -eq 1 ] \
+  || fail "the hand-run counter cannot count, so the zero it would report proves nothing"
+
+HAND_RUN="$(sed -n '/^step "P10-4/,/^verdict P10-4/p' "$0" | grep -cE 'npx tsx|npm run ops:')"
+
+# ---------------------------------------------------------------------------------------------------------
 step "P10-4 — zero to a readable namespace, through the SHIPPED verbs only"
 # ---------------------------------------------------------------------------------------------------------
 
 P10_4=pass
-HAND_RUN=0   # THE MEASUREMENT. Every namespace mutation below goes through projection-content.sh.
 
 content preflight >"$WORK/preflight.txt" 2>&1 || { cat "$WORK/preflight.txt" >&2; P10_4=fail; }
 say "preflight: $(head -1 "$WORK/preflight.txt")"
@@ -405,12 +427,18 @@ for file in "$WORK"/*.txt "$WORK"/*.json; do
   case "$(basename "$file")" in
     content.json|local-objects.json|torbox-objects.json|migrate.txt|bounded.txt|drift.txt) continue ;;
   esac
-  if grep -qiE 'rehearsal-opaque-object-reference|https?://|apikey=' "$file"; then
+  # ANY URI SCHEME, NOT `https?` ALONE. The rehearsal hands the shipped command a DATABASE URL with a password
+  # in it on every invocation, and a scan that knew only http would have called a run that printed one clean.
+  # §4's ninth hard refusal is about credentials before it is about origins.
+  if grep -qiE 'rehearsal-opaque-object-reference|[a-z][a-z0-9+.-]*://|apikey=' "$file"; then
     echo "  LEAK in $(basename "$file")" >&2
     P10_9=fail
   fi
-  if grep -qF "$MEDIA_ROOT" "$file"; then
-    echo "  ABSOLUTE MEDIA PATH in $(basename "$file")" >&2
+  # THE WHOLE RUN DIRECTORY, not the media root alone. `$MEDIA_ROOT` and `$MANIFEST_DIR` are both under
+  # `$WORK`, and the manifest directory is the one this command is most likely to name in a diagnostic — so
+  # scanning only the first of the two left the more likely leak unlooked-for.
+  if grep -qF "$WORK" "$file"; then
+    echo "  ABSOLUTE RUN PATH in $(basename "$file")" >&2
     P10_9=fail
   fi
 done

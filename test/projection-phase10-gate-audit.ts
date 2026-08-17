@@ -320,7 +320,67 @@ test('the rehearsal compares the host\'s container, network and volume SETS rath
   assert(!/docker ps -aq \| wc -l/.test(code), 'the rehearsal compares counts rather than sets');
 });
 
+test('P10-9 scans for ANY URI scheme and for the whole run directory, not for http and the media root', () => {
+  const body = read(REHEARSAL);
+  // THE RUN HANDS THE SHIPPED COMMAND A DATABASE URL WITH A PASSWORD IN IT, on every single invocation. A
+  // leak scan that knew only `https?` would have called a run that printed one clean, and §4's ninth hard
+  // refusal is about credentials before it is about origins.
+  assert(body.includes('[a-z][a-z0-9+.-]*://'),
+    'the evidence scan knows only http, and the one URL this run actually handles is not an http one');
+  // `$MEDIA_ROOT` and `$MANIFEST_DIR` are both under `$WORK`, and the manifest directory is the path a
+  // diagnostic from this command is likelier to name — so scanning only the first left the likelier leak
+  // unlooked-for.
+  assert(/grep -qF "\$WORK"/.test(body),
+    'the evidence scan looks only under the media root, so an absolute manifest path in a preserved file '
+    + 'would have passed');
+});
+
+/**
+ * The rehearsal's own P10-4 section, located the way `sed` locates it: by line-anchored markers.
+ *
+ * ANCHORED, AND THAT MATTERS. A bare `indexOf('step "P10-4')` finds the marker inside the derivation's own
+ * `sed` expression, several lines EARLIER, and would fold the derivation and its control into the section
+ * they measure — which is exactly the reading that would report the shipped script as needing a hand-run
+ * command it does not need.
+ */
+function p10_4Section(body: string): string {
+  const from = /^step "P10-4/m.exec(body)?.index;
+  const to = /^verdict P10-4/m.exec(body)?.index;
+  if (from === undefined || to === undefined || to <= from) return '';
+  return body.slice(from, to);
+}
+
+const HAND_RUN_SHAPE = /npx tsx|npm run ops:/;
+const handRunsIn = (body: string): number =>
+  p10_4Section(body).split('\n').filter((line) => HAND_RUN_SHAPE.test(line)).length;
+
+test('P10-4 COUNTS its hand-run commands out of the run rather than declaring the answer', () => {
+  const body = read(REHEARSAL);
+  // THE DEFECT THIS PINS. An earlier draft wrote `HAND_RUN=0` and then asserted it was zero. No line anywhere
+  // in the file could move that variable, so `HAND_RUN_COMMANDS_MAX` was a budget measured by nothing: a
+  // hand-run command added to the operator path would have left the claim passing and reporting the same 0.
+  assert(!/^\s*HAND_RUN=0\b/m.test(body),
+    'the hand-run measurement is a constant, so the budget it is compared against cannot be exceeded');
+  assert(body.includes(`HAND_RUN="$(sed -n '/^step "P10-4/,/^verdict P10-4/p' "$0" | grep -cE 'npx tsx|npm run ops:')"`),
+    'the derivation is not the one this suite\'s controls model, so the control below proves nothing about it');
+  assert(/HAND_RUN_CONTROL/.test(body),
+    'nothing proves the counter can count, and a grep that matched nothing for the wrong reason reports the '
+    + 'same zero as a section that had none');
+  assert(p10_4Section(body).length > 0, 'the P10-4 section cannot be located by its own markers');
+  assertEq(handRunsIn(body), 0, 'the shipped operator path already needs a hand-run command');
+});
+
 h.section('THE CONTROLS — each one proves the audit bites');
+
+test('CONTROL: a hand-run command added to the operator path is COUNTED', () => {
+  const body = read(REHEARSAL);
+  const tampered = body.replace('content publish >"$WORK/publish-1.txt"',
+    '( cd "$ROOT" && npx tsx src/ops/projection-publish-cli.ts )\ncontent publish >"$WORK/publish-1.txt"');
+  assert(tampered !== body, 'the tamper did not apply, so this control proves nothing');
+  assert(handRunsIn(tampered) >= 1,
+    'a hand-run invocation inserted into the P10-4 section was not counted, so a budget of zero would have '
+    + 'passed a run that needed one — which is the whole of what P10-4 measures');
+});
 
 test('CONTROL: a function defined and never called is CAUGHT', () => {
   const tampered = `${read(REHEARSAL)}\nunreachable_helper() {\n  echo "nothing calls me"\n}\n`;
