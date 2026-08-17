@@ -260,8 +260,26 @@ evidence; an arm a conditional jumped over is the absence of evidence wearing th
 |---|---|
 | `package.json` | new scripts only. No existing script's meaning changes. |
 | `test/suite-inventory.json` | two new offline suites only. |
+| five TorBox source allowlists | `src/core/projection/phase11.ts` joins them **with its reason written beside it**, which the allowlist's own comment says is the only legitimate way to widen one. |
 
 **AND NOTHING ELSE. THIS TRANCHE SHIPS NO PRODUCT SOURCE.** §3.1 is the reason; this table is the check.
+
+**WHY THE ALLOWLIST ROW EXISTS, BECAUSE IT WAS NOT IN THE FIRST DRAFT OF THIS TABLE.** `test/torbox-*.ts`
+scan every file under `src/` and refuse one that names TorBox and is not listed — Phase 10 §7 R4's guard,
+which is where a provider boundary gets quietly weakened. Five of them failed on this tranche's rules module,
+and **the guard was right**: the module does name TorBox. It was not written that way by preference and the
+naming cannot be removed, which is the reason the row is a widening rather than a repair:
+
+- **`MIN_TORBOX_ENTRIES`**, IMPORTED from Phase 9 **by Phase 9's own name**. Renaming a threshold on import
+  is exactly the drift §5.3's import discipline exists to prevent, so the name stays and the file names the
+  provider as a consequence.
+- **The tier-two operator-input list**, which must name what only an operator possesses — otherwise a
+  `NOT RUN` does not say what it is waiting for, and §5.2's whole purpose is that it does.
+
+The module **contacts nothing, implements no TorBox operation, holds no credential and resolves no link.**
+Phase 11's subject is the pair of source kinds, `http-range` and `local`; the provider is incidental to every
+one of its fourteen claims. Only the five allowlists that actually refused are widened, because widening one
+that did not would be widening for no reason.
 
 ### 6.3 Phase 11 must not touch
 

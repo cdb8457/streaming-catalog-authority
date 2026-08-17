@@ -339,6 +339,14 @@ test('TorBox source allowlist remains explicit', () => {
     //                          not contacting a provider, which is exactly why Phase 10 can close without a window.
     'src/core/projection/namespace-snapshot.ts',
     'src/core/projection/phase10.ts',
+    // PHASE 11 JOINS THE LIST, WITH ITS REASON, WHICH THIS COMMENT SAYS IS THE ONLY LEGITIMATE WAY TO
+    // WIDEN ONE. It CONTACTS NOTHING, implements no TorBox operation, holds no credential and resolves
+    // no link. Phase 11 asks whether the two SOURCE KINDS survive each other under one mount, so the
+    // provider appears in exactly two places and both are unavoidable: MIN_TORBOX_ENTRIES, imported
+    // from Phase 9 BY PHASE 9'S OWN NAME because renaming a threshold on import is the drift the
+    // import discipline exists to prevent; and the tier-two operator-input list, which names what only
+    // an operator possesses so that "NOT RUN" says what it is waiting for.
+    'src/core/projection/phase11.ts',
     'src/ops/projection-content.ts',
     'src/ops/projection-content-cli.ts',
   ]);

@@ -549,4 +549,16 @@ export const PHASE11_TRANCHE_PATHS: readonly string[] = Object.freeze([
   'test/projection-phase11-gate-audit.ts',
   'test/suite-inventory.json',
   'package.json',
+  // THE FIVE TORBOX SOURCE ALLOWLISTS. §6.2: this module names TorBox in two places it cannot stop naming it
+  // — `MIN_TORBOX_ENTRIES`, imported from Phase 9 by Phase 9's own name, and the tier-two operator-input list
+  // — so it joins those allowlists WITH ITS REASON WRITTEN BESIDE IT, which the allowlist's own comment says
+  // is the only legitimate way to widen one. They are on this list because they were edited, and a path list
+  // that omitted the edits nobody wanted to admit to would be the one place a stale declaration does real
+  // harm. Only the five that actually refused are widened; widening one that did not would be widening for
+  // no reason.
+  'test/torbox-boundary.ts',
+  'test/torbox-fake-adapter.ts',
+  'test/torbox-provider-adapter.ts',
+  'test/torbox-readonly-client.ts',
+  'test/torbox-real-client-gate.ts',
 ]);

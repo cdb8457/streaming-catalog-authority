@@ -377,9 +377,49 @@ test('THIS TRANCHE SHIPS NO PRODUCT SOURCE, which §3.1 and §6.2 both say and t
     assertEq(path, 'src/core/projection/phase11.ts',
       `${path} is product source and §3.1 says this tranche ships none`);
   }
-  const wiring = PHASE11_TRANCHE_PATHS.filter((path) => !path.startsWith('src/') && !path.startsWith('docs/')
-    && !path.startsWith('deploy/') && !path.startsWith('test/') && path !== COMPOSE);
-  assertEq([...wiring].sort().join(','), 'package.json', 'this tranche modifies a file §6.2 does not list');
+  // AND THE FILES IT TOUCHES THAT ARE NOT ITS OWN ARE EXACTLY §6.2's, LISTED RATHER THAN FILTERED. An
+  // earlier form of this assertion excluded everything under `test/` before comparing, which passed
+  // vacuously the moment this tranche widened five TorBox allowlists — a test that reads like a boundary and
+  // checks nothing is worse than no test, because somebody has already stopped looking at the boundary.
+  const own = new Set([
+    'docs/PROJECTION_PHASE_11_MIXED_SOURCE_ACCEPTANCE.md',
+    'src/core/projection/phase11.ts',
+    'deploy/projection-phase11-mixed-gate.sh',
+    'deploy/projection-phase11-mixed-gate-three.sh',
+    'deploy/projection-phase11-mixed-gate-optional.sh',
+    COMPOSE,
+    'test/projection-phase11.ts',
+    'test/projection-phase11-gate-audit.ts',
+  ]);
+  const foreign = PHASE11_TRANCHE_PATHS.filter((path) => !own.has(path));
+  assertEq([...foreign].sort().join('\n'), [
+    'package.json',
+    'test/suite-inventory.json',
+    'test/torbox-boundary.ts',
+    'test/torbox-fake-adapter.ts',
+    'test/torbox-provider-adapter.ts',
+    'test/torbox-readonly-client.ts',
+    'test/torbox-real-client-gate.ts',
+  ].join('\n'), 'this tranche touches a file outside its own set that §6.2 does not list');
+});
+
+test('every widened TorBox allowlist names this tranche\'s module AND carries a reason beside it', () => {
+  // §6.2 AND PHASE 10 §7 R4: widening an allowlist is where a provider boundary gets quietly weakened, and
+  // the allowlist's own comment says the reason written beside the addition is what makes it legitimate. An
+  // entry with no reason is the shape of change that guard exists to catch.
+  const widened = PHASE11_TRANCHE_PATHS.filter((path) => path.startsWith('test/torbox-'));
+  assertEq(widened.length, 5, 'the widened allowlist set has changed size');
+  for (const relative of widened) {
+    const body = read(relative);
+    const at = body.indexOf(`'src/core/projection/phase11.ts',`);
+    assert(at > 0, `${relative} does not list this tranche's module, so the widening is not where it claims`);
+    const before = body.slice(Math.max(0, at - 900), at);
+    assert(/PHASE 11 JOINS THE LIST, WITH ITS REASON/.test(before),
+      `${relative} lists this tranche's module with no reason beside it, and an un-reasoned addition is `
+      + 'exactly what these eight suites exist to refuse');
+    assert(/MIN_TORBOX_ENTRIES/.test(before) && /CONTACTS NOTHING/.test(before),
+      `${relative}'s reason does not say WHY the naming is unavoidable or WHAT the module does not do`);
+  }
 });
 
 test('every path the tranche claims to touch exists, so the list cannot go quietly stale', () => {
