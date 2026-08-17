@@ -945,6 +945,78 @@ test('the arm-list helper really does read the SIX ids out of the contract\'s ow
     'the helper does not print the contract\'s six arm ids in the contract\'s order');
 });
 
+test('PHASE 12: the kind counter counts PER ENTRY, over the PUBLISHED set, and not by substring', () => {
+  // P11-M1's measurement, DRIVEN. It replaced two substring greps over the whole status document — a check
+  // that could not say which entry carried which kind, whether either was published, or whether the word
+  // simply appeared in a field this gate does not own the shape of.
+  const helper = helperFrom('KINDS', 'kinds.cjs');
+  const dir = freshDir();
+  const at = (name: string, doc: unknown): string => {
+    const file = join(dir, name);
+    writeFileSync(file, JSON.stringify(doc));
+    return file;
+  };
+
+  const mixed = at('mixed.json', { entries: [
+    { path: 'a', kinds: ['http-range'], publication: 'published' },
+    { path: 'b', kinds: ['local'], publication: 'published' },
+  ] });
+  assertEq(runNode(helper, [mixed]).out, '1 1', 'a genuinely mixed published generation was not counted as one');
+
+  // AN ADMITTED ENTRY NOBODY PUBLISHED IS NOT PART OF THE PUBLISHED GENERATION, and P11-M1's claim is about
+  // one published generation holding both kinds.
+  const unpublished = at('unpublished.json', { entries: [
+    { path: 'a', kinds: ['http-range'], publication: 'published' },
+    { path: 'b', kinds: ['local'], publication: 'admitted-not-published' },
+  ] });
+  assertEq(runNode(helper, [unpublished]).out, '1 0',
+    'an entry that was never published counted towards the published generation, so P11-M1 would pass on a '
+    + 'mixture that is not in the generation it is about');
+
+  // AND THE DEFECT ITSELF: a document holding only provider-backed entries, with the word "local" elsewhere
+  // in it. Both original greps would have been satisfied by this and the arm would have passed.
+  const substringOnly = at('substring.json', { note: 'a local root was resolved', entries: [
+    { path: 'a', kinds: ['http-range'], publication: 'published' },
+    { path: 'b', kinds: ['http-range'], publication: 'published' },
+  ] });
+  assertEq(runNode(helper, [substringOnly]).out, '2 0',
+    'the word "local" appearing anywhere in the document was counted as a worker-produced entry');
+  assertEq(runNode(helper, [at('empty.json', { entries: [] })]).out, '0 0', 'an empty generation was not zero');
+});
+
+test('PHASE 12: P11-M1 no longer greps for its two kinds, and its minimums come from the module', () => {
+  // THE HEREDOCS ARE BLANKED, not just the comments: `kinds.cjs` NAMES the two greps it replaced in its own
+  // explanation, and a model that read them as shell would report the defect as still present in the repair.
+  const code = shellCodeOf(read(GATE));
+  assert(!/grep -q 'http-range'/.test(code) && !/grep -q '"local"'/.test(code),
+    'P11-M1 is back to substring greps over the whole status document, which cannot say which entry carried '
+    + 'which kind or whether it was published');
+  assert(/node "\$WORK\/kinds\.cjs" "\$WORK\/status-1\.json"/.test(code),
+    'P11-M1 does not count the published entries of each kind');
+  // THE MINIMUMS COME FROM THE CONTRACT'S OWN MODULE, the way P11-M6's denominator does. A gate carrying its
+  // own copy of a threshold is a gate whose threshold can drift from the document's in the passing direction.
+  assert(/npx tsx "\$WORK\/minimums\.mts"/.test(code), 'the minimums are not read out of the module');
+  assert(/MIN_TORBOX_ENTRIES/.test(read(GATE)) && /MIN_ADMITTED_USENET_ENTRIES/.test(read(GATE)),
+    'the minimums helper does not name the two rules §5.3 says P11-M1 is measured against');
+  assert(/KIND_CONTROL/.test(code),
+    'nothing proves the kind counter can count, so the mixture P11-M1 reports would prove nothing');
+  // AND THE MINIMUMS ARE THEMSELVES FLOOR-CHECKED, because a module edited to zero would make a generation
+  // holding one kind satisfy both.
+  assert(/\[ "\$MIN_REMOTE" -ge 1 \] && \[ "\$MIN_LOCAL" -ge 1 \]/.test(code),
+    'a mixed-generation minimum of zero would be accepted, and a generation holding one kind would pass');
+});
+
+test('CONTROL: a P11-M1 that goes back to substring greps is CAUGHT', () => {
+  const body = read(GATE);
+  const tampered = body.replace(/MIXED_COUNTS="\$\(node "\$WORK\/kinds\.cjs"[\s\S]*?so it is not a mixed generation" >&2; M1=fail; \}\n/,
+    `grep -q 'http-range' "$WORK/status-1.json" || M1=fail\ngrep -q '"local"' "$WORK/status-1.json" || M1=fail\n`);
+  assert(tampered !== body, 'the tamper did not apply, so this control proves nothing');
+  const code = shellCodeOf(tampered);
+  assert(/grep -q 'http-range'/.test(code) && !/node "\$WORK\/kinds\.cjs" "\$WORK\/status-1\.json"/.test(code),
+    'a P11-M1 returned to substring greps still reads as counting entries, so the check above would not have '
+    + 'caught the original defect either');
+});
+
 test('the corpus helper writes bytes that are not all one value', () => {
   // A probe window over a constant buffer is a meaningless digest, and a gate whose two halves both digest to
   // the same thing is a gate that cannot tell them apart.

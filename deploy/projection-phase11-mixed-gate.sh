@@ -110,6 +110,39 @@ verdict() {
   fi
 }
 
+# TWO EMPTY STRINGS COMPARE EQUAL, AND "THE BYTES DID NOT MOVE" IS THE ONE ANSWER THAT MUST NEVER BE
+# PRODUCIBLE BY HAVING READ NOTHING.
+#
+# THE DEFECT THIS REPAIRS. `consumer_sha` sends its errors to /dev/null and pipes through `awk`, so a mount
+# that is not there, a consumer that lost its bind, or a daemon that stopped answering all return the EMPTY
+# STRING. P11-M3 and P11-M4 each compared one of those against another, and `[ "" = "" ]` is true — so an
+# appliance that had died between two arms would have reported the provider-backed half as byte-identical
+# before and after, and the arm would have passed on the absence of the thing it measures. It is the same
+# shape as `entry.cjs` refusing an absent entry rather than emitting an empty record, one layer out, and it
+# was pinned in the helper and not at the call sites.
+same_bytes() {
+  local what="$1" before="$2" after="$3"
+  if [ -z "$before" ] || [ -z "$after" ]; then
+    echo "  $what: a digest is EMPTY, so nothing was read and no comparison can be made" >&2
+    return 1
+  fi
+  [ "$before" = "$after" ]
+}
+
+# A COUNTER THAT DID NOT RUN REPORTS THE PASSING VALUE, AND SHELL ARITHMETIC IS WHERE THAT HAPPENS SILENTLY:
+# `$(( A + B ))` with A unset or empty is ZERO, which is exactly the budget P11-M4 is measured against. So
+# every derived number is asserted to BE a number before it is compared or added. §7 R3 and R4's whole
+# argument is that these numbers are derived rather than declared; a derivation that failed and answered zero
+# is a declaration wearing the derivation's clothes.
+numeric() {
+  case "${2:-}" in
+    ''|*[!0-9]*)
+      echo "  $1 did not produce a number, so the zero it would contribute proves nothing" >&2
+      return 1 ;;
+  esac
+  return 0
+}
+
 # ---------------------------------------------------------------------------------------------------------
 # Preconditions. EVERY ONE IS CHECKED BEFORE ANYTHING IS CREATED, so a host that cannot run this leaves with
 # nothing to clean up.
@@ -304,6 +337,38 @@ const reached = new Set(lines(process.argv[3]));
 const undeclared = [...reached].filter((id) => !declared.includes(id));
 process.stdout.write(`${declared.filter((id) => !reached.has(id)).length} ${undeclared.length}`);
 UNREACHED
+
+cat > "$WORK/kinds.cjs" <<'KINDS'
+// `kinds.cjs <status.json>` - HOW MANY PUBLISHED ENTRIES OF EACH KIND THE GENERATION HOLDS. Prints
+// `<http-range count> <local count>`.
+//
+// THE DEFECT THIS REPLACES, AND IT WAS IN THE ARM THE TRANCHE IS NAMED FOR. P11-M1 asked
+// `grep -q 'http-range'` and `grep -q '"local"'` over the WHOLE status document. Neither says which ENTRY
+// carried which kind, neither says whether the entry was PUBLISHED, and `"local"` is a substring of any field
+// or diagnostic that happens to spell it in a document this gate does not own the shape of. A generation
+// holding TWO provider-backed entries beside the word "local" would have passed the mixed-generation check,
+// which is the one answer P11-M1 exists to make impossible.
+//
+// The counts it prints are compared against `MIN_TORBOX_ENTRIES` and `MIN_ADMITTED_USENET_ENTRIES` READ FROM
+// THE CONTRACT'S OWN MODULE by `minimums.mts`, for the reason `arms.mts` gives about P11-M6's denominator: a
+// gate carrying its own copy of a number is a gate whose number can drift from the document's, silently, in
+// the direction that makes the run pass.
+const { readFileSync } = require('node:fs');
+const doc = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+const entries = Array.isArray(doc.entries) ? doc.entries : [];
+const published = entries.filter((entry) => entry && entry.publication === 'published');
+const of = (kind) => published.filter((e) => Array.isArray(e.kinds) && e.kinds.includes(kind)).length;
+process.stdout.write(`${of('http-range')} ${of('local')}`);
+KINDS
+
+cat > "$WORK/minimums.mts" <<'MINIMUMS'
+// The two mixed-generation minimums, READ FROM THE CONTRACT'S OWN MODULE rather than restated here. Both are
+// Phase 9's own, imported into `PHASE11_RULES` by Phase 9's name. Prints `<provider-backed> <worker-produced>`.
+const root = process.env.PHASE11_ROOT_URL as string;
+const module_ = await import(`${root}src/core/projection/phase11.ts`);
+const rules = module_.PHASE11_RULES as Record<string, number>;
+console.log(`${rules.MIN_TORBOX_ENTRIES} ${rules.MIN_ADMITTED_USENET_ENTRIES}`);
+MINIMUMS
 
 cat > "$WORK/arms.mts" <<'ARMS'
 // The six arm ids, READ FROM THE CONTRACT'S OWN MODULE rather than restated here.
@@ -540,6 +605,27 @@ ARM_CONTROL="$(node "$WORK/unreached.cjs" "$WORK/arms-declared.txt" "$WORK/contr
 [ "$ARM_CONTROL" -eq 5 ] \
   || fail "the unreached-arm counter cannot count, so the zero P11-M6 would report proves nothing"
 
+# P11-M1's TWO MINIMUMS, READ OUT OF THE CONTRACT'S OWN MODULE BEFORE THE OPERATOR PATH BEGINS — the same
+# arrangement `arms-declared.txt` makes for P11-M6's denominator, and for the same reason.
+( cd "$ROOT" && PHASE11_ROOT_URL="$ROOT_URL" npx tsx "$WORK/minimums.mts" > "$WORK/mixed-minimums.txt" ) \
+  || fail "the contract's own mixed-generation minimums could not be read, so P11-M1 has nothing to measure"
+MIN_REMOTE="$(cut -d' ' -f1 "$WORK/mixed-minimums.txt" | tr -d '\n\r ')"
+MIN_LOCAL="$(cut -d' ' -f2 "$WORK/mixed-minimums.txt" | tr -d '\n\r ')"
+numeric "the provider-backed entry minimum" "$MIN_REMOTE" || fail "the contract's minimums are not numbers"
+numeric "the worker-produced entry minimum" "$MIN_LOCAL" || fail "the contract's minimums are not numbers"
+[ "$MIN_REMOTE" -ge 1 ] && [ "$MIN_LOCAL" -ge 1 ] \
+  || fail "a mixed-generation minimum is below one, so a generation holding a single kind would satisfy it"
+
+# AND THE KIND COUNTER IS PROVED TO COUNT BEFORE IT IS TRUSTED, exactly as the hand-run, field-difference and
+# unreached-arm counters are. The control document holds one published entry of each kind and one UNPUBLISHED
+# local entry, so an answer of `1 1` proves both that the kinds are read per entry and that an admitted entry
+# nobody published is not counted as part of the published generation.
+printf '%s\n' '{"entries":[{"path":"a","kinds":["http-range"],"publication":"published"},{"path":"b","kinds":["local"],"publication":"admitted-not-published"},{"path":"c","kinds":["local"],"publication":"published"}]}' \
+  > "$WORK/control-status.json"
+KIND_CONTROL="$(node "$WORK/kinds.cjs" "$WORK/control-status.json")"
+[ "$KIND_CONTROL" = "1 1" ] \
+  || fail "the kind counter cannot count, so the mixture P11-M1 would report proves nothing (it said '$KIND_CONTROL')"
+
 # ---------------------------------------------------------------------------------------------------------
 step "a throwaway PostgreSQL on 127.0.0.1:$PG_PORT, migrated"
 # ---------------------------------------------------------------------------------------------------------
@@ -673,9 +759,6 @@ export PROJECTIOND_ALPHA_CONFIG="$WORK/config.json"
 export PROJECTIOND_ALPHA_SECRETS_DIR="$WORK/secrets"
 
 counters() { curl -fsS "http://127.0.0.1:${ORIGIN_PORT}/counters" 2>/dev/null | tr -d '\n '; }
-
-# TWO EMPTY STRINGS COMPARE EQUAL, AND "THE BYTES DID NOT MOVE" IS THE ONE ANSWER THAT MUST NEVER BE
-# PRODUCIBLE BY HAVING READ NOTHING.
 #
 # THE DEFECT THIS REPAIRS. `consumer_sha` sends its errors to /dev/null and pipes through `awk`, so a mount
 # that is not there, a consumer that lost its bind, or a daemon that stopped answering all return the EMPTY
@@ -739,10 +822,23 @@ node "$WORK/expect.cjs" "$WORK/status-1.json" counts.registered 2 || M1=fail
 node "$WORK/expect.cjs" "$WORK/status-1.json" counts.published 2 || M1=fail
 node "$WORK/expect.cjs" "$WORK/status-1.json" agrees true || M1=fail
 
-# THE GENERATION IS MIXED, AND BOTH MINIMUMS ARE PHASE 9'S OWN. A generation holding two entries of one kind
-# is not a mixed generation, and calling one that is the only way this arm could pass having composed nothing.
-grep -q 'http-range' "$WORK/status-1.json" || { echo "no provider-backed entry in the generation" >&2; M1=fail; }
-grep -q '"local"' "$WORK/status-1.json" || { echo "no worker-produced local entry in the generation" >&2; M1=fail; }
+# THE GENERATION IS MIXED, AND BOTH MINIMUMS ARE PHASE 9'S OWN, READ FROM THE CONTRACT'S MODULE. A generation
+# holding two entries of one kind is not a mixed generation, and calling one that is the only way this arm
+# could pass having composed nothing. COUNTED PER ENTRY AND OVER THE PUBLISHED SET, not grepped for as two
+# substrings of a document this gate does not own the shape of.
+MIXED_COUNTS="$(node "$WORK/kinds.cjs" "$WORK/status-1.json")"
+REMOTE_ENTRIES="$(printf '%s' "$MIXED_COUNTS" | cut -d' ' -f1)"
+LOCAL_ENTRIES="$(printf '%s' "$MIXED_COUNTS" | cut -d' ' -f2)"
+say "published entries by kind: $REMOTE_ENTRIES provider-backed, $LOCAL_ENTRIES worker-produced \
+(minimums $MIN_REMOTE and $MIN_LOCAL, from the contract's own module)"
+numeric "the provider-backed entry count" "$REMOTE_ENTRIES" || M1=fail
+numeric "the worker-produced entry count" "$LOCAL_ENTRIES" || M1=fail
+[ "${REMOTE_ENTRIES:-0}" -ge "${MIN_REMOTE:-1}" ] 2>/dev/null \
+  || { echo "the published generation holds $REMOTE_ENTRIES provider-backed entries and §5.1 requires \
+$MIN_REMOTE, so it is not a mixed generation" >&2; M1=fail; }
+[ "${LOCAL_ENTRIES:-0}" -ge "${MIN_LOCAL:-1}" ] 2>/dev/null \
+  || { echo "the published generation holds $LOCAL_ENTRIES worker-produced local entries and §5.1 requires \
+$MIN_LOCAL, so it is not a mixed generation" >&2; M1=fail; }
 
 verdict P11-M1-mixed-generation-assembled "$M1"
 
