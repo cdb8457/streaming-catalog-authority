@@ -1664,6 +1664,14 @@
     {
       "file": "projection-phase10-gate-audit.ts",
       "group": "offline"
+    },
+    {
+      "file": "projection-phase11.ts",
+      "group": "offline"
+    },
+    {
+      "file": "projection-phase11-gate-audit.ts",
+      "group": "offline"
     }
   ]
 }
