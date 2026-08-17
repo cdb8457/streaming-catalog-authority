@@ -174,8 +174,22 @@ against real operator inputs, and **no tier-one result contributes to that verdi
 |---|---|---|
 | **P11-M1** | one published generation holds at least one provider-backed `http-range` entry and at least one `local` entry a fake worker produced, assembled through **shipped verbs only** | arm — provider-free |
 | **P11-M2** | each half is readable through the **one** mount `projection-alpha.sh` owns, **for what it is**: the `local` half from disk with the fake origin's counters unmoved, the `http-range` half by range against the fake origin with its counters moved | arm — provider-free |
-| **P11-M3** | publishing a generation that adds one half leaves the other half's path, version, size, mtime and locator identical, and its bytes through the mount identical | arm — provider-free |
-| **P11-M4** | a failure injected into ONE source — the range origin stopped, then the worker stopped and its completed file removed — disturbs **ZERO** recorded fields of the other source's entry, and the other half stays readable | arm — provider-free — **MEASURED** against `CROSS_SOURCE_FIELDS_DISTURBED_MAX` |
+| **P11-M3** | publishing a generation that adds one half leaves **every recorded field** of the other half's entry identical, and its bytes through the mount identical | arm — provider-free |
+| **P11-M4** | a failure injected into ONE source — the range origin stopped, then the worker's completed file removed — disturbs **ZERO** recorded fields of the other source's entry, and the other half stays readable | arm — provider-free — **MEASURED** against `CROSS_SOURCE_FIELDS_DISTURBED_MAX` |
+
+**WHAT "EVERY RECORDED FIELD" IS, NAMED HERE RATHER THAN LEFT TO THE GATE TO CHOOSE.** The six the shipped
+`status --json` surface carries per entry: `path`, `kinds`, `sizeBytes`, `visibility`, `degradedReason` and
+`publication`. A gate that picked its own subset would be a gate whose zero is about the fields it felt like
+comparing, so the comparison is over the **whole record**, and a field present in one capture and absent from
+the other counts as moved.
+
+**THE LOCATOR IS DELIBERATELY NOT AMONG THEM, AND THAT IS A REFUSAL RATHER THAN A GAP.** §4's ninth refusal
+keeps a provider object reference out of every emitted document, so the shipped status surface does not carry
+one — and a gate that diffed a locator would first have to put that reference into its own evidence, which is
+the exact thing `P11-M6` asserts no preserved file does. The two claims cannot both be satisfied, and this
+contract chooses the refusal. What a moved locator would break — the bytes a media server reads — is covered
+directly instead: `P11-M3` and `P11-M4` both re-read the other half **through the mount** and compare its
+bytes.
 | **P11-M5** | the whole mixed sequence needs **zero** hand-run commands and **zero** operator interventions, and nothing publishes implicitly — an `add` without `--publish` mints no generation | arm — provider-free |
 | **P11-M6** | **every arm this gate declares was REACHED**; cleanup leaves zero phase-owned containers, networks and volumes, asserted from inside the run; and no preserved evidence carries a secret, a URL, an origin, a path or a media identity | arm — provider-free — **MEASURED** against `UNREACHED_ARMS_MAX` |
 | **P11-S1** | the full offline inventory passes on the development host with every Phase 11 suite in it, from **Git Bash** and from **an ordinary PowerShell** | sequence-level — provider-free |
