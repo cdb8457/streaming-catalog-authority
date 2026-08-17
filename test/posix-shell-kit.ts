@@ -23,18 +23,20 @@ import { join } from 'node:path';
 // if none can, a caller SKIPS BY NAME rather than failing, because a suite that could not run the wrapper
 // has not checked the wrapper and must not report either verdict.
 //
-// A RELATED DEFECT IS SOLVED DIFFERENTLY IN `test/projection-jellyfin-dataplane.ts`, AND THE DIFFERENCE IS
-// DELIBERATE. That suite keeps whatever `bash` it finds and TRANSLATES the path into that shell's convention
-// (`toBashPath`, plus `WSLENV` so variables survive the boundary). That is right there, where the wrapper
-// only ever invokes a stub. It is wrong for the suites this module serves: their wrappers run `npm`, `npx`
-// and `docker` out of this checkout, and a WSL bash would be a different machine with a different toolchain.
-// What they need is the shell the repository is actually operated with.
+// THE OTHER REPAIR, WHICH WAS TRIED AND IS NOT THE ONE. `test/projection-jellyfin-dataplane.ts` originally
+// KEPT whatever `bash` it found and TRANSLATED the path into that shell's convention — a style probe, a
+// `toBashPath` hard-coding WSL's `/mnt/c` against MSYS's `/c`, and a `WSLENV` entry so the stub variable
+// survived the boundary at all. Three layers, each correct about its own symptom, none addressing the cause:
+// the wrappers these suites drive run `npm`, `npx` and `docker` out of THIS checkout, and a WSL bash is a
+// different machine with a different toolchain, so it is the wrong executable even in the cases where the
+// translation worked. What they need is the shell the repository is actually operated with, which is what
+// selecting by execution finds. That suite now imports this module like the rest.
 //
-// WHY THIS IS A MODULE RATHER THAN A THIRD COPY. `test/torbox-resolver.ts` worked this out first and paid
-// for it twice. `test/projection-phase9-gate-audit.ts` then met the identical failure — nine of its
+// WHY THIS IS A MODULE RATHER THAN A COPY PER SUITE. `test/torbox-resolver.ts` worked this out first and
+// paid for it twice. `test/projection-phase9-gate-audit.ts` then met the identical failure — nine of its
 // eighteen controls failing from PowerShell, on `bash -n` and on 127 — because the reasoning lived in
 // another suite's private functions. A copied harness is one more chance to weaken one assertion, so the
-// discovery lives here once and both suites import it.
+// discovery lives here once and every suite that drives a shipped script imports it.
 //
 // IT STARTS NOTHING, READS NO ENVIRONMENT IT DOES NOT NAME, AND CONTACTS NOTHING. The only processes it runs
 // are `git --exec-path` and candidate shells against a throwaway probe script in a temporary directory.

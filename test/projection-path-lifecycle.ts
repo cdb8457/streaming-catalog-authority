@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
+import { NO_SHELL, posixShell, shPath, shellOrThrow } from './posix-shell-kit.js';
 import { findRedactionProblems } from '../src/core/projection/media-server-dataplane.js';
 import {
   LIFECYCLE_SERVERS, additionResults, deletionResults, diffInventories, inventoryProblems, refusalResults,
@@ -326,18 +327,44 @@ async function main(): Promise<void> {
   // The wrapper's accounting, exercised as behaviour
   // -------------------------------------------------------------------------------------------------------
 
+  // THE SHELL THESE FOUR CONTROLS ARE DRIVEN THROUGH IS SELECTED, NOT NAMED — see `./posix-shell-kit.js`.
+  // Bare `bash` on an ordinary Windows PATH is `C:\WINDOWS\system32\bash.exe`, the WSL launcher, which cannot
+  // address a Windows drive path in any spelling and answers 127, the status a shell returns for "command not
+  // found". These controls assert on STATUS NUMBERS, so the harness failure printed "a skip must propagate
+  // 77, got 127" — the wording of the single worst defect this repository can have, raised by a path
+  // separator. Nothing is weakened: each control still drives the real wrapper and asserts the same status
+  // and the same text.
+  const skippedBlocks: string[] = [];
+  const skipBlock = (what: string): void => {
+    skippedBlocks.push(what);
+    console.log(`  SKIP  ${NO_SHELL} — ${what}`);
+  };
+  const HAS_SHELL = posixShell() !== null;
+
   const runWrapper = (status: number, runs: string): { code: number; out: string } => {
     const dir = mkdtempSync(join(tmpdir(), 'lifecycle-wrapper-'));
     const stub = join(dir, 'stub.sh');
     writeFileSync(stub, `#!/usr/bin/env bash\nexit ${status}\n`);
-    const result = spawnSync('bash', [join(HERE, '..', 'deploy/projection-path-lifecycle-gate-three.sh')], {
-      encoding: 'utf8',
-      env: { ...process.env, PROJECTION_LIFECYCLE_GATE_COMMAND: stub, PROJECTION_LIFECYCLE_GATE_RUNS: runs },
-    });
-    return { code: result.status ?? -1, out: `${result.stdout}${result.stderr}` };
+    // BOTH PATHS ARE HANDED OVER IN THE SPELLING A SHELL READS: the wrapper is invoked by path and it invokes
+    // the stub by path, so translating only one of them moves the failure rather than removing it.
+    const result = spawnSync(shellOrThrow(),
+      [shPath(join(HERE, '..', 'deploy/projection-path-lifecycle-gate-three.sh'))], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PROJECTION_LIFECYCLE_GATE_COMMAND: shPath(stub),
+          PROJECTION_LIFECYCLE_GATE_RUNS: runs,
+        },
+      });
+    // A SPAWN THAT NEVER STARTED IS NOT A STATUS THE WRAPPER CHOSE.
+    if (result.error !== undefined || result.status === null) {
+      throw new Error(`the wrapper could not be executed by the selected shell: ${result.error?.message ?? 'no exit status'}`);
+    }
+    return { code: result.status, out: `${result.stdout}${result.stderr}` };
   };
 
   await test('A SKIPPED RUN IS NOT FOLDED INTO SUCCESS', () => {
+    if (!HAS_SHELL) { skipBlock('the three-run wrapper was not driven with a skipping run'); return; }
     // The worst failure available to this repository is a green tranche-closing command that proved nothing.
     const { code, out } = runWrapper(77, '3');
     assert(code === 77, `a skip must propagate 77, got ${code}`);
@@ -346,6 +373,7 @@ async function main(): Promise<void> {
   });
 
   await test('A FAILING RUN STOPS THE SEQUENCE AT ONCE', () => {
+    if (!HAS_SHELL) { skipBlock('the three-run wrapper was not driven with a failing run'); return; }
     const { code, out } = runWrapper(1, '3');
     assert(code === 1, `a failure must propagate, got ${code}`);
     assert(/run 1 of 3/.test(out), 'and name the run it stopped at');
@@ -353,12 +381,14 @@ async function main(): Promise<void> {
   });
 
   await test('A ZERO-RUN SEQUENCE CANNOT ANNOUNCE A COMPLETED ONE', () => {
+    if (!HAS_SHELL) { skipBlock('the zero-run sequence was not driven'); return; }
     const { code, out } = runWrapper(0, '0');
     assert(code !== 0, `zero runs must not exit 0, got ${code}`);
     assert(/refusing to report a completed sequence/.test(out), 'and must say why');
   });
 
   await test('THREE CLEAN RUNS DO ANNOUNCE ONE, AND STILL CLOSE NOTHING ELSE', () => {
+    if (!HAS_SHELL) { skipBlock('the three-run wrapper was not driven with three clean runs'); return; }
     const { code, out } = runWrapper(0, '3');
     assert(code === 0, `three clean runs must exit 0, got ${code}`);
     assert(/3 of 3 consecutive path-lifecycle runs completed/.test(out), 'the closing message');
@@ -451,6 +481,32 @@ async function main(): Promise<void> {
   await test('this suite runs in the aggregate', () => {
     assert(AGGREGATE_SUITE_COMMAND.includes('tsx test/projection-path-lifecycle.ts'),
       'a suite nobody runs is a suite that stops being true');
+  });
+
+  await test('THE SHELL THE WRAPPER CONTROLS RUN THROUGH IS ONE THAT CAN ACTUALLY RUN A SCRIPT', () => {
+    // THE REGRESSION FOR THE HARNESS ITSELF. The four wrapper-accounting controls above are only worth their
+    // `ok` if a real shell executed a real wrapper. This asserts the selection did its job, and — the
+    // important half — that a run which could NOT find a shell says so BY NAME rather than leaving four green
+    // lines that never executed anything.
+    const shell = posixShell();
+    if (shell === null) {
+      assert(skippedBlocks.length > 0, 'no shell was selected and yet nothing reported itself skipped');
+      console.log(`    .. ${skippedBlocks.length} block(s) skipped: ${NO_SHELL}`);
+      return;
+    }
+    assert(skippedBlocks.length === 0,
+      `a shell was selected and ${skippedBlocks.length} block(s) still skipped: ${skippedBlocks.join('; ')}`);
+    const probe = spawnSync(shell,
+      [shPath(join(HERE, '..', 'deploy/projection-path-lifecycle-gate-three.sh'))], {
+        encoding: 'utf8',
+        env: { ...process.env, PROJECTION_LIFECYCLE_GATE_RUNS: '0' },
+        timeout: 60_000,
+      });
+    assert(probe.error === undefined,
+      `the selected shell could not be handed a repository path: ${probe.error?.message ?? ''}`);
+    assert(probe.status !== 127,
+      'the selected shell answered 127 for a wrapper that exists, which is what a shell that cannot address '
+      + 'this path does — the exact defect this selection was introduced to remove');
   });
 
   console.log(`\n${passed} passed, ${failed} failed\n`);

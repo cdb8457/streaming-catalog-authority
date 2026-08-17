@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
+import { NO_SHELL, posixShell, shPath, shellOrThrow } from './posix-shell-kit.js';
 import {
   Deadline, GATE_CLIENT, MEDIA_SERVER_BUDGETS, MEDIA_SERVER_DEADLINES_MS, MEDIA_SERVER_POLL_INTERVAL_MS,
   MEDIA_SERVER_SOAK, PLAYBACK_ENDPOINT_IS_ANONYMOUS, SEEK_PLAN_FRACTIONS, SEEK_SETTLE_MS, ScanBarrier,
@@ -1002,46 +1003,61 @@ await test('an opaque reference compares across phases without printing what it 
 // Skip semantics — behavioural, by running the wrappers with a stub
 // ---------------------------------------------------------------------------------------------------------
 
-const bashAvailable = spawnSync('bash', ['-c', 'exit 0'], { encoding: 'utf8' }).status === 0;
-
 /**
- * Which spelling of a filesystem path the `bash` on this machine understands.
+ * THE SHELL THESE BLOCKS ARE DRIVEN THROUGH IS SELECTED BY EXECUTION, NOT BY NAME — see
+ * `./posix-shell-kit.js`, which owns the reasoning and is shared with the other suites that met the same
+ * defect.
  *
- * THE DEFECT THIS CLOSES, AND IT MADE FIVE TESTS FAIL FOR A REASON THAT HAD NOTHING TO DO WITH THEM. On
- * Windows, `bash` may be Git Bash — which takes `C:\a\b` and `/c/a/b` — or it may be WSL, which takes neither
- * and answers `127`, the status a shell returns for "command not found". Passing a native Windows path to
- * whichever one is on PATH is a coin flip, and when it lost, the wrapper-accounting tests reported that a
- * skipped run looked like a passing one. That is a false alarm about the single most important property in
- * this gate, raised by a path separator.
+ * THE DEFECT, WHICH MADE TESTS FAIL FOR A REASON THAT HAD NOTHING TO DO WITH THEM. On Windows, bare `bash`
+ * may be Git Bash — which takes `C:\a\b` and `/c/a/b` — or it may be `C:\WINDOWS\system32\bash.exe`, the WSL
+ * launcher, which takes neither and answers `127`, the status a shell returns for "command not found". Which
+ * one you get depends on which terminal somebody happened to type into, and when it lost, these controls
+ * reported that a skipped run looked like a passing one: a false alarm about the single most important
+ * property in this gate, raised by a path separator.
  *
- * So the shell is ASKED what it can translate with, once, rather than guessed at from `process.platform`.
+ * WHAT USED TO BE HERE, AND WHY IT IS GONE. This file KEPT whatever `bash` it found and translated the path
+ * into that shell's convention — a `bashPathStyle` probe, a `toBashPath` that hard-coded WSL's `/mnt/c` and
+ * MSYS's `/c` (string arithmetic, because calling `wslpath` silently translated the working directory
+ * instead and produced a plausible-looking wrong path that answered `126`), and a `WSLENV` entry so that
+ * `PROJECTION_JELLYFIN_GATE_COMMAND` survived the boundary at all — three layers compensating for one wrong
+ * choice of executable. Each layer was correct about its own symptom and none of them addressed the cause,
+ * so this now makes the same choice the rest of the suite family makes: ASK A CANDIDATE TO EXECUTE A SCRIPT
+ * AT THE EXACT SPELLING THIS SUITE HANDS OUT, and keep the first that can. A WSL bash is a different machine
+ * with a different toolchain from the checkout these wrappers run out of, so it is the wrong answer here
+ * even in the cases where it worked.
+ *
+ * NOTHING IS WEAKENED BY THIS. Every control still drives a real wrapper and still asserts the same status
+ * and the same text; what changed is which executable receives the call — and a host where NO candidate can
+ * run a script now SKIPS BY NAME rather than reporting a verdict it never measured.
  */
-const bashPathStyle = ((): 'wsl' | 'cygwin' | 'native' => {
-  if (!bashAvailable) return 'native';
-  const probe = spawnSync('bash', ['-c',
-    'if command -v wslpath >/dev/null 2>&1; then echo wsl; '
-    + 'elif command -v cygpath >/dev/null 2>&1; then echo cygwin; else echo native; fi'],
-  { encoding: 'utf8' });
-  const answer = (probe.stdout ?? '').trim();
-  return answer === 'wsl' || answer === 'cygwin' ? answer : 'native';
-})();
+const skippedBlocks: string[] = [];
+function skipShellBlock(what: string): void {
+  skippedBlocks.push(what);
+  console.log(`  SKIP  ${NO_SHELL} — ${what}`);
+}
+const HAS_SHELL = posixShell() !== null;
 
 /**
  * A path in the spelling a given `bash` understands. A non-Windows path is already one.
+ *
+ * IT IS KEPT, AND IT IS NO LONGER ON THE PATH ANY CONTROL IS DRIVEN THROUGH. This is the translator half of
+ * the superseded repair described above: the call sites now hand out `shPath` and let `posixShell()` pick a
+ * shell that can read it. What it is retained for is the finding it encodes, which cost two attempts and is
+ * asserted below — WSL mounts Windows drives under `/mnt`, MSYS, Cygwin and Git Bash put them at the root,
+ * and a `native` bash on Windows is Git Bash, so it takes the second.
  *
  * IT IS STRING ARITHMETIC RATHER THAN A CALL TO `wslpath`, AND THE FIRST VERSION WAS THE CALL. Shelling out
  * to `bash -c 'wslpath -a "$1"' sh <path>` looks obviously more correct than hard-coding a prefix — and
  * measured from PowerShell, `$1` arrived EMPTY, so `wslpath` translated the working directory instead. The
  * wrapper was then handed the project directory, bash said "Is a directory", and the tests reported `126`:
  * a translation that silently produced a plausible-looking wrong path. The two conventions are one line
- * each and can be checked against literals offline, which the call could not be.
+ * each and can be checked against literals offline, which the call could not be — which is why the check
+ * below survives the mechanism it was written for.
  */
 export function toBashPath(path: string, style: 'wsl' | 'cygwin' | 'native'): string {
   if (!/^[A-Za-z]:[\\/]/.test(path)) return path;
   const drive = (path[0] as string).toLowerCase();
   const rest = path.slice(2).replace(/\\/g, '/');
-  // WSL mounts Windows drives under /mnt; MSYS, Cygwin and Git Bash put them at the root. A `native` bash on
-  // Windows is Git Bash, which takes the second.
   return style === 'wsl' ? `/mnt/${drive}${rest}` : `/${drive}${rest}`;
 }
 
@@ -1049,32 +1065,21 @@ function runWrapper(script: string, stubExit: number, env: Record<string, string
 { status: number | null; out: string } {
   const dir = mkdtempSync(join(tmpdir(), 'pjd-gate-'));
   const stub = join(dir, 'stub-gate.sh');
+  // LF ONLY, IMPLICITLY BUT DELIBERATELY. A stub written with CRLF is one whose `exit 77\r` the shell reads
+  // as a command, and the wrapper under test would then report a status this suite never scripted.
   writeFileSync(stub, `#!/usr/bin/env bash\necho "stub gate ran"\nexit ${stubExit}\n`);
   chmodSync(stub, 0o755);
-  // BOTH PATHS ARE TRANSLATED. The wrapper is invoked by path and it invokes the stub by path; translating
-  // only one of them moves the 127 rather than removing it.
-  const wrapperEnv: Record<string, string> = {
-    PROJECTION_JELLYFIN_GATE_COMMAND: toBashPath(stub, bashPathStyle),
-    ...env,
-  };
-  // A WIN32 ENVIRONMENT VARIABLE DOES NOT REACH WSL UNLESS `WSLENV` NAMES IT, AND THIS IS THE THIRD LAYER OF
-  // THE SAME FAILURE.
-  //
-  // With the path fixed and the line endings fixed, the wrapper finally RAN — and ignored the stub, because
-  // `PROJECTION_JELLYFIN_GATE_COMMAND` never crossed the boundary, so its `:-` default took over and it
-  // invoked the REAL gate. The suite then reported 77 (this host cannot host the gate) where it expected 0,
-  // which reads exactly like the wrapper mishandling a skip: the defect these tests exist to catch, produced
-  // by the harness rather than by the wrapper. `/u` means "pass it in, unchanged" — unchanged because the
-  // path was already translated above, and letting WSL translate it a second time would corrupt it.
-  const spawnEnv: Record<string, string | undefined> = { ...process.env, ...wrapperEnv };
-  if (bashPathStyle === 'wsl') {
-    const shared = Object.keys(wrapperEnv).map((name) => `${name}/u`).join(':');
-    spawnEnv.WSLENV = process.env.WSLENV ? `${process.env.WSLENV}:${shared}` : shared;
-  }
-  const result = spawnSync('bash', [toBashPath(join(root, script), bashPathStyle)], {
+  // BOTH PATHS ARE HANDED OVER IN THE SPELLING A SHELL READS. The wrapper is invoked by path and it invokes
+  // the stub by path; translating only one of them moves the 127 rather than removing it.
+  const result = spawnSync(shellOrThrow(), [shPath(join(root, script))], {
     encoding: 'utf8',
-    env: spawnEnv,
+    env: { ...process.env, PROJECTION_JELLYFIN_GATE_COMMAND: shPath(stub), ...env },
   });
+  // A SPAWN THAT NEVER STARTED IS NOT A STATUS THE WRAPPER CHOSE, and must not be reported in the same
+  // vocabulary these assertions use.
+  if (result.error !== undefined) {
+    throw new Error(`the wrapper could not be executed by the selected shell: ${result.error.message}`);
+  }
   return { status: result.status, out: `${result.stdout ?? ''}${result.stderr ?? ''}` };
 }
 
@@ -1088,55 +1093,56 @@ await test('SKIP IS NOT A PASS: the gate exits 77, and 77 is not zero', () => {
   assert(/closes NO acceptance gate/i.test(skipBlock), 'and says plainly that it closes nothing');
 });
 
-if (!bashAvailable) {
-  console.log('  SKIP  the wrapper accounting tests need bash, which is not on PATH here');
-} else {
-  await test('THREE-RUN WRAPPER: a skipped run propagates 77 and reports no completed runs', () => {
-    // THE DEFECT THIS CLOSES. The gate used to exit 0 on skip and this wrapper looped over it, so a host with
-    // no /dev/fuse produced "3 consecutive runs completed" and status 0 having proved nothing whatsoever.
-    const { status, out } = runWrapper('deploy/projection-jellyfin-dataplane-gate-three.sh', 77);
-    assertEq(status, 77, 'a skipped run makes the required command exit 77, not 0');
-    assert(/SKIPPED at run 1 of 3/.test(out), 'it names the run it skipped at');
-    assert(/Runs completed: 0 of 3/.test(out), 'and reports zero completed');
-    assert(/CLOSES NOTHING/i.test(out), 'and says the sequence closes nothing');
-    assert(!/consecutive runs completed, none skipped/.test(out),
-      'and CANNOT emit the completion message it emits on success');
-  });
+await test('THREE-RUN WRAPPER: a skipped run propagates 77 and reports no completed runs', () => {
+  if (!HAS_SHELL) { skipShellBlock('the three-run wrapper was not driven with a skipping run'); return; }
+  // THE DEFECT THIS CLOSES. The gate used to exit 0 on skip and this wrapper looped over it, so a host with
+  // no /dev/fuse produced "3 consecutive runs completed" and status 0 having proved nothing whatsoever.
+  const { status, out } = runWrapper('deploy/projection-jellyfin-dataplane-gate-three.sh', 77);
+  assertEq(status, 77, 'a skipped run makes the required command exit 77, not 0');
+  assert(/SKIPPED at run 1 of 3/.test(out), 'it names the run it skipped at');
+  assert(/Runs completed: 0 of 3/.test(out), 'and reports zero completed');
+  assert(/CLOSES NOTHING/i.test(out), 'and says the sequence closes nothing');
+  assert(!/consecutive runs completed, none skipped/.test(out),
+    'and CANNOT emit the completion message it emits on success');
+});
 
-  await test('THREE-RUN WRAPPER: three clean runs report three completed and exit 0', () => {
-    const { status, out } = runWrapper('deploy/projection-jellyfin-dataplane-gate-three.sh', 0);
-    assertEq(status, 0, 'three passing runs pass');
-    assert(/3 of 3 consecutive runs completed, none skipped/.test(out), 'and the count is stated, not implied');
-    // The limit travels with the success message. Newlines are collapsed because the message is wrapped.
-    assert(/must not be\s+reported as Phase 1 closure/.test(out), 'with the honest limit attached');
-  });
+await test('THREE-RUN WRAPPER: three clean runs report three completed and exit 0', () => {
+  if (!HAS_SHELL) { skipShellBlock('the three-run wrapper was not driven with three clean runs'); return; }
+  const { status, out } = runWrapper('deploy/projection-jellyfin-dataplane-gate-three.sh', 0);
+  assertEq(status, 0, 'three passing runs pass');
+  assert(/3 of 3 consecutive runs completed, none skipped/.test(out), 'and the count is stated, not implied');
+  // The limit travels with the success message. Newlines are collapsed because the message is wrapped.
+  assert(/must not be\s+reported as Phase 1 closure/.test(out), 'with the honest limit attached');
+});
 
-  await test('THREE-RUN WRAPPER: an ordinary failure stops the sequence and propagates', () => {
-    const { status, out } = runWrapper('deploy/projection-jellyfin-dataplane-gate-three.sh', 3);
-    assertEq(status, 3, 'the failing status propagates unchanged');
-    assert(/FAILED at run 1 of 3/.test(out), 'it names where it stopped');
-    assert(!/consecutive runs completed/.test(out), 'and claims no completed sequence');
-  });
+await test('THREE-RUN WRAPPER: an ordinary failure stops the sequence and propagates', () => {
+  if (!HAS_SHELL) { skipShellBlock('the three-run wrapper was not driven with a failing run'); return; }
+  const { status, out } = runWrapper('deploy/projection-jellyfin-dataplane-gate-three.sh', 3);
+  assertEq(status, 3, 'the failing status propagates unchanged');
+  assert(/FAILED at run 1 of 3/.test(out), 'it names where it stopped');
+  assert(!/consecutive runs completed/.test(out), 'and claims no completed sequence');
+});
 
-  await test('THREE-RUN WRAPPER: zero requested runs cannot announce a completed sequence', () => {
-    const { status, out } = runWrapper('deploy/projection-jellyfin-dataplane-gate-three.sh', 0,
-      { PROJECTION_JELLYFIN_GATE_RUNS: '0' });
-    assert(status !== 0, 'a loop that never ran is not a pass');
-    assert(/refusing to report a completed sequence/.test(out), 'and it says why');
-  });
+await test('THREE-RUN WRAPPER: zero requested runs cannot announce a completed sequence', () => {
+  if (!HAS_SHELL) { skipShellBlock('the zero-run sequence was not driven'); return; }
+  const { status, out } = runWrapper('deploy/projection-jellyfin-dataplane-gate-three.sh', 0,
+    { PROJECTION_JELLYFIN_GATE_RUNS: '0' });
+  assert(status !== 0, 'a loop that never ran is not a pass');
+  assert(/refusing to report a completed sequence/.test(out), 'and it says why');
+});
 
-  await test('OPTIONAL ENTRY POINT: maps 77 to 0, and nothing else', () => {
-    const skipped = runWrapper('deploy/projection-jellyfin-dataplane-gate-optional.sh', 77);
-    assertEq(skipped.status, 0, 'a skip is success for a host where the gate is optional');
-    assert(/NOTHING WAS PROVED/.test(skipped.out), 'but it says loudly that nothing was proved');
-    assert(/No acceptance gate is closed/i.test(skipped.out), 'and that it closes nothing');
+await test('OPTIONAL ENTRY POINT: maps 77 to 0, and nothing else', () => {
+  if (!HAS_SHELL) { skipShellBlock('the optional entry point was not driven'); return; }
+  const skipped = runWrapper('deploy/projection-jellyfin-dataplane-gate-optional.sh', 77);
+  assertEq(skipped.status, 0, 'a skip is success for a host where the gate is optional');
+  assert(/NOTHING WAS PROVED/.test(skipped.out), 'but it says loudly that nothing was proved');
+  assert(/No acceptance gate is closed/i.test(skipped.out), 'and that it closes nothing');
 
-    const failedRun = runWrapper('deploy/projection-jellyfin-dataplane-gate-optional.sh', 4);
-    assertEq(failedRun.status, 4, 'a REAL failure still fails here');
-    const passedRun = runWrapper('deploy/projection-jellyfin-dataplane-gate-optional.sh', 0);
-    assertEq(passedRun.status, 0, 'and a pass still passes');
-  });
-}
+  const failedRun = runWrapper('deploy/projection-jellyfin-dataplane-gate-optional.sh', 4);
+  assertEq(failedRun.status, 4, 'a REAL failure still fails here');
+  const passedRun = runWrapper('deploy/projection-jellyfin-dataplane-gate-optional.sh', 0);
+  assertEq(passedRun.status, 0, 'and a pass still passes');
+});
 
 await test('the EVIDENCE commands are the ones that propagate a skip, and the optional one is separate', () => {
   const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
@@ -2391,11 +2397,16 @@ await test('THE CLEANUP UNMOUNTS IN A NAMESPACE THAT PROPAGATES BACK TO THE HOST
 });
 
 await test('THE CLEANUP HELPER REFUSES EVERY PATH THAT IS NOT UNDER THE RUN ROOT', () => {
+  if (!HAS_SHELL) { skipShellBlock('the cleanup helper\'s containment guard was not driven'); return; }
   // A helper that takes a path and `rm -rf`s it is one bad variable away from taking something else, so the
-  // guard is executable rather than a comment. Driven through a real shell.
-  const helperPath = join(root, 'deploy/projection-gate-cleanup.sh');
+  // guard is executable rather than a comment. Driven through a real shell — the SELECTED one, and with the
+  // helper named in the spelling that shell reads. Sourcing `C:\…\projection-gate-cleanup.sh` left
+  // `projection_gate_cleanup_run` undefined, so every attempt came back 127 with "command not found" on
+  // stderr instead of "cleanup refused" — a harness fault that reads exactly like the containment guard
+  // having been dropped, which is the one thing this control exists to notice.
+  const helperPath = shPath(join(root, 'deploy/projection-gate-cleanup.sh'));
   const attempt = (gateRoot: string, run: string): { status: number | null; stderr: string } => {
-    const result = spawnSync('bash', ['-c',
+    const result = spawnSync(shellOrThrow(), ['-c',
       `. '${helperPath}'; projection_gate_cleanup_run '${gateRoot}' '${run}' alpine`],
     { encoding: 'utf8' });
     return { status: result.status, stderr: result.stderr };
@@ -2415,11 +2426,13 @@ await test('THE CLEANUP HELPER REFUSES EVERY PATH THAT IS NOT UNDER THE RUN ROOT
 });
 
 await test('THE UNMOUNT-ONLY HELPER IS GUARDED EXACTLY AS THE CLEANUP ONE IS', () => {
+  if (!HAS_SHELL) { skipShellBlock('the unmount helper\'s containment guard was not driven'); return; }
   // It exists because the cleanup helper also DELETES, and the mid-gate path must not. A second entry point
-  // is a second place for the containment to be forgotten, so it is driven through a real shell too.
-  const helperPath = join(root, 'deploy/projection-gate-cleanup.sh');
+  // is a second place for the containment to be forgotten, so it is driven through a real shell too — the
+  // selected one, with the helper named in the spelling that shell reads.
+  const helperPath = shPath(join(root, 'deploy/projection-gate-cleanup.sh'));
   const attempt = (gateRoot: string, run: string): { status: number | null; stderr: string } => {
-    const result = spawnSync('bash', ['-c',
+    const result = spawnSync(shellOrThrow(), ['-c',
       `. '${helperPath}'; projection_gate_unmount_run '${gateRoot}' '${run}' alpine`],
     { encoding: 'utf8' });
     return { status: result.status, stderr: result.stderr };
@@ -2559,6 +2572,35 @@ await test('the corpus is registered through the same write path, in one process
     'and a refusal rolls back and is re-thrown rather than replaced');
   assert(read('deploy/projection-jellyfin-dataplane-gate.sh').includes('register batch --file'),
     'and the gate uses it for the corpus');
+});
+
+await test('THE SHELL THE EXECUTED CONTROLS RUN THROUGH IS ONE THAT CAN ACTUALLY RUN A SCRIPT', () => {
+  // THE REGRESSION FOR THE HARNESS ITSELF. The seven controls above that EXECUTE something — five wrapper
+  // accounting checks and the two containment guards on the cleanup helper — are only worth their PASS if a
+  // real shell ran a real script. This asserts the selection did its job, and — the important half — that a
+  // run which could NOT find a shell says so BY NAME rather than leaving seven green lines that never
+  // executed anything.
+  const shell = posixShell();
+  if (shell === null) {
+    assert(skippedBlocks.length > 0, 'no shell was selected and yet nothing reported itself skipped');
+    console.log(`    .. ${skippedBlocks.length} block(s) skipped: ${NO_SHELL}`);
+    return;
+  }
+  assertEq(skippedBlocks.length, 0,
+    `a shell was selected and ${skippedBlocks.length} block(s) still skipped: ${skippedBlocks.join('; ')}`);
+  // 127 IS THE STATUS A SHELL RETURNS FOR "command not found", and it is the exact answer the WSL launcher
+  // gave for a wrapper that exists. Asserting on it here means the defect cannot come back disguised as a
+  // wrapper-accounting failure.
+  const probe = spawnSync(shell, [shPath(join(root, 'deploy/projection-jellyfin-dataplane-gate-three.sh'))], {
+    encoding: 'utf8',
+    env: { ...process.env, PROJECTION_JELLYFIN_GATE_RUNS: '0' },
+    timeout: 60_000,
+  });
+  assert(probe.error === undefined,
+    `the selected shell could not be handed a repository path: ${probe.error?.message ?? ''}`);
+  assert(probe.status !== 127,
+    'the selected shell answered 127 for a wrapper that exists, which is what a shell that cannot address '
+    + 'this path does — the exact defect this selection was introduced to remove');
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);
