@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { createHarness, assert, assertEq } from './usenet-kit.js';
 import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
+import { NO_SHELL, posixShell, shPath, shellOrThrow } from './posix-shell-kit.js';
 
 // Projection Phase 9 — the gate audit.
 //
@@ -35,17 +36,37 @@ const REHEARSAL = 'deploy/projection-phase9-rehearsal.sh';
 const OPTIONAL = 'deploy/projection-phase9-rehearsal-optional.sh';
 const THREE = 'deploy/projection-phase9-rehearsal-three.sh';
 
-/** Whether this host has a bash the audit can actually drive. Windows without Git Bash has none. */
-function bashAvailable(): boolean {
-  try {
-    execFileSync('bash', ['-c', 'exit 0'], { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
-  }
+// THE SHELL THESE CONTROLS ARE DRIVEN WITH IS CHOSEN BY EXECUTION, NOT BY NAME.
+//
+// THE DEFECT THAT MADE NINE OF THE EIGHTEEN CONTROLS BELOW RED FOR A REASON THAT HAD NOTHING TO DO WITH THEM.
+// This file used to invoke bare `bash` — whatever PATH resolved first. Started from Git Bash that is MSYS
+// bash and everything passed. Started from an ordinary PowerShell it is `C:\WINDOWS\system32\bash.exe`, the
+// WSL launcher, which cannot address a Windows drive path in any spelling: `bash -n C:\…\rehearsal.sh` failed
+// outright, and every wrapper execution came back 127 — the status a shell returns for "command not found".
+//
+// WHY THAT WAS WORSE THAN AN ORDINARY TEST FAILURE. 127 is a NUMBER, and these controls assert on numbers.
+// "a skip was not folded: got 127, want 0" is what this suite prints when the optional wrapper mishandles a
+// skip — the single most important property it guards — and it is exactly what it printed when the wrapper
+// was fine and the harness could not start it. A green figure from one terminal and nine failures from
+// another, about the same commit, is not a verdict about the product at all.
+//
+// So the shell is selected by `./posix-shell-kit.js`, which makes each candidate EXECUTE a script at the path
+// spelling this suite hands out and keeps the first that can. Git Bash is preferred on Windows and bare
+// `bash` is tried last there, because bare `bash` is the one most likely to be WSL — and a WSL bash would be
+// a different machine with a different toolchain from the checkout these wrappers run `npx` and `docker` out
+// of, so it is the wrong answer even when it works.
+//
+// NOTHING IS WEAKENED BY THIS. Every control still runs, still drives a real wrapper, and still asserts the
+// same status and the same text. What changed is which executable receives the call.
+
+/** Blocks that could not be executed here, named and counted so a green summary cannot hide one. */
+const skippedBlocks: string[] = [];
+function skipBlock(what: string): void {
+  skippedBlocks.push(what);
+  console.log(`    .. SKIPPED on ${process.platform}: ${NO_SHELL} — ${what}`);
 }
 
-const HAS_BASH = bashAvailable();
+const HAS_SHELL = posixShell() !== null;
 
 interface RunResult { readonly status: number; readonly output: string }
 
@@ -53,18 +74,21 @@ function runBash(script: string, env: Record<string, string>): RunResult {
   // stderr is FOLDED INTO stdout deliberately. Every one of these wrappers writes its refusals and its
   // "NOTHING WAS PROVED" to stderr, which is correct — and a harness that only captured stdout would report
   // a silent fold as a silent fold, which is the assertion, so it has to read both.
-  const command = `"${join(repoRoot, script).replace(/\\/g, '/')}" 2>&1`;
-  try {
-    const output = execFileSync('bash', ['-c', command], {
-      env: { ...process.env, ...env },
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    return { status: 0, output };
-  } catch (error) {
-    const failure = error as { status?: number; stdout?: string; stderr?: string };
-    return { status: failure.status ?? 1, output: `${failure.stdout ?? ''}${failure.stderr ?? ''}` };
+  //
+  // THE SCRIPT IS PASSED AS AN ARGUMENT RATHER THAN INTERPOLATED INTO `-c`. A path inside a `-c` string is a
+  // path the shell has to re-parse, and the quoting that survives one shell does not survive the next.
+  const result = spawnSync(shellOrThrow(), [shPath(join(repoRoot, script))], {
+    env: { ...process.env, ...env },
+    encoding: 'utf8',
+    timeout: 120_000,
+  });
+  // A SPAWN THAT NEVER STARTED IS NOT A STATUS THE WRAPPER CHOSE. `status` is null when the child was killed
+  // or could not be spawned at all; reporting that as some number would put a harness failure into the same
+  // vocabulary the assertions use, which is the whole defect this file just came out of.
+  if (result.error !== undefined || result.status === null) {
+    throw new Error(`the wrapper could not be executed by the selected shell: ${result.error?.message ?? 'no exit status'}`);
   }
+  return { status: result.status, output: `${result.stdout ?? ''}${result.stderr ?? ''}` };
 }
 
 /** A stub that exits with a scripted status, so the wrappers' ACCOUNTING is driven rather than read. */
@@ -72,9 +96,12 @@ function withStub(status: number, fn: (path: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), 'phase9-stub-'));
   const path = join(dir, 'stub.sh');
   try {
+    // LF ONLY, EXPLICITLY. A stub written with CRLF is one whose `exit 77\r` the shell reads as a command,
+    // and the wrapper under test would then report a status this suite never scripted.
     writeFileSync(path, `#!/usr/bin/env bash\necho "stub ran"\nexit ${status}\n`, 'utf8');
     chmodSync(path, 0o755);
-    fn(path);
+    // The wrapper invokes this path itself, so it is handed over in the spelling a shell reads.
+    fn(shPath(path));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -83,9 +110,17 @@ function withStub(status: number, fn: (path: string) => void): void {
 h.section('syntax, which is necessary and nowhere near sufficient');
 
 test('every rehearsal script parses', () => {
-  if (!HAS_BASH) { console.log('    (skipped: no bash on this host)'); return; }
+  if (!HAS_SHELL) { skipBlock('the three rehearsal scripts were not parsed'); return; }
   for (const script of [REHEARSAL, OPTIONAL, THREE]) {
-    execFileSync('bash', ['-n', join(repoRoot, script)], { stdio: 'ignore' });
+    // `-n` is READ AND ASSERTED rather than allowed to throw. A thrown `execFileSync` reports "Command
+    // failed: bash -n C:\…" — which is what a shell that cannot address the path says, and also what a
+    // genuine syntax error says. The status and stderr tell those two apart.
+    const result = spawnSync(shellOrThrow(), ['-n', shPath(join(repoRoot, script))], {
+      encoding: 'utf8',
+      timeout: 60_000,
+    });
+    assert(result.error === undefined, `${script} could not be handed to the shell: ${result.error?.message ?? ''}`);
+    assertEq(result.status, 0, `${script} is not valid shell: ${(result.stderr ?? '').trim()}`);
   }
 });
 
@@ -145,7 +180,7 @@ test('the rehearsal names its own compose project and its own port, and removes 
 h.section('the wrappers, DRIVEN rather than read');
 
 test('the optional wrapper folds a 77 to 0 and says NOTHING WAS PROVED while doing it', () => {
-  if (!HAS_BASH) { console.log('    (skipped: no bash on this host)'); return; }
+  if (!HAS_SHELL) { skipBlock('the optional wrapper folds a 77 to 0 and says NOTHING WAS PROVED while doing it'); return; }
   withStub(77, (stub) => {
     const result = runBash(OPTIONAL, { PROJECTION_PHASE9_REHEARSAL_ENTRYPOINT: stub });
     assertEq(result.status, 0, 'a skip was not folded');
@@ -155,7 +190,7 @@ test('the optional wrapper folds a 77 to 0 and says NOTHING WAS PROVED while doi
 });
 
 test('the optional wrapper passes a REAL FAILURE through unchanged', () => {
-  if (!HAS_BASH) { console.log('    (skipped: no bash on this host)'); return; }
+  if (!HAS_SHELL) { skipBlock('the optional wrapper passes a REAL FAILURE through unchanged'); return; }
   withStub(1, (stub) => {
     assertEq(runBash(OPTIONAL, { PROJECTION_PHASE9_REHEARSAL_ENTRYPOINT: stub }).status, 1,
       'a rehearsal that RAN AND FAILED was folded into success');
@@ -166,7 +201,7 @@ test('the optional wrapper passes a REAL FAILURE through unchanged', () => {
 });
 
 test('the optional wrapper passes a PASS through as a pass', () => {
-  if (!HAS_BASH) { console.log('    (skipped: no bash on this host)'); return; }
+  if (!HAS_SHELL) { skipBlock('the optional wrapper passes a PASS through as a pass'); return; }
   withStub(0, (stub) => {
     const result = runBash(OPTIONAL, { PROJECTION_PHASE9_REHEARSAL_ENTRYPOINT: stub });
     assertEq(result.status, 0, 'a pass');
@@ -175,7 +210,7 @@ test('the optional wrapper passes a PASS through as a pass', () => {
 });
 
 test('the three-runner runs exactly three times and counts them', () => {
-  if (!HAS_BASH) { console.log('    (skipped: no bash on this host)'); return; }
+  if (!HAS_SHELL) { skipBlock('the three-runner runs exactly three times and counts them'); return; }
   withStub(0, (stub) => {
     const result = runBash(THREE, { PROJECTION_PHASE9_REHEARSAL_ENTRYPOINT: stub });
     assertEq(result.status, 0, 'three passing runs did not pass');
@@ -186,7 +221,7 @@ test('the three-runner runs exactly three times and counts them', () => {
 });
 
 test('the three-runner STOPS at the first failure and reports how far it got', () => {
-  if (!HAS_BASH) { console.log('    (skipped: no bash on this host)'); return; }
+  if (!HAS_SHELL) { skipBlock('the three-runner STOPS at the first failure and reports how far it got'); return; }
   withStub(1, (stub) => {
     const result = runBash(THREE, { PROJECTION_PHASE9_REHEARSAL_ENTRYPOINT: stub });
     assertEq(result.status, 1, 'a failing run did not fail the sequence');
@@ -196,7 +231,7 @@ test('the three-runner STOPS at the first failure and reports how far it got', (
 });
 
 test('the three-runner PROPAGATES a skip as a skip rather than folding it', () => {
-  if (!HAS_BASH) { console.log('    (skipped: no bash on this host)'); return; }
+  if (!HAS_SHELL) { skipBlock('the three-runner PROPAGATES a skip as a skip rather than folding it'); return; }
   withStub(77, (stub) => {
     const result = runBash(THREE, { PROJECTION_PHASE9_REHEARSAL_ENTRYPOINT: stub });
     assertEq(result.status, 77, 'a skipped run was folded inside the three-runner');
@@ -205,7 +240,7 @@ test('the three-runner PROPAGATES a skip as a skip rather than folding it', () =
 });
 
 test('A ZERO-RUN LOOP CANNOT ANNOUNCE A COMPLETED SEQUENCE', () => {
-  if (!HAS_BASH) { console.log('    (skipped: no bash on this host)'); return; }
+  if (!HAS_SHELL) { skipBlock('A ZERO-RUN LOOP CANNOT ANNOUNCE A COMPLETED SEQUENCE'); return; }
   withStub(0, (stub) => {
     const result = runBash(THREE, {
       PROJECTION_PHASE9_REHEARSAL_ENTRYPOINT: stub,
@@ -218,7 +253,7 @@ test('A ZERO-RUN LOOP CANNOT ANNOUNCE A COMPLETED SEQUENCE', () => {
 });
 
 test('a SHORTENED run count cannot be read as the full sequence', () => {
-  if (!HAS_BASH) { console.log('    (skipped: no bash on this host)'); return; }
+  if (!HAS_SHELL) { skipBlock('a SHORTENED run count cannot be read as the full sequence'); return; }
   withStub(0, (stub) => {
     const result = runBash(THREE, {
       PROJECTION_PHASE9_REHEARSAL_ENTRYPOINT: stub,
@@ -260,6 +295,33 @@ test('this suite is in the offline inventory', () => {
   const entry = inventory.suites.find((suite) => suite.file === 'projection-phase9-gate-audit.ts');
   assert(entry !== undefined, 'suite is inventoried');
   assertEq(entry.group, 'offline', 'offline group');
+});
+
+test('the shell used to drive the wrappers is one that can actually run a script', () => {
+  // THE REGRESSION FOR THE HARNESS ITSELF. Nine of the controls above are only worth their `ok` if a real
+  // shell executed a real wrapper; before this, bare `bash` on a Windows PATH resolved to the WSL launcher
+  // and they failed with 127 in the same vocabulary a genuine wrapper defect fails with. This asserts the
+  // selection did its job, and — the important half — that a run which could NOT find a shell says so by
+  // name instead of leaving eight green lines that never executed anything.
+  const shell = posixShell();
+  if (shell === null) {
+    assert(skippedBlocks.length > 0, 'no shell was selected and yet nothing reported itself skipped');
+    console.log(`    .. ${skippedBlocks.length} block(s) skipped: ${NO_SHELL}`);
+    return;
+  }
+  assertEq(skippedBlocks.length, 0,
+    `a shell was selected and ${skippedBlocks.length} block(s) still skipped: ${skippedBlocks.join('; ')}`);
+  // The selected shell runs a script at the exact spelling this suite hands out — the property that was
+  // assumed before and is now measured.
+  const probe = spawnSync(shell, [shPath(join(repoRoot, REHEARSAL))], {
+    env: { ...process.env, PROJECTION_PHASE9_REHEARSAL_COMMAND: '' , PATH: '' },
+    encoding: 'utf8',
+    timeout: 60_000,
+  });
+  assert(probe.error === undefined, `the selected shell could not be handed a repository path: ${probe.error?.message ?? ''}`);
+  assert(probe.status !== 127,
+    'the selected shell answered 127 for a script that exists, which is what a shell that cannot address '
+    + 'this path does — the exact defect this selection was introduced to remove');
 });
 
 await h.finish();

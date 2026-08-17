@@ -8,7 +8,8 @@
     "aggregate-suite.ts",
     "projection-delivery-wording.ts",
     "jellyfin-fake-server.ts",
-    "usenet-kit.ts"
+    "usenet-kit.ts",
+    "posix-shell-kit.ts"
   ],
   "suites": [
     {

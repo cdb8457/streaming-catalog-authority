@@ -11,6 +11,9 @@ import { fileURLToPath } from 'node:url';
 import type { AddressInfo } from 'node:net';
 import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 import {
+  NO_SHELL, SHELL_SENTINEL, posixShell, resetShellChoice, shPath, shellCanRunAScript, shellOrThrow,
+} from './posix-shell-kit.js';
+import {
   TORBOX_ASSUMED_LIFETIME_MS, TORBOX_LINK_LIFETIME_MS, TORBOX_REQUESTDL, TORBOX_SOURCE_KINDS,
   TorBoxRefError, TorBoxResolveError, buildRequestUrl, classifyStatus, findSecretShapes, formatStableRef,
   parseResolveBody, parseStableRef, redactError,
@@ -52,7 +55,7 @@ const repoFile = (path: string): string => readFileSync(join(HERE, '..', path), 
  * determinant was never the separator; it was WHICH `bash` got the call. `posixShell` below is the fix, and
  * this remains for the argv hygiene it does provide.
  */
-const shPath = (path: string): string => path.replace(/\\/g, '/');
+// `shPath` now lives in `./posix-shell-kit.js`, beside the selection it belongs to.
 
 /**
  * Blocks the suite could not execute here, counted so a green summary cannot hide them.
@@ -72,99 +75,14 @@ const skipBlock = (what: string): void => {
 // THE SHELL THIS SUITE DRIVES SHIPPED SCRIPTS WITH, CHOSEN BY EXECUTION RATHER THAN BY NAME
 // ---------------------------------------------------------------------------------------------------------
 //
-// THE DEFECT, WHICH SURVIVED TWO COMMITS AND WAS PUBLISHED AS A PASSING FIGURE BOTH TIMES. Four tests here
-// drive a shipped shell program, and they invoked it as `spawnSync('bash', …)` — whatever `bash` PATH
-// happens to resolve first. On a stock Windows install that is `C:\WINDOWS\system32\bash.exe`, the WSL
-// launcher, which cannot address a Windows drive path in any spelling; the wrapper test therefore FAILED
-// rather than ran, and the failure was indistinguishable from a real regression in the wrapper. It passed
-// only when the suite happened to be started from a shell that had put Git Bash's `bin` first, which is why
-// the recorded Windows figure did not reproduce from an ordinary PowerShell launch.
-//
-// SO THE SHELL IS CHOSEN BY ASKING IT TO DO THE JOB, NOT BY ASKING WHAT IT IS CALLED. Each candidate is made
-// to execute a real script at the exact path spelling the suite will use and print a sentinel. A candidate
-// that cannot is not a POSIX shell as far as this suite is concerned, whatever its name — and if none can,
-// every test that needs one SKIPS BY NAME rather than failing, because a suite that could not run the
-// wrapper has not checked the wrapper and must not report either verdict.
-//
-// A RELATED DEFECT WAS SOLVED DIFFERENTLY ELSEWHERE, AND THE DIFFERENCE IS DELIBERATE.
-// `test/projection-jellyfin-dataplane.ts` keeps whatever `bash` it finds and TRANSLATES the path into that
-// shell's convention (`toBashPath`, plus `WSLENV` so variables survive the boundary). That is right there,
-// where the wrapper only ever invokes a stub. It is wrong here: these wrappers run `npm`, `npx` and `docker`
-// out of this checkout, and a WSL bash would be a different machine with a different toolchain. What this
-// suite needs is the shell the repository is actually operated with.
-const SHELL_SENTINEL = 'projection-posix-shell-ok';
-
-/** Where a Git-for-Windows `bash.exe` lives, derived from the `git` that is installed rather than guessed. */
-function gitBashCandidates(): readonly string[] {
-  const found: string[] = [];
-  // `git --exec-path` answers e.g. `C:/Program Files/Git/mingw64/libexec/git-core`; the shell sits at
-  // `<install root>/bin/bash.exe`. Walking up from the answer finds it wherever Git was installed, which a
-  // hard-coded `C:\Program Files` would not.
-  const execPath = spawnSync('git', ['--exec-path'], { encoding: 'utf8' });
-  if (execPath.status === 0) {
-    let dir = String(execPath.stdout).trim().replace(/\\/g, '/');
-    for (let up = 0; up < 4 && dir.includes('/'); up += 1) {
-      found.push(`${dir}/bin/bash.exe`);
-      dir = dir.slice(0, dir.lastIndexOf('/'));
-    }
-  }
-  for (const root of [process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.LOCALAPPDATA]) {
-    if (root !== undefined && root !== '') found.push(`${shPath(root)}/Git/bin/bash.exe`);
-  }
-  return found;
-}
-
-/**
- * Candidates in the order they should be preferred.
- *
- * ON WINDOWS, BARE `bash` IS TRIED LAST AND THAT ORDERING IS THE WHOLE POINT: it is the one most likely to
- * be WSL. On a POSIX host bare `bash` is tried FIRST, because there it is the right answer — with the
- * absolute paths after it so that a PATH which has been poisoned, shadowed or emptied still resolves to a
- * real shell rather than making the suite skip a check it could have run.
- */
-function shellCandidates(): readonly string[] {
-  if (process.platform === 'win32') return [...gitBashCandidates(), 'bash'];
-  return ['bash', '/bin/bash', '/usr/bin/bash', '/bin/sh'];
-}
-
-/** Can this candidate actually execute a script at the spelling this suite hands out? */
-function shellCanRunAScript(command: string): boolean {
-  const dir = mkdtempSync(join(tmpdir(), 'tbshell-'));
-  const script = join(dir, 'probe.sh');
-  writeFileSync(script, `#!/bin/sh\nprintf '%s' '${SHELL_SENTINEL}'\n`);
-  try { chmodSync(script, 0o755); } catch { /* Windows has no executable bit; the shell is given the path */ }
-  const result = spawnSync(command, [shPath(script)], { encoding: 'utf8', timeout: 30_000 });
-  return result.status === 0 && String(result.stdout ?? '').includes(SHELL_SENTINEL);
-}
-
-let shellChoice: { readonly command: string | null } | undefined;
-
-/** The chosen shell, or `null` when nothing on this host can run a script at this path. Memoised. */
-function posixShell(): string | null {
-  if (shellChoice === undefined) {
-    shellChoice = { command: shellCandidates().find(shellCanRunAScript) ?? null };
-  }
-  return shellChoice.command;
-}
-
-/**
- * The chosen shell where a caller has already established there is one.
- *
- * Every call site is behind a guard that skips by name when `posixShell()` is null, so reaching this with
- * nothing selected is a defect in the guard rather than a property of the host — and it throws rather than
- * quietly falling back to bare `bash`, which is the behaviour this whole mechanism exists to remove.
- */
-function shellOrThrow(): string {
-  const command = posixShell();
-  if (command === null) throw new Error('no POSIX shell was selected, and this block requires one');
-  return command;
-}
-
-/** For the selection regression, which has to re-resolve under a deliberately poisoned PATH. */
-function resetShellChoice(): void { shellChoice = undefined; }
-
-/** The reason a block cannot run, named for what is missing rather than for the platform. */
-const NO_SHELL = 'no POSIX shell on this host can execute a script at the workspace path';
+// THE WHOLE ARGUMENT NOW LIVES IN `./posix-shell-kit.js`, AND IT MOVED THERE BECAUSE IT WAS NEEDED TWICE.
+// This suite worked the defect out first and paid for it over two commits: `bash` on a stock Windows PATH
+// is the WSL launcher, which cannot address a Windows drive path in any spelling — so a wrapper test FAILS
+// rather than runs, and the failure is indistinguishable from a real regression in the wrapper.
+// `test/projection-phase9-gate-audit.ts` then met the identical failure, nine of eighteen controls red from
+// an ordinary PowerShell launch, because the reasoning was locked up in this file's private functions.
+// Nothing about the selection changed in the move; it is imported rather than re-derived, so a future
+// correction lands in one place instead of two.
 
 let passed = 0;
 let failed = 0;
