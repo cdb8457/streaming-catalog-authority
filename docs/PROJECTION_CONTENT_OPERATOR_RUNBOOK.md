@@ -197,6 +197,26 @@ to put on a timer, and the exit status is the report rather than an action.
 or a disk shuffle removes one without anything else in this system noticing. That is what
 `local-source-file-absent` is for, and it is why this command exists at all.
 
+`local-source-file-absent` also covers the case where the file is still there and **a directory on the way to
+it has become a symbolic link**. The detail line says `component-is-symlink` when that is what happened. This
+contract never follows a link on the way to a local source: a link is a second name for a directory somebody
+else can move, and a file reached through one is not the file that was registered even when its own stat looks
+perfect. `add-local` refuses such a path outright, with `LOCAL_PATH_NOT_CONTAINED`.
+
+### 5.1 The refusals from `add-local` and `add-torbox` that are about the FILE rather than its contents
+
+None of these writes anything: an `add` is one transaction, and a refusal leaves the registry exactly as it
+was rather than half-applied.
+
+| Refusal | What it means |
+|---|---|
+| `LOCAL_PATH_NOT_CONTAINED` | the media root, or a directory on the way to the file, is a symbolic link or is not a directory |
+| `LOCAL_FILE_IS_SYMLINK` | the file itself is a link. Register what it points at, under a root you configured |
+| `OBJECT_PATH_DUPLICATE` | two objects in one file name the same projected path. They would be **one** entry — a projected entry id is derived from its path — and the second would silently replace the first. Two paths that differ only in case count as the same, because on an SMB or macOS client they are one file |
+| `OBJECT_LABEL_DUPLICATE` | two objects share a label, and a label is the only identity an object has in a report line |
+| `OBJECTS_FILE_TOO_LARGE` | the file is bigger than any list of objects. Almost always `--file` pointed at a media file |
+| `OBJECTS_FILE_TOO_MANY` | more objects than one operator action; split the file |
+
 ---
 
 ## 6. Hold and release
@@ -210,9 +230,11 @@ deploy/projection-content.sh release --path "Movies/Local One/Local One.bin"
 untouched, because a source that cannot be reached must not be able to shrink a media server's library — and
 neither must one you are holding on purpose.
 
-Both are idempotent and both say when they changed nothing. `release` **refuses** an entry that is `retiring`
-rather than making it available again: a retiring entry is not a held one, and cancelling a deletion intent
-somebody declared elsewhere is not what "release" means.
+Both are idempotent and both say when they changed nothing. **Both refuse an entry that is `retiring`**, and
+for the same reason in both directions: a retiring entry is not a held one, and cancelling a deletion intent
+somebody declared elsewhere is not what either verb means. `hold` would clear the intent outright — degrading
+an entry and retiring it are mutually exclusive states — so the refusal there is the more important of the
+two. Cancel a retirement where it was declared, not here.
 
 Run `publish` afterwards for either change to reach a generation.
 

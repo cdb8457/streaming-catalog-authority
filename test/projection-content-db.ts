@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Client } from 'pg';
@@ -421,6 +421,38 @@ async function main(): Promise<void> {
     // ARGV PARSING ONLY, so it runs on every host: the refusal happens before the configuration is read.
     const status = await contentCli(['status', '--config', configFile, '--publish']);
     assertEq(status, 2, 'a --publish an operator typed on `status` was silently ignored');
+  });
+
+  await test('re-adding a file whose MTIME moved is refused IN WORDS, not by a driver exception', async () => {
+    // THE ONE REFUSAL AN OPERATOR CAN REACH THROUGH ORDINARY USE. A version key is derived from the label and
+    // the probe digests, so a re-add of an unchanged file is idempotent. A `touch` moves the mtime while
+    // every fixed probe window stays identical, so the KEY is the same and the ROW is not, and
+    // `cat_projection_version_register` raises rather than overwriting — which is correct, since one version
+    // key names one exact byte stream. What used to reach the operator was a plpgsql exception naming a
+    // derived id, and after this tranche's error-path repair the CLI withholds any message this project did
+    // not compose, which would have left them with a SQLSTATE and nothing else.
+    const second = path.join(mediaRoot, 'movies', 'local-two.bin');
+    writeFileSync(second, mediaBytes(1024 * 1024));
+    const file = path.join(inputDir, 'local-two.json');
+    writeFileSync(file, JSON.stringify([{
+      label: 'local-two', itemId: localItem, path: 'Movies/Local Two/Local Two.bin',
+      relativePath: 'movies/local-two.bin',
+    }]));
+
+    const first = await addLocalObjects(config, host, file, process.env.DATABASE_URL);
+    assertEq(first.length, 1, 'the second local file did not register');
+    // THE CONTROL: an unchanged re-add is still idempotent, so the refusal below is about the change rather
+    // than about re-running the verb.
+    const again = await addLocalObjects(config, host, file, process.env.DATABASE_URL);
+    assertEq(again.length, 1, 'a second identical add-local was refused, so this verb is not idempotent at all');
+
+    const when = new Date('2026-05-01T09:00:00.000Z');
+    utimesSync(second, when, when);
+    let code = '';
+    try { await addLocalObjects(config, host, file, process.env.DATABASE_URL); }
+    catch (error) { code = (error as { code?: string }).code ?? ''; }
+    assertEq(code, 'VERSION_ALREADY_REGISTERED_DIFFERENTLY',
+      'a touched file produced a driver exception rather than a sentence an operator can act on');
   });
 
   await admin.end();

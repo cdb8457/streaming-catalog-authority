@@ -325,7 +325,10 @@ HAND_RUN_CONTROL="$(printf '%s\n' 'npx tsx src/ops/projection-register-cli.ts --
 [ "$HAND_RUN_CONTROL" -eq 1 ] \
   || fail "the hand-run counter cannot count, so the zero it would report proves nothing"
 
-HAND_RUN="$(sed -n '/^step "P10-4/,/^verdict P10-4/p' "$0" | grep -cE 'npx tsx|npm run ops:')"
+# The range markers avoid a literal double quote INSIDE the single-quoted `sed` expression: a line-based
+# shell reader cannot close that pairing, and `test/custody-runtime-closure.ts` refuses a line it cannot read
+# — "an unreadable line is not an empty one". A `.` matches the quote and reads the same to a human.
+HAND_RUN="$(sed -n '/^step .P10-4/,/^verdict P10-4/p' "$0" | grep -cE 'npx tsx|npm run ops:')"
 
 # ---------------------------------------------------------------------------------------------------------
 step "P10-4 — zero to a readable namespace, through the SHIPPED verbs only"

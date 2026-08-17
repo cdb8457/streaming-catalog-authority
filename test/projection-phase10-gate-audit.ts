@@ -361,7 +361,9 @@ test('P10-4 COUNTS its hand-run commands out of the run rather than declaring th
   // hand-run command added to the operator path would have left the claim passing and reporting the same 0.
   assert(!/^\s*HAND_RUN=0\b/m.test(body),
     'the hand-run measurement is a constant, so the budget it is compared against cannot be exceeded');
-  assert(body.includes(`HAND_RUN="$(sed -n '/^step "P10-4/,/^verdict P10-4/p' "$0" | grep -cE 'npx tsx|npm run ops:')"`),
+  // The `.` in the range marker is a literal double quote the shell reader cannot pair inside a single-quoted
+  // expression; `test/custody-runtime-closure.ts` refuses a line it cannot read, and it is right to.
+  assert(body.includes(`HAND_RUN="$(sed -n '/^step .P10-4/,/^verdict P10-4/p' "$0" | grep -cE 'npx tsx|npm run ops:')"`),
     'the derivation is not the one this suite\'s controls model, so the control below proves nothing about it');
   assert(/HAND_RUN_CONTROL/.test(body),
     'nothing proves the counter can count, and a grep that matched nothing for the wrong reason reports the '

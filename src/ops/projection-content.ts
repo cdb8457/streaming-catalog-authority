@@ -612,6 +612,45 @@ export async function inRegistryTransaction<T>(db: Queryable, fn: () => Promise<
 }
 
 /**
+ * The exact sentence `cat_projection_version_register` raises when a version key is re-asserted with
+ * different bytes. Matched rather than re-derived, because the function is the one that decides it.
+ */
+const VERSION_BYTES_CONFLICT = /already registered with different bytes/;
+
+/**
+ * Register a version, and turn the one refusal an OPERATOR can reach into a sentence they can act on.
+ *
+ * WHAT THEY REACH, AND HOW. A version key is derived from what the entry IS — the label and the probe
+ * digests for a local file, the label and the reference for a provider-backed one — so re-running `add` is
+ * idempotent. It stops being idempotent the moment something changes that the KEY does not see but the row
+ * does: a local file whose mtime moved while its size and every fixed probe window stayed identical, or a
+ * corrected `sizeBytes` in an objects file whose `ref` did not change. `cat_projection_version_register` then
+ * RAISES rather than overwriting, which is correct — one version key names one exact byte stream — and what
+ * reached the operator was a `plpgsql` exception naming a derived id.
+ *
+ * A DRIVER EXCEPTION IS NOT A REFUSAL AN OPERATOR CAN ACT ON, and after this tranche's error-path repair the
+ * CLI withholds any message this project did not compose, which is right and would have left them with a
+ * SQLSTATE and nothing else. So the one reachable case is named here, in this project's own words, and every
+ * other error is re-thrown untouched rather than absorbed into a guess.
+ */
+async function registerVersionOrExplain(
+  db: Queryable, label: string, version: Parameters<typeof registerVersion>[1],
+): Promise<void> {
+  try {
+    await registerVersion(db, version);
+  } catch (error) {
+    const message = typeof (error as Error | undefined)?.message === 'string' ? (error as Error).message : '';
+    if (!VERSION_BYTES_CONFLICT.test(message)) throw error;
+    throw new ContentCommandError('VERSION_ALREADY_REGISTERED_DIFFERENTLY',
+      `${label}: the control plane already holds this version with DIFFERENT bytes, so nothing was written. `
+      + 'For a local file that means its mtime moved while its size and every probe window stayed identical; '
+      + 'for a provider-backed object it means the size or the mtime in the objects file changed while the '
+      + 'reference did not. Register it under a different label if it is a different version, or put the '
+      + 'timestamp back if it is not.');
+  }
+}
+
+/**
  * Register TorBox objects. IT DOES NOT PUBLISH.
  *
  * Phase 10 §2.2 is the reason the two are separate verbs: `admitted` did not mean visible, and the repair for
@@ -641,7 +680,7 @@ export async function addTorboxObjects(
     await registerRoot(db, config.endpointId, 'http-range');
     const outcomes: AddOutcome[] = [];
     for (const { object, sizeBytes, versionKey, probes } of prepared) {
-      await registerVersion(db, {
+      await registerVersionOrExplain(db, object.label, {
         versionKey, sizeBytes, mtime: object.mtime as string, ...(probes === null ? {} : { probes }),
       });
       const projectedEntryId = await registerEntry(db, {
@@ -774,7 +813,8 @@ export async function addLocalObjects(
     const outcomes: AddOutcome[] = [];
     for (const { object, stat, probes } of proved) {
       const versionKey = contentVersionKeyFor('local', object.label, probes.map((probe) => probe.sha256).join(':'));
-      await registerVersion(db, { versionKey, sizeBytes: stat.sizeBytes, mtime: stat.mtime, probes });
+      await registerVersionOrExplain(db, object.label,
+        { versionKey, sizeBytes: stat.sizeBytes, mtime: stat.mtime, probes });
       const projectedEntryId = await registerEntry(db, {
         itemId: object.itemId,
         versionKey,

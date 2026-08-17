@@ -648,6 +648,12 @@ test('both add verbs run their writes through the transaction, structurally', ()
     const withinVerb = body.slice(0, body.indexOf('\n}\n') + 1);
     assert(withinVerb.includes('inRegistryTransaction('),
       `${verb} writes outside a transaction, so a refusal half way through leaves the earlier rows behind`);
+    // AND THROUGH THE WORDED VERSION REGISTRATION. `cat_projection_version_register` RAISES when a key is
+    // re-asserted with different bytes — the case an operator reaches by touching a file — and after the
+    // error-path repair the CLI withholds any message this project did not compose, so a driver exception
+    // there would reach them as a SQLSTATE and nothing else.
+    assert(withinVerb.includes('registerVersionOrExplain('),
+      `${verb} registers a version without wording the one refusal an operator can reach through ordinary use`);
   }
 });
 
