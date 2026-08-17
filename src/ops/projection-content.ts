@@ -511,6 +511,36 @@ export interface AddOutcome {
 }
 
 /**
+ * Run every registration of one `add` as ONE database transaction.
+ *
+ * WHY THIS EXISTS, AND IT IS A DEFECT THIS AUDIT FOUND RATHER THAN A PRECAUTION. `withRegistry` opens a
+ * connection and nothing more, so every `registerVersion` and `registerEntry` inside it was its own
+ * autocommit statement. An objects file whose fourth entry the registration boundary refused — a locator it
+ * calls URL-shaped, a probe plan the size does not imply, a root nobody registered — left the first three
+ * WRITTEN, under a command the operator reads as having failed. `add-local` already argued that case for the
+ * FILESYSTEM half ("a run that registered three entries and then found the fourth missing would leave a
+ * namespace half-changed"); the argument is the same one and it did not reach the database half.
+ *
+ * IT IS THE WHOLE `add` AND NOT ONE OBJECT PER TRANSACTION. Per-object commits would make the verb partially
+ * applied on failure, which is the state a re-run cannot distinguish from a different file.
+ *
+ * ROLLBACK IS BEST-EFFORT AND THE ORIGINAL ERROR WINS. A connection that cannot roll back is a connection
+ * that is about to be closed by `withRegistry`, which ends the transaction anyway; reporting the rollback's
+ * failure instead of the cause would hide the sentence the operator needs.
+ */
+export async function inRegistryTransaction<T>(db: Queryable, fn: () => Promise<T>): Promise<T> {
+  await db.query('BEGIN');
+  try {
+    const value = await fn();
+    await db.query('COMMIT');
+    return value;
+  } catch (error) {
+    await db.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  }
+}
+
+/**
  * Register TorBox objects. IT DOES NOT PUBLISH.
  *
  * Phase 10 §2.2 is the reason the two are separate verbs: `admitted` did not mean visible, and the repair for
@@ -520,15 +550,26 @@ export async function addTorboxObjects(
   config: ContentPlaneConfig, host: ContentHost, file: string, connectionString?: string,
 ): Promise<readonly AddOutcome[]> {
   const objects = await readObjectsFile(host, file, 'http-range');
+
+  // EVERY OBJECT IS TURNED INTO ITS REGISTRATION BEFORE A CONNECTION IS OPENED, for the reason `add-local`
+  // proves its files first. `probePlanFor` refuses a digest set the size does not imply, and it used to be
+  // called INSIDE the write loop — so the fourth object's refusal arrived after the first three had been
+  // written. Deriving the whole plan first makes the refusal arrive before anything exists to undo.
+  const prepared = objects.map((object) => {
+    const sizeBytes = object.sizeBytes as number;
+    return {
+      object,
+      sizeBytes,
+      versionKey: contentVersionKeyFor('http-range', object.label, object.sha256 ?? object.ref as string),
+      probes: object.probeDigests === undefined ? null : probePlanFor(sizeBytes, object.probeDigests),
+    };
+  });
+
   const published = readPublishedEntryIds(config);
-  return withRegistry(async (db: Queryable) => {
+  return withRegistry(async (db: Queryable) => inRegistryTransaction(db, async () => {
     await registerRoot(db, config.endpointId, 'http-range');
     const outcomes: AddOutcome[] = [];
-    for (const object of objects) {
-      const sizeBytes = object.sizeBytes as number;
-      const identity = object.sha256 ?? object.ref as string;
-      const versionKey = contentVersionKeyFor('http-range', object.label, identity);
-      const probes = object.probeDigests === undefined ? null : probePlanFor(sizeBytes, object.probeDigests);
+    for (const { object, sizeBytes, versionKey, probes } of prepared) {
       await registerVersion(db, {
         versionKey, sizeBytes, mtime: object.mtime as string, ...(probes === null ? {} : { probes }),
       });
@@ -544,7 +585,7 @@ export async function addTorboxObjects(
       });
     }
     return outcomes;
-  }, connectionString);
+  }), connectionString);
 }
 
 /**
@@ -592,7 +633,7 @@ export async function addLocalObjects(
   }
 
   const published = readPublishedEntryIds(config);
-  return withRegistry(async (db: Queryable) => {
+  return withRegistry(async (db: Queryable) => inRegistryTransaction(db, async () => {
     await registerRoot(db, config.rootId, 'local');
     const outcomes: AddOutcome[] = [];
     for (const { object, stat, probes } of proved) {
@@ -610,7 +651,7 @@ export async function addLocalObjects(
       });
     }
     return outcomes;
-  }, connectionString);
+  }), connectionString);
 }
 
 // ---------------------------------------------------------------------------------------------------------

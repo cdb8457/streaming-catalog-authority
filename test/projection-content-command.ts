@@ -6,7 +6,9 @@ import { createHarness, assert, assertEq, assertThrows } from './usenet-kit.js';
 import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 import {
   ContentCommandError,
+  addTorboxObjects,
   contentVersionKeyFor,
+  inRegistryTransaction,
   isUnder,
   isoOf,
   parseContentConfig,
@@ -19,6 +21,7 @@ import {
   type ContentFileStat,
   type ContentHost,
 } from '../src/ops/projection-content.js';
+import type { Queryable } from '../src/core/projection/source-registry.js';
 import { parseArgs } from '../src/ops/projection-content-cli.js';
 import { PHASE10_DIVERGENCE_CODES, PHASE10_DIVERGENCE_MEANINGS } from '../src/core/projection/phase10.js';
 import { probeOffsetsFor, PROJECTION_PROBE_PLAN } from '../src/core/projection/manifest-v1.js';
@@ -329,6 +332,73 @@ test('the reconciler names no code the contract does not', () => {
   for (const code of emitted) {
     assert((PHASE10_DIVERGENCE_CODES as readonly string[]).includes(code),
       `the reconciler emits ${code}, which §3.3 does not name`);
+  }
+});
+
+h.section('an `add` is ONE transaction, and it refuses before it writes');
+
+/** A `Queryable` that records every statement and can be told to refuse the nth registration. */
+function recordingDb(failOn?: string): { readonly statements: string[]; readonly db: Queryable } {
+  const statements: string[] = [];
+  return {
+    statements,
+    db: {
+      async query(text: string) {
+        statements.push(text);
+        if (failOn !== undefined && text.includes(failOn)) throw new Error('the registry refused this row');
+        return { rows: [] };
+      },
+    },
+  };
+}
+
+test('a successful add COMMITS, and every registration is inside the one transaction', async () => {
+  const { statements, db } = recordingDb();
+  await inRegistryTransaction(db, async () => { await db.query('SELECT cat_projection_entry_register(...)'); });
+  assertEq(statements[0], 'BEGIN', 'the registrations did not open a transaction');
+  assertEq(statements[statements.length - 1], 'COMMIT', 'the transaction was never committed');
+});
+
+test('a registration refused half way ROLLS BACK, so a failed add leaves NOTHING registered', async () => {
+  const { statements, db } = recordingDb('entry_register');
+  let message = '';
+  try {
+    await inRegistryTransaction(db, async () => {
+      await db.query('SELECT cat_projection_version_register(...)');
+      await db.query('SELECT cat_projection_entry_register(...)');
+    });
+  } catch (error) { message = (error as Error).message; }
+  assertEq(message, 'the registry refused this row',
+    'the rollback swallowed the cause, so the operator would be told about the recovery and not the refusal');
+  assert(statements.includes('ROLLBACK'),
+    'a run that registered a version and then had its entry refused left the version behind — the half-changed '
+    + 'namespace the add verbs exist not to leave');
+  assert(!statements.includes('COMMIT'), 'a refused add committed anyway');
+});
+
+test('add-torbox refuses a probe plan BEFORE it opens a connection, so nothing is written to undo', async () => {
+  // THE ORDERING IS THE ASSERTION. The database is deliberately unreachable: if the refusal arrives first,
+  // this fails on the plan, and if the write loop is reached first it fails on the connection. An earlier
+  // draft called `probePlanFor` inside the loop, so object 2's refusal arrived after object 1 was written.
+  const objects = [
+    { label: 'first', itemId: ITEM, path: 'Movies/A/A.bin', ref: 'opaque-one', sizeBytes: 4194304, mtime: '2026-06-01T10:00:00.000Z' },
+    { label: 'second', itemId: ITEM, path: 'Movies/B/B.bin', ref: 'opaque-two', sizeBytes: 4194304, mtime: '2026-06-01T10:00:00.000Z', probeDigests: [] },
+  ];
+  let code = '';
+  try {
+    await addTorboxObjects(CONFIG, hostWith(objects), '/tmp/objects.json', 'postgresql://127.0.0.1:1/nothing');
+  } catch (error) { code = (error as ContentCommandError).code ?? ''; }
+  assertEq(code, 'OBJECT_PROBE_PLAN_MISMATCH',
+    'the second object\'s probe plan was checked after a connection had been opened for the first one');
+});
+
+test('both add verbs run their writes through the transaction, structurally', () => {
+  const source = read('src/ops/projection-content.ts');
+  for (const verb of ['addTorboxObjects', 'addLocalObjects']) {
+    const body = source.slice(source.indexOf(`export async function ${verb}`));
+    const withinVerb = body.slice(0, body.indexOf('\n}\n') + 1);
+    assert(withinVerb.includes('inRegistryTransaction('),
+      `${verb} writes outside a transaction, so a refusal half way through leaves the earlier rows behind`);
   }
 });
 
