@@ -1009,6 +1009,21 @@ export async function holdContentEntry(
   const before = await readNamespaceSnapshot(connectionString);
   const existing = before.find((entry) => entry.projectedEntryId === projectedEntryId);
   if (existing === undefined) throw new ContentCommandError('ENTRY_UNKNOWN', 'no registered entry has that path');
+  if (existing.visibility === 'retiring') {
+    // A HOLD DOES NOT CANCEL A DECLARED DELETION INTENT, AND THIS AUDIT FOUND THAT IT DID.
+    //
+    // `cat_projection_entry_degrade` sets `deletion_intent_id`, `retiring_declared_at` and `grace_deadline`
+    // all to NULL — it has to, because an entry cannot be degraded and retiring at once. So `hold` on a
+    // retiring entry silently threw away an intent somebody declared through a different verb, and reported
+    // `changed: true` about a hold.
+    //
+    // `release` ALREADY REFUSED EXACTLY THIS, in exactly these words: "release does not cancel a declared
+    // deletion intent." The two verbs are symmetric and only one of them had the guard, which made the more
+    // destructive of the pair the unguarded one. Retirement is declared elsewhere and is cancelled elsewhere.
+    throw new ContentCommandError('ENTRY_RETIRING',
+      'that entry is retiring, and holding it would clear the deletion intent somebody declared for it; a hold '
+      + 'is not the verb for cancelling one');
+  }
 
   await withRegistry((db) => degradeEntry(db, projectedEntryId, 'operator-hold', since), connectionString);
   return {

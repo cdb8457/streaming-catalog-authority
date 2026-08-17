@@ -11,6 +11,9 @@ import { mintItemId } from '../src/core/catalog/events.js';
 import { FileCustodian } from '../src/core/crypto/file-custodian.js';
 import { adminUrl, closePool, getPool, migrate } from '../src/db/pool.js';
 import { readPointer } from '../src/core/projection/artifact-store.js';
+import { deriveProjectedEntryId } from '../src/core/projection/manifest-v1.js';
+import { readNamespaceSnapshot } from '../src/core/projection/namespace-snapshot.js';
+import { restoreEntry, retireEntry, withRegistry } from '../src/core/projection/source-registry.js';
 import { main as contentCli } from '../src/ops/projection-content-cli.js';
 import {
   addLocalObjects, addTorboxObjects, contentPreflight, contentStatus, createRealContentHost,
@@ -362,6 +365,38 @@ async function main(): Promise<void> {
     try { await holdContentEntry('Movies/Nothing/Nothing.bin', TORBOX_MTIME, process.env.DATABASE_URL); }
     catch (error) { refused = (error as { code?: string }).code === 'ENTRY_UNKNOWN'; }
     assert(refused, 'a hold on an unknown path succeeded, so an operator typo is silently a no-op');
+  });
+
+  await test('hold REFUSES a RETIRING entry, because degrading one would throw away its deletion intent', async () => {
+    // WHY THIS ARM EXISTS. `cat_projection_entry_degrade` sets `deletion_intent_id`, `retiring_declared_at`
+    // and `grace_deadline` all to NULL — it must, since an entry cannot be degraded and retiring at once. So
+    // `hold` on a retiring entry silently cancelled an intent declared through a different verb and reported
+    // `changed: true` about a hold. `release` already refused exactly this; the two verbs are symmetric and
+    // the more destructive of the pair was the unguarded one.
+    const entryId = deriveProjectedEntryId(TORBOX_PROJECTED);
+    await withRegistry((db) => retireEntry(db, entryId, {
+      intentKey: 'phase10-audit-intent', declaredAt: '2026-06-01T10:00:00.000Z',
+      graceDeadline: '2026-07-01T10:00:00.000Z',
+    }), process.env.DATABASE_URL);
+
+    let code = '';
+    try { await holdContentEntry(TORBOX_PROJECTED, TORBOX_MTIME, process.env.DATABASE_URL); }
+    catch (error) { code = (error as { code?: string }).code ?? ''; }
+    assertEq(code, 'ENTRY_RETIRING', 'a hold cancelled a declared deletion intent');
+
+    // THE INTENT IS STILL THERE, asserted from the namespace rather than from the refusal's own word for it.
+    const after = await readNamespaceSnapshot(process.env.DATABASE_URL);
+    const entry = after.find((one) => one.projectedEntryId === entryId);
+    assertEq(entry?.visibility, 'retiring', 'the entry stopped retiring');
+    assert((entry?.retiring?.deletionIntentId ?? '').length > 0, 'the deletion intent was cleared');
+
+    // AND `release` STILL REFUSES IT TOO, which is the symmetry this arm is about.
+    let releaseCode = '';
+    try { await releaseContentEntry(TORBOX_PROJECTED, process.env.DATABASE_URL); }
+    catch (error) { releaseCode = (error as { code?: string }).code ?? ''; }
+    assertEq(releaseCode, 'ENTRY_RETIRING', 'release cancelled a declared deletion intent');
+
+    await withRegistry((db) => restoreEntry(db, entryId), process.env.DATABASE_URL);
   });
 
   await test('the shipped reconcile CLI exits 1 on a divergence and 0 when there is none', async () => {
