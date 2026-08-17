@@ -19,10 +19,10 @@ import { publishGeneration, publishStatus } from '../core/projection/publish-ser
 import { readPointer } from '../core/projection/artifact-store.js';
 import { assertSealedSafe } from '../core/usenet/sealed.js';
 import { UsenetJobLedger, createFileLedgerStorage, usenetLedgerPath } from '../core/usenet/job-ledger.js';
-import {
-  PHASE10_DIVERGENCE_CODES, PHASE10_DIVERGENCE_MEANINGS, PHASE10_RULES,
-  type Phase10DivergenceCode,
-} from '../core/projection/phase10.js';
+// THE DIVERGENCE SET IS READ FROM ONE PLACE AND RE-EXPORTED FROM NONE. An earlier draft re-exported it from
+// here "so a gate and a suite read it from one place", which is exactly the sentence that creates a second
+// place: `src/core/projection/phase10.ts` is where the contract lives, and everything reads it from there.
+import { PHASE10_DIVERGENCE_MEANINGS, type Phase10DivergenceCode } from '../core/projection/phase10.js';
 
 // Projection Phase 10 §3.2 — D10.2, D10.3 and D10.4: THE OPERATOR CONTENT PLANE.
 //
@@ -678,12 +678,21 @@ export interface ContentReconcileReport {
    * and reporting that as "no divergence" would be reporting a question nobody asked as an answer.
    */
   readonly ledgerChecked: boolean;
+  /**
+   * Local root ids this configuration could not resolve to a directory, so their files were NOT checked.
+   *
+   * REPORTED RATHER THAN SKIPPED, for the same reason `ledgerChecked` exists: "no local source was missing"
+   * and "some local sources were never looked at" are different facts, and a report that merged them would
+   * grow quieter the less it could see.
+   */
+  readonly unresolvedLocalRoots: readonly string[];
 }
 
 export async function reconcileContent(
   config: ContentPlaneConfig, host: ContentHost, connectionString?: string,
 ): Promise<ContentReconcileReport> {
   const divergences: ContentDivergence[] = [];
+  const unresolvedLocalRoots = new Set<string>();
   const add = (code: Phase10DivergenceCode, at: string, detail: string): void => {
     divergences.push({ code, meaning: PHASE10_DIVERGENCE_MEANINGS[code], at, detail });
   };
@@ -713,7 +722,17 @@ export async function reconcileContent(
     for (const source of entry.sources) {
       if (source.kind !== 'local') continue;
       const locator = source.locator as { readonly rootId: string; readonly relativePath: string };
-      if (locator.rootId !== config.rootId) continue;
+      if (locator.rootId !== config.rootId) {
+        // A LOCAL ROOT THIS CONFIGURATION CANNOT RESOLVE TO A DIRECTORY IS COUNTED, NOT SKIPPED.
+        //
+        // The configuration names ONE local root and the directory it lives at. An entry whose locator names
+        // a different one is an entry this command cannot stat, and quietly moving on would report a
+        // namespace as fully checked while the source most likely to have vanished — an admitted Usenet file
+        // under a root somebody configured separately — was never looked at. `unresolvedLocalRoots` on the
+        // report is what carries that, and `renderReconcile` prints it.
+        unresolvedLocalRoots.add(locator.rootId);
+        continue;
+      }
       const stat = await host.stat(`${config.mediaRoot}/${locator.relativePath}`);
       if (stat.kind === 'missing' || stat.kind === 'symlink' || stat.kind === 'other') {
         // THE DIVERGENCE PHASE 10 §2.4 EXISTS FOR. Every admitted Usenet entry is a `local` source under the
@@ -748,6 +767,7 @@ export async function reconcileContent(
     admittedNotPublished: divergences.filter((one) => one.code === 'registry-ahead-of-generation').length,
     divergences,
     ledgerChecked: ledger !== null,
+    unresolvedLocalRoots: [...unresolvedLocalRoots].sort(),
   };
   // THE LAST GATE BEFORE ANYTHING IS PRINTED, exactly as `status-report.ts` does it. It REFUSES rather than
   // redacting: a report that still carries a raw locator at the point of being written is a report whose
@@ -840,7 +860,7 @@ export interface HoldOutcome {
  * `operator-hold` IS ALREADY IN THE CLOSED SET. Phase 10 adds no reason, which is §4's first hard refusal.
  */
 export async function holdContentEntry(
-  config: ContentPlaneConfig, projectedPath: string, since: string, connectionString?: string,
+  projectedPath: string, since: string, connectionString?: string,
 ): Promise<HoldOutcome> {
   const normalized = normalizeProjectedPath(projectedPath);
   if (!normalized.ok) throw new ContentCommandError('PATH_NOT_NORMALIZED', 'a hold names a normalized projected path');
@@ -861,7 +881,7 @@ export async function holdContentEntry(
 
 /** Restore a held entry. The symmetric verb, and equally explicit. */
 export async function releaseContentEntry(
-  config: ContentPlaneConfig, projectedPath: string, connectionString?: string,
+  projectedPath: string, connectionString?: string,
 ): Promise<HoldOutcome> {
   const normalized = normalizeProjectedPath(projectedPath);
   if (!normalized.ok) throw new ContentCommandError('PATH_NOT_NORMALIZED', 'a release names a normalized projected path');
@@ -1001,6 +1021,10 @@ export function renderReconcile(report: ContentReconcileReport): readonly string
   if (!report.ledgerChecked) {
     lines.push('  the Usenet job ledger was NOT read, so ledger-entry-unregistered was not answered either way');
   }
+  if (report.unresolvedLocalRoots.length > 0) {
+    lines.push(`  ${report.unresolvedLocalRoots.length} local root(s) name no directory this configuration `
+      + 'knows, so their files were NOT checked: ' + report.unresolvedLocalRoots.join(', '));
+  }
   if (report.divergences.length === 0) {
     lines.push('  no divergence');
     return lines;
@@ -1040,6 +1064,3 @@ export function renderHold(outcome: HoldOutcome, verb: 'hold' | 'release'): read
     '  library shrank. Run `publish` for the change to reach a generation.',
   ];
 }
-
-/** Re-exported so a gate and a suite read the closed set from one place. */
-export { PHASE10_DIVERGENCE_CODES, PHASE10_RULES };

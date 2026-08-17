@@ -330,7 +330,7 @@ async function main(): Promise<void> {
   });
 
   await test('P10-5b - hold degrades the entry, and it STAYS in the namespace', async () => {
-    const outcome = await holdContentEntry(config, LOCAL_PROJECTED, TORBOX_MTIME, process.env.DATABASE_URL);
+    const outcome = await holdContentEntry(LOCAL_PROJECTED, TORBOX_MTIME, process.env.DATABASE_URL);
     assertEq(outcome.visibility, 'degraded', 'hold did not degrade');
     assertEq(outcome.changed, true, 'hold on an available entry reported nothing changed');
 
@@ -345,12 +345,12 @@ async function main(): Promise<void> {
   });
 
   await test('hold is idempotent, and reports that it changed nothing the second time', async () => {
-    const again = await holdContentEntry(config, LOCAL_PROJECTED, TORBOX_MTIME, process.env.DATABASE_URL);
+    const again = await holdContentEntry(LOCAL_PROJECTED, TORBOX_MTIME, process.env.DATABASE_URL);
     assertEq(again.changed, false, 'a second hold reported a change');
   });
 
   await test('P10-5c - release restores it', async () => {
-    const outcome = await releaseContentEntry(config, LOCAL_PROJECTED, process.env.DATABASE_URL);
+    const outcome = await releaseContentEntry(LOCAL_PROJECTED, process.env.DATABASE_URL);
     assertEq(outcome.visibility, 'available', 'release did not restore');
     assertEq(outcome.changed, true, 'release on a held entry reported nothing changed');
     const document = await contentStatus(config, host, process.env.DATABASE_URL);
@@ -359,7 +359,7 @@ async function main(): Promise<void> {
 
   await test('hold and release REFUSE a path no entry has, rather than silently doing nothing', async () => {
     let refused = false;
-    try { await holdContentEntry(config, 'Movies/Nothing/Nothing.bin', TORBOX_MTIME, process.env.DATABASE_URL); }
+    try { await holdContentEntry('Movies/Nothing/Nothing.bin', TORBOX_MTIME, process.env.DATABASE_URL); }
     catch (error) { refused = (error as { code?: string }).code === 'ENTRY_UNKNOWN'; }
     assert(refused, 'a hold on an unknown path succeeded, so an operator typo is silently a no-op');
   });

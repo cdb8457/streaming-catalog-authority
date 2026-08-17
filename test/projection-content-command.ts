@@ -281,6 +281,7 @@ test('every reconcile says it changed nothing, in its first line and in its last
   const lines = renderReconcile({
     phase: 10, publishedSequence: 3, registryEntries: 2, publishedEntries: 1, admittedNotPublished: 1,
     ledgerChecked: false,
+    unresolvedLocalRoots: ['archive'],
     divergences: [{
       code: 'registry-ahead-of-generation', meaning: PHASE10_DIVERGENCE_MEANINGS['registry-ahead-of-generation'],
       at: 'Movies/A/A.bin', detail: 'admitted-not-published',

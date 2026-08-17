@@ -220,8 +220,8 @@ export async function main(argv: readonly string[]): Promise<number> {
 
     if (args.verb === 'hold' || args.verb === 'release') {
       const outcome = args.verb === 'hold'
-        ? await holdContentEntry(config, args.path as string, args.since ?? new Date().toISOString().replace(/\.(\d{3})\d*Z$/, '.$1Z'), args.databaseUrl)
-        : await releaseContentEntry(config, args.path as string, args.databaseUrl);
+        ? await holdContentEntry(args.path as string, args.since ?? new Date().toISOString().replace(/\.(\d{3})\d*Z$/, '.$1Z'), args.databaseUrl)
+        : await releaseContentEntry(args.path as string, args.databaseUrl);
       emit(outcome, renderHold(outcome, args.verb), args.json);
       return 0;
     }
