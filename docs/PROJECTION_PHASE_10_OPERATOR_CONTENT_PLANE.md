@@ -376,4 +376,84 @@ they were **unverifiable**.
 
 ## 11. Run record
 
-**EMPTY. Nothing has been built or measured against this contract at the time of this commit.**
+### 11.1 STATUS: BUILT AND PROVIDER-FREE READY. **NO-GO — nothing here closes Phase 10.**
+
+Everything below was measured on the **development host**, provider-free. §5's closing run is on the real
+Unraid host and has **not** happened. **Not one of the ten claims of §5 is recorded as closed.** This section
+is a record of what was built and what it did when it was run, and a reader may not take a figure from it as a
+`P10-` verdict.
+
+**NO PROVIDER WAS CONTACTED AT ANY POINT. `endpoint.json` was not read, not written and not touched** — the
+rehearsal records its mtime before and after and reported `absent before, absent after`.
+
+### 11.2 What was measured, and where
+
+| | |
+|---|---|
+| Host | the development host only. The Unraid host has not run any of this. |
+| `npx tsc --noEmit` | clean |
+| Full offline inventory | **333 selected / 333 passed / 0 failed / 0 required-but-skipped**, 682 s, from **Git Bash**. 333 rather than 329 because this tranche adds four offline suites and nothing else. |
+| `test/projection-phase10.ts` | 30 / 30 |
+| `test/projection-phase10-gate-audit.ts` | 26 / 26, including seven controls that each tamper a copy of the rehearsal and assert the audit FAILS |
+| `test/projection-content-command.ts` | 37 / 37 |
+| `test/projection-namespace-snapshot.ts` | 12 / 12 |
+| `test/projection-drift-guard-db.ts` | **6 / 6** against a real migrated PostgreSQL 16 |
+| `test/projection-content-db.ts` | **18 passed, 0 failed, 1 SKIPPED** against a real migrated PostgreSQL 16 |
+| Phase 9's own suites | 13 / 13, unchanged |
+| `test/projection-bounded-recovery.ts` | 52 / 52 — the **OPERATOR SOURCE DIGEST is unmoved** |
+| `phase9RequiresSoakRerun` over this tranche's real 33-path diff | **FALSE.** Zero `PHASE9_SOAK_TRIGGERING_SOURCE` entries touched, so **the Phase 8 soak is not re-run** |
+
+**THE ONE SKIP IS NAMED AND COUNTED, and it is the product being correct.** `parseContentConfig` refuses a
+path that is not absolute POSIX and refuses one containing a backslash, exactly as `parseUsenetConfig` does,
+because the appliance is Linux. A Windows development host cannot present a temporary directory at such a
+path, so the arm that drives the shipped **CLI** over one cannot run there. The TorBox registration it covers
+runs on every host through the module; the CLI arm runs on the appliance host, where §5 is measured.
+
+### 11.3 The rehearsal was executed, and what it did
+
+`deploy/projection-phase10-rehearsal.sh` was run **for real** on the development host before its path
+precondition existed, and reached the database half of its sequence: `docker compose up --wait` on **5670**,
+`ops:migrate`, **P10-6 pass**, **P10-3 pass** driving `test/projection-drift-guard-db.ts` against that
+container, cleanup leaving the host's container, network and volume **sets identical**, and `endpoint.json`
+unmoved.
+
+**It now exits 77 on that host, by its own precondition, and that is the honest answer.** §11.5 is why.
+
+### 11.4 What this record does NOT contain
+
+No `go:phase10-rehearsal:three`. No run on the Unraid host. No provider-free regression subset. No offline
+inventory from an ordinary PowerShell — that arm depends on dispatch `task_49ab24180bd0`'s POSIX-shell harness
+repair landing in the same tree, and until it does **P10-1's second arm is NOT RUN**, which §5 and
+`phase10ClosureProblems` both refuse to fold into a pass. No `P9-` verdict of any kind.
+
+### 11.5 The defects this tranche found IN ITSELF, by running rather than by reading
+
+Recorded because a tranche that lists only what worked is a tranche nobody can audit.
+
+1. **The drift guard's second hole.** `admit()` caught a throwing `namespaceSnapshot` and fell through to an
+   admission carrying the weaker guarantee. Defensible while no shipped publisher could answer; the moment one
+   could, a database that blinked for one query would buy that admission a skipped guard. Now a **transient
+   refusal**.
+2. **`Buffer.alloc(NaN)` in the rehearsal.** `node -e` puts the first user argument at `argv[1]`, not
+   `argv[2]`, so the synthesised corpus was never written — the exact class of defect this instrument exists
+   to find in a shipped command, found in the instrument on its first real execution.
+3. **A closing message that narrated what it proved under "4 passed, 2 failed".** A paragraph that reads the
+   same whether or not the run passed is one somebody will quote out of context. Now guarded by the count.
+4. **A multi-line `node -e '…'` in a shipped script.** `test/custody-runtime-closure.ts` refused it: "an
+   unterminated single quote — the rest of this line cannot be read, and an unreadable line is not an empty
+   one". Every embedded program moved into a heredoc-written file.
+5. **Two defects in the gate audit's own model**, both false positives that would have got the audit deleted
+   rather than fixed: `trap cleanup EXIT` read as dead code, and apostrophes inside **double** quotes
+   (`"the operator's inputs"`) shifting a single-quote pairing so that assignments after them were blanked.
+6. **A local root the configuration cannot resolve was skipped silently by `reconcile`** — the same shape as
+   §2.1, one hat smaller. Now reported as `unresolvedLocalRoots`.
+7. **A Windows development host cannot host the rehearsal**, and the run that says so must be a **SKIP** and
+   not a failure. The probe passes the path through a **file** rather than argv, because MSYS rewrites a
+   POSIX-looking argument on the way to a native binary — an argv probe would have passed on exactly the host
+   it exists to catch.
+
+### 11.6 What still has to happen before §5 can be answered
+
+`go:phase10-rehearsal:three` on the Unraid host; the provider-free regression subset of P10-7 from one frozen
+candidate; the offline inventory from **both** shells, which needs `task_49ab24180bd0`'s commit first; and the
+complete sequence three consecutive fresh times. **Provider windows required: zero.**
