@@ -49,6 +49,14 @@ APPLIANCE="projection-alpha-projectiond"
 CONSUMER_CONTAINER="projection-phase11-consumer-$$"
 CONTENT="$HERE/projection-content.sh"
 ALPHA="$HERE/projection-alpha.sh"
+# THE SHIPPED CLEANUP, SOURCED RATHER THAN RE-IMPLEMENTED. It exists because four Jellyfin runs on the real
+# Unraid host left four dangling mountpoints: a lazy unmount issued inside a container whose bind carried
+# Docker's default `rprivate` propagation succeeds in a namespace thrown away a millisecond later, and the
+# host's mountpoint is never touched. A plain `rm -rf` over a run directory that still carries a live FUSE
+# mount is the same defect one step further on. Every other mounting gate here sources this file; this one
+# did not, and on the one host §9.1 names as the closing host that is where the leak lands.
+# shellcheck source=projection-gate-cleanup.sh
+. "$HERE/projection-gate-cleanup.sh"
 IMAGE="${PROJECTIOND_IMAGE:-projectiond:phase1-local}"
 VERIFY_IMAGE="alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
 GO_IMAGE="golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651"
@@ -130,9 +138,31 @@ if docker ps -a --format '{{.Names}}' | grep -qx "$APPLIANCE"; then
 container name is fixed, so it would be reading somebody else's mount. Stop it first."
 fi
 
-WORK="$(mktemp -d)"
+# THE RUN DIRECTORY IS UNDER THE REPOSITORY, AND ON THIS TRANCHE THAT IS CORRECTNESS RATHER THAN TASTE.
+#
+# THE DEFECT IT REPAIRS, MEASURED ON THE HOST §9.1 NAMES AS THE CLOSING HOST. `mktemp -d` answers `/tmp/tmp.X`,
+# which on that host resolves to `/` — propagation `private`. The shipped appliance profile binds its mount
+# point `:rshared`, because that is what makes the namespace visible to a media server in another container,
+# and Docker REFUSES an `rshared` bind whose source is not on a shared subtree. So `alpha start` would have
+# failed, P11-M2 would have gone RED, and the colour would have been about which directory the run happened to
+# be in. Phase 10 §11.5's seventh defect and §7 R5 both say that is a SKIP and never a failure — but the
+# honest repair is not to skip on the appliance host, it is to stop putting the mount point somewhere the
+# appliance cannot use. Every other mounting gate in this repository roots its run directory under the
+# checkout for exactly this reason; `deploy/projection-alpha-acceptance.sh` is the closest precedent and it is
+# a member of P11-S3's own regression subset.
+GATE_ROOT="${PROJECTION_PHASE11_GATE_ROOT:-$ROOT/.projection-phase11-mixed-gate}"
+WORK="$GATE_ROOT/run-$$"
+mkdir -p "$WORK" || fail "the gate could not create its own run directory under $GATE_ROOT"
+chmod 755 "$GATE_ROOT" "$WORK" 2>/dev/null || true
 ARMS_FILE="$WORK/arms-reached.txt"
 : > "$ARMS_FILE"
+
+# LEAVING WITH NOTHING, ON EVERY PATH THAT LEAVES BEFORE THE TRAP IS INSTALLED. The run directory is the only
+# thing that exists at this point, and a host that cannot host this gate must not keep one.
+leave_with_nothing() {
+  rm -rf "$WORK" 2>/dev/null || true
+  rmdir "$GATE_ROOT" 2>/dev/null || true
+}
 
 # ---------------------------------------------------------------------------------------------------------
 # THE HELPER PROGRAMS, WRITTEN TO FILES RATHER THAN PASSED AS `node -e '...'`.
@@ -391,19 +421,49 @@ WORKER
 
 printf '%s' "$WORK" > "$WORK/.path-probe"
 node "$WORK/probe.cjs" "$WORK/.path-probe" || {
-  rm -rf "$WORK"
+  leave_with_nothing
   skip "this host cannot present its own run directory at a path the shipped commands will accept: the \
 content configuration requires an absolute POSIX path, and the one this shell produced is not the one the \
 Node runtime resolves. That refusal is the product being correct. Run this on the appliance host."
 }
 
 node "$WORK/identity.cjs" "$WORK/.identity-probe" || {
-  rm -rf "$WORK"
+  leave_with_nothing
   skip "this host does not agree with itself about which file a descriptor is open on: an lstat and an fstat \
 of the same path report different device numbers, so the shipped admission proof refuses every completed \
 output as mutated. That is a fact about this filesystem and not about the product. Run this on the appliance \
 host."
 }
+
+# CAN A MOUNT MADE INSIDE THE APPLIANCE REACH THIS HOST'S OWN NAMESPACE? THE THIRD PROBE, AND THE ONE THIS
+# TRANCHE NEVER ASKED.
+#
+# The shipped profile binds the mount point `:rshared` and the consumer below binds it `:rslave`; both require
+# the run directory to sit on a subtree whose propagation is shared. Docker refuses the bind outright when it
+# does not, so without this probe the answer arrives as a RED P11-M2 that is a fact about the directory rather
+# than about the two halves. §7 R5's design rule: a red run caused by which machine it was launched on is not
+# a verdict about the product.
+#
+# IT IS ASKED AFTER THE OTHER TWO ON PURPOSE. `findmnt` is Linux, and on a development host the path probe
+# above has already skipped for a reason that is upstream of this one — so a host reaching this line and
+# lacking `findmnt` is a host where the question genuinely cannot be asked, and a check that could not run is
+# not a check that passed. `deploy/projection-gate-cleanup.sh` takes the same position about the same tool.
+command -v findmnt >/dev/null 2>&1 || {
+  leave_with_nothing
+  skip "findmnt is not on this host, so whether the appliance's shared bind of the run directory can be \
+created cannot be asked, and a check that could not run is not a check that passed"
+}
+case "$(findmnt -no PROPAGATION -T "$WORK" 2>/dev/null | head -1)" in
+  *shared*) : ;;
+  *)
+    PROPAGATION_IS="$(findmnt -no TARGET,PROPAGATION -T "$WORK" 2>/dev/null | head -1)"
+    leave_with_nothing
+    skip "the run directory sits on a subtree whose propagation is not shared ($PROPAGATION_IS), so the \
+shipped appliance profile's shared bind of the mount point cannot be created and no media server in another \
+container could see the namespace. Set PROJECTION_PHASE11_GATE_ROOT to a directory on a shared subtree, or \
+run this from a checkout on one. That is a fact about this host's mount table and not about the product."
+    ;;
+esac
 
 CONTAINERS_BEFORE="$(docker ps -aq | sort | tr '\n' ' ')"
 NETWORKS_BEFORE="$(docker network ls -q | sort | tr '\n' ' ')"
@@ -423,7 +483,14 @@ cleanup() {
   docker rm -f "$APPLIANCE" >/dev/null 2>&1 || true
   docker network rm "$ALPHA_NETWORK" >/dev/null 2>&1 || true
   docker compose -f "$COMPOSE_FILE" -p "$PROJECT" down -v --remove-orphans >/dev/null 2>&1 || true
-  rm -rf "$WORK"
+  # THE RUN DIRECTORY GOES THROUGH THE SHIPPED CLEANUP RATHER THAN THROUGH `rm -rf`. On the failure paths this
+  # trap exists for, the appliance's FUSE mount may still be standing at `$WORK/mnt`: `rm -rf` over a live
+  # mount leaves the mountpoint behind at best, and the next run inherits a namespace and passes for the wrong
+  # reason. The helper removes the mount in a namespace that PROPAGATES BACK, verifies it went, retries within
+  # a bounded count, and only then removes the directory. It refuses any path that is not under the gate root.
+  projection_gate_cleanup_run "$GATE_ROOT" "$WORK" "$VERIFY_IMAGE" || true
+  projection_gate_report_cleanliness "$GATE_ROOT" "$WORK" || true
+  rmdir "$GATE_ROOT" 2>/dev/null || true
   return "$status"
 }
 trap cleanup EXIT

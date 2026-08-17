@@ -416,6 +416,85 @@ test('the appliance\'s own output is EXCLUDED from the run-path scan and NOT fro
   }
 });
 
+h.section('PHASE 12 §11 — the run directory has to be somewhere the appliance can bind it');
+
+/**
+ * THE DEFECT, AND IT IS THE ONE THAT DECIDED WHETHER THIS GATE COULD RUN AT ALL ON THE HOST §9.1 NAMES.
+ *
+ * The gate took its run directory from `mktemp -d`. On the real Unraid host that answers `/tmp/tmp.X`, which
+ * resolves to `/` — propagation `private`. The shipped appliance profile binds the mount point `:rshared`,
+ * because that is what makes the namespace visible to a media server in another container, and Docker REFUSES
+ * an `rshared` bind whose source is not on a shared subtree. `alpha start` would have failed, P11-M2 would
+ * have gone red, and the colour would have been about which directory the run happened to be in.
+ *
+ * The repair has two halves and this suite pins both, because either alone is a half-repair that reads like a
+ * whole one: the run directory now sits under the checkout, the way every other mounting gate here roots its
+ * own, AND the propagation is PROBED before anything is created, so a host that still cannot host it SKIPS
+ * with 77 rather than failing an arm about its own mount table.
+ */
+const RUN_ROOT_SHAPE = /GATE_ROOT="\$\{PROJECTION_PHASE11_GATE_ROOT:-\$ROOT\/\.projection-phase11-mixed-gate\}"/;
+
+test('PHASE 12: the run directory is rooted under the checkout, not at mktemp -d', () => {
+  const code = codeOf(read(GATE));
+  assert(RUN_ROOT_SHAPE.test(code),
+    'the gate no longer roots its run directory under the checkout, so on a host whose temporary directory is '
+    + 'on a private subtree the appliance cannot bind its own mount point');
+  assert(!/WORK="\$\(mktemp -d\)"/.test(code),
+    'the gate is back on mktemp -d, which on the real Unraid host puts the mount point on a private subtree');
+  assert(/WORK="\$GATE_ROOT\/run-\$\$"/.test(code),
+    'the run directory is not a per-process child of the gate root, so two runs would share one');
+});
+
+test('PHASE 12: mount propagation is PROBED before anything is created, and failing it SKIPS', () => {
+  const body = read(GATE);
+  const code = codeOf(body);
+  const probeAt = code.indexOf('findmnt -no PROPAGATION -T "$WORK"');
+  assert(probeAt > 0, 'the gate never asks whether its run directory is on a shared subtree');
+  // BEFORE ANYTHING IS CREATED. The baselines are taken immediately before the first container exists, so a
+  // probe after them is a probe that already cost the host something.
+  const baselineAt = code.indexOf('CONTAINERS_BEFORE=');
+  assert(baselineAt > 0 && probeAt < baselineAt,
+    'the propagation probe runs after the host baseline is taken, so it is no longer a precondition');
+  assert(/\*shared\*\)/.test(code), 'the probe does not accept a shared subtree by its propagation word');
+  // AND IT IS A SKIP RATHER THAN A FAILURE. §7 R5: a red run caused by which machine it was launched on is
+  // not a verdict about the product.
+  const probeRegion = code.slice(probeAt, probeAt + 1200);
+  assert(/skip "/.test(probeRegion), 'a run directory on a private subtree FAILS the gate rather than skipping it');
+  assert(body.includes('PROJECTION_PHASE11_GATE_ROOT'),
+    'the skip names no way for an operator to point the run at a shared subtree, so it is a dead end');
+});
+
+test('PHASE 12: the run directory is removed through the shipped cleanup, not through rm -rf', () => {
+  const code = codeOf(read(GATE));
+  // THE LEAK THIS CLOSES WAS MEASURED ON THE REAL HOST AND NOWHERE ELSE: four runs, four dangling
+  // mountpoints. On the failure paths the trap exists for, the appliance's FUSE mount may still be standing
+  // at `$WORK/mnt`, and `rm -rf` over a live mount leaves the mountpoint for the next run to inherit.
+  assert(/\.\s+"\$HERE\/projection-gate-cleanup\.sh"/.test(code),
+    'the gate does not source the shipped cleanup, so it carries its own idea of how a mount comes off');
+  assert(/projection_gate_cleanup_run "\$GATE_ROOT" "\$WORK" "\$VERIFY_IMAGE"/.test(code),
+    'the trap does not remove the run directory through the shipped cleanup');
+  assert(/projection_gate_report_cleanliness/.test(code),
+    'nothing reports whether a mountpoint was left behind, and an unreported leak is one nobody repairs');
+  const trapAt = code.indexOf('cleanup() {');
+  const trapEnd = code.indexOf('trap cleanup EXIT');
+  assert(trapAt > 0 && trapEnd > trapAt, 'the cleanup function could not be located');
+  assert(!/rm -rf "\$WORK"/.test(code.slice(trapAt, trapEnd)),
+    'the trap still removes the run directory with rm -rf, which is what leaves a mountpoint behind');
+});
+
+test('CONTROL: a gate that goes back to mktemp -d, or drops the propagation probe, is CAUGHT', () => {
+  const body = read(GATE);
+  const backToMktemp = body.replace(/GATE_ROOT="[^"]*"\nWORK="\$GATE_ROOT\/run-\$\$"/, 'WORK="$(mktemp -d)"');
+  assert(backToMktemp !== body, 'the tamper did not apply, so this control proves nothing');
+  assert(!RUN_ROOT_SHAPE.test(codeOf(backToMktemp)) || /WORK="\$\(mktemp -d\)"/.test(codeOf(backToMktemp)),
+    'a gate returned to mktemp -d still reads as rooted under the checkout');
+
+  const withoutProbe = body.replace(/case "\$\(findmnt -no PROPAGATION[\s\S]*?\nesac\n/, '');
+  assert(withoutProbe !== body, 'the propagation tamper did not apply, so this control proves nothing');
+  assert(!withoutProbe.includes('findmnt -no PROPAGATION -T "$WORK"'),
+    'the propagation probe survived its own removal, so the check above cannot tell it is gone');
+});
+
 /**
  * The gate's own hand-run range, located the way `sed` locates it: by line-anchored markers.
  *
