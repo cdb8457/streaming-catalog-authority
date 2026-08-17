@@ -20,7 +20,8 @@ import {
   renderStatus,
   type ContentPlaneConfig,
 } from './projection-content.js';
-import { assertSealedSafe, sealedProblems } from '../core/usenet/sealed.js';
+import { RegistrationError } from '../core/projection/source-registry.js';
+import { SealedValueError, assertSealedSafe, sealedProblems } from '../core/usenet/sealed.js';
 
 // Projection Phase 10 D10.3 — the operator's entry point for the content plane. Argv parsing, and nothing else.
 //
@@ -83,7 +84,11 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     throw new ContentCommandError('USAGE', 'the first argument is the verb');
   }
   if (!(VERBS as readonly string[]).includes(verb)) {
-    throw new ContentCommandError('USAGE', `unknown verb: ${verb}`);
+    // THE ARGUMENT IS NOT ECHOED, and that is the whole change here. The operator typed it, so they can see
+    // it; the usage below names the eight verbs. What an echo buys is a path, or a whole
+    // `--database-url=<connection string>` typed as ONE token, printed to stderr and into whatever collects
+    // it. A diagnostic must not be the reason a secret leaves the process.
+    throw new ContentCommandError('USAGE', 'that is not one of the eight verbs this command has');
   }
 
   let configPath: string | undefined;
@@ -112,7 +117,9 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       case '--database-url': databaseUrl = takeValue(); break;
       case '--publish': publish = true; break;
       case '--json': json = true; break;
-      default: throw new ContentCommandError('USAGE', `unknown option: ${String(flag)}`);
+      // NOT ECHOED, for the reason the unknown verb is not: `--database-url=<connection string>` typed as one
+      // token arrives here as an unknown option, and printing it would print the credential.
+      default: throw new ContentCommandError('USAGE', 'that is not one of the options this command has');
     }
   }
 
@@ -158,15 +165,57 @@ export function loadConfig(path: string): ContentPlaneConfig {
  * the absolute path it failed on, a driver error can carry a connection string, and a `JSON.parse` failure
  * quotes its input. A message carrying one of those shapes is REPLACED rather than trimmed, because silently
  * removing the offending substring would leave a reader believing they had been told everything.
+ *
+ * AND THE SCAN WAS NOT ENOUGH, WHICH IS WHAT THIS AUDIT FOUND. `sealedProblems` looks for six SHAPES, and the
+ * hazard the paragraph above names is not one of them: its URL shape lists http, ftp, nntp and news, and a
+ * control-plane connection string is a scheme it does not know. So the exact string this comment promised to
+ * withhold would have been printed. An `ECONNREFUSED`, a SQLSTATE message naming a role, a `JSON.parse`
+ * position — none of the six shapes match those either.
+ *
+ * SO THE RULE IS NOW ABOUT WHO WROTE THE SENTENCE, NOT ABOUT WHAT IS IN IT. §4's ninth hard refusal forbids
+ * "an arbitrary OS error string" in an emitted document, and an allowlist of shapes to reject is the wrong
+ * side of that: it is a promise to have thought of every shape. This project's own error classes carry
+ * sentences this project wrote and a reviewer can read; a driver, the filesystem and the runtime do not, and
+ * their message is replaced whatever it says. The CODE is still printed, so `ECONNREFUSED` and `28P01` still
+ * reach the operator — a closed token is not an arbitrary string.
  */
-function safeErrorMessage(error: unknown): string {
+function composedByThisProject(error: unknown): boolean {
+  return error instanceof ContentCommandError
+    || error instanceof RegistrationError
+    || error instanceof SealedValueError;
+}
+
+/** Any URI scheme at all, not the six `sealedProblems` knows. A scheme this file has not heard of is the case. */
+const ANY_URI_SCHEME = /[a-z][a-z0-9+.-]*:\/\//i;
+
+/** Longer than any sentence this project composes. A message this long is one somebody else wrote. */
+const MESSAGE_MAX_CHARS = 1000;
+
+const WITHHELD = 'the command failed, and its message was not one this project composed, so it was withheld '
+  + 'rather than printed; the code above is what names the failure';
+
+export function safeErrorMessage(error: unknown): string {
   const message = typeof (error as Error | undefined)?.message === 'string' ? (error as Error).message : '';
   if (message.length === 0) return 'the command failed without a message';
-  if (sealedProblems(message).length > 0) {
+  if (!composedByThisProject(error)) return WITHHELD;
+  if (message.length > MESSAGE_MAX_CHARS) return WITHHELD;
+  if (ANY_URI_SCHEME.test(message) || sealedProblems(message).length > 0) {
     return 'the command failed, and its message carried a path, a URL or an identifier, so it was withheld '
       + 'rather than printed';
   }
   return message;
+}
+
+/**
+ * The error CODE, when it is a closed token and not a second message.
+ *
+ * `.code` is a five-character SQLSTATE on a driver error and an `ERRNO` on a filesystem one, and both are
+ * exactly what an operator needs. It is not a field this project owns on somebody else's error, so a value
+ * that is not a token shape is not printed as one.
+ */
+function safeErrorCode(error: unknown): string {
+  const code = (error as { code?: unknown } | undefined)?.code;
+  return typeof code === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(code) ? code : 'ERROR';
 }
 
 function emit(document: unknown, lines: readonly string[], json: boolean): void {
@@ -181,7 +230,11 @@ export async function main(argv: readonly string[]): Promise<number> {
   try {
     args = parseArgs(argv);
   } catch (error) {
-    console.error((error as Error).message);
+    // THE PARSE PATH IS SCANNED TOO, AND IT WAS NOT. Two of the sentences below interpolate ARGV — `unknown
+    // verb: <the first argument>` and `unknown option: <the flag>` — so an operator who mistyped a path into
+    // the verb slot had it echoed straight back. The header of this file already claimed every error path was
+    // scanned; this is the line that makes that true.
+    console.error(`${safeErrorCode(error)}: ${safeErrorMessage(error)}`);
     console.error(USAGE);
     return 2;
   }
@@ -242,7 +295,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     emit({ registered: outcomes, published: report }, [...lines, '', ...renderPublish(report)], args.json);
     return report.problems.length === 0 ? 0 : 1;
   } catch (error) {
-    console.error(`${(error as ContentCommandError).code ?? 'ERROR'}: ${safeErrorMessage(error)}`);
+    console.error(`${safeErrorCode(error)}: ${safeErrorMessage(error)}`);
     return 1;
   }
 }
@@ -250,7 +303,7 @@ export async function main(argv: readonly string[]): Promise<number> {
 const invokedDirectly = process.argv[1] !== undefined && process.argv[1].endsWith('projection-content-cli.ts');
 if (invokedDirectly) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }).catch((error: unknown) => {
-    console.error(`ERROR: ${safeErrorMessage(error)}`);
+    console.error(`${safeErrorCode(error)}: ${safeErrorMessage(error)}`);
     process.exitCode = 1;
   });
 }

@@ -28,7 +28,8 @@ import {
   type ContentHost,
 } from '../src/ops/projection-content.js';
 import type { Queryable } from '../src/core/projection/source-registry.js';
-import { parseArgs } from '../src/ops/projection-content-cli.js';
+import { main, parseArgs, safeErrorMessage } from '../src/ops/projection-content-cli.js';
+import { sealedProblems } from '../src/core/usenet/sealed.js';
 import { PHASE10_DIVERGENCE_CODES, PHASE10_DIVERGENCE_MEANINGS } from '../src/core/projection/phase10.js';
 import { manifestDigestOfBytes, probeOffsetsFor, PROJECTION_PROBE_PLAN } from '../src/core/projection/manifest-v1.js';
 
@@ -344,6 +345,57 @@ test('the reconciler names no code the contract does not', () => {
     assert((PHASE10_DIVERGENCE_CODES as readonly string[]).includes(code),
       `the reconciler emits ${code}, which §3.3 does not name`);
   }
+});
+
+h.section('the error path, which is the one path whose text this project does not write');
+
+/** Everything the command wrote to stderr while `fn` ran. */
+async function stderrOf(fn: () => Promise<unknown>): Promise<string> {
+  const lines: string[] = [];
+  const original = console.error;
+  console.error = (...parts: unknown[]): void => { lines.push(parts.map((part) => String(part)).join(' ')); };
+  try { await fn(); } finally { console.error = original; }
+  return lines.join('\n');
+}
+
+test('an unknown VERB is not echoed, because an operator can mistype a path into that slot', async () => {
+  const secret = '/mnt/user/media/Some Film (2026)/Some Film.mkv';
+  const written = await stderrOf(() => main([secret]));
+  assert(!written.includes(secret),
+    'the first argument was printed back to stderr, so a path reached whatever collects it');
+  assert(written.includes('eight verbs'), 'the operator was not told what was wrong');
+});
+
+test('an unknown OPTION is not echoed, because --database-url=<connection string> is ONE token', async () => {
+  // The realistic mistake, not a contrived one: every other CLI on the host accepts the `=` form, this one
+  // takes a separate value, and the whole credential arrives as an unrecognised flag.
+  const credential = '--database-url=postgresql://app:hunter2@127.0.0.1:5670/catalog';
+  const written = await stderrOf(() => main(['status', '--config', '/tmp/none.json', credential]));
+  assert(!written.includes('hunter2'), 'a password typed as part of a flag was printed to stderr');
+  assert(!written.includes(credential), 'the unrecognised option was echoed with its value');
+});
+
+test('a message THIS PROJECT composed is printed, so the rule is not "withhold everything"', () => {
+  assertEq(safeErrorMessage(new ContentCommandError('X', 'the objects file is not there')),
+    'the objects file is not there', 'a sentence this project wrote was withheld');
+});
+
+test('a message this project did NOT compose is withheld whatever it says', () => {
+  // §4's ninth hard refusal forbids an arbitrary OS error string in an emitted document. A list of shapes to
+  // reject is the wrong side of that rule: it is a promise to have thought of every shape.
+  const written = safeErrorMessage(new Error('connect ECONNREFUSED 127.0.0.1:5670'));
+  assert(!written.includes('127.0.0.1'), 'a driver message reached the operator surface verbatim');
+  assert(written.includes('withheld'), 'the reader was not told that something was withheld');
+});
+
+test('a CONNECTION STRING is withheld, which the six sealed shapes do not match', () => {
+  // THE EXACT HAZARD `safeErrorMessage`'s own comment named. `sealedProblems`'s URL shape lists http, ftp,
+  // nntp and news; a control-plane scheme is not one of them, so the string it promised to withhold would
+  // have been printed if it were the only check.
+  const url = 'postgresql://app:hunter2@127.0.0.1:5670/catalog';
+  assertEq(sealedProblems(url).length, 0, 'the premise of this arm no longer holds: sealedProblems now matches it');
+  const written = safeErrorMessage(new ContentCommandError('X', `could not reach ${url}`));
+  assert(!written.includes('hunter2'), 'a connection string reached the operator surface');
 });
 
 h.section('the objects file is BOUNDED, and two objects cannot be one entry');
