@@ -536,6 +536,33 @@ test('the gate ports collide with no other compose file and no other deploy scri
   }
 });
 
+test('PHASE 12: the throwaway database is published on LOOPBACK and not on every interface', () => {
+  // THE DEFECT, AND IT ONLY MATTERS BECAUSE OF WHERE §9.1 SAYS THIS RUNS. The compose header says these gates
+  // "bind a fixed loopback port"; the mapping said `5680:5432`, which publishes `postgres`/`postgres` on
+  // EVERY interface of the host for the life of the run — and the host §9.1 names is the operator's own
+  // Unraid box on their LAN. The gate has always reached the database at `127.0.0.1`, so the narrowing costs
+  // the run nothing and the comment stops being a description of something that was not true.
+  const compose = read(COMPOSE);
+  assert(/- "127\.0\.0\.1:\$\{PROJECTION_PHASE11_GATE_PG_PORT:-\d{4}\}:5432"/.test(compose),
+    'the Phase 11 gate database is published on every interface of whatever host runs it');
+  assert(/127\.0\.0\.1:\$\{PG_PORT\}\/catalog/.test(read(GATE)),
+    'the gate no longer reaches its database on loopback, so the binding above would break it');
+});
+
+test('PHASE 12: every wait in the gate is BOUNDED, including the one Compose does not bound itself', () => {
+  // `docker compose up --wait` HAS NO TIMEOUT OF ITS OWN. A database that never reports healthy — an image
+  // that will not pull, a port already held, a host under load — left this command waiting with no output and
+  // nothing to read, on a gate whose every other wait is bounded by an attempt count.
+  const code = read(GATE).replace(/^\s*#.*$/gm, '');
+  assert(/--wait --wait-timeout "\$PG_WAIT_SECONDS"/.test(code),
+    'the database wait is unbounded, so a host that cannot start it hangs the run instead of failing it');
+  assert(/PG_WAIT_SECONDS="\$\{PROJECTION_PHASE11_PG_WAIT_SECONDS:-\d+\}"/.test(code),
+    'the bound is not an overridable named value, so a slow host has no way past it but a code edit');
+  // AND THE TWO LOOPS THAT WERE ALREADY BOUNDED STAY BOUNDED, because a bound removed from one of them would
+  // be the same defect wearing a different hat.
+  assert(/for attempt in 1 2 3/.test(code), 'the origin readiness and quiescence loops are no longer bounded');
+});
+
 test('the database is throwaway, and the compose file names no provider', () => {
   const compose = read(COMPOSE);
   assert(/tmpfs/.test(compose) && /\/var\/lib\/postgresql\/data/.test(compose),

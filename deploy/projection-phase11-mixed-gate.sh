@@ -60,6 +60,7 @@ ALPHA="$HERE/projection-alpha.sh"
 IMAGE="${PROJECTIOND_IMAGE:-projectiond:phase1-local}"
 VERIFY_IMAGE="alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
 GO_IMAGE="golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651"
+PG_WAIT_SECONDS="${PROJECTION_PHASE11_PG_WAIT_SECONDS:-180}"
 ORIGIN_OBJECT_BYTES=$((4 * 1024 * 1024))
 CORPUS_BYTES=$((2 * 1024 * 1024))
 ENTRY_LOCAL="Movies/Worker One (2026)/Worker One (2026).mkv"
@@ -630,9 +631,13 @@ KIND_CONTROL="$(node "$WORK/kinds.cjs" "$WORK/control-status.json")"
 step "a throwaway PostgreSQL on 127.0.0.1:$PG_PORT, migrated"
 # ---------------------------------------------------------------------------------------------------------
 
+# `--wait-timeout` IS THE DIFFERENCE BETWEEN A GATE THAT FAILS AND A GATE THAT HANGS. `--wait` on its own has
+# no bound, so a database that never reports healthy — an image that will not pull, a port already held, a
+# host under load — leaves this command waiting with no output and nothing to read. Every other wait in this
+# script is bounded by an attempt count; this one was not.
 PROJECTION_PHASE11_GATE_PG_PORT="$PG_PORT" \
-  docker compose -f "$COMPOSE_FILE" -p "$PROJECT" up -d --wait \
-  || fail "the throwaway PostgreSQL did not become healthy"
+  docker compose -f "$COMPOSE_FILE" -p "$PROJECT" up -d --wait --wait-timeout "$PG_WAIT_SECONDS" \
+  || fail "the throwaway PostgreSQL did not become healthy within ${PG_WAIT_SECONDS}s"
 
 export ADMIN_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:${PG_PORT}/catalog"
 export DATABASE_URL="postgresql://app:app@127.0.0.1:${PG_PORT}/catalog"

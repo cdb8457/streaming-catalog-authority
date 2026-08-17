@@ -45,7 +45,12 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "${PROJECTION_PHASE11_GATE_PG_PORT:-5680}:5432"
+      # BOUND TO LOOPBACK, AND ON THE HOST §9.1 NAMES THAT IS THE DIFFERENCE BETWEEN A THROWAWAY DATABASE AND
+      # A SUPERUSER DATABASE ON THE OPERATOR'S LAN. The header above already says these gates "bind a fixed
+      # loopback port"; the mapping did not, so `5680:5432` published `postgres`/`postgres` on EVERY interface
+      # for the life of the run. The gate reaches it at `127.0.0.1:5680` and always has, so this narrows what
+      # the file publishes and changes nothing the gate does.
+      - "127.0.0.1:${PROJECTION_PHASE11_GATE_PG_PORT:-5680}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d catalog"]
       interval: 3s
