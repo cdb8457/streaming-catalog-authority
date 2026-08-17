@@ -434,11 +434,32 @@ documentation file. `test/projection-phase12.ts` reads that file, which makes th
 §11.1.1's own rule, the one this repository applies to everybody else — **UNVERIFIABLE rather than wrong.**
 The PowerShell arm ran entirely after the edit and is clean. §10.7 re-measures both from a frozen tree.
 
-### 10.7 THE CONFIRMATION RUN, FROM A CANDIDATE CONTAINING THIS RECORD
+### 10.7 THE CONFIRMATION RUN, FROM CANDIDATE `61445f2` — THE COMMIT THAT CARRIES §10 AND §11
 
-**EMPTY UNTIL IT HAS HAPPENED.** §10.4's inventory figures and §10.3's host figures are from `8be98c2`; this
-section records the same measurements taken from the commit that carries §10 and §11, so that no figure in
-this document depends on a tree that moved.
+**THE WHOLE CAMPAIGN WAS RUN AGAIN, from the commit containing this record, so that no figure in this document
+depends on a tree that moved and so that §10.6's process defect is answered by a measurement rather than by an
+apology.** `61445f2` differs from `8be98c2` in three documentation files and nothing else — this file's §10
+and §11, Phase 11's §10.7 and Phase 10's §11.8 — and all three are read by suites, which is why re-running was
+the honest answer rather than an argument about whether documentation counts.
+
+| | |
+|---|---|
+| Staging | **0 files differing, 0 text files carrying a CR on either side** — byte identity in both directions against an archive of `61445f2` |
+| Daemon image | `sha256:216f1ae6f298781b34b0855f1b5201d5db51eec816b8ccf894876797a7a21a46` — **the same digest as `8be98c2`**, which is what says no daemon byte moved across the entire campaign |
+| `go:phase10-rehearsal:three` | **3 of 3, none skipped, exit 0** — 6/6 arms in every run |
+| `go:phase11-mixed-gate:three` | **3 of 3, none skipped, exit 0** — all six arms REACHED and 6/6 passed in every run |
+| `alpha-acceptance` / `publisher-mount` / `restart-topology` / `real-provider-gate --fake` | exit 0, exit 0, exit 0, exit 0 — 14 of 14 arms on the first |
+| Host container / network / volume sets | **45 / 18 / 47 before, 45 / 18 / 47 after, 0 differing in each**, zero mountpoints under the staging directory, no `projection-*` container left |
+| Full offline inventory, **Git Bash** | **336 / 336 / 0 failed / 0 required-but-skipped**, 679 s |
+| Full offline inventory, **an ordinary PowerShell** | **336 / 336 / 0 failed / 0 required-but-skipped**, 687 s |
+
+**NOTHING MOVED.** Every figure in §10.3 and §10.4 reproduced from a frozen tree, so §10.6's unverifiable
+Git Bash arm is superseded by a verifiable one and the two arms of `P12-S1` are now from **one candidate**.
+
+**AND THE STATUS DOES NOT MOVE EITHER.** §10.1 is still a NO-GO for the reason §11.4 gives: the shipped
+`phase12ClosureProblems` asks for three fresh sequences of the complete campaign and this is the second, not
+the third. Two consecutive fresh complete sequences is a better answer than one and it is not the answer §5.4
+asks for, and a tranche that rounded it up would be doing the thing this whole document exists to refuse.
 
 ---
 
