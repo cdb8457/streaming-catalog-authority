@@ -537,3 +537,37 @@ tree. It is (`2b14bcc`), and the arm has now been run, green, alongside the Git 
 **That is evidence for P10-1 and it is not P10-1's verdict.** §5's GO asks all ten claims of ONE FROZEN
 CANDIDATE, seven of the ten have never been measured at all, and `phase10ClosureProblems` refuses a closure
 with an absent verdict exactly as it refuses one with a skip.
+
+### 11.8 THE REHEARSAL HAS NOW RUN END TO END — recorded by Phase 12, which found why it never had
+
+**§11.7.4's SENTENCE IS SUPERSEDED AND IS KEPT WHOLE ABOVE.** It said *"The rehearsal has still never run end
+to end on any host"*. That was true of the tree it was written about, and it stays where it is rather than
+being rewritten: a run record edited to agree with a later run is not a record.
+
+**WHY IT NEVER HAD, AND NO STRUCTURAL CHECK COULD SEE IT.** `test/projection-drift-guard-db.ts` inherits the
+rehearsal's exported `DATABASE_URL` — deliberately, because `P10-3`'s whole subject is the shipped publisher
+driving a REAL migrated database rather than an embedded one — and it leaves its own roots, versions and
+entries in the registry `P10-4` then counts. On the real host `P10-4` read **five** registered entries after
+adding one, its `add-torbox` collided with the suite's own `remote-one` version and came back as a bare
+SQLSTATE `P0001`, and `P10-5` inherited the same five. **Two arms red, one cause, and both steps individually
+correct.** The throwaway database is now destroyed, re-created and migrated between the two, and **the zero is
+asserted from the shipped status surface** rather than assumed from the reset — which is the half that would
+have caught this rather than merely repaired it.
+
+**WHAT IS NOW TRUE, MEASURED FROM CANDIDATE `8be98c2` ON THE REAL UNRAID HOST.** `deploy/projection-phase10-
+rehearsal.sh` ran end to end: **6 arms, 6 passed, 0 failed, exit 0** — and then three consecutive fresh times
+through `go:phase10-rehearsal:three`, none skipped. The provider-free regression subset is green from that
+candidate, and the full offline inventory passes from **both** shells, 336 / 336 / 0 / 0.
+
+**THE STATUS DOES NOT MOVE TO GO, AND `phase10ClosureProblems` IS WHAT SAYS SO.** Run over that evidence it
+returns two problems, and they are the same claim at two levels:
+
+> - the run reports 1 fresh sequences; §5 requires 3, and a shorter run closes nothing
+> - P10-10-three-consecutive-fresh-sequences was skipped or is NOT RUN; a skip proves nothing and is never folded into a pass
+
+**Eight of §5's ten claims now carry a pass verdict.** §11.1 STILL STANDS AS A NO-GO, and Phase 10 is one
+sequence-level claim away from being answerable. **No provider was contacted, `endpoint.json` was not read,
+written or touched, no §4 refusal and no §5.1 threshold moved, and §§1–10 of this document are untouched** —
+Phase 12's bounded change to this tranche is one line of `docker-compose.projection-phase10.yml`, the registry
+reset in the rehearsal, and this section. Its reasons are in
+`docs/PROJECTION_PHASE_12_AUDIT_AND_PROVIDER_FREE_CLOSURE.md` §6.2 and §11.

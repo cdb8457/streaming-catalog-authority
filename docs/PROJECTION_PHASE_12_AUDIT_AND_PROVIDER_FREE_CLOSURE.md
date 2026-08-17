@@ -324,16 +324,213 @@ document **first**, states what moved and why, and re-runs everything already me
 
 ## 10. Run record
 
-**EMPTY UNTIL A RUN HAS HAPPENED.** §10 is filled in by the tranche that runs this, and a reader who finds it
-empty is reading a contract that has not been answered. Nothing in §§1–9 is evidence.
+### 10.1 STATUS: RUN ON THE REAL HOST. **NO-GO — `phase12ClosureProblems` refuses this run, and §11.4 says why.**
+
+Every one of §5's **eleven claims has a pass verdict**, and the shipped closure function **still refuses**,
+because it asks for three fresh sequences and this campaign ran the complete sequence **once**. That
+discrepancy is between this document's §5 and this tranche's own code; it is recorded in §11.4 and **not**
+resolved by editing the function after the run it would have failed. **Phase 12 is NO-GO.**
+
+**AND TWO SENTENCES THAT WERE TRUE BEFORE THIS CAMPAIGN ARE NOT TRUE AFTER IT.** Phase 11 §10.1 said the mixed
+gate *"EXITS 77 AT ITS FIRST PRECONDITION and has never reached a single one of its six arms on any host"*.
+Phase 10 §11.7.4 said *"the rehearsal has still never run end to end on any host"*. Both have now happened, on
+the real Unraid host, three consecutive fresh times each, with zero skips. Those sentences are **superseded
+rather than rewritten**, in their own documents, and each supersession says what replaced it.
+
+**NO PROVIDER WAS CONTACTED AT ANY POINT.** No TorBox endpoint, no CDN origin, no indexer, no operator
+SABnzbd, no NNTP server, no media server, no Tower production container, no operator content and no
+credential. `endpoint.json` was absent before and absent after, recorded by the gate itself. No production
+container was started, stopped, restarted, reconfigured or deleted, and the host's container, network and
+volume sets are identical to how they were found.
+
+### 10.2 The candidate, and where each figure comes from
+
+**Candidate `8be98c2`.** Staged onto the real host by `deploy/projection-phase12-stage.sh stage`, and proved
+**byte-identical in both directions** against an archive of that commit taken with the working-tree conversion
+disabled: **0 files differing, 0 text files carrying a CR on either side.**
+
+The daemon image built from that tree is `sha256:216f1ae6f298781b34b0855f1b5201d5db51eec816b8ccf894876797a7a21a46`,
+and it is **the same digest** the tree built before D6's repair — which is what says the line-ending defect
+moved no daemon byte, because `.gitattributes` already forced every Go source to LF.
+
+**THIS COMMIT IS THE FIRST TREE THAT DIFFERS FROM THE CANDIDATE**, and it differs only in documentation:
+this file's §10 and §11, Phase 11's new §10.7, and Phase 10's new §11.8. §10.7 records the confirmation run
+from a candidate that contains them.
+
+### 10.3 What was measured on the REAL UNRAID HOST
+
+| | |
+|---|---|
+| Host | Unraid 7.2.3, kernel 6.12.54, Docker 27.5.1, Compose 2.40.3, Node v22.18.0 |
+| Read-only preflight | recorded **before anything was created**: `/dev/fuse` reachable from a container; no appliance container; no `projection-alpha` network; 5670, 5680 and 8300 all free; the staging directory on a **`shared`** subtree — which is the one property D1 turned out to depend on |
+| `deploy/projection-phase10-rehearsal.sh` | **6 arms, 6 passed, 0 failed, exit 0.** The first end-to-end run on any host |
+| `go:phase10-rehearsal:three` | **3 of 3 consecutive fresh runs, none skipped, exit 0** |
+| `deploy/projection-phase11-mixed-gate.sh` | **all six predeclared arms REACHED, 6 passed, 0 failed, exit 0.** The first arm verdicts in this project's history |
+| `go:phase11-mixed-gate:three` | **3 of 3 consecutive fresh runs, none skipped, exit 0** |
+| `deploy/projection-alpha-acceptance.sh` | **14 of 14 arms**, exit 0 |
+| `deploy/projection-publisher-mount-gate.sh` | PASSED, exit 0 |
+| `deploy/projection-restart-topology-gate.sh` | PASSED, exit 0 |
+| `deploy/projection-real-provider-gate.sh --fake` | exit 0, **with three arms SKIPPED by that gate's own design** — see §11.3 #4 |
+| Host container / network / volume sets | **45 / 18 / 47 before, 45 / 18 / 47 after, 0 differing in each.** Zero mountpoints left under the staging directory |
+| `endpoint.json` | **absent before, absent after** — asserted by the gate, not promised |
+
+### 10.4 What was measured on the DEVELOPMENT HOST
+
+| | |
+|---|---|
+| `npx tsc --noEmit` | clean |
+| Full offline inventory, **Git Bash** | **336 selected / 336 passed / 0 failed / 0 required-but-skipped**, 686 s |
+| Full offline inventory, **an ordinary PowerShell** | **336 selected / 336 passed / 0 failed / 0 required-but-skipped**, 684 s |
+| `test/projection-phase12.ts` | 29 / 29 — and **two of its arms failed on their first execution**, which §11's D-list records |
+| `test/projection-phase11.ts` | 37 / 37, was 34 |
+| `test/projection-phase11-gate-audit.ts` | 55 / 55, was 41 — fourteen new arms, five of them controls |
+| `test/projection-phase10.ts` | 31 / 31, was 30 |
+| `test/custody-runtime-closure.ts` | 39 / 39, with the new staging script in its corpus |
+| `test/projection-bounded-recovery.ts` | 52 / 52 — the **OPERATOR SOURCE DIGEST is unmoved** |
+| The eight provider source allowlists | 7 / 11 / 7 / 10 / 12 / 6 / 10 / 7 — **none widened**, because `src/core/projection/phase12.ts` names no provider |
+| `phase9RequiresSoakRerun` over this tranche's own path list | **FALSE.** Zero `PHASE9_SOAK_TRIGGERING_SOURCE` entries touched, so **the Phase 8 soak is not re-run** |
+
+**336 IS 335 PLUS ONE.** This tranche adds one offline suite and nothing else, and the arithmetic is stated so
+nobody has to take the count on trust.
+
+### 10.5 THE CLOSURE FUNCTIONS, RUN RATHER THAN SUMMARISED
+
+The shipped functions were given this campaign's verdicts and their problem lists are reproduced verbatim.
+This is what the product says, not what the author concluded.
+
+`phase10ClosureProblems` — **2 problems, both the same shape:**
+
+> - the run reports 1 fresh sequences; §5 requires 3, and a shorter run closes nothing
+> - P10-10-three-consecutive-fresh-sequences was skipped or is NOT RUN; a skip proves nothing and is never folded into a pass
+
+**Eight of Phase 10's ten claims now carry a pass verdict**, and the two that do not are the same claim at two
+levels. Phase 10 is **NO-GO**, and one sequence-level claim away.
+
+`phase11ClosureProblems`, tier one — **2 problems, the same shape again:**
+
+> - the run reports 1 fresh sequences; §5 requires 3, and a shorter run closes nothing
+> - P11-S4-three-consecutive-fresh-sequences was skipped or is NOT RUN; a skip proves nothing and is never folded into a pass
+
+**Nine of Phase 11's ten tier-one claims now carry a pass verdict, every one of them stamped `fake=true`.**
+Tier one is **NO-GO** and one sequence-level claim away. **Tier two is untouched** and stays exactly as open
+as Phase 11 left it.
+
+`phase12ClosureProblems` — **1 problem:**
+
+> - the run reports 1 fresh sequences; §5 requires 3, and a shorter run closes nothing
+
+### 10.6 What this record does NOT contain
+
+**No tier-two verdict of any kind.** `P11-R1`, `P11-R2`, `P11-R3` and `P11-R4` are NOT RUN and no fake run may
+record one. **No `P9-` verdict**: `P9-2`, `P9-3`, `P9-5` and `P9-11` are exactly as open as Phase 11 left them,
+and Phase 10 §8's prerequisite is inherited and discharged by none of this. **Nothing about the mixed
+PRODUCT** — a fake range origin is not a provider and a fake worker is not an NNTP feed. **No complete
+tier-one sequence run three times**, which is the one claim standing between Phase 10, Phase 11 tier one and
+Phase 12 and their respective GOs. **No soak, no load figure, no uptime figure, no release.**
+
+**AND ONE PROCESS DEFECT OF THIS CAMPAIGN'S OWN.** The Git Bash inventory arm was started against candidate
+`8be98c2` and this file's §11 was written **while it was running**, so the tree moved under it by one
+documentation file. `test/projection-phase12.ts` reads that file, which makes that arm's figure — by Phase 6
+§11.1.1's own rule, the one this repository applies to everybody else — **UNVERIFIABLE rather than wrong.**
+The PowerShell arm ran entirely after the edit and is clean. §10.7 re-measures both from a frozen tree.
+
+### 10.7 THE CONFIRMATION RUN, FROM A CANDIDATE CONTAINING THIS RECORD
+
+**EMPTY UNTIL IT HAS HAPPENED.** §10.4's inventory figures and §10.3's host figures are from `8be98c2`; this
+section records the same measurements taken from the commit that carries §10 and §11, so that no figure in
+this document depends on a tree that moved.
 
 ---
 
-## 11. The independent audit of Phase 11
+## 11. The independent audit of Phase 11, and the eight defects it found
 
-**EMPTY UNTIL THE AUDIT HAS HAPPENED.** Every defect it finds is recorded here — repaired, out of scope, or
-found-and-wrong — with the reason beside each and the phase that owns the repair named for the ones Phase 12
-may not make.
+§§1–9 of the Phase 11 contract and the shipped bytes were read against each other, and then the instrument was
+**run**. This section records **every** defect the audit found — repaired, out of scope, or found-and-wrong —
+with the reason beside each. It **withdraws no figure** from Phase 11 §10: every number there was true about
+the tree it was measured on, and eight defects later that tree is not this one.
+
+**FOUR OF THE EIGHT WERE FOUND BY READING AND FOUR BY RUNNING, AND THE SPLIT IS THE POINT OF THE TRANCHE.**
+Phase 11's own audit is forty-one arms with twelve tamper controls and it is good; it could not see any of
+these, because it was written by the tranche that wrote the gate and because the gate had never got past its
+first precondition. Every defect in the class "only running finds it" was still in it, undisturbed, by
+construction.
+
+**EVERY REPAIR CARRIES A REGRESSION CONTROL THAT FAILS ON THE UNREPAIRED BYTES**, which is `P12-A1`, and every
+control lives in the suite that already owns the thing it guards.
+
+### 11.1 The eight, in the order they were found
+
+| id | Defect | Found by | Repair | Control |
+|---|---|---|---|---|
+| **D1** | The gate took its run directory from `mktemp -d`. On the host §9.1 names as the closing host that resolves to `/`, propagation **`private`** — and the shipped appliance profile binds its mount point `:rshared`, which Docker refuses when the source is not on a shared subtree. `alpha start` would have failed, `P11-M2` would have gone red, and the colour would have been about which directory the run was in. Phase 10 §11.5's seventh defect and Phase 11 §7 R5's own imported design rule, inside the tranche that imported it. | reading, confirmed by measuring the host's mount table | the run directory is rooted under the checkout, the way every other mounting gate here roots its own; **and** the propagation is PROBED before anything is created, so a host that still cannot host it SKIPs with 77 | 4 arms in `projection-phase11-gate-audit.ts`, one of them a tamper that returns the gate to `mktemp -d` and strips the probe |
+| **D2** | Three byte comparisons in `P11-M3` and `P11-M4` compared two possibly-**empty** strings with a bare `=`. `consumer_sha` sends its errors to `/dev/null`, so a mount that is not there returns the empty string, and `[ "" = "" ]` is true. **And `M4_MOVED=$((M4_A + M4_B))` evaluates an empty operand as ZERO, which is the budget.** | reading | `same_bytes` refuses an empty digest on either side and all five comparisons go through it; `numeric` asserts every derived number is a number before it is compared or added | 4 arms, two of which **execute** the two shell functions out of the shipped bytes, one of which asserts the arithmetic model on the host running the suite, and one of which strips the guard off a call site |
+| **D3** | `P11-M1` — the arm the tranche is **named for** — answered "is this generation mixed" with `grep -q 'http-range'` and `grep -q '"local"'` over the whole status document. Neither says which entry carried which kind or whether it was published, and `"local"` is a substring of any field that spells it. A generation of two provider-backed entries beside the word "local" would have passed. `phase11MixedGenerationProblems` was exported, documented and tested, and the gate never called it or anything like it. | reading | `minimums.mts` reads both minimums out of the contract's own module before the operator path begins, and `kinds.cjs` counts **published** entries per kind | 3 arms, one driving `kinds.cjs` over four documents including the exact shape the defect passed on, one a tamper restoring the greps |
+| **D4** | The throwaway PostgreSQL published `postgres`/`postgres` on **every interface** of the host, while the compose header claimed a loopback bind and the gate connected at `127.0.0.1`. **And `docker compose up -d --wait` has no timeout**, on a gate whose every other wait is bounded by an attempt count. | reading | `- "127.0.0.1:${…}:5432"`, and `--wait-timeout` behind an overridable named value | 2 arms in `projection-phase11.ts`, which also pin that the gate still connects on loopback and that the two already-bounded loops stay bounded |
+| **D5** | Three smaller ones, each the mirror of something the tranche got right beside it. The cleanup destroys the `projection-alpha` network **unconditionally**, including one it did not create — while a comment three lines above refuses the appliance's own *name* for exactly that reason. `P11-M2` quiesced the origin before the LOCAL read and not before the REMOTE one, so "the counters moved" was satisfiable by any traffic at all — the false-**pass** direction of §7 R8's own argument. And `worker.json`, an **output**, sat on the exclusion list whose own comment says it holds "the inputs this run wrote for the shipped commands to read". | reading | a network precondition in the same shape as the appliance one; a second quiescence; `worker.json` scanned by both halves | 3 arms, one of which **counts** the quiescence call sites rather than asserting one exists |
+| **D6** | **`deploy/projection-phase12-stage.sh`'s own.** `git archive` applies `core.autocrlf`, which on this development host is `true`, so the staging command carried a CRLF tree onto the Linux host — not the commit. The same file is `1d95779c…` in the commit and was `47a8da60…` on the host. `test/projection-content-command.ts` slices a function body with `indexOf('\n}\n')`, finds nothing in a CRLF file, and reported that a shipped verb **writes outside a transaction** — a false sentence about the product produced by a line ending. **And `P12-P2` agreed**, because it compared the host against the same converted archive. | running | `-c core.autocrlf=false -c core.eol=lf` on every archive invocation, **and** a CR scan of both trees, because this repository's commit contains no CR in any text file — measured, not assumed | 2 arms in `projection-phase12.ts`, one extracting **every** archive invocation from the shipped bytes so a repair applied to `stage` and not to `verify` fails |
+| **D7** | `test/projection-drift-guard-db.ts` inherits the Phase 10 rehearsal's exported `DATABASE_URL` — deliberately, since `P10-3`'s subject is the shipped publisher against a **real** database — and leaves its roots, versions and entries in the registry `P10-4` then counts. `P10-4` read **five** registered entries after adding one, its `add-torbox` collided with the suite's own `remote-one` version and returned a bare SQLSTATE `P0001`, and `P10-5` inherited the same five. **Two arms red, one cause, both steps individually correct.** This is why the Phase 10 rehearsal had never run end to end on any host. | running | the throwaway database is destroyed, re-created and migrated between `P10-3` and the operator inputs, **and the zero is asserted from the shipped status surface** rather than assumed from the reset | 1 arm in `projection-phase10.ts`, which **failed on its own first execution** by finding the EXIT trap's copy of `down -v` instead of the reset's |
+| **D8** | The gate handed the appliance a configuration with **no `statusAddr`**, which `projection-alpha.sh preflight` counts as a failed check — "status and the healthcheck cannot work". Preflight, install and start all refused, the appliance never came up, the `projection-alpha` network was never created, the fake origin could not join it, and `P11-M2`, `P11-M3` and `P11-M4` failed on reads of a namespace that had never existed. The refusal is the shipped script being right. | running | `"statusAddr": "127.0.0.1:9010"`, cross-checked against every other deploy script and compose file | 1 arm in `projection-phase11.ts` that parses the heredoc as JSON and re-derives the port from the parsed value |
+
+### 11.2 D2 WAS VINDICATED BY D8, WHICH IS THE ONE RESULT IN THIS SECTION WORTH READING TWICE
+
+D2 was found by reading and repaired four commits before the gate ever reached the real host. When it did, D8
+meant no appliance started at all — and the run reported:
+
+> `the provider-backed half before and after a publish of the other: a digest is EMPTY, so nothing was read and no comparison can be made`
+
+on an arm that also reported `fields of the provider-backed entry moved by a publish of the other half: 0`.
+
+**Without D2's repair, `P11-M3` and `P11-M4` would have PASSED**, on an appliance that had never started, on
+the first run in the project's history that could have produced them — and a green tier-one instrument verdict
+would have been recorded for a namespace that did not exist. That is the entire argument for auditing an
+instrument nobody has attacked, stated by the instrument itself.
+
+### 11.3 What the audit found and did NOT repair, with the phase that owns each
+
+Recorded because a tranche that lists only what it fixed is a tranche nobody can audit.
+
+1. **A database password reaches the process table on every content invocation.** `deploy/projection-content.sh`
+   is driven as `--database-url "postgresql://app:app@…"`, so the credential is visible to any user on the host
+   through `ps`. **NOT REPAIRED:** the shipped verb's interface is `src/ops/projection-content-cli.ts`, which
+   §6.3 forbids this tranche to edit, and changing how a gate calls it without changing what it accepts would
+   be a workaround rather than a repair. **Owner: Phase 15**, whose independent review is where an operator
+   interface is the subject.
+2. **Both of the Phase 10 rehearsal's `docker compose up -d --wait` invocations are unbounded**, including the
+   one this tranche added in the same shape as the one already there. **NOT REPAIRED:** §6.2 authorises the
+   registry reset and its assertion in that file and nothing else, and widening a bounded-modification row to
+   carry an unrelated repair is how a bounded change stops being one. **Owner: Phase 15.**
+3. **Four shipped gates leave an empty gate-root directory under the checkout**, and the real-provider gate
+   leaves its own preserved evidence in one. **NOT A DEFECT AND NOT REPAIRED:** none of them is a container, a
+   network or a volume, `P12-C1`'s sets are identical, zero mountpoints remain under the staging directory, and
+   the evidence directory is that gate doing what it says it does. Recorded so nobody reads §10's residue
+   figure as "the staging directory is empty".
+4. **`real-provider-gate --fake` reports three arms SKIPPED**, by its own design: real TLS, the egress
+   allowlist and per-read refresh are assertable only against a real endpoint. **NOT A PHASE 12 SKIP** — those
+   three are `P12-R4`'s member gate's internal arms and they belong to **Phase 13**. §10.3 names all three
+   rather than reporting the subset as uniformly green.
+5. **`phase11MixedGenerationProblems` is still not executed by the gate.** D3's repair applies the same two
+   minimums, read from the same module, but it does not run the function — because the count happens inside
+   the hand-run range and reaching the module there needs `npx tsx`, which is exactly what `P11-M5` counts.
+   **KNOWINGLY PARTIAL:** narrowing `P11-M5`'s pattern to let the invocation through was available and refused,
+   because a measurement loosened to accommodate a repair no longer means what §5 says it means. **Owner: a
+   Phase 11 amendment** that either justifies the narrower pattern in that document first, or moves the check
+   outside the range.
+6. **This tranche's own closure function is stricter than its own §5.** See §11.4.
+
+### 11.4 THE DEFECT THIS TRANCHE FOUND IN ITSELF, AND IT IS WHY §10 IS A NO-GO
+
+§5's prose says Phase 12 is GO when **one frozen candidate** demonstrates all eleven claims with zero skips.
+`phase12ClosureProblems` — shipped in D12.2, and the thing that actually decides — additionally requires
+**three fresh sequences**, modelled on `phase11ClosureProblems` without the prose to match.
+
+**The two disagree, the function is the stricter, and the function is what decides.** This campaign ran the
+complete Phase 12 sequence **once**. So `phase12ClosureProblems` refuses, and §10.1 is a NO-GO.
+
+**IT IS RECORDED RATHER THAN RESOLVED BY EDITING THE FUNCTION.** A closure rule relaxed after the run it would
+have failed is not a closure rule; it is a description of that run. Either the prose rises to the function —
+by a commit that changes §5 first and then runs the complete sequence three times — or the function comes down
+to the prose, by a commit that changes §5 first and re-runs everything already measured against the old value.
+§8's procedure applies to this tranche exactly as it applies to the ones it audits.
 
 ---
 

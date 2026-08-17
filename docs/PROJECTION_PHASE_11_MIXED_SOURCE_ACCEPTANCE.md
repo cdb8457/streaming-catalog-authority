@@ -475,3 +475,36 @@ real NNTP provider behind it, an entitled NZB, and **three real pre-attached med
 
 **AND PHASE 9 IS UNCHANGED.** `P9-2`, `P9-3`, `P9-5` and `P9-11` are exactly as open as Phase 10 left them,
 and Phase 10 §8's prerequisite is inherited by this tranche and discharged by none of it.
+
+### 10.7 THE GATE HAS NOW RUN ON THE REAL HOST — recorded by Phase 12, which audited it and then ran it
+
+**§10.1's HEADLINE IS SUPERSEDED AND IS KEPT WHOLE ABOVE.** It said the gate *"EXITS 77 AT ITS FIRST
+PRECONDITION and has never reached a single one of its six arms on any host"*. That was true of the tree it
+was written about. It is no longer true, and the sentence stays where it is rather than being rewritten,
+because a run record somebody edited to agree with a later run is not a record.
+
+**WHAT IS NOW TRUE, MEASURED FROM CANDIDATE `8be98c2` ON THE REAL UNRAID HOST.** All six predeclared arms were
+**REACHED**, all six passed, exit 0 — and then three consecutive fresh times through
+`go:phase11-mixed-gate:three`, none skipped. `P11-S3`'s provider-free regression subset is green from that
+candidate. The full offline inventory passes from **both** shells, 336/336/0/0.
+
+**THE STATUS DOES NOT MOVE TO GO, AND `phase11ClosureProblems` IS WHAT SAYS SO.** Run over that evidence it
+returns two problems, and they are the same claim at two levels:
+
+> - the run reports 1 fresh sequences; §5 requires 3, and a shorter run closes nothing
+> - P11-S4-three-consecutive-fresh-sequences was skipped or is NOT RUN; a skip proves nothing and is never folded into a pass
+
+**Nine of the ten tier-one claims now carry a pass verdict and every one of them is stamped `fake=true`.**
+TIER ONE IS NO-GO and is one sequence-level claim away. **TIER TWO IS UNTOUCHED**: `P11-R1`, `P11-R2`,
+`P11-R3` and `P11-R4` are NOT RUN, nothing here contacted a provider, a worker, an indexer or a media server,
+and `endpoint.json` was absent before and absent after.
+
+**AND EIGHT DEFECTS HAD TO BE REPAIRED BEFORE ANY OF THAT WAS POSSIBLE**, four found by reading and four by
+running. Three of them decided whether the gate could run at all: a run directory on a `private`-propagation
+subtree that the shipped appliance's shared bind cannot use; an appliance configuration with no `statusAddr`,
+which the shipped preflight refuses; and a staging command that carried a CRLF tree onto a Linux host.
+**And one of them decided whether a green run would have MEANT anything**: three byte comparisons that passed
+when both sides were empty, which is exactly what the first host run produced while no appliance was running.
+They are recorded in `docs/PROJECTION_PHASE_12_AUDIT_AND_PROVIDER_FREE_CLOSURE.md` §11, with a control for
+each. **No threshold in §5.3, no refusal in §4, no claim id and no claim wording moved**, and §§1–9 of this
+document are untouched.
