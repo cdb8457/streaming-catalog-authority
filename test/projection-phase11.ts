@@ -549,6 +549,33 @@ test('PHASE 12: the throwaway database is published on LOOPBACK and not on every
     'the gate no longer reaches its database on loopback, so the binding above would break it');
 });
 
+test('PHASE 12 §11 D8: the appliance configuration carries a statusAddr, and it is this gate\'s own port', () => {
+  // THE DEFECT, FOUND BY THE FIRST RUN THAT EVER REACHED AN ARM. `projection-alpha.sh preflight` counts a
+  // configuration with no usable `statusAddr` as a FAILED CHECK — "status and the healthcheck cannot work" —
+  // so preflight, install and start all refused, the appliance never came up, no mount ever existed, and
+  // P11-M2, P11-M3 and P11-M4 failed on reads of a namespace that was never there. The refusal is the shipped
+  // script being right; the gate handed it a configuration no operator would write.
+  const body = read(GATE);
+  const from = body.indexOf("cat > \"$WORK/config.json\" <<'DAEMONJSON'");
+  const to = body.indexOf('\nDAEMONJSON\n', from);
+  assert(from > 0 && to > from, 'the appliance configuration heredoc could not be located');
+  const config = JSON.parse(body.slice(body.indexOf('{', from), to)) as { statusAddr?: string };
+  assert(typeof config.statusAddr === 'string' && /^127\.0\.0\.1:\d{4}$/.test(config.statusAddr),
+    'the appliance configuration names no loopback statusAddr, and the shipped preflight refuses without one');
+  // AND THE PORT IS THIS GATE'S OWN. Two appliances answering on one status port would be two gates lending
+  // each other a healthcheck, which is the same argument the database and origin ports are cross-checked on.
+  const port = (config.statusAddr as string).split(':')[1] as string;
+  for (const entry of readdirSync(join(repoRoot, 'deploy'))) {
+    if (!entry.endsWith('.sh') || entry.startsWith('projection-phase11-')) continue;
+    assert(!read(join('deploy', entry)).includes(`127.0.0.1:${port}`),
+      `deploy/${entry} already uses status port ${port}, so two appliances could answer on one`);
+  }
+  for (const entry of readdirSync(repoRoot)) {
+    if (!entry.startsWith('docker-compose.')) continue;
+    assert(!read(entry).includes(`127.0.0.1:${port}`), `${entry} already binds ${port}`);
+  }
+});
+
 test('PHASE 12: every wait in the gate is BOUNDED, including the one Compose does not bound itself', () => {
   // `docker compose up --wait` HAS NO TIMEOUT OF ITS OWN. A database that never reports healthy — an image
   // that will not pull, a port already held, a host under load — left this command waiting with no output and

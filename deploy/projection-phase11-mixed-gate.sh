@@ -743,11 +743,24 @@ cat > "$CONFIG_FILE" <<CONFIGJSON
 CONFIGJSON
 
 # THE APPLIANCE'S OWN CONFIGURATION, IN THE IN-CONTAINER PATHS THE SHIPPED COMPOSE FILE BINDS.
+#
+# `statusAddr` IS HERE BECAUSE THE SHIPPED PREFLIGHT REFUSES WITHOUT IT, AND THIS GATE OMITTED IT.
+#
+# PHASE 12 §11 D8, FOUND BY THE FIRST RUN THAT EVER REACHED AN ARM. `projection-alpha.sh preflight` counts a
+# configuration with no usable `statusAddr` as a FAILED CHECK — "status and the healthcheck cannot work" — so
+# preflight, install and start all refused, the appliance never came up, no mount ever existed, and P11-M2,
+# P11-M3 and P11-M4 failed on reads of a namespace that was never there. The refusal is the shipped script
+# being right; the gate was handing it a configuration an operator would not.
+#
+# 9010 IS ITS OWN, and `test/projection-phase11.ts` cross-checks it against every other deploy script and
+# compose file rather than trusting this comment. 9000 is `projection-alpha-acceptance.sh`'s, 9099 is another
+# gate's, and two appliances answering on one status port would be two gates lending each other a healthcheck.
 cat > "$WORK/config.json" <<'DAEMONJSON'
 {
   "mountPoint": "/mnt/projection",
   "pointerPath": "/var/lib/projectiond/manifest/pointer.json",
   "probeCacheDir": "/var/lib/projectiond/cache",
+  "statusAddr": "127.0.0.1:9010",
   "localRoots": { "media": "/var/lib/projectiond/media" },
   "endpoints": [
     {
