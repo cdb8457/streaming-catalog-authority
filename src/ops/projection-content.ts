@@ -589,6 +589,64 @@ export async function addTorboxObjects(
 }
 
 /**
+ * What a walk from the media root to a local file found, or `ok`. A closed vocabulary, never a path.
+ *
+ * `component-missing` is deliberately NOT one of these: an absent leaf is the divergence `reconcile` exists to
+ * report and the refusal `add-local` already words for itself, and folding it in here would replace two
+ * sentences an operator can act on with one that names a walk.
+ */
+export type ContentContainment =
+  | 'ok' | 'root-is-symlink' | 'root-not-a-directory' | 'component-is-symlink' | 'component-not-a-directory';
+
+const CONTAINMENT_SENTENCE: Readonly<Record<Exclude<ContentContainment, 'ok'>, string>> = Object.freeze({
+  'root-is-symlink': 'the media root is a symbolic link, which is never followed',
+  'root-not-a-directory': 'the media root is not a directory',
+  'component-is-symlink': 'a directory on the way to the named file is a symbolic link, which is never followed',
+  'component-not-a-directory': 'a component on the way to the named file is not a directory',
+});
+
+/**
+ * Walk from the media root to the file's parent, checking each component and following nothing.
+ *
+ * WHY A WALK AND NOT ONE `lstat` ON THE LEAF, which is what this module used to do. The sentence is
+ * `src/core/usenet/completed-output.ts`'s and it applies here unchanged: "an `lstat` on the leaf proves the
+ * LEAF is not a symlink. It proves nothing about `/downloads/complete/job` being a symlink into somebody
+ * else's share." A `relativePath` is refused unless it is normalized — no `..`, no leading slash, no
+ * backslash — so a STRING cannot escape the media root; a symlinked directory component can, and did. An
+ * `add-local` that registered such a file would put content from outside the media root into the namespace
+ * under a locator every later reader resolves through the same link, and `reconcile` would stat it there and
+ * report agreement.
+ *
+ * IT IS A CHECK AND NOT A RESOLUTION. Nothing here calls `realpath`: a resolved path would be a THIRD name for
+ * the file, and the registry stores the relative one. The refusal is the answer.
+ *
+ * THE LEAF IS THE CALLER'S. `add-local` refuses a symlinked, empty or non-regular leaf in its own words, and
+ * `reconcile` reports an absent one as a divergence; both need the walk under those answers rather than
+ * instead of them.
+ */
+export async function checkPathComponents(
+  host: ContentHost, mediaRoot: string, relativePath: string,
+): Promise<ContentContainment> {
+  const rootStat = await host.stat(mediaRoot);
+  if (rootStat.kind === 'symlink') return 'root-is-symlink';
+  if (rootStat.kind !== 'directory') return 'root-not-a-directory';
+
+  const segments = relativePath.split('/');
+  let at = mediaRoot;
+  // THE LEAF IS NOT WALKED HERE, so `segments.length - 1` is the bound rather than `segments.length`.
+  for (let index = 0; index < segments.length - 1; index += 1) {
+    at = `${at}/${segments[index] as string}`;
+    const stat = await host.stat(at);
+    if (stat.kind === 'symlink') return 'component-is-symlink';
+    // A MISSING COMPONENT IS NOT A CONTAINMENT PROBLEM. It means the file is not there, which the caller's own
+    // leaf check says in the words its verb uses.
+    if (stat.kind === 'missing') return 'ok';
+    if (stat.kind !== 'directory') return 'component-not-a-directory';
+  }
+  return 'ok';
+}
+
+/**
  * Register local files. IT READS THEM, AND THAT IS THE POINT.
  *
  * A local file is one this host can open, so its size, its mtime and its probe digests are FACTS this command
@@ -607,6 +665,13 @@ export async function addLocalObjects(
   const proved: Array<{ readonly object: ContentObjectInput; readonly stat: ContentFileStat; readonly probes: readonly ProbeInput[] }> = [];
   for (const object of objects) {
     const absolute = `${config.mediaRoot}/${object.relativePath as string}`;
+    // CONTAINMENT FIRST, AND ON EVERY COMPONENT. A normalized relative path cannot escape the media root as a
+    // STRING; a symlinked directory on the way to it escapes as a FILE, and the leaf's own `lstat` says
+    // nothing about that. See `checkPathComponents`.
+    const contained = await checkPathComponents(host, config.mediaRoot, object.relativePath as string);
+    if (contained !== 'ok') {
+      throw new ContentCommandError('LOCAL_PATH_NOT_CONTAINED', `${object.label}: ${CONTAINMENT_SENTENCE[contained]}`);
+    }
     const stat = await host.stat(absolute);
     if (stat.kind === 'missing') {
       throw new ContentCommandError('LOCAL_FILE_MISSING', `${object.label}: the named file is not under the media root`);
@@ -774,6 +839,13 @@ export async function reconcileContent(
         unresolvedLocalRoots.add(locator.rootId);
         continue;
       }
+      // THE SAME WALK `add-local` DOES, FOR THE SAME REASON. A directory component that became a symbolic
+      // link after the entry was registered means the file this report would stat is not the file that was
+      // registered, and a report that stats through the link answers about somebody else's share. It is
+      // reported as `local-source-file-absent` — the file is not where the locator says it is — with the
+      // walk's own closed-vocabulary word as the detail, so no seventh divergence code is invented.
+      const contained = await checkPathComponents(host, config.mediaRoot, locator.relativePath);
+      if (contained !== 'ok') { add('local-source-file-absent', entry.path, contained); continue; }
       const stat = await host.stat(`${config.mediaRoot}/${locator.relativePath}`);
       if (stat.kind === 'missing' || stat.kind === 'symlink' || stat.kind === 'other') {
         // THE DIVERGENCE PHASE 10 §2.4 EXISTS FOR. Every admitted Usenet entry is a `local` source under the

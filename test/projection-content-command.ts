@@ -6,7 +6,9 @@ import { createHarness, assert, assertEq, assertThrows } from './usenet-kit.js';
 import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 import {
   ContentCommandError,
+  addLocalObjects,
   addTorboxObjects,
+  checkPathComponents,
   contentVersionKeyFor,
   inRegistryTransaction,
   isUnder,
@@ -333,6 +335,70 @@ test('the reconciler names no code the contract does not', () => {
     assert((PHASE10_DIVERGENCE_CODES as readonly string[]).includes(code),
       `the reconciler emits ${code}, which §3.3 does not name`);
   }
+});
+
+h.section('containment: the walk from the media root, following nothing');
+
+/** A host whose filesystem is a map from absolute path to kind. Anything unnamed is missing. */
+function treeHost(tree: Readonly<Record<string, ContentFileStat['kind']>>, body: unknown = []): ContentHost {
+  return {
+    hasPosixModes: true,
+    async stat(absolutePath) {
+      const kind = tree[absolutePath];
+      return kind === undefined
+        ? fileStat({ kind: 'missing' })
+        : fileStat({ kind, sizeBytes: kind === 'file' ? 1024 : 0 });
+    },
+    async readFile() { return JSON.stringify(body); },
+    async digestWindow() { return 'a'.repeat(64); },
+  };
+}
+
+const MEDIA = CONFIG.mediaRoot;
+
+test('an ORDINARY tree walks clean, so the check refuses something rather than everything', async () => {
+  const host = treeHost({ [MEDIA]: 'directory', [`${MEDIA}/movies`]: 'directory', [`${MEDIA}/movies/a.bin`]: 'file' });
+  assertEq(await checkPathComponents(host, MEDIA, 'movies/a.bin'), 'ok', 'a plain directory tree was refused');
+});
+
+test('a SYMLINKED DIRECTORY on the way to the file is caught, which one lstat on the leaf cannot see', async () => {
+  // The leaf is a perfectly ordinary regular file. It is a regular file in SOMEBODY ELSE'S share, reached
+  // through a link this contract never follows — which is exactly what an lstat on the leaf reports as fine.
+  const host = treeHost({ [MEDIA]: 'directory', [`${MEDIA}/movies`]: 'symlink', [`${MEDIA}/movies/a.bin`]: 'file' });
+  assertEq(await checkPathComponents(host, MEDIA, 'movies/a.bin'), 'component-is-symlink',
+    'a symbolic link on the way to the file was followed');
+});
+
+test('a media root that is itself a link is refused before any component is walked', async () => {
+  assertEq(await checkPathComponents(treeHost({ [MEDIA]: 'symlink' }), MEDIA, 'movies/a.bin'), 'root-is-symlink',
+    'the media root was followed');
+});
+
+test('a MISSING component is not a containment answer, because "not there" is the caller\'s own sentence', async () => {
+  assertEq(await checkPathComponents(treeHost({ [MEDIA]: 'directory' }), MEDIA, 'movies/a.bin'), 'ok',
+    'an absent file was reported as a containment problem rather than as an absent file');
+});
+
+test('add-local REFUSES a file reached through a symlinked directory, and never opens a connection', async () => {
+  const objects = [{ label: 'a', itemId: ITEM, path: 'Movies/A/A.bin', relativePath: 'movies/a.bin' }];
+  const host = treeHost(
+    { '/tmp/local.json': 'file', [MEDIA]: 'directory', [`${MEDIA}/movies`]: 'symlink', [`${MEDIA}/movies/a.bin`]: 'file' },
+    objects);
+  let code = '';
+  try { await addLocalObjects(CONFIG, host, '/tmp/local.json', 'postgresql://127.0.0.1:1/nothing'); }
+  catch (error) { code = (error as ContentCommandError).code ?? ''; }
+  assertEq(code, 'LOCAL_PATH_NOT_CONTAINED',
+    'a file outside the media root was registered as a local source under it, and the locator every later '
+    + 'reader resolves would resolve through the same link');
+});
+
+test('reconcile walks the components too, so a link that appeared later is reported', () => {
+  const source = read('src/ops/projection-content.ts');
+  const body = source.slice(source.indexOf('export async function reconcileContent'),
+    source.indexOf('function readPublishedEntryIds'));
+  assert(body.includes('checkPathComponents('),
+    'reconcile stats the leaf through whatever the path resolves to, so a component that became a link after '
+    + 'registration would be reported as agreeing');
 });
 
 h.section('an `add` is ONE transaction, and it refuses before it writes');
