@@ -387,15 +387,41 @@ test('the staging directory is GUARDED by a marker, and the guard is why it may 
     'the staging directory is cleared before the guard that says it may be');
 });
 
+test('PHASE 12 §11: the archive is taken with the working-tree conversion DISABLED', () => {
+  // THE DEFECT, FOUND BY STAGING A CANDIDATE AND RUNNING IT. `git archive` applies `core.autocrlf`, which on
+  // this development host is `true`, so it emitted CRLF for every text file the commit stores with LF and
+  // carried a tree onto the Linux host that was NOT the commit. The consequence was immediate and specific:
+  // `test/projection-content-command.ts` slices a function body with `indexOf('\n}\n')`, which finds nothing
+  // in a CRLF file, so a structural check reported that a shipped verb writes outside a transaction — a false
+  // sentence about the product, produced by a line ending, on the host where the phase closes.
+  //
+  // AND THE VERIFICATION AGREED, WHICH IS THE WORSE HALF. It compared the host against THE SAME converted
+  // archive, so both sides were wrong in the same direction and the diff was zero.
+  const code = read(STAGE).replace(/^\s*#.*$/gm, '');
+  const archives = code.match(/git (?:-c [a-z.]+=[a-z]+ )*archive/g) ?? [];
+  assert(archives.length >= 2, 'the staging command no longer archives the candidate');
+  for (const invocation of archives) {
+    assert(invocation.includes('-c core.autocrlf=false'),
+      `an archive is taken as "${invocation}", which applies this platform's line-ending conversion and `
+      + 'carries a tree that is not the commit');
+    assert(invocation.includes('-c core.eol=lf'), `an archive is taken as "${invocation}" without pinning eol`);
+  }
+  // THE CONTROL THE MANIFEST COMPARISON CANNOT BE. Two sides converted the same wrong way agree.
+  assert(/local_crs/.test(code) && /host_crs/.test(code),
+    'nothing counts CR-bearing files, so a conversion on BOTH sides would still read as byte identity');
+  assert(/\[ "\$\{local_crs:-1\}" != "0" \] \|\| \[ "\$\{host_crs:-1\}" != "0" \]/.test(code),
+    'the CR count is taken and not compared, or an unreadable count defaults to the passing answer');
+});
+
 test('byte identity is proved in BOTH directions, against an archive rather than the working tree', () => {
   const body = read(STAGE);
   const code = body.replace(/^\s*#.*$/gm, '');
-  assert(/git archive --format=tar "\$COMMIT"/.test(code), 'the candidate is not archived from one commit');
+  assert(/archive --format=tar "\$COMMIT"/.test(code), 'the candidate is not archived from one commit');
   assert(/LC_ALL=C sort/.test(code), 'the manifests are not sorted under the C locale, so collation is drift');
   assert(/sed 's\/ \\\*\/  \/'/.test(code), 'the binary marker is not normalised, so the hashes differ for no reason');
   assert(/differing="\$\(diff "\$local_manifest" "\$host_manifest" \| grep -c '\^\[<>\]'\)"/.test(code),
     'the comparison is not a two-sided diff, so a file present on only one side could pass');
-  assert(body.includes('.gitattributes'),
+  assert(body.includes('TRACKED FILES ONLY'),
     'the script does not record WHY the comparison is against an archive, which is the reason it looks odd');
   assert(/node_modules/.test(code), 'the host manifest does not exclude what running produces rather than staging');
 });

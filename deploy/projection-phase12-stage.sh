@@ -18,12 +18,20 @@
 # carry this phase's own marker — a script that takes a path and clears it is one bad variable away from
 # clearing something else.
 #
-# WHY THE COMPARISON IS AGAINST `git archive` AND NOT AGAINST THE WORKING TREE. `.gitattributes` marks some
-# files `eol=crlf`, so an archive emits CRLF where a checkout on a POSIX host holds LF: about nine files
-# differ for that reason alone and it reads as real drift. The archive is extracted locally, hashed, and
-# compared against the host — an empty diff is byte identity in both directions with nothing to explain away.
-# `LC_ALL=C` is on BOTH sides because Git Bash and a Linux host disagree on collation for uppercase-leading
-# filenames, and an unlocalised sort produces a six-hundred-line diff between two identical trees.
+# WHY THE COMPARISON IS AGAINST `git archive` AND NOT AGAINST THE WORKING TREE. The archive is TRACKED FILES
+# ONLY, so no working-tree drift can leak into a run: what lands on the host is what the commit contains and
+# nothing else. It is extracted locally, hashed, and compared against the host — an empty diff is byte
+# identity in both directions. `LC_ALL=C` is on BOTH sides because Git Bash and a Linux host disagree on
+# collation for uppercase-leading filenames, and an unlocalised sort produces a six-hundred-line diff between
+# two identical trees.
+#
+# AND THE ARCHIVE IS TAKEN WITH THE WORKING-TREE CONVERSION DISABLED, WHICH IS THE MOST IMPORTANT LINE IN
+# THIS FILE. `git archive` applies `core.autocrlf`, and on a Windows development host that is `true` — so a
+# plain `git archive` emits CRLF for every text file the commit stores with LF, and carries a tree onto the
+# Linux host that is not the commit. A verification that compared the host against THE SAME converted archive
+# agreed while both sides were wrong, which is a check that cannot see the one thing it exists to see.
+# `-c core.autocrlf=false -c core.eol=lf` is what makes the archive the commit's own bytes, and `no_cr_under`
+# below is the control: this repository's commit contains no CR in any text file at all.
 #
 # EXIT STATUS. 0 when the mode succeeded. 1 when it failed. 77 when this host cannot answer at all, which is a
 # SKIP and is not a pass.
@@ -191,7 +199,7 @@ verify_identity() {
   host_manifest="$ROOT/.projection-phase12-stage/host-$$.txt"
   mkdir -p "$archive_dir" || fail "the archive could not be extracted locally"
 
-  ( cd "$ROOT" && git archive --format=tar "$COMMIT" ) | ( cd "$archive_dir" && tar -x ) \
+  ( cd "$ROOT" && git -c core.autocrlf=false -c core.eol=lf archive --format=tar "$COMMIT" ) | ( cd "$archive_dir" && tar -x ) \
     || fail "the candidate could not be extracted locally for comparison"
   manifest_local "$archive_dir" "$local_manifest"
 
@@ -201,6 +209,23 @@ verify_identity() {
 -not -path './node_modules/*' -not -path './.projection-*' -not -path './.git/*' -print0 \
 | LC_ALL=C sort -z | xargs -0 sha256sum | LC_ALL=C sort" > "$host_manifest" \
     || fail "the staged tree's manifest could not be read from the host"
+
+  # THE CONTROL THE MANIFEST COMPARISON CANNOT BE, AND THE DEFECT IT WAS WRITTEN FOR. Two sides converted the
+  # same wrong way agree, so a diff of zero says the host matches THIS ARCHIVE and not that the archive is the
+  # commit. This repository's commit contains NO CR in any text file at all — measured, not assumed — so a
+  # single CR anywhere in either tree means a conversion happened between the commit and the host, and every
+  # figure a run produced on that tree belongs to no commit.
+  local local_crs host_crs
+  local_crs="$( ( cd "$archive_dir" && grep -rlI "$(printf '\r')" . 2>/dev/null | wc -l ) | tr -d ' ' )"
+  host_crs="$(remote "cd '$STAGE_DIR' && grep -rlI \"\$(printf '\\r')\" . \
+--exclude-dir=node_modules --exclude-dir=.git 2>/dev/null | wc -l" | tr -d ' \r')"
+  say "text files carrying a CR: $local_crs in the archive, $host_crs on the host (budget 0 on both sides)"
+  if [ "${local_crs:-1}" != "0" ] || [ "${host_crs:-1}" != "0" ]; then
+    rm -rf "$archive_dir" "$local_manifest" "$host_manifest"
+    fail "a line-ending conversion happened between the commit and the tree under test, so no figure from \
+that tree belongs to $COMMIT. The archive command applies core.autocrlf; this script disables it, and \
+something else has put it back."
+  fi
 
   local differing
   differing="$(diff "$local_manifest" "$host_manifest" | grep -c '^[<>]')"
@@ -226,7 +251,7 @@ stage() {
   step "extracting the candidate onto the host, tracked files only"
   # TRACKED FILES ONLY, WHICH IS THE WHOLE POINT OF `git archive`: no working-tree drift can leak into a run,
   # and what lands on the host is exactly what the commit contains.
-  ( cd "$ROOT" && git archive --format=tar "$COMMIT" ) | remote "tar -x -C '$STAGE_DIR'" \
+  ( cd "$ROOT" && git -c core.autocrlf=false -c core.eol=lf archive --format=tar "$COMMIT" ) | remote "tar -x -C '$STAGE_DIR'" \
     || fail "the candidate could not be extracted onto the host"
 
   step "proving byte identity in both directions"
