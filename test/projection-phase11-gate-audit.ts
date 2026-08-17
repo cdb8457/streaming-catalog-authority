@@ -1081,6 +1081,23 @@ test('the corpus helper writes bytes that are not all one value', () => {
   assert(new Set(bytes).size > 1, 'the synthesised corpus is all one value');
 });
 
+test('the three shipped scripts carry no carriage return, which is what `shellFunctionFrom` rests on', () => {
+  // `shellFunctionFrom` above locates a function with `indexOf('\n}\n')` — a literal carrying a bare LF, which
+  // matches nothing in a CRLF file. It is safe here ONLY because `.gitattributes` pins `*.sh` to LF on every
+  // platform, and it fails loudly rather than silently if that ever stops being true. This says so by name.
+  //
+  // WHY IT IS WORTH A TEST OF ITS OWN. The `*.ts` files are deliberately NOT pinned, and at the Phase 10-12
+  // integration merge three pins that sliced a `.ts` source the same way went red on an ordinary Windows
+  // checkout against bytes identical to the branch they merged — one of them reporting that a shipped verb
+  // writes outside a transaction. `test/helpers/ts-source.ts` is the repair for the unpinned side; this is
+  // the assertion that the pinned side is still pinned.
+  for (const path of [GATE, THREE, OPTIONAL]) {
+    const raw = readFileSync(join(repoRoot, path));
+    assertEq(raw.includes(0x0d), false, `${path} holds a CR; .gitattributes pins shipped shell to LF`);
+  }
+  assert(read('.gitattributes').includes('*.sh text eol=lf'), '.gitattributes no longer pins shell scripts to LF');
+});
+
 h.section('wiring');
 
 test('this suite is in the offline inventory', () => {
