@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { createHarness, assert, assertEq, assertThrows } from './usenet-kit.js';
 import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
+import { TsSourceError, topLevelDeclaration } from './helpers/ts-source.js';
 import {
   CONTENT_OBJECTS_FILE_MAX_BYTES,
   CONTENT_OBJECTS_MAX,
@@ -644,8 +645,15 @@ test('add-torbox refuses a probe plan BEFORE it opens a connection, so nothing i
 test('both add verbs run their writes through the transaction, structurally', () => {
   const source = read('src/ops/projection-content.ts');
   for (const verb of ['addTorboxObjects', 'addLocalObjects']) {
-    const body = source.slice(source.indexOf(`export async function ${verb}`));
-    const withinVerb = body.slice(0, body.indexOf('\n}\n') + 1);
+    // BRACE-DELIMITED AND REFUSING, NOT SLICED TO THE NEXT `\n}\n`. That literal carries a bare LF, so on an
+    // ordinary Windows checkout — `core.autocrlf=true`, which `.gitattributes` pins away for `*.sh` and
+    // deliberately does not for `*.ts` — it matched nothing, `indexOf` answered -1, and `slice(0, -1 + 1)`
+    // handed back THE EMPTY STRING. This pin then reported that `addTorboxObjects` writes outside a
+    // transaction: a false sentence about a shipped verb, produced by a line ending. Phase 12 §11 found it on
+    // a staged candidate and fixed the STAGING archive; the pin itself still failed on any CRLF worktree, and
+    // did, at the Phase 10-12 integration merge, against bytes identical to the branch it merged.
+    const withinVerb = topLevelDeclaration(source, `export async function ${verb}`,
+      `src/ops/projection-content.ts ${verb}`);
     assert(withinVerb.includes('inRegistryTransaction('),
       `${verb} writes outside a transaction, so a refusal half way through leaves the earlier rows behind`);
     // AND THROUGH THE WORDED VERSION REGISTRATION. `cat_projection_version_register` RAISES when a key is
@@ -655,6 +663,71 @@ test('both add verbs run their writes through the transaction, structurally', ()
     assert(withinVerb.includes('registerVersionOrExplain('),
       `${verb} registers a version without wording the one refusal an operator can reach through ordinary use`);
   }
+});
+
+test('CONTROL: the transaction pin reads the SAME region from a CRLF checkout as from an LF one', () => {
+  // THE POST-MERGE FAILURE, REPRODUCED. This is the actual defect of the Phase 10-12 integration merge:
+  // identical committed blobs, a green child worktree whose files happened to be typed LF, and three red
+  // suites in the integration worktree whose files arrived CRLF from an ordinary checkout. Nothing about the
+  // product differed. The pin must therefore be a function of the source and not of the checkout.
+  const lf = read('src/ops/projection-content.ts').replace(/\r\n?/g, '\n');
+  const crlf = lf.replace(/\n/g, '\r\n');
+  assert(crlf.includes('\r\n') && !lf.includes('\r'), 'the two typings of the control are not two typings');
+  for (const verb of ['addTorboxObjects', 'addLocalObjects']) {
+    const header = `export async function ${verb}`;
+    assertEq(topLevelDeclaration(crlf, header, 'crlf'), topLevelDeclaration(lf, header, 'lf'),
+      `${verb} reads as a different region on a CRLF checkout, which is the defect this control exists on`);
+    // AND THE OLD READER REALLY DID MISS, so this control is not asserting a property nothing ever lacked.
+    const oldWay = crlf.slice(crlf.indexOf(header));
+    assertEq(oldWay.indexOf('\n}\n'), -1,
+      `the '\\n}\\n' literal still matches in a CRLF file, so the reader below is not the thing that fixed this`);
+    assertEq(oldWay.slice(0, oldWay.indexOf('\n}\n') + 1), '',
+      'the old slice answered something other than the empty string, so the false failure had another cause');
+  }
+});
+
+test('CONTROL: the region reader REFUSES rather than handing back the rest of the file', async () => {
+  // THE OTHER HALF, AND THE WORSE ONE. A miss that slices `0 .. -1` returns the whole remainder and the
+  // assertion passes over a region it was never asked about. `test/projection-namespace-snapshot.ts` was
+  // doing exactly that. Every way of not finding a region is a named error here.
+  const source = read('src/ops/projection-content.ts');
+  await assertThrows(() => topLevelDeclaration(source, 'export async function noSuchVerb', 'absent'),
+    /no line begins/, 'an absent declaration was answered rather than refused');
+  await assertThrows(
+    () => topLevelDeclaration(`${source}\nexport async function addLocalObjects(\n): Promise<void> {\n}\n`,
+      'export async function addLocalObjects', 'twice'),
+    /begins 2 lines/, 'a declaration written twice was answered with the first, which is not the one in force');
+  await assertThrows(() => topLevelDeclaration('export async function open(\n): Promise<void> {\n  return;\n',
+    'export async function open', 'unclosed'),
+    /never closed/, 'an unclosed declaration was answered rather than refused');
+  await assertThrows(() => topLevelDeclaration(
+    'export interface A {\n  readonly a: string;\nexport interface B {\n  readonly b: string;\n}\n',
+    'export interface A', 'run-on'),
+  /ran past the declaration/, 'a region that swallowed the next declaration was answered rather than refused');
+  // AND IT IS NOT VACUOUS: the shipped declarations really are found, and really are bounded.
+  const entry = topLevelDeclaration(source, 'export interface ContentStatusEntry', 'shipped');
+  assert(entry.startsWith('export interface ContentStatusEntry {') && entry.endsWith('\n}'),
+    'the reader did not return a whole declaration for a declaration that is plainly there');
+  assert(!entry.slice('export interface ContentStatusEntry {'.length).includes('export '),
+    'the region reached into the next declaration');
+  // AND THE REFUSAL IS THIS MODULE'S OWN, so a caller that wants to distinguish "not found" from a bug in
+  // itself can, rather than matching on message text.
+  let refusal: unknown;
+  try { topLevelDeclaration(source, 'export async function noSuchVerb', 'absent'); } catch (error) { refusal = error; }
+  assert(refusal instanceof TsSourceError, 'the refusal is not a TsSourceError, so it reads as an unrelated crash');
+});
+
+test('CONTROL: the transaction pin still BITES — a verb that writes outside the transaction is caught', () => {
+  // A reader that refuses correctly and an assertion that cannot fail are the same thing from the outside.
+  const tampered = read('src/ops/projection-content.ts')
+    .replace(/\r\n?/g, '\n')
+    .replace('export async function addTorboxObjects', 'export async function tamperedTorboxObjects');
+  const body = topLevelDeclaration(tampered, 'export async function tamperedTorboxObjects', 'tampered')
+    .replace(/inRegistryTransaction\(/g, 'plainQuery(');
+  assert(!body.includes('inRegistryTransaction('),
+    'the tamper did not remove the transaction, so the pin below was never given a defect to find');
+  assert(body.includes('registerVersionOrExplain('),
+    'the tampered region lost more than the transaction, so it is not a control for this pin');
 });
 
 h.section('the refusals that are structural rather than asserted');

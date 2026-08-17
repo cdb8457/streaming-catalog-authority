@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 import { createHarness, assert, assertEq } from './usenet-kit.js';
 import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
+import { asMap, parseYaml } from './helpers/compose-yaml.js';
+import { topLevelDeclaration } from './helpers/ts-source.js';
 import {
   PHASE11_ARM_GATE_IDS,
   PHASE11_CLOSURE_GATE_IDS,
@@ -204,10 +206,16 @@ test('the six recorded fields are the shipped status surface\'s own, and the loc
   // added to `ContentStatusEntry` that this list did not learn about would be a field the cross-source
   // measurement silently stopped comparing, which is the quietest way for a budget of zero to become easier
   // to meet.
+  //
+  // BRACE-DELIMITED AND REFUSING, NOT SLICED TO THE NEXT `\n}\n`. On a CRLF checkout that literal matched
+  // nothing, `indexOf` answered -1, and `slice(0, -1)` handed back THE WHOLE REST OF THE FILE — so every
+  // `readonly` declaration of every LATER interface was counted as a status field and this pin reported ten
+  // fields the status surface does not have. The extractor refuses if the interface is absent, declared
+  // twice or never closed, so the only outcomes left are the right region or a named error.
   const shipped = read('src/ops/projection-content.ts');
-  const block = shipped.slice(shipped.indexOf('export interface ContentStatusEntry {'));
-  const declared = [...block.slice(0, block.indexOf('\n}\n')).matchAll(/^\s*readonly ([A-Za-z]+)[?:]/gm)]
-    .map((match) => match[1] as string);
+  const block = topLevelDeclaration(shipped, 'export interface ContentStatusEntry',
+    'src/ops/projection-content.ts ContentStatusEntry');
+  const declared = [...block.matchAll(/^\s*readonly ([A-Za-z]+)[?:]/gm)].map((match) => match[1] as string);
   assertEq([...declared].sort().join(','), [...PHASE11_RECORDED_ENTRY_FIELDS].sort().join(','),
     'the shipped status entry carries a different field set than the one P11-M4 measures over');
   // AND THE LOCATOR IS NOT ONE OF THEM, WHICH IS §4's NINTH REFUSAL RATHER THAN AN OVERSIGHT.
@@ -216,6 +224,28 @@ test('the six recorded fields are the shipped status surface\'s own, and the loc
     + 'asserts no preserved file carries one');
   assert(/re-read the other half \*\*through the mount\*\*/.test(flat(CONTRACT).replace(/\s+/g, ' ')),
     '§5.1 no longer says what covers a moved locator instead');
+});
+
+test('CONTROL: the field set is read the same from a CRLF checkout, and the old reader was not', () => {
+  // THE POST-MERGE FAILURE, REPRODUCED. At the Phase 10-12 integration merge this pin reported ten status
+  // fields that do not exist, against a `src/ops/projection-content.ts` blob byte-identical to the one the
+  // child branch was green on. The only difference was the checkout: `core.autocrlf=true` types `*.ts` CRLF,
+  // `.gitattributes` pins only `*.sh` and `*.go` to LF, and the child worktree's files happened to have been
+  // written LF. A pin whose answer depends on that is a pin about the checkout.
+  const lf = read('src/ops/projection-content.ts').replace(/\r\n?/g, '\n');
+  const crlf = lf.replace(/\n/g, '\r\n');
+  const fieldsOf = (text: string, what: string): string =>
+    [...topLevelDeclaration(text, 'export interface ContentStatusEntry', what)
+      .matchAll(/^\s*readonly ([A-Za-z]+)[?:]/gm)].map((match) => match[1] as string).sort().join(',');
+  assertEq(fieldsOf(crlf, 'crlf'), fieldsOf(lf, 'lf'), 'the status field set depends on how the file is typed');
+  assertEq(fieldsOf(crlf, 'crlf'), [...PHASE11_RECORDED_ENTRY_FIELDS].sort().join(','),
+    'the CRLF reading is stable but wrong, which is not the property this control is for');
+  // AND THE OLD READER REALLY DID OVER-READ, so this control is not asserting something nothing ever lacked.
+  const block = crlf.slice(crlf.indexOf('export interface ContentStatusEntry {'));
+  const overRead = [...block.slice(0, block.indexOf('\n}\n')).matchAll(/^\s*readonly ([A-Za-z]+)[?:]/gm)];
+  assertEq(block.indexOf('\n}\n'), -1, 'the bare-LF literal still matches in a CRLF file');
+  assert(overRead.length > PHASE11_RECORDED_ENTRY_FIELDS.length,
+    'the old slice did not run past the interface on a CRLF file, so the merge failure had another cause');
 });
 
 test('a generation holding one kind is NOT a mixed generation', () => {
@@ -451,21 +481,40 @@ test('NO SECOND DAEMON AND NO SECOND OWNER OF THE MOUNT POINT — §4\'s fourth 
   // IT DRIVES THE SHIPPED SCRIPT INSTEAD, and this is what says so rather than the comment above it.
   assert(/projection-alpha\.sh/.test(read(GATE)), 'the gate does not drive the shipped appliance script');
   assert(/projection-content\.sh/.test(read(GATE)), 'the gate does not drive the shipped content script');
-  // AND THE COMPOSE FILE HAS EXACTLY ONE SERVICE, which is the same refusal one layer down. The block is
-  // sliced from `services:` to the next TOP-LEVEL key rather than counting two-space keys across the whole
-  // file — `networks:` has a two-space child of its own, and a model that counted it would report two
-  // services in a file that declares one, which is the false failure that gets a pin deleted.
-  const compose = read(COMPOSE).replace(/^\s*#.*$/gm, '');
-  const servicesAt = compose.indexOf('\nservices:\n');
-  assert(servicesAt >= 0, 'the Phase 11 compose file declares no services block');
-  const afterServices = compose.slice(servicesAt + '\nservices:\n'.length);
-  const nextTopLevel = /^[a-z][a-z0-9-]*:/m.exec(afterServices)?.index ?? afterServices.length;
-  const servicesBlock = afterServices.slice(0, nextTopLevel);
-  assertEq((servicesBlock.match(/^ {2}[a-z][a-z0-9-]*:$/gm) ?? []).length, 1,
+  // AND THE COMPOSE FILE HAS EXACTLY ONE SERVICE, which is the same refusal one layer down.
+  //
+  // PARSED, NOT SLICED. This used to cut the block out with `compose.indexOf('\nservices:\n')` and then count
+  // `^ {2}[a-z-]+:$` inside it — a model of the file's typography rather than of its content. It got the
+  // shape right (`networks:` has a two-space child of its own, and counting those across the whole file would
+  // report two services in a file that declares one) and the LINE ENDING wrong: the literal carries a bare
+  // LF, so on an ordinary Windows checkout `indexOf` answered -1 and the pin reported that a file plainly
+  // containing `services:` "declares no services block". `src/ops/minimal-yaml.ts` exists for precisely this
+  // — it reads the value Docker would read, and line endings, indentation width, key order and quoting stop
+  // being able to change the answer.
+  const compose = read(COMPOSE);
+  const services = asMap(parseYaml(compose).services ?? null, `${COMPOSE} services`);
+  assertEq(Object.keys(services).length, 1,
     'the Phase 11 compose file declares more than one service, and a daemon written into it would be a '
     + 'second owner of the mount point');
-  assert(!/projectiond|plex|jellyfin|emby|sabnzbd/i.test(compose),
+  assert(!/projectiond|plex|jellyfin|emby|sabnzbd/i.test(compose.replace(/^\s*#.*$/gm, '')),
     'the compose file names a daemon, a worker or a media server');
+});
+
+test('CONTROL: the one-service reading survives a CRLF checkout, and the old one did not', () => {
+  // THE SECOND HALF OF THE SAME POST-MERGE FAILURE. This pin reported that a file plainly containing
+  // `services:` "declares no services block" — the most obviously false sentence of the three, and the one
+  // that says most clearly that a structural reader modelled on typography answers about the checkout.
+  const lf = read(COMPOSE).replace(/\r\n?/g, '\n');
+  const crlf = lf.replace(/\n/g, '\r\n');
+  const namesOf = (text: string, what: string): string =>
+    Object.keys(asMap(parseYaml(text).services ?? null, what)).join(',');
+  assertEq(namesOf(crlf, 'crlf services'), namesOf(lf, 'lf services'),
+    'the service set depends on how the compose file is typed');
+  assertEq(namesOf(crlf, 'crlf services'), 'postgres', 'the parsed service is not the throwaway database');
+  // AND THE OLD LOCATOR REALLY DID MISS.
+  assertEq(crlf.indexOf('\nservices:\n'), -1, 'the bare-LF literal still matches in a CRLF file');
+  assert(lf.indexOf('\nservices:\n') >= 0,
+    'the literal misses on LF too, so the old pin was failing for a reason other than the line ending');
 });
 
 test('the four Phase 9 claims are named as untouchable, and no Phase 11 file records a P9- or P10- verdict', () => {
