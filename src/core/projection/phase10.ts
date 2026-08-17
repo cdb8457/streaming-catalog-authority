@@ -440,6 +440,18 @@ export const PHASE10_TRANCHE_PATHS: readonly string[] = Object.freeze([
   'test/usenet-admission.ts',
   'test/suite-inventory.json',
   'package.json',
+  // THE EIGHT TORBOX SOURCE ALLOWLISTS. §6.2: a new file that names TorBox joins them WITH ITS REASON WRITTEN
+  // BESIDE IT, which the allowlist's own comment says is the only legitimate way to widen one. They are on
+  // this list because they were edited, and a path list that omitted the edits nobody wanted to admit to
+  // would be the one place a stale declaration does real harm.
+  'test/torbox-boundary.ts',
+  'test/torbox-fake-adapter.ts',
+  'test/torbox-live-smoke-cli.ts',
+  'test/torbox-live-transport.ts',
+  'test/torbox-provider-adapter.ts',
+  'test/torbox-readonly-client.ts',
+  'test/torbox-real-client-gate.ts',
+  'test/torbox-transport-acceptance.ts',
 ]);
 
 /**
