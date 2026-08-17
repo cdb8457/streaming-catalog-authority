@@ -1591,6 +1591,13 @@
       ]
     },
     {
+      "file": "projection-content-db.ts",
+      "group": "db",
+      "args": [
+        "5469"
+      ]
+    },
+    {
       "file": "usenet-sealed.ts",
       "group": "offline"
     },
@@ -1644,6 +1651,10 @@
     },
     {
       "file": "projection-namespace-snapshot.ts",
+      "group": "offline"
+    },
+    {
+      "file": "projection-content-command.ts",
       "group": "offline"
     }
   ]
