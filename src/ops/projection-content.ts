@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
-import { constants, existsSync, promises as fsPromises, createReadStream, readFileSync } from 'node:fs';
+import { constants, existsSync, promises as fsPromises, createReadStream } from 'node:fs';
 import path from 'node:path';
 
 import {
   deriveProjectedEntryId,
+  manifestDigestOfBytes,
   normalizeProjectedPath,
   probeOffsetsFor,
   PROJECTION_PROBE_PLAN,
@@ -16,7 +17,7 @@ import {
 } from '../core/projection/source-registry.js';
 import { readNamespaceSnapshot } from '../core/projection/namespace-snapshot.js';
 import { publishGeneration, publishStatus } from '../core/projection/publish-service.js';
-import { readPointer } from '../core/projection/artifact-store.js';
+import { readExact, readPointer } from '../core/projection/artifact-store.js';
 import { assertSealedSafe } from '../core/usenet/sealed.js';
 import { UsenetJobLedger, createFileLedgerStorage, usenetLedgerPath } from '../core/usenet/job-ledger.js';
 // THE DIVERGENCE SET IS READ FROM ONE PLACE AND RE-EXPORTED FROM NONE. An earlier draft re-exported it from
@@ -76,6 +77,13 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const VERSION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const ENTRY_ID = /^pe_[0-9a-f]{64}$/;
+/**
+ * A generation artifact's file NAME, and nothing that is also a path.
+ *
+ * No slash, no backslash, no leading dot: a pointer is a document this command READS rather than one it
+ * wrote, and `readPointer` checks its five fields by type rather than by shape.
+ */
+const ARTIFACT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 // ---------------------------------------------------------------------------------------------------------
 // Configuration
@@ -899,13 +907,32 @@ export async function reconcileContent(
  * AN UNREADABLE ARTIFACT ANSWERS EMPTY, and that is safe in the only direction that matters: every registered
  * entry is then reported `registry-ahead-of-generation`, which is loud. The opposite default would report a
  * namespace nobody can read as fully published.
+ *
+ * AND "READABLE" MEANS WHAT THE DAEMON MEANS BY IT, which is the correction this audit made. An earlier draft
+ * joined `pointer.artifactName` onto the manifest directory and parsed whatever came back. Two things were
+ * wrong with that, and both of them are about the sentence above rather than about tidiness:
+ *
+ *   * THE NAME WAS NEVER CHECKED TO BE A NAME. `readPointer` validates the pointer's five fields by TYPE and
+ *     not by shape, so a hand-edited or half-written pointer naming `../../something` was read from outside
+ *     the manifest directory this command owns. Nothing this file writes can produce such a pointer; a
+ *     command that reports on a directory after something else has been wrong in it cannot assume that.
+ *   * THE BYTES WERE NEVER CHECKED TO BE THE POINTER'S BYTES. `artifactBytes` and `manifestDigest` were
+ *     ignored, so an artifact of the wrong length or the wrong digest — exactly what a truncated write leaves
+ *     — was read as the published generation. `projectiond` refuses that file, and `publishStatus` says
+ *     `agrees=false` about it by calling `artifactMatches`. This function was the only reader of the three
+ *     that would have called its entries VISIBLE, which is the one question it exists to answer.
  */
-function readPublishedEntryIds(config: ContentPlaneConfig): ReadonlySet<string> {
+export function readPublishedEntryIds(config: ContentPlaneConfig): ReadonlySet<string> {
   const pointer = readPointer(config.manifestDir);
   if (pointer === null) return new Set();
+  if (!ARTIFACT_NAME.test(pointer.artifactName)) return new Set();
+  // READ THROUGH THE ARTIFACT STORE'S OWN READER, at the pointer's declared length, and digested with the
+  // contract's own function. A second implementation of either would be a second opinion about what the
+  // daemon can serve.
+  const bytes = readExact(path.join(config.manifestDir, pointer.artifactName), pointer.artifactBytes);
+  if (bytes === null || manifestDigestOfBytes(bytes) !== pointer.manifestDigest) return new Set();
   try {
-    const bytes = readFileSync(path.join(config.manifestDir, pointer.artifactName), 'utf8');
-    const manifest = JSON.parse(bytes) as { entries?: ReadonlyArray<{ projectedEntryId?: unknown }> };
+    const manifest = JSON.parse(bytes.toString('utf8')) as { entries?: ReadonlyArray<{ projectedEntryId?: unknown }> };
     return new Set((manifest.entries ?? [])
       .map((entry) => String(entry.projectedEntryId))
       .filter((id) => ENTRY_ID.test(id)));

@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -16,6 +17,7 @@ import {
   parseContentConfig,
   probePlanFor,
   readObjectsFile,
+  readPublishedEntryIds,
   renderAdd,
   renderHold,
   renderReconcile,
@@ -26,7 +28,7 @@ import {
 import type { Queryable } from '../src/core/projection/source-registry.js';
 import { parseArgs } from '../src/ops/projection-content-cli.js';
 import { PHASE10_DIVERGENCE_CODES, PHASE10_DIVERGENCE_MEANINGS } from '../src/core/projection/phase10.js';
-import { probeOffsetsFor, PROJECTION_PROBE_PLAN } from '../src/core/projection/manifest-v1.js';
+import { manifestDigestOfBytes, probeOffsetsFor, PROJECTION_PROBE_PLAN } from '../src/core/projection/manifest-v1.js';
 
 // Projection Phase 10 D10.3 — the content command's boundary, offline.
 //
@@ -39,7 +41,12 @@ import { probeOffsetsFor, PROJECTION_PROBE_PLAN } from '../src/core/projection/m
 //   * `--publish` is explicit on the verbs that can publish and REFUSED on the ones that cannot;
 //   * every rendered line says what did NOT happen, because Phase 10 §2.2 is a defect in a sentence.
 //
-// IT OPENS NO CONNECTION, READS NO REAL FILE AND CONTACTS NOTHING: the host boundary is injected.
+// IT OPENS NO CONNECTION AND CONTACTS NOTHING: the host boundary is injected.
+//
+// IT DOES TOUCH ONE REAL DIRECTORY, and the exception is named rather than quietly taken. The arms that ask
+// what a media server can SEE write a pointer and an artifact into a temporary directory of their own, because
+// the question is what happens when the BYTES on disk stop agreeing with the pointer that names them and there
+// is nothing to disagree about in memory. Every one of those directories is removed by the last arm.
 
 const h = createHarness('Projection Phase 10 D10.3 — the content command, offline');
 const { test } = h;
@@ -337,6 +344,74 @@ test('the reconciler names no code the contract does not', () => {
   }
 });
 
+h.section('what a media server can see, answered the way the daemon answers it');
+
+/**
+ * A manifest directory holding one pointer and one artifact, as `publishGeneration` leaves them.
+ *
+ * WRITTEN RATHER THAN FAKED, because the question these arms ask is what happens when the BYTES on disk stop
+ * agreeing with the pointer that names them — and there is nothing to disagree about in memory.
+ */
+function manifestDirWith(
+  entryIds: readonly string[], tamper: (pointer: Record<string, unknown>, dir: string) => void = () => undefined,
+): string {
+  const dir = mkdtempSync(join(tmpdir(), 'phase10-audit-'));
+  const artifact = Buffer.from(JSON.stringify({ entries: entryIds.map((id) => ({ projectedEntryId: id })) }), 'utf8');
+  writeFileSync(join(dir, 'generation-1.json'), artifact);
+  const pointer: Record<string, unknown> = {
+    generationId: 'gen_1', sequence: 1, artifactName: 'generation-1.json',
+    artifactBytes: artifact.length, manifestDigest: manifestDigestOfBytes(artifact),
+  };
+  tamper(pointer, dir);
+  writeFileSync(join(dir, 'pointer.json'), `${JSON.stringify(pointer)}\n`);
+  temporaryDirs.push(dir);
+  return dir;
+}
+
+const temporaryDirs: string[] = [];
+const ENTRY = `pe_${'a'.repeat(64)}`;
+const OUTSIDE_ENTRY = `pe_${'b'.repeat(64)}`;
+const configFor = (manifestDir: string): typeof CONFIG => ({ ...CONFIG, manifestDir });
+
+test('an artifact that AGREES with its pointer is what a media server can see', () => {
+  const ids = readPublishedEntryIds(configFor(manifestDirWith([ENTRY])));
+  assert(ids.has(ENTRY), 'a published entry was reported as invisible, so every entry would read as ahead of the generation');
+});
+
+test('an artifact whose BYTES do not match the pointer is not published, because the daemon refuses it', () => {
+  // A TRUNCATED OR HALF-WRITTEN ARTIFACT IS EXACTLY THIS. `publishStatus` already says `agrees=false` about it
+  // by calling `artifactMatches`; this reader used to be the only one of the three that called its entries
+  // VISIBLE, which is the one question it exists to answer.
+  const dir = manifestDirWith([ENTRY], (_pointer, at) => { writeFileSync(join(at, 'generation-1.json'), 'x'.repeat(64)); });
+  assertEq(readPublishedEntryIds(configFor(dir)).size, 0,
+    'an artifact no daemon would serve was read as the published generation');
+});
+
+test('an artifact whose DIGEST does not match the pointer is not published either', () => {
+  const dir = manifestDirWith([ENTRY], (pointer) => { pointer['manifestDigest'] = `sha256:${'0'.repeat(64)}`; });
+  assertEq(readPublishedEntryIds(configFor(dir)).size, 0, 'the digest the pointer declares was never checked');
+});
+
+test('a pointer naming something that is not a NAME is refused, never joined onto the manifest directory', () => {
+  // THE FILE OUTSIDE IS REAL AND VALID, so the refusal can only come from the name being a path. A test whose
+  // traversal target did not exist would pass on the read failing and say nothing about the guard.
+  let outside = '';
+  const dir = manifestDirWith([ENTRY], (pointer, at) => {
+    const artifact = Buffer.from(JSON.stringify({ entries: [{ projectedEntryId: OUTSIDE_ENTRY }] }), 'utf8');
+    outside = join(at, '..', 'phase10-audit-outside.json');
+    writeFileSync(outside, artifact);
+    pointer['artifactName'] = '../phase10-audit-outside.json';
+    pointer['artifactBytes'] = artifact.length;
+    pointer['manifestDigest'] = manifestDigestOfBytes(artifact);
+  });
+  try {
+    assertEq(readPublishedEntryIds(configFor(dir)).size, 0,
+      'a hand-edited pointer read a file from outside the directory this command owns');
+  } finally {
+    rmSync(outside, { force: true });
+  }
+});
+
 h.section('containment: the walk from the media root, following nothing');
 
 /** A host whose filesystem is a map from absolute path to kind. Anything unnamed is missing. */
@@ -518,6 +593,11 @@ test('the shipped script refuses to publish implicitly, and says so where an ope
 });
 
 h.section('wiring');
+
+test('this suite leaves no temporary directory behind', () => {
+  for (const dir of temporaryDirs) rmSync(dir, { recursive: true, force: true });
+  assert(true, 'unreachable');
+});
 
 test('this suite is in the offline inventory', () => {
   assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/projection-content-command.ts'), 'suite in npm test');
