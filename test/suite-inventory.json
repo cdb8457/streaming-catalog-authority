@@ -1656,6 +1656,14 @@
     {
       "file": "projection-content-command.ts",
       "group": "offline"
+    },
+    {
+      "file": "projection-phase10.ts",
+      "group": "offline"
+    },
+    {
+      "file": "projection-phase10-gate-audit.ts",
+      "group": "offline"
     }
   ]
 }

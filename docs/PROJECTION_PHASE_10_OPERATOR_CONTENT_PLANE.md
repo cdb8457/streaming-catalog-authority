@@ -348,8 +348,8 @@ already closed in: *what is missing is a run rather than a gate.*
 
 **It closes no Phase 9 claim.** It adds no provider. It is **one host**. It is not a soak, a load test, an
 uptime claim, an availability claim or a production release. It fixes none of Phase 7 §12.4's five rough
-edges. It re-closes nothing in Phases 1–8, and it relabels no earlier tranche's evidence. It does not make
-Usenet streaming instant, add source failover, add indexer search, add download-selection policy, or support
+edges. It re-closes nothing in Phases 1–8, and it relabels no earlier tranche's evidence. It does not provide
+instant Usenet streaming, automatic source failover, indexer search, download-selection policy or
 Real-Debrid.
 
 **No threshold in §5.1 and no refusal in §4 may move after this commit** except by a commit that changes this

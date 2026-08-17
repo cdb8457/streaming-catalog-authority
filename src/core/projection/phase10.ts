@@ -192,6 +192,37 @@ export const PHASE10_PROVIDER_FREE_GATE_IDS: readonly Phase10GateId[] = Object.f
 export const PHASE10_PROVIDER_REQUIRED_GATE_IDS: readonly Phase10GateId[] = Object.freeze([]);
 
 /**
+ * THE CLAIMS ONE REHEARSAL RUN MAY NOT ANSWER, AND THIS IS THE MOST IMPORTANT LIST IN THE FILE.
+ *
+ * Phase 9's equivalent refusal was about a PROVIDER: a rehearsal against a fake worker could not close a claim
+ * that says "a real Usenet job". Phase 10 has no provider, so the same failure wears a different shape — a
+ * rehearsal that emitted all ten ids would close the tranche from ONE run on ONE shell, and four of the ten
+ * are claims about a SET of runs that the rehearsal is not one of:
+ *
+ *   P10-1  the full offline inventory, from BOTH shells — a rehearsal runs the suites it names, on the shell
+ *          it was launched from, and the second shell is a separate launch it cannot perform;
+ *   P10-2  three consecutive FRESH rehearsal runs on the real host — one run is not three, and the wrapper
+ *          that counts them is the only thing that can say so;
+ *   P10-7  the provider-free regression subset from one frozen candidate — eleven other gates, none of them
+ *          this one;
+ *   P10-10 three consecutive fresh SEQUENCES — the same argument as P10-2, one level up.
+ *
+ * `phase10ClosureProblems` refuses a `rehearsal: true` verdict for any of them, which is what keeps a green
+ * rehearsal from reading as a closure.
+ */
+export const PHASE10_SEQUENCE_LEVEL_GATE_IDS: readonly Phase10GateId[] = Object.freeze([
+  'P10-1-offline-inventory-both-shells',
+  'P10-2-rehearsal-three-fresh',
+  'P10-7-provider-free-regression-subset-green',
+  'P10-10-three-consecutive-fresh-sequences',
+]);
+
+/** The complement: what one rehearsal run may legitimately answer. A partition of the ten, by construction. */
+export const PHASE10_REHEARSAL_EMITTABLE_GATE_IDS: readonly Phase10GateId[] = Object.freeze(
+  PHASE10_CLOSURE_GATE_IDS.filter((id) => !PHASE10_SEQUENCE_LEVEL_GATE_IDS.includes(id)),
+);
+
+/**
  * The claims whose evidence depends on ANOTHER DISPATCH landing first.
  *
  * §2.6: the seven POSIX-shell suites belong to `task_49ab24180bd0`. Phase 10 does not edit them and does not
@@ -277,6 +308,13 @@ export function phase10ClosureProblems(results: Phase10Results): readonly string
       problems.push(`${gateId} did not pass`);
       continue;
     }
+    // A REHEARSAL VERDICT CANNOT CLOSE A CLAIM ABOUT A SET OF RUNS. This is the check that keeps a green
+    // rehearsal from reading as a closure; see PHASE10_SEQUENCE_LEVEL_GATE_IDS for why these four and no
+    // others.
+    if (result.rehearsal === true && PHASE10_SEQUENCE_LEVEL_GATE_IDS.includes(gateId)) {
+      problems.push(`${gateId} passed only in one rehearsal run, and §5 asks it of a set of runs this one is `
+        + 'not a member of');
+    }
     const key = phase10BudgetKeyFor(gateId);
     if (key === undefined) {
       if (result.measured !== undefined || result.budget !== undefined) {
@@ -360,6 +398,48 @@ export const PHASE10_FORBIDDEN_SOURCE: readonly string[] = Object.freeze([
   'src/core/projection/phase7.ts',
   'src/core/projection/phase8.ts',
   'src/core/projection/phase9.ts',
+]);
+
+/**
+ * EVERY PATH THIS TRANCHE CREATES OR MODIFIES.
+ *
+ * WHAT IT IS FOR: `test/projection-phase10.ts` runs `phase9RequiresSoakRerun` over this list and asserts the
+ * answer is FALSE, which is §5's P10-6 driven rather than promised. The contract's own decision procedure is
+ * called; a suite that re-implemented the rule would be a suite that could disagree with the product about
+ * whether a six-hour soak has to be re-run.
+ *
+ * WHAT IT IS NOT: a substitute for the OPERATOR SOURCE DIGEST. This list is maintained by the people editing
+ * it, so on its own it could be wrong in exactly the way that matters. `test/projection-bounded-recovery.ts`
+ * recomputes the digest over `deploy/projection-alpha.sh`, its two helper programs, the env-contract example
+ * and `docker-compose.projection-alpha.yml` on EVERY run and compares it against the documented value — that
+ * is the guard that cannot be forgotten, and this list is the statement of intent beside it.
+ */
+export const PHASE10_TRANCHE_PATHS: readonly string[] = Object.freeze([
+  'docs/PROJECTION_PHASE_10_OPERATOR_CONTENT_PLANE.md',
+  'docs/PROJECTION_CONTENT_OPERATOR_RUNBOOK.md',
+  'docs/PROJECTION_PHASE_9_USENET_RUNBOOK.md',
+  'src/core/projection/phase10.ts',
+  'src/core/projection/namespace-snapshot.ts',
+  'src/core/projection/publish-service.ts',
+  'src/core/projection/publisher.ts',
+  'src/core/usenet/admission.ts',
+  'src/ops/projection-content.ts',
+  'src/ops/projection-content-cli.ts',
+  'src/ops/usenet-command.ts',
+  'deploy/projection-content.sh',
+  'deploy/projection-phase10-rehearsal.sh',
+  'deploy/projection-phase10-rehearsal-three.sh',
+  'deploy/projection-phase10-rehearsal-optional.sh',
+  'docker-compose.projection-phase10.yml',
+  'test/projection-phase10.ts',
+  'test/projection-phase10-gate-audit.ts',
+  'test/projection-content-command.ts',
+  'test/projection-content-db.ts',
+  'test/projection-namespace-snapshot.ts',
+  'test/projection-drift-guard-db.ts',
+  'test/usenet-admission.ts',
+  'test/suite-inventory.json',
+  'package.json',
 ]);
 
 /**
