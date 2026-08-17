@@ -675,6 +675,27 @@ consumer_sha() { docker exec -u 1000:1000 "$CONSUMER_CONTAINER" \
 
 # THE LOCAL HALF IS SERVED FROM DISK, and the fake origin's counters must not move for it. A local entry that
 # reached the network would be an entry served by the other half's path, which is the failure this arm names.
+# THE ORIGIN MUST BE QUIESCENT BEFORE ANYTHING IS ATTRIBUTED TO A READ, and this is the difference between a
+# measurement and a coincidence. P11-M2's whole distinction is "the local read moved no range traffic" — and
+# a daemon that was still warming a probe cache in the background would move the counters underneath the
+# local read and fail the arm for something the local read did not do. So the counters are sampled until two
+# consecutive samples agree; if they never do, the arm CANNOT ATTRIBUTE and says so rather than guessing in
+# either direction.
+await_quiet_origin() {
+  local attempt first second
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    first="$(counters)"
+    sleep 3
+    second="$(counters)"
+    if [ "$first" = "$second" ] && [ -n "$first" ]; then return 0; fi
+    say "the range origin is still serving on its own (attempt $attempt); waiting to attribute a read to it"
+  done
+  return 1
+}
+
+await_quiet_origin \
+  || { echo "the range origin never went quiet, so no read can be attributed to either half" >&2; M2=fail; }
+
 COUNTERS_BEFORE_LOCAL="$(counters)"
 LOCAL_THROUGH_MOUNT="$(consumer_sha "$ENTRY_LOCAL")"
 COUNTERS_AFTER_LOCAL="$(counters)"
