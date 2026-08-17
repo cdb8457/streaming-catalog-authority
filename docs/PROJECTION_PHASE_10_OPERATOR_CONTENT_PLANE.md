@@ -457,3 +457,83 @@ Recorded because a tranche that lists only what worked is a tranche nobody can a
 `go:phase10-rehearsal:three` on the Unraid host; the provider-free regression subset of P10-7 from one frozen
 candidate; the offline inventory from **both** shells, which needs `task_49ab24180bd0`'s commit first; and the
 complete sequence three consecutive fresh times. **Provider windows required: zero.**
+
+---
+
+### 11.7 THE INDEPENDENT AUDIT OF THIS TRANCHE, AND THE NINE DEFECTS IT FOUND
+
+§§11.1–11.6 record what the tranche that BUILT the content plane measured. This section records what an
+independent audit found by attacking the committed §§1–10 rather than the commit messages that claimed to
+satisfy them. **It withdraws no figure above.** Every number in §11.2 was true about the tree it was measured
+on; nine defects later that tree is not this one, and the re-measured figures are below rather than written
+over the old ones.
+
+**THE STATUS DOES NOT MOVE. §11.1 STILL STANDS: NO-GO, AND NOT ONE OF §5's TEN CLAIMS IS CLOSED.** An audit
+that repaired nine defects is an audit that changed what a closing run would be measuring; it is not a
+closing run. **No provider was contacted. `endpoint.json` was not read, not written and not touched.** No
+§4 refusal and no §5.1 threshold moved, no divergence code was added to §3.3's closed set, no degraded reason
+was added, and §9's ceremony was not needed because nothing it governs changed.
+
+#### 11.7.1 The nine, in the order the contract makes them matter
+
+| | What the contract said | What the code did |
+|---|---|---|
+| **1** | §7 R1 — the snapshot reads without excluding a writer | It read **without a time bound**, twice per admission, inside `withUsenetLedgerLock`. A database that HUNG rather than erroring produced no refusal, no admission and a held lock — defeating the one decision D10.1 turns on, that a blink must REFUSE. Now bounded on connect and on statement. |
+| **2** | D10.3 — "every verb idempotent", and `add-local`'s own comment: a run must not leave "a namespace half-changed" | The two `add` verbs wrote **outside any transaction**, and `add-torbox` checked its probe plans INSIDE the write loop. A file whose fourth object the registry refused left the first three written. Now one transaction, with every plan derived before a connection is opened. |
+| **3** | D10.3 — a `local` source is a file **under the media root**; `completed-output.ts` — "an `lstat` on the leaf proves nothing about a symlink into somebody else's share" | Containment was checked on the **leaf only**. A symlinked directory component put a file from outside the media root into the namespace, and `reconcile` would stat it through the same link and report agreement. Now a component walk, in `add-local` and in `reconcile`. |
+| **4** | D10.2 — `admitted-not-published` is derived from what **a media server can see** | The reader joined an **unvalidated** `artifactName` onto the manifest directory and ignored `artifactBytes` and `manifestDigest`. A truncated artifact the daemon refuses was read as the published generation; a hand-edited pointer read from outside the directory. Now `readExact` at the declared length, digested with the contract's own function, and a name that must be a name. |
+| **5** | §4.2 — nothing is degraded, retired or restored without an explicit verb | `hold` on a **retiring** entry cleared its deletion intent, because `cat_projection_entry_degrade` nulls all three retirement columns. `release` already refused exactly this; the unguarded verb was the destructive one. Now both refuse. |
+| **6** | §4.9 — no credential, path or **arbitrary OS error string** in any emitted document; the CLI's own header — "so is the error path" | The parse path printed `error.message` **unscanned**, and two of those messages interpolate argv — so `--database-url=<connection string>` typed as one token was echoed in full. And `sealedProblems`, the scan the rest relied on, does not match a control-plane connection string at all: its URL shape lists http, ftp, nntp and news. Now nothing echoes argv, and only sentences this project composed are printed. |
+| **7** | §5.1 — `HAND_RUN_COMMANDS_MAX = 0`, "P10-4's measurement" | The rehearsal set `HAND_RUN=0` and then asserted it was zero. **No line in the file could move it.** Adding a hand-run `tsx` to the operator path would have left P10-4 passing and reporting the same 0. Now counted out of the run, with a control that proves the counter counts. |
+| **8** | §4.9 and P10-9 — no preserved evidence carries a secret | The evidence scan looked for `https?://` while every invocation in the run is handed a **database URL with a password in it**, and it scanned only `$MEDIA_ROOT` while `$MANIFEST_DIR` sits beside it. Now any URI scheme, and the whole run directory. |
+| **9** | D10.3 — "every verb idempotent" | Two objects naming one projected path registered **one** entry, the second silently replacing the first, with both reported as registered; the objects file was unbounded in size and in count; and a file whose mtime moved failed with a `plpgsql` exception — which defect 6's repair would then have withheld, leaving a SQLSTATE and nothing else. All four are worded refusals now. |
+
+#### 11.7.2 What was re-measured, and where
+
+| | |
+|---|---|
+| Host | the development host only. **The Unraid host has still not run any of this.** |
+| `npx tsc --noEmit` | clean |
+| Full offline inventory, **Git Bash** | **333 selected / 333 passed / 0 failed / 0 required-but-skipped**, 784 s |
+| Full offline inventory, **an ordinary PowerShell** | **333 selected / 333 passed / 0 failed / 0 required-but-skipped**, 771 s. §11.4 recorded this arm as NOT RUN because it depended on `task_49ab24180bd0`'s POSIX-shell harness repair landing in the same tree. **That commit is now in this tree**, and this is the first time the arm has been run rather than deferred. It is a MEASUREMENT and not a verdict — §5 is the only place a `P10-` verdict may be written, and §5's GO asks all ten of one frozen candidate |
+| `test/projection-content-command.ts` | **63 / 63** — was 37; the added arms are the regressions for defects 2, 3, 4, 6 and 9 |
+| `test/projection-phase10-gate-audit.ts` | **29 / 29** — was 26; two of the three added are for defect 7, one of them a control that inserts a hand-run command into a copy and asserts the count moves |
+| `test/projection-namespace-snapshot.ts` | **13 / 13** — was 12; the added arm is defect 1 |
+| `test/projection-phase10.ts` | 30 / 30, unchanged |
+| `test/projection-content-db.ts` | **20 passed, 0 failed, 1 SKIPPED** against a real migrated PostgreSQL 16 — was 18; the added arms are defects 5 and 9. The skip is §11.2's, unchanged and for the same reason |
+| `test/projection-drift-guard-db.ts` | **6 / 6** against a real migrated PostgreSQL 16, with the new time bounds in place |
+| `test/custody-runtime-closure.ts` | **39 / 39** — and it FAILED first, on the audit's own new `sed` expression: a literal double quote inside a single-quoted range, which "cannot be read, and an unreadable line is not an empty one". The guard was right and the expression was changed |
+| `test/projection-bounded-recovery.ts` | 52 / 52 — the **OPERATOR SOURCE DIGEST is unmoved** |
+| `phase9RequiresSoakRerun` over the AUDIT's own 11-path changed set | **FALSE.** Zero `PHASE9_SOAK_TRIGGERING_SOURCE` entries touched, so **the Phase 8 soak is still not re-run** |
+
+#### 11.7.3 What the audit deliberately did NOT change, so each is a decision rather than an oversight
+
+- **Hard links to a local source are not refused.** `proveOutput` refuses `nlink > 1` because a second name in
+  a WORKER'S download area is a second writer. An operator's media root is not that place — a hardlinked
+  library is ordinary there — and refusing the ordinary case to guard one the operator already owns is the
+  wrong trade.
+- **`withRegistry` still has no connect bound.** It is Phase 1 shared source and §6.2 does not authorise this
+  tranche to modify it. Only the snapshot, which §6.1 gives Phase 10, was bounded.
+- **`sealedProblems`' six shapes were not widened.** `src/core/usenet/sealed.ts` is a closed tranche's module
+  and is not on §6.2's list. The gap it leaves is closed inside the Phase 10 CLI instead, and the arm that
+  pins it asserts its own premise first, so the day the shared scanner learns that shape the arm says so
+  rather than passing for a reason that has moved.
+- **No seventh divergence code.** The component-symlink case is reported as `local-source-file-absent` — the
+  file is not where the locator says it is — with the walk's own word as the detail. §3.3 is a contract and a
+  seventh code goes through §9.
+
+#### 11.7.4 What §11.6 still says, and the one line of it that has moved
+
+`go:phase10-rehearsal:three` on the Unraid host; the provider-free regression subset of P10-7 from one frozen
+candidate; the complete sequence three consecutive fresh times. **The rehearsal has still never run end to end
+on any host** — it reached the database half once, before its path precondition existed, and exits 77 on this
+one. P10-2, P10-4, P10-5, P10-8 and P10-9 have therefore never been recorded by a rehearsal that completed,
+and P10-3 and P10-6 are recorded only by the suites the rehearsal would drive. **Provider windows required:
+zero.**
+
+The one line that has moved is the **integration dependency**. §2.6, §7 R6 and §11.4 all say the same thing:
+the ordinary-PowerShell arm of P10-1 is NOT RUN until dispatch `task_49ab24180bd0`'s commit is in the same
+tree. It is (`2b14bcc`), and the arm has now been run, green, alongside the Git Bash one on the same tree.
+**That is evidence for P10-1 and it is not P10-1's verdict.** §5's GO asks all ten claims of ONE FROZEN
+CANDIDATE, seven of the ten have never been measured at all, and `phase10ClosureProblems` refuses a closure
+with an absent verdict exactly as it refuses one with a skip.
