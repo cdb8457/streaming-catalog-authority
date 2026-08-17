@@ -674,6 +674,39 @@ export PROJECTIOND_ALPHA_SECRETS_DIR="$WORK/secrets"
 
 counters() { curl -fsS "http://127.0.0.1:${ORIGIN_PORT}/counters" 2>/dev/null | tr -d '\n '; }
 
+# TWO EMPTY STRINGS COMPARE EQUAL, AND "THE BYTES DID NOT MOVE" IS THE ONE ANSWER THAT MUST NEVER BE
+# PRODUCIBLE BY HAVING READ NOTHING.
+#
+# THE DEFECT THIS REPAIRS. `consumer_sha` sends its errors to /dev/null and pipes through `awk`, so a mount
+# that is not there, a consumer that lost its bind, or a daemon that stopped answering all return the EMPTY
+# STRING. P11-M3 and P11-M4 each compared one of those against another, and `[ "" = "" ]` is true — so an
+# appliance that had died between two arms would have reported the provider-backed half as byte-identical
+# before and after, three times, and the arm would have passed on the absence of the thing it measures. It is
+# the same shape as `entry.cjs` refusing an absent entry rather than emitting an empty record, one layer out,
+# and it was pinned in the helper and not at the call sites.
+same_bytes() {
+  local what="$1" before="$2" after="$3"
+  if [ -z "$before" ] || [ -z "$after" ]; then
+    echo "  $what: a digest is EMPTY, so nothing was read and no comparison can be made" >&2
+    return 1
+  fi
+  [ "$before" = "$after" ]
+}
+
+# A COUNTER THAT DID NOT RUN REPORTS THE PASSING VALUE, AND SHELL ARITHMETIC IS WHERE THAT HAPPENS SILENTLY:
+# `$(( A + B ))` with A unset or empty is ZERO, which is exactly the budget P11-M4 is measured against. So
+# every derived number is asserted to BE a number before it is compared or added. §7 R3 and R4's whole
+# argument is that these numbers are derived rather than declared; a derivation that failed and answered zero
+# is a declaration wearing the derivation's clothes.
+numeric() {
+  case "${2:-}" in
+    ''|*[!0-9]*)
+      echo "  $1 did not produce a number, so the zero it would contribute proves nothing" >&2
+      return 1 ;;
+  esac
+  return 0
+}
+
 # P11-M5's MEASUREMENT, DERIVED FROM THE RUN RATHER THAN DECLARED, and computed HERE so that the pattern
 # which finds a hand-run invocation is not itself inside the range it searches. The range markers are the two
 # comment lines below; the worker driver and the offline suites are deliberately OUTSIDE it, because a
@@ -767,7 +800,8 @@ COUNTERS_BEFORE_LOCAL="$(counters)"
 LOCAL_THROUGH_MOUNT="$(consumer_sha "$ENTRY_LOCAL")"
 COUNTERS_AFTER_LOCAL="$(counters)"
 LOCAL_ON_DISK="$(node "$WORK/sha.cjs" "$WORK/media/$WORKER_RELATIVE/worker-produced.mkv")"
-[ -n "$LOCAL_THROUGH_MOUNT" ] && [ "$LOCAL_THROUGH_MOUNT" = "$LOCAL_ON_DISK" ] \
+same_bytes "the worker-produced half through the mount against its own bytes on disk" \
+  "$LOCAL_THROUGH_MOUNT" "$LOCAL_ON_DISK" \
   || { echo "the worker-produced entry did not read back through the mount as its own bytes" >&2; M2=fail; }
 [ "$COUNTERS_BEFORE_LOCAL" = "$COUNTERS_AFTER_LOCAL" ] \
   || { echo "reading the local half moved the range origin's counters" >&2; M2=fail; }
@@ -812,12 +846,14 @@ node "$WORK/entry.cjs" "$WORK/status-2.json" "$ENTRY_REMOTE" "$WORK/remote-after
 
 M3_MOVED="$(node "$WORK/fielddiff.cjs" "$WORK/remote-before-publish.json" "$WORK/remote-after-publish.json")"
 say "fields of the provider-backed entry moved by a publish of the other half: $M3_MOVED"
-[ "$M3_MOVED" -eq 0 ] || M3=fail
+numeric "the publish-time field difference" "$M3_MOVED" || M3=fail
+[ "${M3_MOVED:-1}" = "0" ] || M3=fail
 
 # AND ITS BYTES DID NOT MOVE EITHER. A record that agrees while the bytes changed is a record that is
 # describing something other than what a media server reads.
 REMOTE_AFTER_PUBLISH="$(consumer_sha "$ENTRY_REMOTE")"
-[ "$REMOTE_THROUGH_MOUNT" = "$REMOTE_AFTER_PUBLISH" ] \
+same_bytes "the provider-backed half before and after a publish of the other" \
+  "$REMOTE_THROUGH_MOUNT" "$REMOTE_AFTER_PUBLISH" \
   || { echo "the provider-backed half read back differently after the other half was published" >&2; M3=fail; }
 
 verdict P11-M3-publish-does-not-move-the-other-half "$M3"
@@ -839,7 +875,8 @@ content status --json >"$WORK/status-3.json" 2>&1 || M4=fail
 node "$WORK/entry.cjs" "$WORK/status-3.json" "$ENTRY_LOCAL" "$WORK/local-after-outage.json" || M4=fail
 M4_A="$(node "$WORK/fielddiff.cjs" "$WORK/local-before-outage.json" "$WORK/local-after-outage.json")"
 LOCAL_DURING_OUTAGE="$(consumer_sha "$ENTRY_LOCAL")"
-[ "$LOCAL_DURING_OUTAGE" = "$LOCAL_ON_DISK" ] \
+same_bytes "the worker-produced half during the range-origin outage" \
+  "$LOCAL_DURING_OUTAGE" "$LOCAL_ON_DISK" \
   || { echo "a range-origin outage made the worker-produced half unreadable" >&2; M4=fail; }
 docker start "$ORIGIN_CONTAINER" >/dev/null 2>&1 || true
 await_origin || { echo "the range origin did not come back after the injected outage" >&2; M4=fail; }
@@ -860,9 +897,15 @@ M4_B="$(node "$WORK/fielddiff.cjs" "$WORK/remote-before-loss.json" "$WORK/remote
 # refusal keeps a provider object reference out of every emitted document — so what a moved locator would
 # actually break is checked directly, by reading the half back through the mount a media server reads.
 REMOTE_AFTER_LOSS="$(consumer_sha "$ENTRY_REMOTE")"
-[ "$REMOTE_AFTER_LOSS" = "$REMOTE_THROUGH_MOUNT" ] \
+same_bytes "the provider-backed half before and after the worker output was lost" \
+  "$REMOTE_AFTER_LOSS" "$REMOTE_THROUGH_MOUNT" \
   || { echo "losing the worker output changed what the provider-backed half reads back as" >&2; M4=fail; }
 
+# THE TWO HALVES OF THE MEASUREMENT ARE ASSERTED TO BE NUMBERS BEFORE THEY ARE ADDED, because `$(( A + B ))`
+# with either one empty is ZERO — which is the budget. A field diff that failed to run would otherwise have
+# reported the passing answer, and the whole of §7 R4 is that this number is derived rather than declared.
+numeric "the origin-outage field difference" "$M4_A" || { M4=fail; M4_A=99; }
+numeric "the worker-loss field difference" "$M4_B" || { M4=fail; M4_B=99; }
 M4_MOVED=$((M4_A + M4_B))
 say "cross-source fields disturbed: $M4_A by the origin outage, $M4_B by the worker loss, $M4_MOVED total (budget 0)"
 [ "$M4_MOVED" -eq 0 ] || M4=fail
@@ -892,7 +935,7 @@ OBJECTSTHREE
 content add-local --file "$WORK/local-objects-3.json" >"$WORK/add-local-3.txt" 2>&1 \
   || { cat "$WORK/add-local-3.txt" >&2; M5=fail; }
 POINTER_AFTER="$(node "$WORK/sha.cjs" "$WORK/manifest/pointer.json")"
-[ "$POINTER_BEFORE" = "$POINTER_AFTER" ] \
+same_bytes "the published pointer across an add without --publish" "$POINTER_BEFORE" "$POINTER_AFTER" \
   || { echo "an add without --publish moved the published generation" >&2; M5=fail; }
 
 content status --json >"$WORK/status-5.json" 2>&1 || M5=fail
@@ -974,8 +1017,10 @@ ARM_ACCOUNTING="$(node "$WORK/unreached.cjs" "$WORK/arms-declared.txt" "$ARMS_FI
 UNREACHED="$(printf '%s' "$ARM_ACCOUNTING" | cut -d' ' -f1)"
 UNDECLARED="$(printf '%s' "$ARM_ACCOUNTING" | cut -d' ' -f2)"
 say "declared arms unreached: $UNREACHED (budget 0); arms reached that the contract never declared: $UNDECLARED"
-[ "$UNREACHED" -eq 0 ] || M6=fail
-[ "$UNDECLARED" -eq 0 ] || M6=fail
+numeric "the unreached-arm count" "$UNREACHED" || M6=fail
+numeric "the undeclared-arm count" "$UNDECLARED" || M6=fail
+[ "${UNREACHED:-1}" = "0" ] || M6=fail
+[ "${UNDECLARED:-1}" = "0" ] || M6=fail
 
 verdict P11-M6-arms-reached-cleanup-and-redaction "$M6"
 

@@ -416,6 +416,101 @@ test('the appliance\'s own output is EXCLUDED from the run-path scan and NOT fro
   }
 });
 
+h.section('PHASE 12 §11 — two empty strings compare equal, and a counter that did not run reports zero');
+
+/**
+ * One shell FUNCTION lifted out of the shipped gate and DRIVEN, the way the `.cjs` helpers below are driven.
+ *
+ * READING A GUARD IS NOT TESTING IT. These two functions are the whole of the repair for a defect whose
+ * symptom is a PASS, so a suite that asserted they appear in the file would be a suite that could not tell a
+ * working guard from a `return 0`.
+ */
+function shellFunctionFrom(body: string, name: string): string {
+  const from = body.indexOf(`\n${name}() {`);
+  assert(from > 0, `the gate no longer defines ${name}()`);
+  const to = body.indexOf('\n}\n', from);
+  assert(to > from, `${name}() has no closing brace this reader can find`);
+  return body.slice(from, to + 3);
+}
+
+function runShellSnippet(snippet: string): { status: number; out: string } {
+  const shell = shellOrThrow();
+  const dir = freshDir();
+  const file = join(dir, 'drive.sh');
+  writeFileSync(file, `set -uo pipefail\n${snippet}\n`);
+  chmodSync(file, 0o755);
+  const result = spawnSync(shell, [shPath(file)], { encoding: 'utf8' });
+  return { status: result.status ?? -1, out: `${result.stdout ?? ''}${result.stderr ?? ''}` };
+}
+
+test('PHASE 12: same_bytes REFUSES two empty digests, which is the answer "nothing was read" produces', () => {
+  if (posixShell() === null) { assert(true, NO_SHELL); return; }
+  const fn = shellFunctionFrom(read(GATE), 'same_bytes');
+  // THE DEFECT, DRIVEN. `consumer_sha` sends its errors to /dev/null, so a mount that is not there returns
+  // the EMPTY STRING — and `[ "" = "" ]` is true. P11-M3 and P11-M4 each compared one of those against
+  // another, so an appliance that had died between two arms would have reported the provider-backed half as
+  // byte-identical before and after and the arm would have passed on the absence of what it measures.
+  const empty = runShellSnippet(`${fn}\nsame_bytes "a read that did not happen" "" ""`);
+  assertEq(empty.status !== 0, true,
+    'two empty digests compared equal, so an appliance that read nothing would report its bytes unmoved');
+  assert(/EMPTY/.test(empty.out), 'the refusal does not say that a digest was empty, so nobody could diagnose it');
+  const oneEmpty = runShellSnippet(`${fn}\nsame_bytes "half a read" "abc" ""`);
+  assertEq(oneEmpty.status !== 0, true, 'one empty digest was accepted as a comparison');
+  // AND IT STILL ANSWERS THE TWO REAL QUESTIONS, because a guard that refused everything would fail the arm
+  // it is supposed to let pass.
+  assertEq(runShellSnippet(`${fn}\nsame_bytes "equal" "abc" "abc"`).status, 0, 'two equal digests were refused');
+  assertEq(runShellSnippet(`${fn}\nsame_bytes "moved" "abc" "abd"`).status !== 0, true,
+    'two DIFFERENT digests compared equal, so the guard cannot see a byte that moved');
+});
+
+test('PHASE 12: numeric REFUSES a counter that produced no number, which shell arithmetic turns into 0', () => {
+  if (posixShell() === null) { assert(true, NO_SHELL); return; }
+  const fn = shellFunctionFrom(read(GATE), 'numeric');
+  // THE ARITHMETIC THAT MADE THIS SILENT, ASSERTED HERE SO THE REASON IS NOT ONLY IN A COMMENT.
+  const arithmetic = runShellSnippet('A=""\nB=""\necho "$((A + B))"');
+  assertEq(arithmetic.out.trim(), '0',
+    'this shell does not turn an empty operand into zero, so the defect model behind numeric() is wrong');
+  assertEq(runShellSnippet(`${fn}\nnumeric "an empty counter" ""`).status !== 0, true,
+    'an empty counter passed, so a field diff that failed to run would have contributed the budget itself');
+  assertEq(runShellSnippet(`${fn}\nnumeric "a word" "no such file"`).status !== 0, true, 'a non-number passed');
+  assertEq(runShellSnippet(`${fn}\nnumeric "a real count" "0"`).status, 0, 'a real zero was refused');
+  assertEq(runShellSnippet(`${fn}\nnumeric "a real count" "12"`).status, 0, 'a real count was refused');
+});
+
+test('PHASE 12: every byte comparison and every derived number in the gate goes through a guard', () => {
+  const code = codeOf(read(GATE));
+  // THE CALL SITES, PINNED BY NAME. A guard that exists and is used at three of five call sites is a guard
+  // whose two remaining sites are the ones nobody will look at again.
+  for (const pair of ['"$LOCAL_THROUGH_MOUNT" "$LOCAL_ON_DISK"', '"$REMOTE_THROUGH_MOUNT" "$REMOTE_AFTER_PUBLISH"',
+    '"$LOCAL_DURING_OUTAGE" "$LOCAL_ON_DISK"', '"$REMOTE_AFTER_LOSS" "$REMOTE_THROUGH_MOUNT"',
+    '"$POINTER_BEFORE" "$POINTER_AFTER"']) {
+    assert(code.includes(pair), `the byte comparison over ${pair} is no longer made where this suite looks`);
+    const at = code.indexOf(pair);
+    const line = code.lastIndexOf('\n', code.lastIndexOf('\n', at - 1) - 1);
+    assert(code.slice(Math.max(0, line), at).includes('same_bytes'),
+      `${pair} is compared without the guard, so two empty digests would compare equal`);
+  }
+  for (const counter of ['"$M4_A"', '"$M4_B"', '"$M3_MOVED"', '"$UNREACHED"', '"$UNDECLARED"']) {
+    assert(new RegExp(`numeric [^\\n]*${counter.replace(/\$/g, '\\$')}`).test(code),
+      `${counter} is compared against a budget without being asserted to be a number first`);
+  }
+});
+
+test('CONTROL: a byte comparison written WITHOUT the guard is CAUGHT', () => {
+  const body = read(GATE);
+  const tampered = body.replace(
+    /same_bytes "the provider-backed half before and after the worker output was lost" \\\n  /,
+    '[ ');
+  assert(tampered !== body, 'the tamper did not apply, so this control proves nothing');
+  const code = codeOf(tampered);
+  const at = code.indexOf('"$REMOTE_AFTER_LOSS" "$REMOTE_THROUGH_MOUNT"');
+  assert(at > 0, 'the tampered comparison vanished entirely, so this control is measuring the wrong thing');
+  const line = code.lastIndexOf('\n', code.lastIndexOf('\n', at - 1) - 1);
+  assert(!code.slice(Math.max(0, line), at).includes('same_bytes'),
+    'an unguarded comparison still reads as guarded, so the check above would not have caught the original '
+    + 'defect either');
+});
+
 h.section('PHASE 12 §11 — the run directory has to be somewhere the appliance can bind it');
 
 /**
