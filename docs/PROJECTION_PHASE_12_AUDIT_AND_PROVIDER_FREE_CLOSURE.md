@@ -240,8 +240,9 @@ has invented a budget. `phase12ClosureProblems` refuses both directions.
 `docker-compose.projection-alpha.yml`; `deploy/projection-content.sh`; `src/ops/projection-content.ts`;
 `src/ops/projection-content-cli.ts`; `deploy/projection-gate-cleanup.sh`; anything on
 `PHASE9_SOAK_TRIGGERING_SOURCE`; `projectiond/`; any Phase 7, 8 or 9 gate script or run record;
-`docs/PROJECTION_PHASE_9_TORBOX_USENET.md`; `src/core/projection/phase7.ts`, `phase8.ts`, `phase9.ts`,
-`phase10.ts`, `phase11.ts`.
+`docs/PROJECTION_PHASE_9_TORBOX_USENET.md`; `src/core/projection/phase7.ts`;
+`src/core/projection/phase8.ts`; `src/core/projection/phase9.ts`; `src/core/projection/phase10.ts`;
+`src/core/projection/phase11.ts`.
 
 **`src/core/projection/phase11.ts` IS ON THAT LIST ON PURPOSE.** Phase 11's rules are the thing Phase 12 is
 auditing the gate AGAINST. A tranche that could edit both sides of that comparison is a tranche whose audit

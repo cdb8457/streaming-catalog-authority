@@ -36,7 +36,12 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "${PROJECTION_PHASE10_GATE_PG_PORT:-5670}:5432"
+      # BOUND TO LOOPBACK — PHASE 12 §6.2, AND IT IS ONE LINE FOR ONE REASON. Phase 12 runs this rehearsal on
+      # the real Unraid host, and `5670:5432` published `postgres`/`postgres` on EVERY interface of that host
+      # for the life of the run. `deploy/projection-phase10-rehearsal.sh` reaches it at `127.0.0.1:5670` and
+      # always has, so this narrows what the file publishes and changes nothing the rehearsal does. No port,
+      # no image, no credential and no threshold moves, and Phase 10's own §5 is untouched.
+      - "127.0.0.1:${PROJECTION_PHASE10_GATE_PG_PORT:-5670}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d catalog"]
       interval: 3s

@@ -741,7 +741,9 @@
     "go:phase9-rehearsal": "bash deploy/projection-phase9-rehearsal.sh",
     "go:phase9-rehearsal:three": "bash deploy/projection-phase9-rehearsal-three.sh",
     "go:phase9-rehearsal:optional": "bash deploy/projection-phase9-rehearsal-optional.sh",
-    "test:phase9": "tsx src/ops/test-runner-cli.ts --group offline --filter usenet --filter phase9"
+    "test:phase9": "tsx src/ops/test-runner-cli.ts --group offline --filter usenet --filter phase9",
+    "go:phase12-stage": "bash deploy/projection-phase12-stage.sh",
+    "test:phase12": "tsx src/ops/test-runner-cli.ts --group offline --filter phase12"
   },
   "dependencies": {
     "pg": "^8.13.1",
