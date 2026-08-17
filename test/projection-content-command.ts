@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { createHarness, assert, assertEq, assertThrows } from './usenet-kit.js';
 import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 import {
+  CONTENT_OBJECTS_FILE_MAX_BYTES,
+  CONTENT_OBJECTS_MAX,
   ContentCommandError,
   addLocalObjects,
   addTorboxObjects,
@@ -342,6 +344,60 @@ test('the reconciler names no code the contract does not', () => {
     assert((PHASE10_DIVERGENCE_CODES as readonly string[]).includes(code),
       `the reconciler emits ${code}, which §3.3 does not name`);
   }
+});
+
+h.section('the objects file is BOUNDED, and two objects cannot be one entry');
+
+test('an objects file larger than the bound is refused from its STAT, before it is read', async () => {
+  // The body is valid JSON. If the bound were checked after the read this would pass, which is the point:
+  // `--file` takes a path under the same root the media is under, and pointing it at a film is the one
+  // mistake the argument invites.
+  const host = hostWith([{ label: 'a', itemId: ITEM, path: 'Movies/A/A.bin', relativePath: 'movies/a.bin' }],
+    { sizeBytes: CONTENT_OBJECTS_FILE_MAX_BYTES + 1 });
+  await assertThrows(() => readObjectsFile(host, '/tmp/local.json', 'local'),
+    /OBJECTS_FILE_TOO_LARGE/, 'a file of any size was read into memory on an operator\'s say-so');
+});
+
+test('a file naming more objects than one operator action is refused', async () => {
+  const many = Array.from({ length: CONTENT_OBJECTS_MAX + 1 }, (_ignored, index) => ({
+    label: `a${index}`, itemId: ITEM, path: `Movies/A/${index}.bin`, relativePath: `movies/${index}.bin`,
+  }));
+  await assertThrows(() => readObjectsFile(hostWith(many), '/tmp/local.json', 'local'),
+    /OBJECTS_FILE_TOO_MANY/, 'an unbounded list was accepted');
+});
+
+test('two objects naming ONE projected path are refused, rather than one silently replacing the other', async () => {
+  await assertThrows(() => readObjectsFile(hostWith([
+    { label: 'first', itemId: ITEM, path: 'Movies/A/A.bin', relativePath: 'movies/a.bin' },
+    { label: 'second', itemId: ITEM, path: 'Movies/A/A.bin', relativePath: 'movies/b.bin' },
+  ]), '/tmp/local.json', 'local'), /OBJECT_PATH_DUPLICATE/,
+  'the second registration overwrote the first while both were reported as registered');
+});
+
+test('the comparison is the CONTRACT\'S FOLD, so two paths that differ only in case are still one entry', async () => {
+  // `validateSuccession` already refuses a folded collision at publish time. Meeting that refusal three
+  // commands later, phrased as a manifest position, is meeting it in the wrong place.
+  await assertThrows(() => readObjectsFile(hostWith([
+    { label: 'first', itemId: ITEM, path: 'Movies/A/A.bin', relativePath: 'movies/a.bin' },
+    { label: 'second', itemId: ITEM, path: 'movies/a/a.bin', relativePath: 'movies/b.bin' },
+  ]), '/tmp/local.json', 'local'), /OBJECT_PATH_DUPLICATE/,
+  'two paths that are one file on every share this namespace is reached from were both registered');
+});
+
+test('two objects sharing a LABEL are refused, because a label is the only identity a report line has', async () => {
+  await assertThrows(() => readObjectsFile(hostWith([
+    { label: 'same', itemId: ITEM, path: 'Movies/A/A.bin', relativePath: 'movies/a.bin' },
+    { label: 'same', itemId: ITEM, path: 'Movies/B/B.bin', relativePath: 'movies/b.bin' },
+  ]), '/tmp/local.json', 'local'), /OBJECT_LABEL_DUPLICATE/,
+  'two rows answering to one label make every later line about them ambiguous');
+});
+
+test('an ordinary two-object file is still accepted, so the checks refuse something rather than everything', async () => {
+  const objects = await readObjectsFile(hostWith([
+    { label: 'first', itemId: ITEM, path: 'Movies/A/A.bin', relativePath: 'movies/a.bin' },
+    { label: 'second', itemId: ITEM, path: 'Movies/B/B.bin', relativePath: 'movies/b.bin' },
+  ]), '/tmp/local.json', 'local');
+  assertEq(objects.length, 2, 'a perfectly ordinary objects file was refused');
 });
 
 h.section('what a media server can see, answered the way the daemon answers it');

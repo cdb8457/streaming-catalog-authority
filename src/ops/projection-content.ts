@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import {
   deriveProjectedEntryId,
+  foldProjectedPath,
   manifestDigestOfBytes,
   normalizeProjectedPath,
   probeOffsetsFor,
@@ -227,6 +228,18 @@ export function isoOf(mtimeMs: number): string {
 // The objects file
 // ---------------------------------------------------------------------------------------------------------
 
+/**
+ * The bound on an objects FILE, from the stat rather than after the read.
+ *
+ * One MiB holds thousands of objects at the ~200 bytes each the template's shape costs. It exists because
+ * `--file` takes a path under the same root the media is under, and pointing it at a film is the one mistake
+ * the argument invites.
+ */
+export const CONTENT_OBJECTS_FILE_MAX_BYTES = 1024 * 1024;
+
+/** The bound on how many objects one `add` may carry. More than this is not one operator action. */
+export const CONTENT_OBJECTS_MAX = 1024;
+
 export interface ContentObjectInput {
   /** The only identity this object has in any report line. Never a filename, a title or an account name. */
   readonly label: string;
@@ -270,6 +283,16 @@ export async function readObjectsFile(
   if (stat.kind !== 'file') {
     throw new ContentCommandError('OBJECTS_FILE_NOT_REGULAR', 'the objects file is not a regular file');
   }
+  // BOUNDED BEFORE IT IS READ, from the stat this function already took. `readFile` returns the WHOLE file as
+  // one string, so an operator who pointed `--file` at a media file — the one mistake this argument invites,
+  // since both are paths under the same root — would have had the command read it into memory before
+  // `JSON.parse` told them it was not JSON. The bound is the shape `SAB_API_KEY_MAX_BYTES` already sets for
+  // the other file this project reads on an operator's say-so.
+  if (stat.sizeBytes > CONTENT_OBJECTS_FILE_MAX_BYTES) {
+    throw new ContentCommandError('OBJECTS_FILE_TOO_LARGE',
+      `the objects file is larger than ${CONTENT_OBJECTS_FILE_MAX_BYTES} bytes, which is larger than any list `
+      + 'of objects; it was not read');
+  }
   // A TORBOX OBJECT REFERENCE IS A SECRET AND ITS FILE IS TREATED AS ONE. The template says so in as many
   // words. A local objects file names no secret, so the mode is not demanded of it.
   if (kind === 'http-range' && host.hasPosixModes && !stat.ownerOnly) {
@@ -290,8 +313,48 @@ export async function readObjectsFile(
   if (parsed.length === 0) {
     throw new ContentCommandError('OBJECTS_FILE_EMPTY', 'the objects file names nothing to add');
   }
+  if (parsed.length > CONTENT_OBJECTS_MAX) {
+    throw new ContentCommandError('OBJECTS_FILE_TOO_MANY',
+      `the objects file names more than ${CONTENT_OBJECTS_MAX} objects, which is more than one operator `
+      + 'action; split it, so a refusal names a file somebody can read');
+  }
 
-  return parsed.map((raw, index) => validateObject(raw, index, kind));
+  const objects = parsed.map((raw, index) => validateObject(raw, index, kind));
+
+  // TWO OBJECTS THAT WOULD BE ONE ENTRY ARE A REFUSAL, NOT A LAST-ONE-WINS.
+  //
+  // `deriveProjectedEntryId` derives the id from the PATH and from nothing else, and `registerEntry` upserts
+  // on it. So an objects file naming the same path twice registered ONE entry, the second silently replacing
+  // the first, while `renderAdd` printed both lines as registered — an operator told that two things were
+  // added when one was, with no way to tell which one is in the namespace.
+  //
+  // THE COMPARISON IS THE CONTRACT'S OWN FOLD, not the raw string. Unraid shares, macOS clients and SMB all
+  // reach this namespace and on any of them `A.mkv` and `a.mkv` are one file; `validateSuccession` already
+  // refuses a folded collision at PUBLISH time, and meeting that refusal three commands later, phrased as a
+  // manifest position, is meeting it in the wrong place.
+  //
+  // A DUPLICATE LABEL IS REFUSED FOR THE SAME KIND OF REASON. A label is the ONLY identity an object has in a
+  // report line, and two rows answering to one label make every later line about them ambiguous.
+  const paths = new Map<string, string>();
+  const labels = new Set<string>();
+  for (const object of objects) {
+    if (labels.has(object.label)) {
+      throw new ContentCommandError('OBJECT_LABEL_DUPLICATE',
+        `two objects share the label ${object.label}, and a label is the only identity an object has in a `
+        + 'report line');
+    }
+    labels.add(object.label);
+    const folded = foldProjectedPath(object.path);
+    const first = paths.get(folded);
+    if (first !== undefined) {
+      throw new ContentCommandError('OBJECT_PATH_DUPLICATE',
+        `${object.label} and ${first} name the same projected path, so one would silently replace the other: `
+        + 'a projected entry id is derived from its path, and two entries that fold together are one entry');
+    }
+    paths.set(folded, object.label);
+  }
+
+  return objects;
 }
 
 function validateObject(raw: unknown, index: number, kind: 'http-range' | 'local'): ContentObjectInput {
