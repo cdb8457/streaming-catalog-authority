@@ -58,6 +58,25 @@ export const UNRESOLVED_SIZE_BYTES = -1;
 export const UNRESOLVED_MTIME = '';
 
 /**
+ * THE SNAPSHOT IS BOUNDED IN TIME, AND ON THIS PATH THAT IS NOT A DETAIL.
+ *
+ * `admit()` calls this function twice around every publish, and it does so inside `withUsenetLedgerLock` — a
+ * lock held for the whole of `ops:usenet reconcile`. So a connection that never answers does not merely delay
+ * one admission: it hangs the reconciliation and every `submit` that queues behind the lock, for as long as
+ * the operating system is willing to wait on a TCP connect, which on a dropped route is minutes.
+ *
+ * AND IT DEFEATS THE ONE DECISION D10.1 TURNS ON. The repair's whole shape is that a database which BLINKS
+ * must produce a REFUSAL rather than an admission carrying the weaker guarantee. A blink that HANGS instead of
+ * erroring produces neither: no refusal, no admission, a held lock and a command an operator eventually kills.
+ * A bound converts that back into the transient refusal `admit()` already has a branch for.
+ *
+ * The two values are `src/ops/bootstrap.ts`'s shape rather than new numbers; the statement bound is longer
+ * because this reads a whole registry rather than one row.
+ */
+export const NAMESPACE_SNAPSHOT_CONNECT_TIMEOUT_MS = 10_000;
+export const NAMESPACE_SNAPSHOT_STATEMENT_TIMEOUT_MS = 30_000;
+
+/**
  * One snapshot picture, as the entries a drift comparison is stated in terms of.
  *
  * PURE. No database, no clock, no filesystem — the same discipline `publisher.ts` keeps, and for the same
@@ -131,7 +150,11 @@ export function projectedEntriesOf(snapshot: PublishSnapshot): readonly Projecte
  * admission instead of quietly weakening the guarantee.
  */
 export async function readNamespaceSnapshot(connectionString?: string): Promise<readonly ProjectedEntry[]> {
-  const client = new Client({ connectionString: connectionString ?? loadDbConfig().databaseUrl });
+  const client = new Client({
+    connectionString: connectionString ?? loadDbConfig().databaseUrl,
+    connectionTimeoutMillis: NAMESPACE_SNAPSHOT_CONNECT_TIMEOUT_MS,
+    statement_timeout: NAMESPACE_SNAPSHOT_STATEMENT_TIMEOUT_MS,
+  });
   await client.connect();
   try {
     await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');

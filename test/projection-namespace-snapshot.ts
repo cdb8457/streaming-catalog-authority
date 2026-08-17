@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { createHarness, assert, assertEq } from './usenet-kit.js';
 import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 import {
+  NAMESPACE_SNAPSHOT_CONNECT_TIMEOUT_MS,
+  NAMESPACE_SNAPSHOT_STATEMENT_TIMEOUT_MS,
   UNRESOLVED_MTIME,
   UNRESOLVED_SIZE_BYTES,
   projectedEntriesOf,
@@ -215,6 +217,27 @@ test('the shipped publisher implements namespaceSnapshot, which is the whole of 
   assert(/readNamespaceSnapshot\(connectionString\)/.test(publisher),
     'the publisher\'s snapshot does not use the caller\'s connection string, so a gate pointed at a throwaway '
     + 'database would compare the appliance\'s real namespace');
+});
+
+test('the snapshot is BOUNDED IN TIME, because a hang on this path is not the failure the design handles', () => {
+  // WHY THIS IS NOT A DETAIL. `admit()` calls the snapshot twice around every publish, inside
+  // `withUsenetLedgerLock` — a lock held for the whole of `ops:usenet reconcile`. An unbounded connect does
+  // not delay one admission; it hangs the reconciliation and every `submit` queued behind the lock for as
+  // long as the operating system will wait on a TCP connect.
+  //
+  // AND IT DEFEATS THE DECISION D10.1 TURNS ON. The repair's shape is that a database which BLINKS produces a
+  // REFUSAL rather than an admission carrying the weaker guarantee. A blink that HANGS produces neither: no
+  // refusal, no admission, a held lock. A bound turns it back into the transient refusal `admit()` already
+  // has a branch for.
+  const source = codeOf('src/core/projection/namespace-snapshot.ts');
+  assert(/connectionTimeoutMillis:/.test(source),
+    'the snapshot waits forever on a connect, on a path that holds the Usenet ledger lock while it waits');
+  assert(/statement_timeout:/.test(source),
+    'the snapshot waits forever on a query that has been accepted and never answered');
+  assert(NAMESPACE_SNAPSHOT_CONNECT_TIMEOUT_MS > 0 && NAMESPACE_SNAPSHOT_CONNECT_TIMEOUT_MS <= 60_000,
+    'the connect bound is not a bound');
+  assert(NAMESPACE_SNAPSHOT_STATEMENT_TIMEOUT_MS >= NAMESPACE_SNAPSHOT_CONNECT_TIMEOUT_MS,
+    'a statement bound shorter than the connect bound refuses a database that answered');
 });
 
 test('a declared-but-failing snapshot REFUSES rather than falling back to no drift check', () => {
