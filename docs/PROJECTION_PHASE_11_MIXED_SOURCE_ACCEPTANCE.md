@@ -368,7 +368,110 @@ rather than an excuse.
 
 ## 10. Run record
 
-### 10.1 STATUS
+### 10.1 STATUS: BUILT AND PROVIDER-FREE READY. **NO-GO — nothing here closes either tier.**
 
-**Filled in by the tranche that builds against this document. Nothing above may be read as a verdict, and
-this section is empty until a run has happened.**
+Everything below was measured on the **development host**, provider-free. §5's tier-one closing run is on the
+real Unraid host and has **not** happened: **the mixed gate has never run end to end on any host.** **Not one
+of §5's fourteen claims is recorded as closed, in either tier.** This section records what was built and what
+it did when it was run, and a reader may not take a figure from it as a `P11-` verdict.
+
+**NO PROVIDER WAS CONTACTED AT ANY POINT.** No TorBox endpoint, no CDN origin, no indexer, no operator
+SABnzbd, no NNTP server, no media server, no Tower container, no operator content and no credential.
+`endpoint.json` was not read, not written and not touched.
+
+### 10.2 What was measured, and where
+
+Every figure below is from **one frozen candidate**, `b5a8b8b`.
+
+| | |
+|---|---|
+| Host | the development host only. **The Unraid host has not run any of this.** |
+| `npx tsc --noEmit` | clean |
+| Full offline inventory, **Git Bash** | **335 selected / 335 passed / 0 failed / 0 required-but-skipped**, 685 s. 335 rather than 333 because this tranche adds two offline suites and nothing else. |
+| Full offline inventory, **an ordinary PowerShell** | **335 selected / 335 passed / 0 failed / 0 required-but-skipped**, 689 s, same candidate |
+| `test/projection-phase11.ts` | 34 / 34 |
+| `test/projection-phase11-gate-audit.ts` | 41 / 41, including twelve controls that each tamper a copy of the gate and assert the audit FAILS, and seven arms that DRIVE the gate's embedded helper programs rather than reading them |
+| `test/custody-runtime-closure.ts` | 39 / 39, with all three new shipped scripts inside its line-by-line corpus |
+| The eight TorBox source allowlists | 7 / 11 / 12 / 10 / 7 / 7 / 10 / 6, after §6.2's widening |
+| Phase 9's own suites | 13 / 13, unchanged |
+| Phase 10's own suites | 4 / 4 suites, unchanged |
+| `test/projection-bounded-recovery.ts` | 52 / 52 — the **OPERATOR SOURCE DIGEST is unmoved** |
+| `phase9RequiresSoakRerun` over this tranche's real 15-path diff | **FALSE.** Zero `PHASE9_SOAK_TRIGGERING_SOURCE` entries touched, so **the Phase 8 soak is not re-run**. The declared path list and the real changed set are identical **in both directions**. |
+
+**BOTH SHELL ARMS WERE RUN, AND THAT IS A MEASUREMENT RATHER THAN A VERDICT.** §5 is the only place a `P11-`
+verdict may be written, and `P11-S1` asks the inventory of one frozen candidate as part of a complete
+tier-one sequence that has not been assembled.
+
+### 10.3 The gate was executed, and what it did
+
+`deploy/projection-phase11-mixed-gate.sh` was run **for real** and **exits 77 at its `/dev/fuse`
+precondition, before anything is created** — which is the correct answer on this host and is exactly why the
+preconditions are checked before the first container exists. `-optional.sh` folded that 77 to 0 and said
+nothing was proved in **both** tiers; `-three.sh` propagated it as 77 and reported `0 of 3 required`. Both
+were driven against the real gate, not only against stubs.
+
+Its embedded programs were therefore driven **individually, out of the shipped bytes**, by the gate audit:
+the field-difference counter, the unreached-arm counter, the entry-record extractor, the corpus filler, the
+run-directory path probe, the file-identity probe, and the arm list read from the contract's own module. A
+gate whose parts have only been read is a gate nobody has tested.
+
+### 10.4 What this record does NOT contain
+
+No `go:phase11-mixed-gate` that reached a single arm. No `:three`. No run on the Unraid host. No
+provider-free regression subset. **No arm verdict of any kind** — `P11-M1` … `P11-M6` have never been
+recorded by a gate that got past its preconditions. No `P9-`, `P10-` or `P11-R` verdict. **Nothing about the
+mixed product.**
+
+### 10.5 The defects this tranche found IN ITSELF, by running rather than by reading
+
+Recorded because a tranche that lists only what worked is a tranche nobody can audit.
+
+1. **The fake-worker driver compared SABnzbd's history word against a literal.** Written and executed
+   standalone before it was embedded, it asserted `status === 'completed'` against a worker that answers
+   `Completed`. It now derives the operator-visible state from `SAB_HISTORY_STATUS_LIFECYCLE` — the shipped
+   table — because a literal there is this gate's opinion about what a worker's word means.
+2. **The shipped admission proof cannot prove a file on a Windows host, and that is a fact about the
+   filesystem.** `lstat().dev` is `0` and `fstat().dev` is the volume serial, so `sameFile` never agrees and
+   every completed output is refused `output-mutated-during-digest`. Found by running the driver. It is now a
+   **precondition that SKIPS with 77**, beside the MSYS path probe, and both probes are driven by the audit.
+3. **The contract asked for a field the shipped surface refuses to carry.** §5.1 said the cross-source
+   measurement compares "path, version, size, mtime and locator"; three of those five do not exist, and the
+   locator's absence is §4's ninth refusal rather than a gap. Corrected in its own commit, before the tranche
+   it governs landed.
+4. **The range origin was restarted and read from immediately.** `P11-M4` stops the origin container and
+   starts it again; a `go run` process is not ready when `docker start` returns, so the next read would have
+   reported a cross-source disturbance that was a race with a container. The readiness wait is now a function
+   called both times.
+5. **`curl` was never a precondition**, though `P11-M2`'s whole distinction between the halves is whether the
+   origin's counters moved.
+6. **The redaction scan would have failed on the appliance doing its job.** `projection-alpha.sh` names the
+   operator's own directories on purpose. The scan is now an **asymmetry**: secrets over every preserved file
+   including the appliance's, run paths over only what this tranche's own commands emitted — and an audit arm
+   pins both halves, because the quiet failure is the exclusion spreading to both.
+7. **A path rewrite that is right on this host and wrong on the appliance.** The repository URL was built by
+   rewriting a leading `/x/` into `x:/`; correct under Git Bash, and wrong on a Linux host whose repository
+   sits under a single-letter top-level directory. Now `pwd -W`.
+8. **The arm-list helper had never been run**, and it is `P11-M6`'s **denominator** — a helper that printed
+   nothing would have made "zero arms unreached" true of an empty list. The audit arm written to drive it
+   **failed on its first execution**, having handed it the suite's directory instead of the repository root.
+9. **Eight TorBox source allowlists refused this tranche's rules module, and they were right.** §6.2 records
+   the widening and its reason. It also records that the first repair said **five** — a figure taken from an
+   inventory run that had been stopped part-way, which is the same fault Phase 6 §11.1.1 names.
+10. **A boundary test that read like a boundary and checked nothing.** The §6.2 guard filtered every path
+    under `test/` before comparing, so five allowlist edits passed it silently. It now lists this tranche's
+    own files and asserts the remainder exactly.
+
+### 10.6 What still has to happen before §5 can be answered
+
+**TIER ONE:** the mixed gate reaching its six arms on a host with `/dev/fuse`, a Go toolchain image and a
+filesystem whose `lstat` and `fstat` agree — that is `P11-M1` … `P11-M6`, none of which has been recorded
+once; `go:phase11-mixed-gate:three`; the provider-free regression subset of `P11-S3`; the offline inventory
+from both shells **as part of a complete sequence**; and the complete tier-one sequence three consecutive
+fresh times. **Provider windows required: zero.**
+
+**TIER TWO:** everything in §9.2, and none of it exists in this repository. `P11-R1`, `P11-R2`, `P11-R3` and
+`P11-R4` are **NOT RUN** and stay that way until an operator supplies TorBox credentials, a SABnzbd with a
+real NNTP provider behind it, an entitled NZB, and **three real pre-attached media servers**.
+
+**AND PHASE 9 IS UNCHANGED.** `P9-2`, `P9-3`, `P9-5` and `P9-11` are exactly as open as Phase 10 left them,
+and Phase 10 §8's prerequisite is inherited by this tranche and discharged by none of it.
