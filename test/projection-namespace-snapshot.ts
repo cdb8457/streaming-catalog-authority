@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { createHarness, assert, assertEq } from './usenet-kit.js';
 import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
+import { topLevelDeclaration } from './helpers/ts-source.js';
 import {
   NAMESPACE_SNAPSHOT_CONNECT_TIMEOUT_MS,
   NAMESPACE_SNAPSHOT_STATEMENT_TIMEOUT_MS,
@@ -189,9 +190,10 @@ h.section('the two decisions the module is required to have made');
  * why it does not take one — and a check that grepped the whole file would fail on the explanation. A pin
  * that punishes a file for explaining itself is a pin that gets the explanation deleted.
  */
-const codeOf = (relative: string): string => read(relative)
+const stripComments = (source: string): string => source
   .replace(/\/\*[\s\S]*?\*\//g, ' ')
   .replace(/^\s*\/\/.*$/gm, ' ');
+const codeOf = (relative: string): string => stripComments(read(relative));
 
 test('the snapshot takes NO publish lock, and reads READ ONLY at REPEATABLE READ', () => {
   const source = codeOf('src/core/projection/namespace-snapshot.ts');
@@ -209,9 +211,19 @@ test('the snapshot opens its own connection rather than borrowing the registry c
 });
 
 test('the shipped publisher implements namespaceSnapshot, which is the whole of the D10.1 repair', () => {
-  const source = codeOf('src/ops/usenet-command.ts');
-  const publisher = source.slice(source.indexOf('export function createRegistryPublisher'));
-  assert(/async namespaceSnapshot\(\)/.test(publisher.slice(0, publisher.indexOf('\n}\n'))),
+  // EXTRACTED FROM THE RAW SOURCE AND THEN STRIPPED, in that order. `codeOf` collapses a block comment to a
+  // single space, which joins the `*/` line onto the declaration that follows it — so a declaration this
+  // file documents is no longer at column zero and a structural reader cannot find it.
+  //
+  // AND THE READER IS BRACE-DELIMITED, NOT SLICED TO THE NEXT `\n}\n`. That literal carries a bare LF and
+  // matches nothing on an ordinary Windows checkout, where `indexOf` answers -1 and `slice(0, -1)` hands back
+  // THE WHOLE REST OF THE FILE. This assertion then PASSED — over every publisher in the module rather than
+  // over `createRegistryPublisher` — which is the version of the defect that costs nothing until the day the
+  // method moves to a different factory and nobody is told. Two sibling pins failed the other way at the
+  // Phase 10-12 integration merge; this one was the quiet half of the same bug.
+  const publisher = stripComments(topLevelDeclaration(read('src/ops/usenet-command.ts'),
+    'export function createRegistryPublisher', 'src/ops/usenet-command.ts createRegistryPublisher'));
+  assert(/async namespaceSnapshot\(\)/.test(publisher),
     'createRegistryPublisher does not present a namespace, so every real admission is still recorded '
     + 'admittedWithoutDriftCheck — which is Phase 10 §2.1, unrepaired');
   assert(/readNamespaceSnapshot\(connectionString\)/.test(publisher),
