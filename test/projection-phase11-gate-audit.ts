@@ -416,6 +416,59 @@ test('the appliance\'s own output is EXCLUDED from the run-path scan and NOT fro
   }
 });
 
+h.section('PHASE 12 §11 — ownership, attribution, and one file filed under the wrong heading');
+
+test('PHASE 12: the gate REFUSES a projection-alpha network it did not create', () => {
+  const code = codeOf(read(GATE));
+  // THE DEFECT. The cleanup removes `projection-alpha` unconditionally, because the shipped profile creates
+  // it and a run that left it behind would fail its own residue check. A network that was ALREADY THERE is
+  // one somebody else made — an operator, a stopped deployment, another checkout — and removing it is this
+  // gate taking ownership of what is not ours, which is the whole of §4's fourth refusal. The appliance's own
+  // NAME was refused for exactly this reason and the network beside it was not.
+  const refusalAt = code.indexOf('a $ALPHA_NETWORK network already exists on this host');
+  assert(refusalAt > 0, 'the gate adopts a projection-alpha network it did not create, and then destroys it');
+  assert(/docker network ls --format '\{\{\.Name\}\}' \| grep -qx "\$ALPHA_NETWORK"/.test(code),
+    'the network precondition does not match the name exactly, so a substring would satisfy it');
+  // BEFORE ANYTHING IS CREATED, like every other precondition.
+  const workAt = code.indexOf('GATE_ROOT="${PROJECTION_PHASE11_GATE_ROOT');
+  assert(workAt > 0 && refusalAt < workAt, 'the network precondition runs after the run directory exists');
+  // AND IT IS A REFUSAL RATHER THAN A SKIP, because a foreign network is a fact about the host's STATE that
+  // somebody can change, not about the host's capabilities. The two skip probes are unaffected.
+  const region = code.slice(refusalAt - 200, refusalAt + 200);
+  assert(/fail "/.test(region) && !/skip "/.test(region),
+    'a foreign network SKIPS rather than refusing, which folds somebody else\'s state into "this host cannot"');
+});
+
+test('PHASE 12: P11-M2 quiesces the origin before the REMOTE read as well as before the local one', () => {
+  const code = codeOf(read(GATE));
+  const quiesces = (code.match(/^await_quiet_origin \\?$/gm) ?? []).length;
+  assertEq(quiesces, 2,
+    'the origin is quiesced before only one of the two reads. §7 R8\'s argument is symmetric: "the counters '
+    + 'moved" is satisfied by ANY traffic, including a probe cache the daemon was warming on its own, so an '
+    + 'appliance that never served the range read would still have reported that it did');
+  const localAt = code.indexOf('COUNTERS_BEFORE_LOCAL=');
+  const remoteAt = code.indexOf('COUNTERS_BEFORE_REMOTE=');
+  assert(localAt > 0 && remoteAt > localAt, 'the two reads are no longer ordered local-then-remote');
+  const between = code.slice(localAt, remoteAt);
+  assert(between.includes('await_quiet_origin'), 'nothing quiesces the origin between the two reads');
+});
+
+test('PHASE 12: the worker driver OUTPUT is scanned by both halves of the redaction scan', () => {
+  const body = read(GATE);
+  const secretsAt = body.indexOf('if grep -qiE "$SECRETS_SHAPE"');
+  const beforeScans = body.slice(0, secretsAt);
+  // A MIS-FILING RATHER THAN A DECISION. The exclusion list is "the inputs this run wrote for the shipped
+  // commands to READ"; `worker.json` is an OUTPUT the worker driver produced, and an output is exactly what
+  // this scan exists to read.
+  assert(!/\|worker\.json\)/.test(beforeScans) && !/worker\.json\|/.test(beforeScans),
+    'the worker driver\'s own output is excluded from the redaction scan as though it were an input');
+  // AND THE THINGS THAT REALLY ARE INPUTS STAY EXCLUDED, because a scan that failed on the operator's own
+  // object manifest would be a scan nobody keeps.
+  for (const input of ['content.json', 'config.json', 'torbox-objects.json']) {
+    assert(beforeScans.includes(input), `${input} is no longer excluded, and it carries a reference by design`);
+  }
+});
+
 h.section('PHASE 12 §11 — two empty strings compare equal, and a counter that did not run reports zero');
 
 /**

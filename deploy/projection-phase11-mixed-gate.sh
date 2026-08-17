@@ -172,6 +172,17 @@ if docker ps -a --format '{{.Names}}' | grep -qx "$APPLIANCE"; then
 container name is fixed, so it would be reading somebody else's mount. Stop it first."
 fi
 
+# AND THE NETWORK, FOR THE SAME REASON AND ONE THE CONTAINER CHECK DOES NOT COVER. This gate's cleanup removes
+# `projection-alpha` unconditionally, because the shipped profile creates it and a run that left it behind
+# would fail its own residue check. A network that was ALREADY THERE when the gate started is one somebody
+# else made — an operator, a stopped deployment, another checkout — and removing it would be this gate taking
+# ownership of what is not ours, which is the whole of §4's fourth refusal. REFUSED rather than adopted, and
+# refused rather than cleaned up, exactly as the appliance's own name is.
+if docker network ls --format '{{.Name}}' | grep -qx "$ALPHA_NETWORK"; then
+  fail "a $ALPHA_NETWORK network already exists on this host. This gate's cleanup removes that network, so it \
+would be destroying one it did not create. Remove it yourself first, or stop whatever owns it."
+fi
+
 # THE RUN DIRECTORY IS UNDER THE REPOSITORY, AND ON THIS TRANCHE THAT IS CORRECTNESS RATHER THAN TASTE.
 #
 # THE DEFECT IT REPAIRS, MEASURED ON THE HOST §9.1 NAMES AS THE CLOSING HOST. `mktemp -d` answers `/tmp/tmp.X`,
@@ -908,6 +919,16 @@ same_bytes "the worker-produced half through the mount against its own bytes on 
   || { echo "reading the local half moved the range origin's counters" >&2; M2=fail; }
 
 # THE PROVIDER-BACKED HALF IS SERVED BY RANGE, and the counters must move for it.
+#
+# AND THE ORIGIN IS QUIESCED AGAIN FIRST, WHICH IS §7 R8's OWN ARGUMENT APPLIED IN THE DIRECTION IT WAS NOT.
+# The tranche quiesced before the LOCAL read, because there the risk is counters moving underneath a read that
+# should not have moved them. The remote read's risk is the mirror image and it is the one that produces a
+# FALSE PASS: "the counters moved" is satisfied by any traffic at all, including a probe cache the daemon was
+# warming on its own — so an appliance that never served the range read would still have reported that it did.
+# Attribution has to hold in both directions or it is not attribution.
+await_quiet_origin \
+  || { echo "the range origin never went quiet before the provider-backed read, so no traffic can be \
+attributed to it" >&2; M2=fail; }
 COUNTERS_BEFORE_REMOTE="$(counters)"
 REMOTE_THROUGH_MOUNT="$(consumer_sha "$ENTRY_REMOTE")"
 COUNTERS_AFTER_REMOTE="$(counters)"
@@ -1075,7 +1096,12 @@ for file in "$WORK"/*.txt "$WORK"/*.json; do
   case "$(basename "$file")" in
     # THE INPUTS THIS RUN WROTE FOR THE SHIPPED COMMANDS TO READ. They are not evidence; they are the
     # operator's own configuration and object files, and they carry a reference because that is their shape.
-    content.json|config.json|torbox-objects.json|worker.json) continue ;;
+    # `worker.json` IS NOT ON THIS LIST AND USED TO BE, WHICH WAS A MIS-FILING RATHER THAN A DECISION. This
+    # list is "the inputs this run wrote for the shipped commands to READ"; `worker.json` is an OUTPUT the
+    # worker driver produced, and an output is exactly what this scan exists to read. Everything in it — a
+    # submission count, a lifecycle word, a digest, a RELATIVE path and the driver's own composed problems —
+    # is scannable, so it is scanned by both halves like every other piece of this run's evidence.
+    content.json|config.json|torbox-objects.json) continue ;;
     local-objects.json|local-objects-2.json|local-objects-3.json) continue ;;
     control-before.json|control-after.json|control-reached.txt|arms-declared.txt|arms-reached.txt) continue ;;
   esac
