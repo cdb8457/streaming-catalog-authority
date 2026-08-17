@@ -394,6 +394,28 @@ test('the redaction scan knows ANY URI scheme and the whole run directory, not h
   }
 });
 
+test('the appliance\'s own output is EXCLUDED from the run-path scan and NOT from the secrets scan', () => {
+  // A DECISION RECORDED RATHER THAN A SILENT WEAKENING. `deploy/projection-alpha.sh` is the OPERATOR'S
+  // appliance surface: telling somebody where their manifest directory is, is the whole job of `status`.
+  // Failing P11-M6 on it would be this tranche asserting a redaction rule against a shipped surface it does
+  // not own and §6.3 forbids it to edit. What must NOT happen is those files quietly leaving BOTH scans,
+  // because then a credential printed by the appliance would go unlooked-for — so this pins the asymmetry.
+  const body = read(GATE);
+  const secretsAt = body.indexOf('if grep -qiE "$SECRETS_SHAPE"');
+  const runPathAt = body.indexOf('if grep -qF "$WORK"');
+  assert(secretsAt > 0 && runPathAt > secretsAt, 'the two scans are no longer ordered secrets-then-run-path');
+  const betweenScans = body.slice(secretsAt, runPathAt);
+  const beforeScans = body.slice(0, secretsAt);
+  for (const alphaLog of ['alpha-preflight.txt', 'alpha-install.txt', 'alpha-start.txt', 'alpha-stop.txt']) {
+    assert(betweenScans.includes(alphaLog),
+      `${alphaLog} is not excluded from the run-path scan, so P11-M6 would fail on the appliance naming the `
+      + 'operator\'s own directories — which is that surface doing its job');
+    assert(!beforeScans.includes(`|${alphaLog}`) && !beforeScans.includes(`${alphaLog}|`),
+      `${alphaLog} is excluded from the SECRETS scan as well, so a credential the appliance printed would go `
+      + 'unlooked-for');
+  }
+});
+
 /**
  * The gate's own hand-run range, located the way `sed` locates it: by line-anchored markers.
  *

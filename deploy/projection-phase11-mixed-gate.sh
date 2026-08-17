@@ -114,6 +114,10 @@ command -v npx >/dev/null 2>&1 || skip "npx is not on PATH"
 [ -f "$ALPHA" ] || fail "the shipped alpha command is missing; there is no appliance to drive"
 command -v docker >/dev/null 2>&1 || skip "docker is not on PATH, and this gate needs a real database and a mount"
 docker info >/dev/null 2>&1 || skip "the docker daemon is not answering"
+# THE READINESS AND COUNTER READS ARE HTTP, AND A HOST WITHOUT curl WOULD FAIL THEM AS THOUGH THE ORIGIN WERE
+# BROKEN. P11-M2's whole distinction between the two halves is "did the origin's counters move", so a missing
+# client is a skip rather than a red run about a tool.
+command -v curl >/dev/null 2>&1 || skip "curl is not on PATH, and the range origin's counters are read over HTTP"
 
 docker run --rm --device /dev/fuse:/dev/fuse "$VERIFY_IMAGE" test -c /dev/fuse >/dev/null 2>&1 \
   || skip "no /dev/fuse is reachable from a container on this host, so no appliance can mount the namespace"
@@ -505,16 +509,24 @@ docker run -d --name "$ORIGIN_CONTAINER" -p "127.0.0.1:${ORIGIN_PORT}:8099" \
   || skip "the fake range origin did not start, and a Go toolchain image this host cannot pull is a fact \
 about the host rather than about the product"
 
-ORIGIN_READY=0
-for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
-  # LIVENESS IS `/counters`, NOT A RANGED GET. A readiness loop that sent a ranged request would be real
-  # object traffic: it would serve bytes and be counted, dozens of times on a slow host, before this gate had
-  # asserted anything about which reads moved the counters.
-  if curl -fsS "http://127.0.0.1:${ORIGIN_PORT}/counters" >/dev/null 2>&1; then ORIGIN_READY=1; break; fi
-  say "waiting for the fake range origin (attempt $attempt)"
-  sleep 2
-done
-[ "$ORIGIN_READY" -eq 1 ] || skip "the fake range origin never came up on this host"
+# WAITING FOR THE ORIGIN IS A FUNCTION BECAUSE IT IS NEEDED TWICE, and the second time is the one that would
+# otherwise be forgotten: P11-M4 STOPS this container and starts it again, and a `go run` process that has to
+# come back up is not ready the instant `docker start` returns. Reading the other half before it was would
+# have failed the arm for a reason that has nothing to do with what the arm measures.
+await_origin() {
+  local attempt
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+    # LIVENESS IS `/counters`, NOT A RANGED GET. A readiness loop that sent a ranged request would be real
+    # object traffic: it would serve bytes and be counted, dozens of times on a slow host, before this gate
+    # had asserted anything about which reads moved the counters.
+    if curl -fsS "http://127.0.0.1:${ORIGIN_PORT}/counters" >/dev/null 2>&1; then return 0; fi
+    say "waiting for the fake range origin (attempt $attempt)"
+    sleep 2
+  done
+  return 1
+}
+
+await_origin || skip "the fake range origin never came up on this host"
 [ -s "$WORK/origin-out/objects.json" ] || fail "the fake range origin started and emitted no descriptor"
 
 node "$WORK/objects.cjs" "$WORK/origin-out/objects.json" "$WORK/torbox-objects.json" \
@@ -736,6 +748,7 @@ LOCAL_DURING_OUTAGE="$(consumer_sha "$ENTRY_LOCAL")"
 [ "$LOCAL_DURING_OUTAGE" = "$LOCAL_ON_DISK" ] \
   || { echo "a range-origin outage made the worker-produced half unreadable" >&2; M4=fail; }
 docker start "$ORIGIN_CONTAINER" >/dev/null 2>&1 || true
+await_origin || { echo "the range origin did not come back after the injected outage" >&2; M4=fail; }
 
 # INJECTION B — the worker's completed file is removed. The provider-backed half must be untouched and still
 # readable, and nothing may degrade itself: Phase 10 §4's second refusal is imported unchanged.
@@ -805,19 +818,36 @@ arm P11-M6-arms-reached-cleanup-and-redaction
 M6=pass
 
 # THE REDACTION SCAN IS OVER THE OUTPUT RATHER THAN OVER THE SOURCE, because the question is what a reader of
-# this run's evidence can learn. ANY URI SCHEME, not `https?` alone: every invocation in this run is handed a
-# DATABASE URL with a password in it, and §4's ninth refusal is about credentials before it is about origins.
+# this run's evidence can learn. IT IS TWO SCANS OVER TWO DIFFERENT SETS, and the split is a decision rather
+# than a convenience.
+#
+# THE SECRETS SCAN COVERS EVERY PRESERVED FILE, INCLUDING THE APPLIANCE'S OWN. Nothing this run produced may
+# carry the object reference, the worker key or the origin token, whoever wrote it. ANY URI SCHEME, not
+# `https?` alone: every content invocation is handed a DATABASE URL with a password in it, and §4's ninth
+# refusal is about credentials before it is about origins.
+#
+# THE RUN-PATH SCAN COVERS ONLY WHAT THIS TRANCHE'S OWN COMMANDS EMITTED, and the exclusion is `deploy/
+# projection-alpha.sh`'s output. That script is the OPERATOR'S appliance surface and it names the operator's
+# own directories on purpose — telling somebody where their manifest directory is, is the whole job of
+# `status`. Failing P11-M6 on it would be this tranche asserting a redaction rule against a shipped surface
+# it does not own and §6.3 forbids it to edit. The files are still scanned for secrets above.
+SECRETS_SHAPE='phase11-object-1|phase11fakeworkerkey|phase11-fake-origin-token|[a-z][a-z0-9+.-]*://|apikey='
 for file in "$WORK"/*.txt "$WORK"/*.json; do
   [ -f "$file" ] || continue
   case "$(basename "$file")" in
-    content.json|config.json|local-objects.json|local-objects-2.json|local-objects-3.json) continue ;;
-    torbox-objects.json|worker.json|migrate.txt|arms-declared.txt|arms-reached.txt) continue ;;
-    control-before.json|control-after.json|control-reached.txt) continue ;;
+    # THE INPUTS THIS RUN WROTE FOR THE SHIPPED COMMANDS TO READ. They are not evidence; they are the
+    # operator's own configuration and object files, and they carry a reference because that is their shape.
+    content.json|config.json|torbox-objects.json|worker.json) continue ;;
+    local-objects.json|local-objects-2.json|local-objects-3.json) continue ;;
+    control-before.json|control-after.json|control-reached.txt|arms-declared.txt|arms-reached.txt) continue ;;
   esac
-  if grep -qiE 'phase11-object-1|phase11fakeworkerkey|phase11-fake-origin-token|[a-z][a-z0-9+.-]*://|apikey=' "$file"; then
+  if grep -qiE "$SECRETS_SHAPE" "$file"; then
     echo "  LEAK in $(basename "$file")" >&2
     M6=fail
   fi
+  case "$(basename "$file")" in
+    migrate.txt|alpha-preflight.txt|alpha-install.txt|alpha-start.txt|alpha-stop.txt) continue ;;
+  esac
   # THE WHOLE RUN DIRECTORY, not the media root alone: the manifest directory sits beside it and is the path
   # a diagnostic from these commands is likeliest to name.
   if grep -qF "$WORK" "$file"; then
