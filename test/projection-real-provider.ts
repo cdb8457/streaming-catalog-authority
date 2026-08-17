@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
+import { NO_SHELL, posixShell, shPath, shellOrThrow } from './posix-shell-kit.js';
 import {
   CONTROL_DEADLINE_MS, MAX_ACCESS_REFRESHES_PER_READ, MAX_RETRIES_PER_READ, MOUNT_READ_DEADLINE_MS,
   cleanupResults, controlResults, endpointProblems, findLeaks, findResultLeaks, inputProblems,
@@ -521,22 +522,42 @@ async function main(): Promise<void> {
   // The wrapper's accounting
   // -------------------------------------------------------------------------------------------------------
 
+  // THE SHELL THESE CONTROLS ARE DRIVEN THROUGH IS SELECTED, NOT NAMED — see `./posix-shell-kit.js`. Bare
+  // `bash` on an ordinary Windows PATH is `C:\WINDOWS\system32\bash.exe`, the WSL launcher, which cannot
+  // address a Windows drive path in any spelling and answers 127, the status a shell returns for "command not
+  // found". These controls assert on STATUS NUMBERS, so the harness failure printed "a skip must propagate 77,
+  // got 127" — the wording of the single worst defect this repository can have, raised by a path separator.
+  // Nothing is weakened: each control still drives the real wrapper and asserts the same status and text.
+  const skippedBlocks: string[] = [];
+  const skipBlock = (what: string): void => {
+    skippedBlocks.push(what);
+    console.log(`  SKIP  ${NO_SHELL} — ${what}`);
+  };
+  const HAS_SHELL = posixShell() !== null;
+
   const runWrapper = (script: string, status: number, runs: string, env: Record<string, string> = {}):
   { code: number; out: string } => {
     const dir = mkdtempSync(join(tmpdir(), 'rp-wrapper-'));
     const stub = join(dir, 'stub.sh');
     writeFileSync(stub, `#!/usr/bin/env bash\nexit ${status}\n`);
-    const result = spawnSync('bash', [join(HERE, '..', `deploy/${script}`)], {
+    // BOTH PATHS ARE HANDED OVER IN THE SPELLING A SHELL READS: the wrapper is invoked by path and it invokes
+    // the stub by path, so translating only one of them moves the failure rather than removing it.
+    const result = spawnSync(shellOrThrow(), [shPath(join(HERE, '..', `deploy/${script}`))], {
       encoding: 'utf8',
       env: {
-        ...process.env, PROJECTION_REAL_PROVIDER_GATE_COMMAND: stub,
+        ...process.env, PROJECTION_REAL_PROVIDER_GATE_COMMAND: shPath(stub),
         PROJECTION_REAL_PROVIDER_GATE_RUNS: runs, ...env,
       },
     });
-    return { code: result.status ?? -1, out: `${result.stdout}${result.stderr}` };
+    // A SPAWN THAT NEVER STARTED IS NOT A STATUS THE WRAPPER CHOSE.
+    if (result.error !== undefined || result.status === null) {
+      throw new Error(`the wrapper could not be executed by the selected shell: ${result.error?.message ?? 'no exit status'}`);
+    }
+    return { code: result.status, out: `${result.stdout}${result.stderr}` };
   };
 
   await test('A SKIPPED RUN IS NOT FOLDED INTO SUCCESS BY THE STRICT WRAPPER', () => {
+    if (!HAS_SHELL) { skipBlock('the strict wrapper was not driven with a skipping run'); return; }
     // This gate skips whenever the operator has supplied nothing, which will be most of the time. If a skip
     // could read as a pass, the tranche would close on a run that never contacted a provider.
     const { code, out } = runWrapper('projection-real-provider-gate-three.sh', 77, '3');
@@ -546,6 +567,7 @@ async function main(): Promise<void> {
   });
 
   await test('THE CLOSING MESSAGE REFUSES TO SAY WHICH MODE RAN, BECAUSE IT CANNOT KNOW', () => {
+    if (!HAS_SHELL) { skipBlock("the strict wrapper was not driven with three clean runs"); return; }
     // THE FAILURE THIS CLOSES: three green FAKE runs printing a message that reads as three real-provider
     // passes. The wrapper drives whatever command it was given and has no way to tell the two apart, so it
     // must not claim to -- it states both readings and points at the one thing that distinguishes them.
@@ -558,18 +580,21 @@ async function main(): Promise<void> {
   });
 
   await test('A FAILING RUN STOPS THE SEQUENCE AT ONCE', () => {
+    if (!HAS_SHELL) { skipBlock("the strict wrapper was not driven with a failing run"); return; }
     const { code, out } = runWrapper('projection-real-provider-gate-three.sh', 1, '3');
     assert(code === 1, `a failure must propagate, got ${code}`);
     assert(/run 1 of 3/.test(out), 'and name the run it stopped at');
   });
 
   await test('A ZERO-RUN SEQUENCE CANNOT ANNOUNCE A COMPLETED ONE', () => {
+    if (!HAS_SHELL) { skipBlock("the zero-run sequence was not driven"); return; }
     const { code, out } = runWrapper('projection-real-provider-gate-three.sh', 0, '0');
     assert(code !== 0, `zero runs must not exit 0, got ${code}`);
     assert(/refusing to report a completed sequence/.test(out), 'and must say why');
   });
 
   await test('ONLY THE EXPLICITLY OPTIONAL WRAPPER MAY MAP 77 TO SUCCESS', () => {
+    if (!HAS_SHELL) { skipBlock("the optional and strict wrappers were not compared by running them"); return; }
     // The rule the whole tranche depends on: exactly one shipped entry point is allowed to treat "this host
     // cannot run it" as an acceptable outcome, and it says so in its name.
     const optional = runWrapper('projection-real-provider-gate-optional.sh', 77, '1');
@@ -1241,6 +1266,7 @@ async function main(): Promise<void> {
     });
 
   await test('LOSING THE EVIDENCE IS A FAILURE, BECAUSE THE RUN DIRECTORY IS ABOUT TO BE DELETED', () => {
+    if (!HAS_SHELL) { skipBlock("the gate's extracted copy_evidence was not run"); return; }
     // THE DEFECT. The cleanup phase preserves the verdict evidence and then deletes the run directory, which
     // is the only place that evidence exists. The first version copied both files with `|| true` and then
     // printed "evidence kept" unconditionally — so a copy that failed for any reason destroyed the only
@@ -1264,17 +1290,25 @@ async function main(): Promise<void> {
       if (evidenceDir === undefined) mkdirSync(keep);
       prepare(work);
       const script = join(dir, 'copy.sh');
+      // THE TWO PATHS THE EXTRACTED FUNCTION READS ARE WRITTEN IN THE SPELLING A SHELL READS, and so is the
+      // script the shell is handed. A backslash is a separator to Windows and an escape to a shell: the
+      // native spelling reached bash as `C:UsersclintAppData…copy.sh` and the honest case failed with "No
+      // such file or directory" — a harness fault wearing the costume of "the evidence copy did not work",
+      // which is the exact assertion this control makes.
       writeFileSync(script, [
         'set -uo pipefail',
         'die() { echo "GATE FAILED: $*" >&2; exit 1; }',
-        `WORK=${JSON.stringify(work)}`,
-        `EVIDENCE_DIR=${JSON.stringify(keep)}`,
+        `WORK=${JSON.stringify(shPath(work))}`,
+        `EVIDENCE_DIR=${JSON.stringify(shPath(keep))}`,
         body,
         'copy_evidence "out/results.json" "results-kept.jsonl"',
         'echo COPIED',
       ].join('\n'), 'utf8');
-      const result = spawnSync('bash', [script], { encoding: 'utf8' });
-      return { code: result.status ?? -1, err: `${result.stdout ?? ''}${result.stderr ?? ''}` };
+      const result = spawnSync(shellOrThrow(), [shPath(script)], { encoding: 'utf8' });
+      if (result.error !== undefined || result.status === null) {
+        throw new Error(`the extracted function could not be executed by the selected shell: ${result.error?.message ?? 'no exit status'}`);
+      }
+      return { code: result.status, err: `${result.stdout ?? ''}${result.stderr ?? ''}` };
     };
 
     // THE HONEST CASE COPIES, and the copy is byte-identical to what the run wrote.
@@ -1318,6 +1352,32 @@ async function main(): Promise<void> {
   await test('this suite runs in the aggregate', () => {
     assert(AGGREGATE_SUITE_COMMAND.includes('tsx test/projection-real-provider.ts'),
       'a suite nobody runs is a suite that stops being true');
+  });
+
+  await test('THE SHELL THE EXECUTED CONTROLS RUN THROUGH IS ONE THAT CAN ACTUALLY RUN A SCRIPT', () => {
+    // THE REGRESSION FOR THE HARNESS ITSELF. The six controls above that EXECUTE something — five wrapper
+    // accounting checks and the extracted `copy_evidence` — are only worth their `ok` if a real shell ran a
+    // real script. This asserts the selection did its job, and — the important half — that a run which could
+    // NOT find a shell says so BY NAME rather than leaving six green lines that never executed anything.
+    const shell = posixShell();
+    if (shell === null) {
+      assert(skippedBlocks.length > 0, 'no shell was selected and yet nothing reported itself skipped');
+      console.log(`    .. ${skippedBlocks.length} block(s) skipped: ${NO_SHELL}`);
+      return;
+    }
+    assert(skippedBlocks.length === 0,
+      `a shell was selected and ${skippedBlocks.length} block(s) still skipped: ${skippedBlocks.join('; ')}`);
+    const probe = spawnSync(shell,
+      [shPath(join(HERE, '..', 'deploy/projection-real-provider-gate-three.sh'))], {
+        encoding: 'utf8',
+        env: { ...process.env, PROJECTION_REAL_PROVIDER_GATE_RUNS: '0' },
+        timeout: 60_000,
+      });
+    assert(probe.error === undefined,
+      `the selected shell could not be handed a repository path: ${probe.error?.message ?? ''}`);
+    assert(probe.status !== 127,
+      'the selected shell answered 127 for a wrapper that exists, which is what a shell that cannot address '
+      + 'this path does — the exact defect this selection was introduced to remove');
   });
 
   console.log(`\n${passed} passed, ${failed} failed\n`);

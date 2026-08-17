@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
+import { NO_SHELL, posixShell, shPath, shellOrThrow } from './posix-shell-kit.js';
 import {
   MEDIA_SERVER_DEADLINES_MS, MEDIA_SERVER_SOAK, SEEK_PLAN_FRACTIONS, analyseSeekSet, findRedactionProblems,
   seekPlanProblems,
@@ -739,24 +740,47 @@ await test('a query with a repeated parameter name is diagnosable without printi
 // The gate's own accounting: a skip is not a pass
 // ---------------------------------------------------------------------------------------------------------
 
+// THE SHELL THESE FOUR CONTROLS ARE DRIVEN THROUGH IS SELECTED, NOT NAMED — see `./posix-shell-kit.js`.
+// Invoking bare `bash` picked up `C:\WINDOWS\system32\bash.exe` on an ordinary Windows PATH, the WSL launcher,
+// which cannot address a Windows drive path in any spelling and answers 127. These controls assert on STATUS
+// NUMBERS, so "a skip exits 77, not 0: got 127" is what they printed when the wrapper was perfectly fine and
+// the harness could not start it — indistinguishable from the single defect they exist to catch. Nothing here
+// is weakened by the change: each control still drives the real wrapper and still asserts the same status and
+// the same text. What changed is which executable receives the call.
+const skippedBlocks: string[] = [];
+function skipBlock(what: string): void {
+  skippedBlocks.push(what);
+  console.log(`  SKIP  ${NO_SHELL} — ${what}`);
+}
+const HAS_SHELL = posixShell() !== null;
+
 /** Run a wrapper against a stub gate that exits with a scripted status, and report what happened. */
 function runWrapper(script: string, gateExit: number, runs?: string): { status: number; output: string } {
   const dir = mkdtempSync(join(tmpdir(), 'emby-gate-wrapper-'));
   const stub = join(dir, 'stub-gate.sh');
   writeFileSync(stub, `#!/usr/bin/env bash\necho "stub gate ran"\nexit ${gateExit}\n`);
   chmodSync(stub, 0o755);
-  const result = spawnSync('bash', [join(repoRoot, 'deploy', script)], {
+  // BOTH PATHS ARE HANDED OVER IN THE SPELLING A SHELL READS. The wrapper is invoked by path and it invokes
+  // the stub by path; a backslash is a separator to Windows and an escape to a shell, so translating only one
+  // of them moves the failure rather than removing it.
+  const result = spawnSync(shellOrThrow(), [shPath(join(repoRoot, 'deploy', script))], {
     encoding: 'utf8',
     env: {
       ...process.env,
-      PROJECTION_EMBY_GATE_COMMAND: stub,
+      PROJECTION_EMBY_GATE_COMMAND: shPath(stub),
       ...(runs === undefined ? {} : { PROJECTION_EMBY_GATE_RUNS: runs }),
     },
   });
-  return { status: result.status ?? -1, output: `${result.stdout ?? ''}${result.stderr ?? ''}` };
+  // A SPAWN THAT NEVER STARTED IS NOT A STATUS THE WRAPPER CHOSE. Reporting it as a number would put a harness
+  // failure into the same vocabulary these assertions use, which is the defect this block just came out of.
+  if (result.error !== undefined || result.status === null) {
+    throw new Error(`the wrapper could not be executed by the selected shell: ${result.error?.message ?? 'no exit status'}`);
+  }
+  return { status: result.status, output: `${result.stdout ?? ''}${result.stderr ?? ''}` };
 }
 
 await test('the three-run wrapper propagates a SKIP rather than folding it into success', () => {
+  if (!HAS_SHELL) { skipBlock('the three-run wrapper was not driven with a skipping gate'); return; }
   // THIS IS THE FAILURE MODE THAT MATTERS MOST. A green tranche-closing command that proved nothing is the
   // single worst thing this repository can produce, and it is one status code away.
   const skipped = runWrapper('projection-emby-dataplane-gate-three.sh', 77);
@@ -767,6 +791,7 @@ await test('the three-run wrapper propagates a SKIP rather than folding it into 
 });
 
 await test('the three-run wrapper stops at the first failure rather than averaging', () => {
+  if (!HAS_SHELL) { skipBlock('the three-run wrapper was not driven with a failing gate'); return; }
   const failedRun = runWrapper('projection-emby-dataplane-gate-three.sh', 1);
   assertEq(failedRun.status, 1, 'the failure propagates');
   assertEq((failedRun.output.match(/stub gate ran/g) ?? []).length, 1,
@@ -774,6 +799,7 @@ await test('the three-run wrapper stops at the first failure rather than averagi
 });
 
 await test('three green runs are counted, and zero requested runs cannot announce a sequence', () => {
+  if (!HAS_SHELL) { skipBlock('the three-run wrapper was not driven with green and zero-run sequences'); return; }
   const green = runWrapper('projection-emby-dataplane-gate-three.sh', 0);
   assertEq(green.status, 0, 'three green runs succeed');
   assertEq((green.output.match(/stub gate ran/g) ?? []).length, 3, 'and there really were three');
@@ -802,6 +828,7 @@ await test('both wrappers drive THIS gate, and neither one hides what it does no
 });
 
 await test('the optional entry point maps ONLY a skip to success', () => {
+  if (!HAS_SHELL) { skipBlock('the optional entry point was not driven'); return; }
   const skipped = runWrapper('projection-emby-dataplane-gate-optional.sh', 77);
   assertEq(skipped.status, 0, 'a skip is success for a caller that chose this entry point');
   assert(skipped.output.includes('NOTHING WAS PROVED'), 'and it says so loudly');
@@ -1044,6 +1071,34 @@ await test('a Docker Desktop pass is recorded as run and still closes nothing', 
   assert(readme.includes(`used to end "and ${staleClaim}"`),
     'and only as the thing the next clause retracts');
   assert(readme.includes('closes **none** of'), 'while the README still says what a run there does not close');
+});
+
+await test('the shell the wrapper controls are driven through is one that can actually run a script', () => {
+  // THE REGRESSION FOR THE HARNESS ITSELF. The four wrapper-accounting controls above are only worth their
+  // `ok` if a real shell executed a real wrapper. This asserts the selection did its job, and — the important
+  // half — that a run which could NOT find a shell says so BY NAME rather than leaving four green lines that
+  // never executed anything.
+  const shell = posixShell();
+  if (shell === null) {
+    assert(skippedBlocks.length > 0, 'no shell was selected and yet nothing reported itself skipped');
+    console.log(`    .. ${skippedBlocks.length} block(s) skipped: ${NO_SHELL}`);
+    return;
+  }
+  assertEq(skippedBlocks.length, 0,
+    `a shell was selected and ${skippedBlocks.length} block(s) still skipped: ${skippedBlocks.join('; ')}`);
+  // 127 IS THE STATUS A SHELL RETURNS FOR "command not found", and it is the exact answer the WSL launcher
+  // gave for a wrapper that exists. Asserting on it here means the defect cannot come back disguised as a
+  // wrapper-accounting failure.
+  const probe = spawnSync(shell, [shPath(join(repoRoot, 'deploy', 'projection-emby-dataplane-gate-three.sh'))], {
+    encoding: 'utf8',
+    env: { ...process.env, PROJECTION_EMBY_GATE_RUNS: '0' },
+    timeout: 60_000,
+  });
+  assert(probe.error === undefined,
+    `the selected shell could not be handed a repository path: ${probe.error?.message ?? ''}`);
+  assert(probe.status !== 127,
+    'the selected shell answered 127 for a wrapper that exists, which is what a shell that cannot address '
+    + 'this path does — the exact defect this selection was introduced to remove');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

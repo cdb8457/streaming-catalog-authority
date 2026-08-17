@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
+import { NO_SHELL, posixShell, shPath, shellOrThrow } from './posix-shell-kit.js';
 import {
   G18_WORDING_FILES, deliveryOverstatements, readForWordingScan,
 } from './projection-delivery-wording.js';
@@ -1247,6 +1248,14 @@ async function main(): Promise<void> {
   console.log('\nTHE CHEAT: a wrapper that swallows a SKIP or a FAILURE');
   // --------------------------------------------------------------------------------------------------------
 
+  // Blocks that could not be executed here, named and counted so a green summary cannot hide one.
+  const skippedBlocks: string[] = [];
+  const skipBlock = (what: string): void => {
+    skippedBlocks.push(what);
+    console.log(`  SKIP  ${NO_SHELL} — ${what}`);
+  };
+  const HAS_SHELL = posixShell() !== null;
+
   const stubDir = mkdtempSync(join(tmpdir(), 'projection-three-'));
   const stubPath = join(stubDir, 'stub-gate.sh');
   const writeStub = (statuses: readonly number[]): void => {
@@ -1268,18 +1277,29 @@ async function main(): Promise<void> {
     status: number; stdout: string; stderr: string;
   } => {
     writeStub(statuses);
-    const result = spawnSync('bash', [join(repoRoot, 'deploy', script)], {
+    // THE SHELL IS SELECTED BY `./posix-shell-kit.js` RATHER THAN NAMED — and both paths are handed over in
+    // the spelling a shell reads. Bare `bash` on an ordinary Windows PATH is `C:\WINDOWS\system32\bash.exe`,
+    // the WSL launcher, which cannot address a Windows drive path and answers 127. Every control below
+    // asserts on a STATUS NUMBER, so that arrived as "a skipped run must not be folded into success: expected
+    // 77, got 127" — the wording of the single defect they exist to catch, produced by the harness.
+    const result = spawnSync(shellOrThrow(), [shPath(join(repoRoot, 'deploy', script))], {
       env: {
         ...process.env,
-        PROJECTION_THREE_GATE_COMMAND: stubPath,
+        PROJECTION_THREE_GATE_COMMAND: shPath(stubPath),
         ...(runs === undefined ? {} : { PROJECTION_THREE_GATE_RUNS: String(runs) }),
       },
       encoding: 'utf8',
     });
-    return { status: result.status ?? -1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+    // A SPAWN THAT NEVER STARTED IS NOT A STATUS THE WRAPPER CHOSE, and must not be reported in the same
+    // vocabulary these assertions use.
+    if (result.error !== undefined || result.status === null) {
+      throw new Error(`the wrapper could not be executed by the selected shell: ${result.error?.message ?? 'no exit status'}`);
+    }
+    return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
   };
 
   await test('the three-run wrapper propagates a SKIP as 77 and refuses to announce a sequence', () => {
+    if (!HAS_SHELL) { skipBlock('the three-run wrapper was not driven with a skipping run'); return; }
     const result = runWrapper('projection-three-server-concurrency-gate-three.sh', [0, 77, 0]);
     assertEq(result.status, 77, 'a skipped run must not be folded into success');
     assert(result.stderr.includes('CLOSES NOTHING'), 'and it must say so');
@@ -1288,12 +1308,14 @@ async function main(): Promise<void> {
   });
 
   await test('the three-run wrapper stops on the FIRST failure and does not average', () => {
+    if (!HAS_SHELL) { skipBlock('the three-run wrapper was not driven with a failing run'); return; }
     const result = runWrapper('projection-three-server-concurrency-gate-three.sh', [0, 1, 0]);
     assertEq(result.status, 1, 'a failed run must fail the sequence');
     assert(result.stderr.includes('Runs completed: 1 of 3'), 'and it must say how far it got');
   });
 
   await test('three green runs announce a completed sequence AND its limits in the same breath', () => {
+    if (!HAS_SHELL) { skipBlock('the three-run wrapper was not driven with three green runs'); return; }
     const result = runWrapper('projection-three-server-concurrency-gate-three.sh', [0, 0, 0]);
     assertEq(result.status, 0, 'three green runs are a completed sequence');
     assert(result.stdout.includes('3 of 3 consecutive'), 'it must state the count');
@@ -1302,12 +1324,14 @@ async function main(): Promise<void> {
   });
 
   await test('a zero-run sequence cannot announce a completed one', () => {
+    if (!HAS_SHELL) { skipBlock('the zero-run sequence was not driven'); return; }
     const result = runWrapper('projection-three-server-concurrency-gate-three.sh', [0, 0, 0], 0);
     assert(result.status !== 0, 'a loop that never ran must not exit 0');
     assert(result.stderr.includes('refusing to report a completed sequence'), 'and must say why');
   });
 
   await test('the optional entry point maps ONLY 77', () => {
+    if (!HAS_SHELL) { skipBlock('the optional entry point was not driven'); return; }
     const skipped = runWrapper('projection-three-server-concurrency-gate-optional.sh', [77]);
     assertEq(skipped.status, 0, 'the optional entry point exists to map a skip to success');
     assert(skipped.stderr.includes('NOTHING WAS PROVED'), 'and to say that nothing was proved');
@@ -2009,6 +2033,33 @@ async function main(): Promise<void> {
     assert(main.includes('"max-hold"'), 'the gate has to be able to bound the hold below the daemon\'s '
       + 'first-byte deadline; the package default of 15s is above it');
     assert(main.includes('MaxHold: *maxHold'), 'and the flag must actually reach the server');
+  });
+
+  await test('the shell the wrapper controls are driven through is one that can actually run a script', () => {
+    // THE REGRESSION FOR THE HARNESS ITSELF. The five wrapper-accounting controls above are only worth their
+    // PASS if a real shell executed a real wrapper; before the selection, bare `bash` on a Windows PATH was
+    // the WSL launcher and they failed with 127 in the same vocabulary a genuine wrapper defect fails with.
+    // This asserts the selection did its job, and — the important half — that a run which could NOT find a
+    // shell says so by name rather than leaving five green lines that never executed anything.
+    const shell = posixShell();
+    if (shell === null) {
+      assert(skippedBlocks.length > 0, 'no shell was selected and yet nothing reported itself skipped');
+      console.log(`    .. ${skippedBlocks.length} block(s) skipped: ${NO_SHELL}`);
+      return;
+    }
+    assertEq(skippedBlocks.length, 0,
+      `a shell was selected and ${skippedBlocks.length} block(s) still skipped: ${skippedBlocks.join('; ')}`);
+    const probe = spawnSync(shell, [shPath(join(repoRoot, 'deploy',
+      'projection-three-server-concurrency-gate-three.sh'))], {
+      env: { ...process.env, PROJECTION_THREE_GATE_RUNS: '0' },
+      encoding: 'utf8',
+      timeout: 60_000,
+    });
+    assert(probe.error === undefined,
+      `the selected shell could not be handed a repository path: ${probe.error?.message ?? ''}`);
+    assert(probe.status !== 127,
+      'the selected shell answered 127 for a wrapper that exists, which is what a shell that cannot address '
+      + 'this path does — the exact defect this selection was introduced to remove');
   });
 
   console.log(`\n${passed} passed, ${failed} failed\n`);

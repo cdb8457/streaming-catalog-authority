@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
+import { NO_SHELL, posixShell, shPath, shellOrThrow } from './posix-shell-kit.js';
 import {
   MEDIA_SERVER_BUDGETS, MEDIA_SERVER_DEADLINES_MS, MEDIA_SERVER_SOAK, SEEK_PLAN_FRACTIONS,
   TRANSCODE_SOURCE_VIDEO_CODEC,
@@ -1135,6 +1136,20 @@ await test('a held-open stream is ONE response read in two halves, and it knows 
 // A skip is not a pass, and the wrapper accounting is run rather than read
 // ---------------------------------------------------------------------------------------------------------
 
+// THE SHELL EVERY EXECUTED CONTROL IN THIS FILE IS DRIVEN THROUGH IS SELECTED, NOT NAMED — see
+// `./posix-shell-kit.js`. Bare `bash` on an ordinary Windows PATH is `C:\WINDOWS\system32\bash.exe`, the WSL
+// launcher, which cannot address a Windows drive path in any spelling and answers 127, the status a shell
+// returns for "command not found". Ten controls here assert on STATUS NUMBERS, so that arrived as "the
+// wrapper propagates the skip: expected 77, got 127" and "it collects: expected 0, got 127" — the vocabulary
+// of a genuine wrapper defect and a genuine collector defect, produced by a path separator. Nothing is
+// weakened: each control still drives the real script and asserts the same status and the same text.
+const skippedBlocks: string[] = [];
+function skipBlock(what: string): void {
+  skippedBlocks.push(what);
+  console.log(`  SKIP  ${NO_SHELL} — ${what}`);
+}
+const HAS_SHELL = posixShell() !== null;
+
 function runWrapper(script: string, gateStatus: number, env: Record<string, string> = {}): {
   status: number; stdout: string; stderr: string;
 } {
@@ -1142,18 +1157,25 @@ function runWrapper(script: string, gateStatus: number, env: Record<string, stri
   const stub = join(dir, 'stub.sh');
   writeFileSync(stub, `#!/usr/bin/env bash\necho "stub run"\nexit ${gateStatus}\n`);
   chmodSync(stub, 0o755);
-  const result = spawnSync('bash', [join(repoRoot, script)], {
+  // BOTH PATHS ARE HANDED OVER IN THE SPELLING A SHELL READS: the wrapper is invoked by path and it invokes
+  // the stub by path, so translating only one of them moves the failure rather than removing it.
+  const result = spawnSync(shellOrThrow(), [shPath(join(repoRoot, script))], {
     encoding: 'utf8',
-    env: { ...process.env, PROJECTION_PLEX_GATE_COMMAND: stub, ...env },
+    env: { ...process.env, PROJECTION_PLEX_GATE_COMMAND: shPath(stub), ...env },
   });
+  // A SPAWN THAT NEVER STARTED IS NOT A STATUS THE WRAPPER CHOSE.
+  if (result.error !== undefined || result.status === null) {
+    throw new Error(`the wrapper could not be executed by the selected shell: ${result.error?.message ?? 'no exit status'}`);
+  }
   return {
-    status: result.status ?? -1,
+    status: result.status,
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
   };
 }
 
 await test('a skipped run propagates 77 through the three-run wrapper and closes nothing', () => {
+  if (!HAS_SHELL) { skipBlock("the three-run wrapper was not driven with a skipping run"); return; }
   const result = runWrapper('deploy/projection-plex-dataplane-gate-three.sh', 77);
   assertEq(result.status, 77, 'the wrapper propagates the skip');
   assert(!/consecutive PLEX runs completed/.test(result.stdout),
@@ -1163,12 +1185,14 @@ await test('a skipped run propagates 77 through the three-run wrapper and closes
 });
 
 await test('a failing run stops the sequence rather than averaging it', () => {
+  if (!HAS_SHELL) { skipBlock("the three-run wrapper was not driven with a failing run"); return; }
   const result = runWrapper('deploy/projection-plex-dataplane-gate-three.sh', 3);
   assertEq(result.status, 3, 'the failure propagates unchanged');
   assert(/FAILED at run 1 of 3/.test(result.stderr), 'and names the run it stopped at');
 });
 
 await test('three passing runs are counted, and the message is guarded by the COUNT', () => {
+  if (!HAS_SHELL) { skipBlock("the three-run wrapper was not driven with three passing runs"); return; }
   const result = runWrapper('deploy/projection-plex-dataplane-gate-three.sh', 0);
   assertEq(result.status, 0, 'three runs pass');
   assert(/3 of 3 consecutive PLEX runs completed, none skipped/.test(result.stdout), 'and are counted');
@@ -1181,6 +1205,7 @@ await test('three passing runs are counted, and the message is guarded by the CO
 });
 
 await test('a wrapper asked for zero runs refuses to announce a completed sequence', () => {
+  if (!HAS_SHELL) { skipBlock("the zero-run sequence was not driven"); return; }
   const result = runWrapper('deploy/projection-plex-dataplane-gate-three.sh', 0, {
     PROJECTION_PLEX_GATE_RUNS: '0',
   });
@@ -1189,6 +1214,7 @@ await test('a wrapper asked for zero runs refuses to announce a completed sequen
 });
 
 await test('the OPTIONAL entry point maps 77 to 0 and NOTHING else', () => {
+  if (!HAS_SHELL) { skipBlock("the optional entry point was not driven"); return; }
   const skipped = runWrapper('deploy/projection-plex-dataplane-gate-optional.sh', 77);
   assertEq(skipped.status, 0, 'a skip is success for a caller that chose this entry point');
   assert(/NOTHING WAS PROVED/.test(skipped.stderr), 'while saying loudly that nothing was proved');
@@ -1446,17 +1472,24 @@ function runLogTail(dockerStub: string, timeoutSeconds: string, lines = '40', ma
   status: number; stdout: string; elapsedMs: number;
 } {
   const startedAt = Date.now();
-  const result = spawnSync('bash',
-    [join(repoRoot, 'deploy/projection-plex-log-tail.sh'), 'container', lines], {
+  // THE COLLECTOR AND ITS `docker` STUB ARE BOTH HANDED OVER IN THE SPELLING A SHELL READS. The stub is a
+  // path the collector invokes as a command, so leaving it native would move the 127 rather than remove it.
+  const result = spawnSync(shellOrThrow(),
+    [shPath(join(repoRoot, 'deploy/projection-plex-log-tail.sh')), 'container', lines], {
       encoding: 'utf8',
       env: {
         ...process.env,
-        PROJECTION_PLEX_LOG_TAIL_DOCKER: dockerStub,
+        PROJECTION_PLEX_LOG_TAIL_DOCKER: shPath(dockerStub),
         PROJECTION_PLEX_LOG_TAIL_TIMEOUT_SECONDS: timeoutSeconds,
         ...(maxBytes === undefined ? {} : { PROJECTION_PLEX_LOG_TAIL_MAX_BYTES: maxBytes }),
       },
     });
-  return { status: result.status ?? -1, stdout: result.stdout ?? '', elapsedMs: Date.now() - startedAt };
+  // A SPAWN THAT NEVER STARTED IS NOT A STATUS THE COLLECTOR CHOSE — and `status 0` is the assertion in four
+  // of the five controls below, so a harness fault must not be able to arrive wearing that number's clothes.
+  if (result.error !== undefined || result.status === null) {
+    throw new Error(`the log collector could not be executed by the selected shell: ${result.error?.message ?? 'no exit status'}`);
+  }
+  return { status: result.status, stdout: result.stdout ?? '', elapsedMs: Date.now() - startedAt };
 }
 
 function writeStub(body: string): string {
@@ -1468,6 +1501,7 @@ function writeStub(body: string): string {
 }
 
 await test('a HANGING log collector is cut off, and never becomes the failure itself', () => {
+  if (!HAS_SHELL) { skipBlock("the log collector was not driven against a hanging docker"); return; }
   // THE DEFECT THIS CLOSES. The first version wrapped `docker exec` in nothing while its comment claimed to
   // be bounded — and `docker exec` blocks indefinitely against a wedged container, which is exactly the
   // situation in which a gate most needs its log tail. A diagnostic that hangs there replaces an explained
@@ -1482,6 +1516,7 @@ await test('a HANGING log collector is cut off, and never becomes the failure it
 });
 
 await test('the log tail scrubs tokens and query credentials, not just whole locators', () => {
+  if (!HAS_SHELL) { skipBlock("the log collector's scrubbing was not driven"); return; }
   // The URL rule alone would miss a bare `?X-Plex-Token=...` fragment, and Plex logs those. Nothing reaches
   // stdout unscrubbed: the raw text is never printed, only the output of the pipeline.
   const leaky = writeStub(String.raw`printf '%s\n' "GET /library?X-Plex-Token=SECRETVALUE from 172.22.0.4" `
@@ -1499,6 +1534,7 @@ await test('the log tail scrubs tokens and query credentials, not just whole loc
 });
 
 await test('a collector that fails outright says so, without pretending it had a log', () => {
+  if (!HAS_SHELL) { skipBlock("the log collector was not driven against a failing docker"); return; }
   const failing = writeStub('exit 1');
   const result = runLogTail(failing, '15');
   assertEq(result.status, 0, 'still exits 0');
@@ -1506,6 +1542,7 @@ await test('a collector that fails outright says so, without pretending it had a
 });
 
 await test('a hostile line count never reaches the shell that runs inside the container', () => {
+  if (!HAS_SHELL) { skipBlock("the log collector's line-count validation was not driven"); return; }
   // THE LINE COUNT IS INTERPOLATED INTO AN `sh -c` STRING that runs inside the media server's container, so
   // it is validated before it gets there. A diagnostic that executed `40; touch /tmp/pwned` would be a far
   // worse failure than the one it was called to explain.
@@ -1528,6 +1565,7 @@ await test('a hostile line count never reaches the shell that runs inside the co
 });
 
 await test('one enormous log line is truncated, so the diagnostic cannot bury the failure', () => {
+  if (!HAS_SHELL) { skipBlock("the log collector's byte bound was not driven"); return; }
   // A LINE BOUND IS NOT A BYTE BOUND. Plex logs base64 plugin payloads that run to tens of kilobytes on a
   // single line; forty of those is a megabyte of stderr on top of a failure somebody has to read.
   const huge = writeStub(String.raw`printf 'A%.0s' $(seq 1 200000); printf '\n'`);
@@ -3772,6 +3810,30 @@ await test('the gate hands the daemon window to all three playback traffic phase
   assert(gate.includes('"statusAddr": "127.0.0.1:9099"'), 'the daemon publishes on loopback only');
   assert(gate.includes('--network "container:$MOUNT_CONTAINER"'),
     'and the reader joins its network namespace rather than a published port');
+});
+
+await test('the shell the executed controls run through is one that can actually run a script', () => {
+  // THE REGRESSION FOR THE HARNESS ITSELF. The ten controls above that EXECUTE something — five wrapper
+  // accounting checks and five log-collector checks — are only worth their PASS if a real shell ran a real
+  // script. This asserts the selection did its job, and — the important half — that a run which could NOT
+  // find a shell says so BY NAME rather than leaving ten green lines that never executed anything.
+  const shell = posixShell();
+  if (shell === null) {
+    assert(skippedBlocks.length > 0, 'no shell was selected and yet nothing reported itself skipped');
+    console.log(`    .. ${skippedBlocks.length} block(s) skipped: ${NO_SHELL}`);
+    return;
+  }
+  assertEq(skippedBlocks.length, 0,
+    `a shell was selected and ${skippedBlocks.length} block(s) still skipped: ${skippedBlocks.join('; ')}`);
+  const probe = spawnSync(shell, [shPath(join(repoRoot, 'deploy/projection-plex-log-tail.sh'))], {
+    encoding: 'utf8',
+    timeout: 60_000,
+  });
+  assert(probe.error === undefined,
+    `the selected shell could not be handed a repository path: ${probe.error?.message ?? ''}`);
+  assert(probe.status !== 127,
+    'the selected shell answered 127 for a script that exists, which is what a shell that cannot address '
+    + 'this path does — the exact defect this selection was introduced to remove');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
