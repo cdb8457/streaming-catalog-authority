@@ -91,6 +91,64 @@ docker info >/dev/null 2>&1 || skip "the docker daemon is not answering"
 WORK="$(mktemp -d)"
 
 # ---------------------------------------------------------------------------------------------------------
+# THE HELPER PROGRAMS, WRITTEN TO FILES RATHER THAN PASSED AS `node -e '...'`.
+#
+# WHY, AND IT IS A DEFECT THIS TRANCHE FOUND IN ITSELF. A multi-line `node -e '` opens a single quote that the
+# next line does not close, and `test/custody-runtime-closure.ts` reads every shipped script line by line and
+# refuses exactly that: "an unterminated single quote - the rest of this line cannot be read, and an unreadable
+# line is not an empty one". The check is right. A quote a line-based reader cannot close is a quote a HUMAN
+# reader cannot close either, and a shell script whose remaining lines are unreadable is where an unterminated
+# string silently swallows the next command.
+#
+# So the JavaScript lives in files, written by quoted heredocs, exactly as `projection-publisher-mount-gate.sh`
+# writes its own `objects.cjs`, `fill.cjs` and `sha.cjs`. Every one of them takes its input as an argument and
+# prints or exits; none of them reads this script's variables.
+# ---------------------------------------------------------------------------------------------------------
+
+cat > "$WORK/probe.cjs" <<'PROBE'
+// Can the runtime the shipped command runs on resolve the path THIS SHELL would write into a configuration?
+// The path arrives in a FILE, not in argv: MSYS rewrites a POSIX-looking argument on the way to a native
+// binary, so an argv probe would pass on exactly the host this exists to catch.
+const { existsSync, readFileSync } = require('node:fs');
+const asConfigured = readFileSync(process.argv[2], 'utf8');
+if (!existsSync(asConfigured)) process.exit(1);
+PROBE
+
+cat > "$WORK/fill.cjs" <<'FILL'
+// Synthesised bytes that are not all one value, so a probe window over them is a meaningful digest.
+const { writeFileSync } = require('node:fs');
+const size = Number(process.argv[3]);
+const buffer = Buffer.alloc(size);
+for (let i = 0; i < size; i += 1) buffer[i] = (i * 31 + 7) & 0xff;
+writeFileSync(process.argv[2], buffer);
+FILL
+
+cat > "$WORK/sha.cjs" <<'SHA'
+const { createHash } = require('node:crypto');
+const { readFileSync } = require('node:fs');
+process.stdout.write(createHash('sha256').update(readFileSync(process.argv[2])).digest('hex'));
+SHA
+
+cat > "$WORK/mtime.cjs" <<'MTIME'
+const { statSync } = require('node:fs');
+try { process.stdout.write(String(statSync(process.argv[2]).mtimeMs)); }
+catch { process.stdout.write('unreadable'); }
+MTIME
+
+cat > "$WORK/expect.cjs" <<'EXPECT'
+// `expect.cjs <document> <dotted.field> <value>` - one assertion, named, over a document a shipped verb
+// emitted. Written as data rather than as embedded JavaScript so a reader can see which field each step
+// checks without parsing a program out of a shell string.
+const { readFileSync } = require('node:fs');
+const doc = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+const actual = process.argv[3].split('.').reduce((node, key) => (node === undefined || node === null ? node : node[key]), doc);
+const expected = process.argv[4];
+const same = String(actual) === expected;
+if (!same) console.error(`  ${process.argv[3]}=${String(actual)}, expected ${expected}`);
+process.exit(same ? 0 : 1);
+EXPECT
+
+# ---------------------------------------------------------------------------------------------------------
 # CAN THIS HOST EVEN EXPRESS THE PATHS THE SHIPPED COMMAND REQUIRES? Checked here, before anything is created.
 #
 # THE DEFECT THIS PRECONDITION EXISTS FOR, FOUND BY RUNNING THIS SCRIPT ON A WINDOWS DEVELOPMENT HOST. The
@@ -113,11 +171,7 @@ WORK="$(mktemp -d)"
 # configuration — which nothing rewrites — is one it cannot. A probe that used argv would pass on exactly the
 # host this precondition exists to catch, which is the quietest possible way for a precondition to be useless.
 printf '%s' "$WORK" > "$WORK/.path-probe"
-node -e '
-const { existsSync, readFileSync } = require("node:fs");
-const asConfigured = readFileSync(process.argv[1], "utf8");
-if (!existsSync(asConfigured)) process.exit(1);
-' "$WORK/.path-probe" || {
+node "$WORK/probe.cjs" "$WORK/.path-probe" || {
   rm -rf "$WORK"
   skip "this host cannot present its own run directory at a path the shipped command will accept: the content \
 configuration requires an absolute POSIX path, and the one this shell produced is not the one the Node runtime \
@@ -131,7 +185,7 @@ VOLUMES_BEFORE="$(docker volume ls -q | sort | tr '\n' ' ')"
 # `endpoint.json` IS NOT READ, WRITTEN OR TOUCHED, and the mtime is how that is checked rather than promised.
 ENDPOINT_FILE="${PROJECTIOND_ENDPOINT_FILE:-$ROOT/endpoint.json}"
 ENDPOINT_MTIME_BEFORE="absent"
-[ -f "$ENDPOINT_FILE" ] && ENDPOINT_MTIME_BEFORE="$(node -e 'process.stdout.write(String(require("node:fs").statSync(process.argv[1]).mtimeMs))' "$ENDPOINT_FILE" 2>/dev/null || echo unreadable)"
+[ -f "$ENDPOINT_FILE" ] && ENDPOINT_MTIME_BEFORE="$(node "$WORK/mtime.cjs" "$ENDPOINT_FILE")"
 
 cleanup() {
   local status=$?
@@ -208,13 +262,8 @@ mkdir -p "$MEDIA_ROOT/movies" "$MANIFEST_DIR"
 # slot a file invocation would use. Getting that wrong here produced `Buffer.alloc(NaN)` and a corpus that was
 # never written, which is the shape of defect this rehearsal exists to find in a shipped command — found in
 # the rehearsal itself, on its first real execution.
-node -e '
-const { writeFileSync } = require("node:fs");
-const size = Number(process.argv[2]);
-const buffer = Buffer.alloc(size);
-for (let i = 0; i < size; i += 1) buffer[i] = (i * 31 + 7) & 0xff;
-writeFileSync(process.argv[1], buffer);
-' "$MEDIA_ROOT/movies/local-one.bin" 2097152 || fail "could not synthesise the local corpus"
+node "$WORK/fill.cjs" "$MEDIA_ROOT/movies/local-one.bin" 2097152 \
+  || fail "could not synthesise the local corpus"
 
 CONFIG_FILE="$WORK/content.json"
 cat > "$CONFIG_FILE" <<CONFIG
@@ -273,11 +322,8 @@ grep -q "NOTHING IS VISIBLE YET" "$WORK/add-local.txt" \
 [ -e "$MANIFEST_DIR/pointer.json" ] && { echo "add-local published a generation, which no verb but publish may do" >&2; P10_4=fail; }
 
 content status --json >"$WORK/status-1.json" 2>&1 || { cat "$WORK/status-1.json" >&2; P10_4=fail; }
-node -e '
-const doc = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
-if (doc.counts.admittedNotPublished !== 1) { console.error("admitted-not-published was not reported"); process.exit(1); }
-if (doc.counts.published !== 0) { console.error("something was published without publish being run"); process.exit(1); }
-' "$WORK/status-1.json" || P10_4=fail
+node "$WORK/expect.cjs" "$WORK/status-1.json" counts.admittedNotPublished 1 || P10_4=fail
+node "$WORK/expect.cjs" "$WORK/status-1.json" counts.published 0 || P10_4=fail
 
 # reconcile EXITS 1 ON A DIVERGENCE AND THAT IS THE DESIGN, so its status is captured rather than trusted.
 content reconcile >"$WORK/reconcile-1.txt" 2>&1
@@ -294,12 +340,9 @@ content add-torbox --file "$TORBOX_OBJECTS" --publish >"$WORK/add-torbox.txt" 2>
   || { cat "$WORK/add-torbox.txt" >&2; P10_4=fail; }
 
 content status --json >"$WORK/status-2.json" 2>&1 || P10_4=fail
-node -e '
-const doc = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
-if (doc.counts.registered !== 2) { console.error(`registered=${doc.counts.registered}, expected 2`); process.exit(1); }
-if (doc.counts.published !== 2) { console.error(`published=${doc.counts.published}, expected 2`); process.exit(1); }
-if (doc.agrees !== true) { console.error("the control plane and the directory disagree"); process.exit(1); }
-' "$WORK/status-2.json" || P10_4=fail
+node "$WORK/expect.cjs" "$WORK/status-2.json" counts.registered 2 || P10_4=fail
+node "$WORK/expect.cjs" "$WORK/status-2.json" counts.published 2 || P10_4=fail
+node "$WORK/expect.cjs" "$WORK/status-2.json" agrees true || P10_4=fail
 
 # IDEMPOTENCE, DRIVEN. A second identical add and a second publish change nothing.
 content add-local --file "$LOCAL_OBJECTS" >"$WORK/add-local-2.txt" 2>&1 || P10_4=fail
@@ -318,7 +361,7 @@ step "P10-5 — a local source removed under a published namespace"
 P10_5=pass
 
 # THE BYTES BEFORE. §7 R5's mitigation is an assertion about a directory, so the directory is digested.
-BEFORE_DIGESTS="$(cd "$MANIFEST_DIR" && for f in *; do printf '%s ' "$f"; node -e 'const {createHash}=require("node:crypto");const {readFileSync}=require("node:fs");console.log(createHash("sha256").update(readFileSync(process.argv[1])).digest("hex"))' "$f"; done | sort)"
+BEFORE_DIGESTS="$(cd "$MANIFEST_DIR" && for f in *; do printf '%s ' "$f"; node "$WORK/sha.cjs" "$f"; echo; done | sort)"
 
 rm -f "$MEDIA_ROOT/movies/local-one.bin"
 
@@ -326,7 +369,7 @@ content reconcile >"$WORK/reconcile-2.txt" 2>&1
 grep -q "local-source-file-absent" "$WORK/reconcile-2.txt" \
   || { echo "a removed local source was not reported" >&2; P10_5=fail; }
 
-AFTER_DIGESTS="$(cd "$MANIFEST_DIR" && for f in *; do printf '%s ' "$f"; node -e 'const {createHash}=require("node:crypto");const {readFileSync}=require("node:fs");console.log(createHash("sha256").update(readFileSync(process.argv[1])).digest("hex"))' "$f"; done | sort)"
+AFTER_DIGESTS="$(cd "$MANIFEST_DIR" && for f in *; do printf '%s ' "$f"; node "$WORK/sha.cjs" "$f"; echo; done | sort)"
 if [ "$BEFORE_DIGESTS" != "$AFTER_DIGESTS" ]; then
   echo "reconcile moved a byte of the published generation, which §4's second hard refusal forbids" >&2
   P10_5=fail
@@ -336,26 +379,17 @@ say "generation bytes changed by the report: 0 (budget 0)"
 # THE NAMESPACE DID NOT DEGRADE ITSELF. A reconciliation that repaired what it found would be one that
 # changed the evidence before anybody read it.
 content status --json >"$WORK/status-3.json" 2>&1 || P10_5=fail
-node -e '
-const doc = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
-if (doc.counts.degraded !== 0) { console.error("the namespace degraded an entry on its own"); process.exit(1); }
-' "$WORK/status-3.json" || P10_5=fail
+node "$WORK/expect.cjs" "$WORK/status-3.json" counts.degraded 0 || P10_5=fail
 
 content hold --path "Movies/Local One/Local One.bin" >"$WORK/hold.txt" 2>&1 || { cat "$WORK/hold.txt" >&2; P10_5=fail; }
 grep -q "STILL IN THE NAMESPACE" "$WORK/hold.txt" || { echo "hold did not say the entry stays" >&2; P10_5=fail; }
 content status --json >"$WORK/status-4.json" 2>&1 || P10_5=fail
-node -e '
-const doc = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
-if (doc.counts.held !== 1) { console.error("hold did not hold"); process.exit(1); }
-if (doc.counts.registered !== 2) { console.error("hold removed an entry from the namespace"); process.exit(1); }
-' "$WORK/status-4.json" || P10_5=fail
+node "$WORK/expect.cjs" "$WORK/status-4.json" counts.held 1 || P10_5=fail
+node "$WORK/expect.cjs" "$WORK/status-4.json" counts.registered 2 || P10_5=fail
 
 content release --path "Movies/Local One/Local One.bin" >"$WORK/release.txt" 2>&1 || { cat "$WORK/release.txt" >&2; P10_5=fail; }
 content status --json >"$WORK/status-5.json" 2>&1 || P10_5=fail
-node -e '
-const doc = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
-if (doc.counts.held !== 0) { console.error("release did not restore"); process.exit(1); }
-' "$WORK/status-5.json" || P10_5=fail
+node "$WORK/expect.cjs" "$WORK/status-5.json" counts.held 0 || P10_5=fail
 
 verdict P10-5-absent-local-source-reported-not-repaired "$P10_5"
 
@@ -403,7 +437,7 @@ verdict P10-8-cleanup-leaves-nothing "$P10_8"
 
 # `endpoint.json` — asserted rather than promised.
 ENDPOINT_MTIME_AFTER="absent"
-[ -f "$ENDPOINT_FILE" ] && ENDPOINT_MTIME_AFTER="$(node -e 'process.stdout.write(String(require("node:fs").statSync(process.argv[1]).mtimeMs))' "$ENDPOINT_FILE" 2>/dev/null || echo unreadable)"
+[ -f "$ENDPOINT_FILE" ] && ENDPOINT_MTIME_AFTER="$(node "$WORK/mtime.cjs" "$ENDPOINT_FILE")"
 [ "$ENDPOINT_MTIME_BEFORE" = "$ENDPOINT_MTIME_AFTER" ] \
   || fail "endpoint.json was touched, which §4's third hard refusal forbids at any point"
 say "endpoint.json: $ENDPOINT_MTIME_BEFORE before, $ENDPOINT_MTIME_AFTER after — unmoved"

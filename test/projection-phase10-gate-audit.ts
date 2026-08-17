@@ -273,17 +273,31 @@ test('the rehearsal contacts no provider and asserts endpoint.json is unmoved', 
 });
 
 test('the rehearsal SKIPS rather than fails when the host cannot express the paths the command requires', () => {
-  const code = codeOf(read(REHEARSAL));
-  const probe = code.slice(code.indexOf('.path-probe'), code.indexOf('CONTAINERS_BEFORE'));
-  assert(probe.length > 0, 'the rehearsal has no run-directory path probe');
-  assert(/skip\s/.test(probe),
-    'the path probe fails the run rather than skipping it, and a red run caused by which machine it was '
-    + 'launched on is not a verdict about the product');
+  const body = read(REHEARSAL);
+  const probeProgram = body.slice(body.indexOf("<<'PROBE'"), body.indexOf('\nPROBE\n'));
+  assert(probeProgram.length > 0, 'the rehearsal has no run-directory path probe');
   // THE PROBE MUST NOT USE ARGV. Under MSYS a POSIX-looking argument is rewritten on the way to a native
   // binary, so an argv probe passes on exactly the host it exists to catch.
-  assert(/readFileSync/.test(probe),
-    'the path probe passes the path through argv, which MSYS rewrites — so it would pass on the host it '
-    + 'exists to catch');
+  assert(/readFileSync/.test(probeProgram),
+    'the path probe reads the path from argv, which MSYS rewrites — so it would pass on the host it exists '
+    + 'to catch');
+
+  const invocation = codeOf(body).slice(codeOf(body).indexOf('.path-probe'), codeOf(body).indexOf('CONTAINERS_BEFORE'));
+  assert(/skip\s/.test(invocation),
+    'the path probe fails the run rather than skipping it, and a red run caused by which machine it was '
+    + 'launched on is not a verdict about the product');
+});
+
+test('no shipped Phase 10 script passes a MULTI-LINE program to node -e', () => {
+  // FOUND BY `test/custody-runtime-closure.ts`, WHICH READS EVERY SHIPPED SCRIPT LINE BY LINE. A multi-line
+  // `node -e '` opens a single quote the next line does not close, and a quote a line-based reader cannot
+  // close is a quote a human reader cannot close either — it is where an unterminated string silently
+  // swallows the next command. The JavaScript lives in heredoc-written files instead.
+  for (const relative of [REHEARSAL, THREE, OPTIONAL, CONTENT]) {
+    const code = codeOf(read(relative));
+    assert(!/node\s+-e\s+'[^']*\n/.test(code),
+      `${relative} passes a multi-line program to node -e, which leaves every line after it unreadable`);
+  }
 });
 
 test('a FAILED rehearsal does not print the paragraph describing what it proved', () => {

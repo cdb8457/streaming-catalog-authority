@@ -188,8 +188,11 @@ const emptyReport = (outcome: PublishOutcome, extra: Partial<PublishReport> = {}
  * Read the whole registry as one consistent picture. Called inside the repeatable-read transaction.
  *
  * EXPORTED FOR PROJECTION PHASE 10 §3.2 D10.1, AND FOR NOTHING ELSE YET. `src/core/projection/namespace-snapshot.ts`
- * needs exactly this picture to answer "did the TorBox half of the namespace move across this publish" on a
- * REAL appliance — the guard Phase 10 §2.1 found running only in the rehearsal and in one unit test. The
+ * needs exactly this picture to answer "did the PROVIDER-BACKED half of the namespace move across this
+ * publish" on a REAL appliance — the guard Phase 10 §2.1 found running only in a rehearsal and in one unit
+ * test. The provider is deliberately not named here: this file is Phase 1 shared source read by nineteen
+ * deploy scripts, and putting it on a provider source allowlist to license one word would mean the guard that
+ * watches for provider knowledge leaking into the publisher had stopped watching the publisher. The
  * export changes no behaviour: the function is unmodified, `publishGeneration` still calls it in the same
  * place inside the same transaction, and the new caller supplies its own read-only transaction rather than
  * borrowing this one's. It takes a `Client` rather than a pool precisely so a caller cannot get a picture

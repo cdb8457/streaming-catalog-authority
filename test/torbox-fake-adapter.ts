@@ -261,6 +261,27 @@ async function main(): Promise<void> {
       'src/ops/usenet-command.ts',
       'src/ops/usenet-rehearsal.ts',
       'src/ops/usenet-rehearsal-cli.ts',
+      // PROJECTION PHASE 10 - THE OPERATOR CONTENT PLANE. docs/PROJECTION_PHASE_10_OPERATOR_CONTENT_PLANE.md
+      // is the phase that authorises these four, and §2.1 is why they exist at all: the TorBox drift guard
+      // `torBoxDrift` had TWO implementors of `namespaceSnapshot` -- the rehearsal's in-memory publisher and a
+      // unit-test fake -- so on a real appliance `before` was always null, the comparison was always skipped,
+      // and every real admission was recorded `admittedWithoutDriftCheck`. D10.1 is the repair.
+      //
+      // NONE OF THE FOUR CONTACTS TORBOX, implements a TorBox operation, holds a TorBox credential or resolves
+      // a TorBox link. Phase 10 is PROVIDER-FREE BY CONSTRUCTION and its §4 third hard refusal says endpoint.json
+      // is not read, written or touched at any point.
+      //
+      //   namespace-snapshot.ts  reads the live namespace so the guard has a `before` and an `after` to compare;
+      //                          it names TorBox because a guard that may not name what it guards cannot guard it,
+      //                          which is the same argument src/ops/release-readiness.ts is on this list for.
+      //   phase10.ts             states the claim P10-3 measures, in the words the contract uses.
+      //   projection-content.ts  ships the `add-torbox` verb: it REGISTERS an opaque object reference through the
+      //   projection-content-cli.ts   existing `http-range` boundary and resolves nothing. Registering a reference is
+      //                          not contacting a provider, which is exactly why Phase 10 can close without a window.
+      'src/core/projection/namespace-snapshot.ts',
+      'src/core/projection/phase10.ts',
+      'src/ops/projection-content.ts',
+      'src/ops/projection-content-cli.ts',
     ]);
     const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
       const path = `${dir}/${entry.name}`;
