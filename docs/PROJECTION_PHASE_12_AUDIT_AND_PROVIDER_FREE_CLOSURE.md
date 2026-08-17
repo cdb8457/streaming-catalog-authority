@@ -461,6 +461,27 @@ Git Bash arm is superseded by a verifiable one and the two arms of `P12-S1` are 
 the third. Two consecutive fresh complete sequences is a better answer than one and it is not the answer §5.4
 asks for, and a tranche that rounded it up would be doing the thing this whole document exists to refuse.
 
+### 10.8 EXACTLY WHAT IS LEFT ON THE HOST, INCLUDING WHAT `P12-C1` DOES NOT COUNT
+
+`P12-C1` is a claim about **containers, networks and volumes**, and those are identical. Three other things
+are on the host because of this campaign, and naming them is the difference between "the host is unchanged"
+and "the sets `P12-C1` names are unchanged". They are named here so nobody reads the second as the first.
+
+1. **`/mnt/user/appdata/catalog-phase12-closure`**, 125 MB — the staged candidate, its `node_modules`, and
+   four empty gate-root directories the shipped gates leave behind plus the real-provider gate's own preserved
+   evidence (§11.3 #3). It is **phase-owned, outside every operator share this project serves**, and it is the
+   thing Phase 13 re-stages over rather than re-creates. **Deliberately not deleted:** a candidate nobody can
+   re-verify is a candidate whose figures cannot be checked.
+2. **`projectiond:phase12-frozen`, 10.3 MB** — the daemon image built from the candidate, pinned by the digest
+   §10.7 records. **Deliberately not deleted**, for the same reason, and it does not touch the
+   `projectiond:phase1-local` tag another tranche's tree owns.
+3. **`golang:1.26`, 874 MB** — the pinned Go toolchain image the fake range origin runs in, **pulled by the
+   gate on first use** and left in the host's image cache. The preflight reported it as NOT PRESENT before the
+   campaign, which is what makes this an addition rather than a discovery.
+
+**No operator content, no share, no media server, no provider configuration, no credential, no
+`endpoint.json` and no persistent production data was created, read, altered or removed at any point.**
+
 ---
 
 ## 11. The independent audit of Phase 11, and the eight defects it found
