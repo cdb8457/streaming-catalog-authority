@@ -1056,8 +1056,22 @@ test('CONTROL: a skip reader that prints nothing on an empty file is CAUGHT', ()
 h.section('P13PRE-I6 — a no-contact readiness record emits shape only');
 // ---------------------------------------------------------------------------------------------------------
 
-/** The commands by which a shell program could reach something off this host. */
-const REACHING_COMMANDS = ['curl', 'wget', 'nc', 'ssh', 'openssl', 'telnet'] as const;
+/**
+ * The commands by which a shell program could reach something off this host.
+ *
+ * IT WAS NARROWER THAN ITS CLAIM. An audit noted that the list named six transfer clients and omitted
+ * every RESOLVER — `dig`, `nslookup`, `host`, `getent` — and `ping`, each of which reaches a network
+ * without transferring a byte. The shipped recorder invokes none of them, so the no-contact claim held
+ * either way; a list that holds by luck is not the same as one that holds by construction.
+ *
+ * `docker` IS CHECKED SEPARATELY AND BY SUBSTRING, because `docker run` reaches a registry and starts
+ * a container, and no invocation of it belongs in a program whose whole promise is that it contacts
+ * nothing.
+ */
+const REACHING_COMMANDS = [
+  'curl', 'wget', 'nc', 'ncat', 'socat', 'ssh', 'scp', 'sftp', 'openssl', 'telnet',
+  'dig', 'nslookup', 'host', 'getent', 'ping', 'ping6', 'traceroute', 'rsync',
+] as const;
 
 /**
  * Does this shell code INVOKE a command, as opposed to containing its letters?

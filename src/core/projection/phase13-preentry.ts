@@ -546,8 +546,12 @@ export const PHASE13_PREENTRY_TRANCHE_PATHS: readonly string[] = Object.freeze([
   'deploy/projection-real-provider-gate-optional.sh',
   'deploy/projection-path-lifecycle-gate-optional.sh',
   'deploy/projection-phase12-stage.sh',
-  'test/projection-phase12.ts',
+  // `test/projection-phase12.ts` USED TO BE ON THIS LIST AND WAS NEVER MODIFIED. An independent audit
+  // found the row: the I7 control it claimed to carry in fact lives in the gate-audit suite, and the
+  // completeness check was one-directional -- table superset of module -- so a row for a file nothing
+  // touched was structurally invisible. The check is bidirectional now.
   'test/projection-real-provider.ts',
+  'src/core/projection/real-provider.ts',
   'test/suite-inventory.json',
   'package.json',
 ]);

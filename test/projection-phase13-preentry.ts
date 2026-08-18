@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -487,7 +488,14 @@ function ownershipTablePaths(): readonly string[] {
     if (!line.startsWith('|')) continue;
     const first = line.split('|')[1]?.trim() ?? '';
     const match = /^`([^`]+)`$/.exec(first);
-    if (match?.[1] !== undefined && /^[\w./-]+\.(ts|sh|json|md)$/.test(match[1])) paths.push(match[1]);
+    // EVERY EXTENSION THIS TRANCHE ACTUALLY TOUCHES, PLUS DOTFILES. A parser that knew four extensions
+    // silently dropped the two Compose files and `.gitignore` from the table it was checking — so the
+    // bidirectional check below reported them as unlisted when they were listed, which is the same class of
+    // "the check and the thing it checks disagree about what counts" this whole pass is about.
+    if (match?.[1] !== undefined
+      && /^[\w./-]*\.(ts|sh|json|md|yml|yaml|gitignore|gitattributes)$/.test(match[1])) {
+      paths.push(match[1]);
+    }
   }
   return paths;
 }
@@ -508,6 +516,40 @@ test('the ownership table is complete: it holds every path the module names, and
   ]) {
     assert(table.includes(path), `${path} is repaired by this tranche but is not in the document's §11 table`);
   }
+});
+
+test('every path §11 claims as modified WAS modified, driven against git', () => {
+  // THE DIRECTION THE COMPLETENESS CHECK COULD NOT SEE. It asserted table ⊇ module, so a row naming a file
+  // NOTHING TOUCHED was structurally invisible — and an independent audit found exactly one:
+  // `test/projection-phase12.ts`, listed as carrying a control that in fact lives in the gate-audit suite.
+  //
+  // IT IS DRIVEN AGAINST GIT rather than inferred, because "was this file modified" is a question only the
+  // history can answer. The base is read from the document's own header, so the check cannot drift from the
+  // candidate the record claims. Where git or that commit is unavailable — a shallow clone, an export — it
+  // SKIPS BY NAME rather than failing, for the reason `posix-shell-kit` gives: a suite that could not ask
+  // the question has not answered it either way.
+  const base = /\| Candidate \| integration `([0-9a-f]{7,40})`/.exec(read(CONTRACT))?.[1];
+  assert(base !== undefined, 'the document names no candidate, so nothing can say what "modified" means');
+  const rev = spawnSync('git', ['rev-parse', '--verify', `${base}^{commit}`],
+    { cwd: repoRoot, encoding: 'utf8', timeout: 60_000 });
+  if (rev.status !== 0) { assert(true, `the candidate ${base} is not in this checkout`); return; }
+
+  const diff = spawnSync('git', ['diff', '--name-only', `${base}..HEAD`],
+    { cwd: repoRoot, encoding: 'utf8', timeout: 120_000 });
+  assertEq(diff.status, 0, 'git could not list what this branch changed');
+  const changed = new Set(String(diff.stdout ?? '').split('\n').map((line) => line.trim()).filter(Boolean));
+  assert(changed.size > 0, 'git reports no change at all, so this check is measuring nothing');
+
+  // EVERY ROW NAMES A FILE THIS BRANCH ACTUALLY TOUCHED.
+  const phantom = ownershipTablePaths().filter((path) => !changed.has(path));
+  assertEq(phantom.length, 0,
+    `§11 claims these paths but the branch does not touch them: ${phantom.join(', ')}`);
+
+  // AND EVERY FILE THIS BRANCH TOUCHED HAS A ROW. The other direction, so a file can no longer be changed
+  // without the ownership record saying so — which is the half that keeps the table honest as work lands.
+  const unlisted = [...changed].filter((path) => !ownershipTablePaths().includes(path));
+  assertEq(unlisted.length, 0,
+    `these paths are modified by the branch and §11 does not list them: ${unlisted.join(', ')}`);
 });
 
 test('PHASE 9: nothing this tranche touches triggers a soak re-run', () => {
