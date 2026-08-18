@@ -586,19 +586,62 @@ test('every path §11 claims as modified WAS modified, driven against git, and i
     `these paths are modified by the branch and no post-candidate ownership table lists them: ${unlisted.join(', ')}`);
 });
 
+/**
+ * §10.3's "New (n)" and "Modified (n)" counts, read out of the document.
+ *
+ * THE PARAGRAPH END IS FOUND WITH A REGEX AND NOT WITH `indexOf('\n\n')`, and that is not a style
+ * preference. `.gitattributes` pins `*.sh` and `*.go` to LF and nothing else, so a `.md` file is LF in the
+ * worktree an agent wrote it in and CRLF in an ordinary Windows checkout of the SAME COMMIT. A bare-LF
+ * blank-line literal misses in the CRLF one, `indexOf` answers `-1`, and `slice(at, -1)` is not "no match" —
+ * it is THE REST OF THE FILE. That mis-slice fails silently in both directions, and this repository has paid
+ * four release baselines for it; `test/helpers/ts-source.ts` exists because of it.
+ *
+ * AND IT REFUSES RATHER THAN RETURNING A REGION IT IS NOT SURE OF, which is that helper's whole rule.
+ */
+function modifiedEnumeration(document: string): { stated: number; newStated: number; paragraph: string } {
+  const at = document.indexOf('**Modified (');
+  assert(at >= 0, '§10.3 no longer enumerates the modified files, so this check has nothing to compare');
+  const end = /\r?\n\r?\n/.exec(document.slice(at));
+  assert(end !== null,
+    '§10.3\'s enumeration runs to the end of the document with no blank line after it, so the paragraph '
+    + 'boundary this check needs does not exist and nothing here is measuring a paragraph');
+  const paragraph = document.slice(at, at + end.index);
+  const stated = Number(/\*\*Modified \((\d+)\)/.exec(paragraph)?.[1]);
+  const newStated = Number(/\*\*New \((\d+)\)/.exec(document)?.[1]);
+  assert(Number.isFinite(stated) && Number.isFinite(newStated),
+    '§10.3 no longer states a New and a Modified count, so there is nothing to compare against §11');
+  return { stated, newStated, paragraph };
+}
+
+test('CONTROL: every document parser here answers the same on a CRLF rendering of the same commit', () => {
+  // THE DEFECT CLASS, DRIVEN. Two worktrees on the same commit do not have the same bytes on disk: an agent
+  // writes LF, an ordinary Windows checkout of the identical tree hash is CRLF, and `git status` reports
+  // clean either way because the index normalises. So a suite green here can be red in a fresh clone for a
+  // reason that is not in the commit at all. The fix is not to normalise the checkout; it is for every
+  // parser to answer the same in both, which is what this drives.
+  const lf = read(CONTRACT).replace(/\r\n/g, '\n');
+  const crlf = lf.replace(/\n/g, '\r\n');
+  assert(crlf.includes('\r\n') && !lf.includes('\r'), 'the two renderings are not actually different');
+
+  assertEq(ownershipSectionPaths(crlf).join(','), ownershipSectionPaths(lf).join(','),
+    'the ownership table parses differently under CRLF, so the completeness check is about a line ending');
+  const a = modifiedEnumeration(lf);
+  const b = modifiedEnumeration(crlf);
+  assertEq(b.stated, a.stated, '§10.3\'s modified count reads differently under CRLF');
+  assertEq(b.newStated, a.newStated, '§10.3\'s new count reads differently under CRLF');
+  // AND THE PARAGRAPH IS A PARAGRAPH IN BOTH, rather than the rest of the file in one of them.
+  assert(b.paragraph.length < crlf.length / 4,
+    'the paragraph found under CRLF is most of the document, which is the silent mis-slice this exists for');
+  assertEq(b.paragraph.replace(/\r/g, ''), a.paragraph, 'the two renderings yield different paragraphs');
+});
+
 test('§10.3\'s enumeration and §11\'s table name the same files, so the prose cannot drift again', () => {
   // WHY THIS CHECK EXISTS. §10.3 said "Modified (11)" and git said fifteen; the four the correction pass
   // added were never added to it, including `src/core/projection/real-provider.ts`, which carries the D1
   // repair. §11 was right the whole time and is bidirectionally enforced — §10.3 was **measured by nothing**,
   // which is the only reason the two could disagree. Now they cannot.
   const document = read(CONTRACT);
-  const at = document.indexOf('**Modified (');
-  assert(at >= 0, '§10.3 no longer enumerates the modified files, so this check has nothing to compare');
-  const paragraph = document.slice(at, document.indexOf('\n\n', at));
-
-  // THE COUNT IN THE PROSE IS THE COUNT OF THE ROWS, not a number somebody typed beside a list.
-  const stated = Number(/\*\*Modified \((\d+)\)/.exec(paragraph)?.[1]);
-  const newStated = Number(/\*\*New \((\d+)\)/.exec(document)?.[1]);
+  const { stated, newStated } = modifiedEnumeration(document);
   const table = ownershipTablePaths();
   assertEq(stated + newStated, table.length,
     `§10.3 accounts for ${newStated} new plus ${stated} modified and §11 lists ${table.length} paths`);
