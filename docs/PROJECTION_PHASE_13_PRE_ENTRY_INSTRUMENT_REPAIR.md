@@ -325,7 +325,7 @@ tranche repaired instruments and regressed the repairs, and **a repaired instrum
 | | |
 |---|---|
 | Base | integration `f77871f` |
-| Commits | eight, listed in §10.2 |
+| Commits | eight, listed in §10.2, **plus the one that adds §10.9 itself** — which is the only commit not measured by the figures it carries, and §10.9 says why |
 | Typecheck | `npx tsc --noEmit` — **clean** |
 | New suites | `projection-phase13-preentry` 35/0, `projection-phase13-preentry-gate-audit` 48/0 |
 | Full offline inventory | **338 selected, 338 passed, 0 failed, 0 required-but-skipped**, from BOTH shells, from one frozen commit. §10.9 |
