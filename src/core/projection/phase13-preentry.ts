@@ -506,6 +506,7 @@ export const PHASE13_PREENTRY_TRANCHE_PATHS: readonly string[] = Object.freeze([
   'deploy/projection-path-lifecycle-gate-optional.sh',
   'deploy/projection-phase12-stage.sh',
   'test/projection-phase12.ts',
+  'test/projection-real-provider.ts',
   'test/suite-inventory.json',
   'package.json',
 ]);

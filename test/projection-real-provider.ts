@@ -1042,11 +1042,19 @@ async function main(): Promise<void> {
     const { dir, script } = extract('config.cjs');
     const endpointPath = join(dir, 'endpoint.json');
     const out = join(dir, 'config.json');
+    // THE THIRD ARGUMENT IS NOW READ, AND ITS ABSENCE USED TO BE THE FINGERPRINT OF A CALL SITE NOBODY RAN.
+    // The gate passed `$CREDENTIAL` and this program destructured two of three arguments, so nothing noticed
+    // that in REAL mode the daemon's `tokenFile` pointed into an EMPTY directory. The Phase 13 pre-entry
+    // repair makes the argument load-bearing; these calls supply it, and the refusals it now makes are
+    // regressed in `test/projection-phase13-preentry-gate-audit.ts`, which owns that repair.
+    const credentialPath = join(dir, 'credential');
+    writeFileSync(credentialPath, 'a-credential-value-this-suite-invented\n');
     writeFileSync(endpointPath, JSON.stringify({
       id: 'provider', directBaseUrl: 'https://cdn.example.invalid/objects',
       allowedOrigins: ['https://cdn.example.invalid'],
     }));
-    assert(runNode(script, [endpointPath, out]).code === 0, 'config.cjs failed on a well-formed endpoint');
+    assert(runNode(script, [endpointPath, out, credentialPath]).code === 0,
+      'config.cjs failed on a well-formed endpoint');
 
     const text = readFileSync(out, 'utf8');
     const config = JSON.parse(text) as {
@@ -1067,7 +1075,12 @@ async function main(): Promise<void> {
       allowedOrigins: ['https://cdn.example.invalid'],
       allowInsecureHttp: 'false', allowPrivateAddresses: 'yes',
     }));
-    assert(runNode(script, [endpointPath, out]).code === 0, 'config.cjs failed on the typo endpoint');
+    assert(runNode(script, [endpointPath, out, credentialPath]).code === 0,
+      'config.cjs failed on the typo endpoint');
+    // AND THE CREDENTIAL'S VALUE STILL NEVER REACHES THE CONFIGURATION. It is named by path and opened by
+    // the daemon; making the argument load-bearing must not have made it readable.
+    assert(!readFileSync(out, 'utf8').includes('a-credential-value-this-suite-invented'),
+      'the credential value reached the daemon configuration, which is the one thing this file may not do');
     const typo = (JSON.parse(readFileSync(out, 'utf8')) as typeof config).endpoints[0]!;
     assert(typo.allowInsecureHttp === false && typo.allowPrivateAddresses === false,
       'a string value was treated as an opt-in; the relaxations must require a real boolean true');

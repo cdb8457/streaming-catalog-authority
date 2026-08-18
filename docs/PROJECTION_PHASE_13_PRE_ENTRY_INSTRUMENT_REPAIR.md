@@ -346,6 +346,7 @@ and runs `phase9RequiresSoakRerun` over the **union**, so the soak question is a
 | `deploy/projection-path-lifecycle-gate-optional.sh` | modified | points at its own gate, with its own header |
 | `deploy/projection-phase12-stage.sh` | modified | one further **literal** marker admitted; every other refusal unchanged |
 | `test/projection-phase12.ts` | modified | the control for the line above, which belongs to the tranche that made the change |
+| `test/projection-real-provider.ts` | modified | its two `config.cjs` calls supply the third argument the repair made load-bearing, and one added assertion that the credential VALUE still never reaches the configuration |
 | `test/suite-inventory.json` | modified | the two new offline suites |
 | `package.json` | modified | the new scripts. **No existing script's meaning changes** |
 

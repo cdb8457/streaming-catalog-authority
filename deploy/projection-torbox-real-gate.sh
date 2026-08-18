@@ -35,6 +35,18 @@ NODE_IMAGE="node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f716619
 COMPOSE_FILE="docker-compose.projection-torbox.yml"
 NETWORK="projection-torbox-real-gate"
 PG_PORT="${PROJECTION_TORBOX_REAL_GATE_PG_PORT:-5580}"
+# THE COMPOSE WAIT'S BOUND. Phase 12's D4 found and repaired an unbounded `up -d --wait` in the Phase 11
+# mixed gate; both provider gates still carried it. A wait with no bound is not a slow failure but a
+# HANG, and a hang is worse than a failure because a failure is a verdict and a hang is a person
+# deciding to give up. Overridable for a slow host, and floor-checked below rather than trusted: GNU
+# tooling reads a duration of `0` as NO BOUND AT ALL.
+PG_WAIT_SECONDS="${PROJECTION_TORBOX_REAL_GATE_PG_WAIT_SECONDS:-180}"
+case "$PG_WAIT_SECONDS" in
+  ''|*[!0-9]*) echo "GATE FAILED: the compose wait bound is not a whole number of seconds" >&2; exit 1 ;;
+esac
+[ "$PG_WAIT_SECONDS" -ge 1 ] \
+  || { echo "GATE FAILED: a compose wait bound of 0 is NO BOUND AT ALL, which is the hang this value \
+exists to stop" >&2; exit 1; }
 RESOLVER_PORT="${PROJECTION_TORBOX_REAL_GATE_RESOLVER_PORT:-8140}"
 
 MOUNT_CONTAINER="projection-tbr-mount-$$"
@@ -124,7 +136,12 @@ cleanup() {
   docker rm -f "$RESOLVER_CONTAINER" >/dev/null 2>&1 || true
   docker rm -f "$MOUNT_CONTAINER" >/dev/null 2>&1 || true
   docker compose -f "$COMPOSE_FILE" down -v --remove-orphans >/dev/null 2>&1 || true
-  docker network rm "$NETWORK" >/dev/null 2>&1 || true
+  # ONLY A NETWORK THIS RUN CREATED. `NETWORK_PREEXISTED` is 1 when the ownership probe found one
+  # already there, and it defaults to 1 here so a run that died BEFORE the probe removes nothing -- an
+  # unknown owner is not this run, and the safe default for a destructive step is to do nothing.
+  if [ "${NETWORK_PREEXISTED:-1}" = "0" ]; then
+    docker network rm "$NETWORK" >/dev/null 2>&1 || true
+  fi
   if [ "${CLEANED:-0}" = "1" ]; then
     # Already done and already ASSERTED. Repeating the report here would print a second, weaker statement
     # about the same thing.
@@ -718,9 +735,27 @@ npx tsx src/ops/projection-host-preflight-cli.ts traversal --path "$GATE_ROOT" -
 step "building the production projectiond image, and migrating a throwaway PostgreSQL"
 # ----------------------------------------------------------------------------------------------------------
 docker build -t "$IMAGE" ./projectiond
-docker compose -f "$COMPOSE_FILE" up -d --wait postgres
+docker compose -f "$COMPOSE_FILE" up -d --wait --wait-timeout "$PG_WAIT_SECONDS" postgres \
+  || die "the throwaway PostgreSQL did not become healthy inside ${PG_WAIT_SECONDS}s, so this run stops \
+rather than waiting on it for ever"
 npx tsx src/ops/migrate-cli.ts
-docker network create "$NETWORK" >/dev/null 2>&1 || true
+
+# THE NETWORK IS REMOVED ON THE WAY OUT ONLY IF THIS RUN CREATED IT.
+#
+# `docker network create … || true` followed by an unconditional `docker network rm` in the EXIT trap is
+# Phase 12's D5 -- "the cleanup destroys the network unconditionally, including one it did not create".
+# The attribution only ever held in one direction. "The host was left as it was found" is a statement
+# about a SET rather than a count, and a run that removes somebody else's network and creates its own
+# satisfies every count while violating the sentence. So ownership is decided HERE, once, before
+# anything is created, and the create no longer swallows its own failure.
+if docker network inspect "$NETWORK" >/dev/null 2>&1; then
+  NETWORK_PREEXISTED=1
+  echo "  the network $NETWORK already existed; this run will USE it and will NOT remove it"
+else
+  NETWORK_PREEXISTED=0
+  docker network create "$NETWORK" >/dev/null \
+    || die "the gate network could not be created, and this run will not proceed on somebody else's"
+fi
 
 # ----------------------------------------------------------------------------------------------------------
 step "publishing a generation whose sources are the operator's TorBox stable references"

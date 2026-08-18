@@ -39,6 +39,10 @@ GO_IMAGE="golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e
 COMPOSE_FILE="docker-compose.projection-real-provider.yml"
 NETWORK="projection-real-provider-gate"
 PG_PORT="${PROJECTION_REAL_PROVIDER_GATE_PG_PORT:-5560}"
+# THE COMPOSE WAIT'S BOUND. Overridable for a slow host, and floor-checked below rather than trusted:
+# GNU tooling reads a duration of `0` as NO BOUND AT ALL, so an override of zero would silently remove
+# the very thing this value exists to provide while the gate went on reporting the wait as bounded.
+PG_WAIT_SECONDS="${PROJECTION_REAL_PROVIDER_GATE_PG_WAIT_SECONDS:-180}"
 FAKE_PORT="${PROJECTION_REAL_PROVIDER_GATE_FAKE_PORT:-8130}"
 
 MOUNT_CONTAINER="projection-rp-mount-$$"
@@ -75,6 +79,13 @@ for arg in "$@"; do
   esac
 done
 
+case "$PG_WAIT_SECONDS" in
+  ''|*[!0-9]*) echo "GATE FAILED: the compose wait bound is not a whole number of seconds" >&2; exit 1 ;;
+esac
+[ "$PG_WAIT_SECONDS" -ge 1 ] \
+  || { echo "GATE FAILED: a compose wait bound of 0 is NO BOUND AT ALL, which is the hang this value \
+exists to stop" >&2; exit 1; }
+
 export ADMIN_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:${PG_PORT}/catalog"
 export DATABASE_URL="postgresql://app:app@127.0.0.1:${PG_PORT}/catalog"
 export PROJECTION_REAL_PROVIDER_GATE_PG_PORT="$PG_PORT"
@@ -89,7 +100,12 @@ export PROJECTION_REAL_PROVIDER_GATE_PG_PORT="$PG_PORT"
 cleanup() {
   docker rm -f "$MOUNT_CONTAINER" "$FAKE_CONTAINER" >/dev/null 2>&1 || true
   docker compose -f "$COMPOSE_FILE" down -v --remove-orphans >/dev/null 2>&1 || true
-  docker network rm "$NETWORK" >/dev/null 2>&1 || true
+  # ONLY A NETWORK THIS RUN CREATED. `NETWORK_PREEXISTED` is 1 when the ownership probe found one already
+  # there, and it defaults to 1 here so a run that died BEFORE the probe removes nothing -- an unknown owner
+  # is not this run, and the safe default for a destructive step is to do nothing.
+  if [ "${NETWORK_PREEXISTED:-1}" = "0" ]; then
+    docker network rm "$NETWORK" >/dev/null 2>&1 || true
+  fi
   if [ "${CLEANED:-0}" = "1" ]; then
     # Already done and already ASSERTED. Repeating the report here would print a second, weaker statement
     # about the same thing.
@@ -202,8 +218,22 @@ cat > "$WORK/config.cjs" <<'CONFIG'
 //
 // THE CREDENTIAL IS NAMED BY PATH AND ITS VALUE IS NEVER READ HERE. The daemon opens the file itself, checks
 // its mode, and keeps the value inside `source.SecretFile`, which never renders it.
-const { readFileSync, writeFileSync } = require('node:fs');
-const [, , endpointPath, out] = process.argv;
+const { readFileSync, statSync, writeFileSync } = require('node:fs');
+// THE THIRD ARGUMENT IS READ NOW, AND ITS ABSENCE USED TO BE THE FINGERPRINT OF A CALL SITE NOBODY RAN. This
+// program was called with three arguments and destructured two: `$CREDENTIAL` was passed and silently
+// ignored, so nothing noticed that in REAL mode the daemon's `tokenFile` below pointed into an EMPTY
+// directory. It is now checked for existence and non-emptiness -- never read for value -- so a run that
+// forgot to place the operator's credential where the daemon will look fails HERE, before an image is built.
+const [, , endpointPath, out, credentialPath] = process.argv;
+if (typeof credentialPath !== 'string' || credentialPath === '') {
+  throw new Error('the daemon configuration was built without being told which credential file the daemon '
+    + 'will open, so nothing checks that the file it is about to be pointed at exists');
+}
+const credentialStat = statSync(credentialPath);
+if (!credentialStat.isFile() || credentialStat.size === 0) {
+  throw new Error('the credential the daemon is about to be pointed at is not a non-empty regular file, so '
+    + 'the daemon would start and then fail every read for a reason no assertion in this gate names');
+}
 const endpoint = JSON.parse(readFileSync(endpointPath, 'utf8'));
 const config = {
   mountPoint: '/mnt/projection',
@@ -362,6 +392,33 @@ if (unreadable > 0) {
 console.log(String(hits));
 SCAN
 
+cat > "$WORK/skips.cjs" <<'SKIPS'
+// The ids of every arm this run SKIPPED, one line, comma-separated, empty when there were none.
+//
+// WHY THIS IS A FILE RATHER THAN A `node -e` ON THE GATE'S COMMAND LINE. Every other helper in this gate
+// is a file for the same reason: an offline suite can EXTRACT it and drive it against fixtures, which is
+// the difference between a check that the string is present and a check that the program answers. A
+// two-hundred-character one-liner is also where a quoting defect hides, and this program exists to stop a
+// skip being read as a pass -- a job it cannot do if it fails to parse and the shell reads that as empty.
+//
+// IT FAILS CLOSED. An unreadable, empty or unparseable results file exits non-zero rather than printing
+// nothing, because printing nothing is indistinguishable from "no arm skipped" and would turn the exact
+// absence this check exists to catch into a pass.
+const { readFileSync } = require('node:fs');
+const path = process.argv[2];
+if (typeof path !== 'string' || path === '') {
+  console.error('no results file was named, so nothing can be said about what this run skipped');
+  process.exit(1);
+}
+const lines = readFileSync(path, 'utf8').split('\n').filter((line) => line.trim() !== '');
+if (lines.length === 0) {
+  console.error('the results file holds no verdicts at all, which is a failure rather than a run with no skips');
+  process.exit(1);
+}
+const results = lines.map((line) => JSON.parse(line));
+console.log(results.filter((one) => one.verdict === 'skip').map((one) => one.gate).join(','));
+SKIPS
+
 cat > "$WORK/observations.cjs" <<'OBSERVATIONS'
 // The observation record the verdict phase reads. COUNTERS ONLY: no URL, no reference, no header, no value.
 //
@@ -378,7 +435,10 @@ cat > "$WORK/observations.cjs" <<'OBSERVATIONS'
 // gate now TEARS THE DATA PLANE DOWN FIRST and passes in what it counted.
 const { writeFileSync } = require('node:fs');
 const [, , out, write, create, unlink, chmod, leaseTraces, mode,
-  mountpoints, containers, runDirectories] = process.argv;
+  mountpoints, containers, runDirectories,
+  // THE THREE EVIDENCE PATHS. Each may be the empty string, which means THIS RUN HAD NO SOURCE FOR THAT
+  // OBSERVATION -- recorded as UNTAKEN in `provenance`, and never silently as a zero.
+  endpointPath, trapPath, countersPath] = process.argv;
 
 // A COUNT THAT COULD NOT BE TAKEN IS NOT A COUNT OF ZERO. The shell passes the empty string when the host
 // cannot answer the question at all (no `findmnt`), and that becomes NaN — which `JSON.stringify` writes as
@@ -388,20 +448,81 @@ const [, , out, write, create, unlink, chmod, leaseTraces, mode,
 // platform. Where the host CAN answer, it stays a hard assertion.
 const count = (raw) => (raw === '' || raw === undefined ? Number.NaN : Number(raw));
 
+// ------------------------------------------------------------------------------------------------------
+// THE TRANSPORT OBSERVATIONS ARE DERIVED FROM EVIDENCE THIS RUN WROTE, AND USED TO BE SIX LITERALS.
+//
+// WHAT WAS WRONG. `egressObservedAtListener: false` and `endpointExpires: false` were written IDENTICALLY
+// IN BOTH MODES, so `RP3-egress-allowlist` and `RP3-refresh-per-read` did not merely skip on this host --
+// they skipped FOREVER, on every host, against every endpoint, and no repair anywhere in the product could
+// ever have cleared them. A literal that decides a SKIP is worse than one that decides a pass: a false pass
+// is at least a claim somebody can attack, and a permanent skip is a claim nobody can even reach.
+// `endpointExpires: false` was written under a comment reading 'the direct path has no expiring access
+// material' -- true of the fake endpoint, and false of any resolver endpoint, which is exactly the kind the
+// real mode is for.
+//
+// WHAT THEY ARE NOW. Each is read out of a file, and each carries its PROVENANCE into the record so a
+// reader can tell a measurement from an absence:
+//
+//   endpointExpires        <- the endpoint document THIS RUN USED. An endpoint that names a resolver
+//                             resolves a reference before reading, which is expiring access material.
+//   egressObservedAtListener <- whether this run wrote a trap-listener observation at all. A count with no
+//                             listener behind it is a declaration; the verdict layer already refuses to
+//                             assert on one, and now the boolean it refuses on is a fact rather than a
+//                             constant. A run that stands one up and files the observation MOVES it.
+//   disallowedOriginContacts <- the delta in that observation. Absent without a listener, never 0.
+//   status429 / retries / refreshesPerRead <- the origin-counter observation where the run has one.
+//
+// AND AN ABSENT SOURCE IS RECORDED AS ABSENT RATHER THAN AS A ZERO. `null` reaches the verdict as an
+// untaken observation; the numbers below fall back to the contract's own conservative reading only where
+// the verdict layer requires a number, and the provenance says which happened. §6.0 settled the same
+// three-valued question for the host preflight: an undetermined answer is reported, never passed.
+const readJson = (file) => {
+  try { return JSON.parse(require('node:fs').readFileSync(file, 'utf8')); } catch { return undefined; }
+};
+const endpointDocument = endpointPath === undefined || endpointPath === ''
+  ? undefined : readJson(endpointPath);
+const trap = trapPath === undefined || trapPath === '' ? undefined : readJson(trapPath);
+const originCounters = countersPath === undefined || countersPath === ''
+  ? undefined : readJson(countersPath);
+
+// A RESOLVER MEANS EXPIRING ACCESS MATERIAL. The endpoint contract admits exactly one of `resolverUrl` and
+// `directBaseUrl`; the first mints access material per read and the second serves a stable reference.
+const endpointExpires = endpointDocument === undefined
+  ? false
+  : typeof endpointDocument.resolverUrl === 'string' && endpointDocument.resolverUrl !== '';
+const endpointExpiresFrom = endpointDocument === undefined
+  ? 'UNTAKEN-the-endpoint-document-was-not-supplied-to-this-record'
+  : 'derived-from-the-endpoint-document-this-run-used';
+
+// THE LISTENER, OR THE HONEST ABSENCE OF ONE.
+const egressObservedAtListener = trap !== undefined && trap.listenerStoodUp === true;
+const disallowedOriginContacts = egressObservedAtListener ? Number(trap.contacts) : 0;
+
 const record = {
   // NOT PROVOKED, ONLY BOUNDED. This corpus is never a load test, so no 429 is manufactured and no retry is
   // forced; what is recorded is what happened while the gate did its ordinary reads.
-  status429: 0,
-  retries: 0,
-  refreshesPerRead: [],
-  disallowedOriginContacts: 0,
-  // THIS GATE STANDS UP NO LISTENER ON THE EXCLUDED ORIGIN, so it cannot observe a contact with one and does
-  // not claim to. The verdict records the egress line rather than asserting it, and says so. G26 asserts the
-  // allowlist in full against a listener `deploy/projection-lease-gate.sh` really does stand up.
-  egressObservedAtListener: false,
-  // The direct path has no expiring access material, so the refresh assertion correctly SKIPS -- and a skip
-  // says so. G24-G26 assert the refresh contract in full against the expiring-lease mode.
-  endpointExpires: false,
+  status429: originCounters === undefined ? 0 : Number(originCounters.served429),
+  retries: originCounters === undefined ? 0 : Number(originCounters.retries),
+  refreshesPerRead: originCounters === undefined || !Array.isArray(originCounters.refreshesPerRead)
+    ? [] : originCounters.refreshesPerRead.map(Number),
+  disallowedOriginContacts,
+  egressObservedAtListener,
+  endpointExpires,
+  // THE PROVENANCE OF EVERY DECISION-BEARING FIELD, so 'this was measured' and 'nothing could measure it'
+  // are never the same line. The gate refuses to report a REAL run as evidence while any of these says
+  // UNTAKEN, which is what stops an absence being read as a zero.
+  provenance: {
+    endpointExpires: endpointExpiresFrom,
+    egressObservedAtListener: egressObservedAtListener
+      ? 'measured-at-a-listener-this-run-stood-up-on-a-deliberately-excluded-origin'
+      : 'UNTAKEN-this-run-stood-up-no-listener-on-an-excluded-origin',
+    disallowedOriginContacts: egressObservedAtListener
+      ? 'the-delta-of-that-listener-own-counters'
+      : 'UNTAKEN-there-was-no-listener-to-count-at',
+    transportCounters: originCounters === undefined
+      ? 'UNTAKEN-no-origin-counter-surface-on-this-path'
+      : 'the-origin-own-counters-before-and-after-the-reads',
+  },
   readOnly: {
     writeRefused: write === 'true',
     createRefused: create === 'true',
@@ -458,6 +579,17 @@ if [ "$MODE" = "real" ]; then
   ENDPOINT="$ENDPOINT_FILE"
   CONTROL_ENDPOINT="$ENDPOINT_FILE"
   CREDENTIAL="$CREDENTIAL_FILE"
+
+  # THE DAEMON OPENS ITS CREDENTIAL AT A CONTAINER PATH, AND IN REAL MODE NOTHING EVER PUT ONE THERE.
+  # `config.cjs` writes `tokenFile: /var/lib/projectiond/inputs/credential`, and the mount container binds
+  # `$WORK/inputs` there read-only. Fake mode writes a credential into that directory; real mode created it
+  # EMPTY and never copied the operator's in, so even past the endpoint-path defect below the daemon would
+  # have found no credential and failed every read. The copy is the operator's file at 0600 into a 0700
+  # directory this run owns and removes, and its VALUE is never read by this shell -- `install` moves bytes,
+  # `ps` sees two paths.
+  install -m 600 "$CREDENTIAL_FILE" "$WORK/inputs/credential" \
+    || die "the operator's credential could not be placed where the daemon opens it, and a daemon \
+with no credential fails every read for a reason no assertion in this gate names"
 else
   FIXTURE_FLAG="--fixture-endpoint"
   echo "  FAKE MODE: no credential, no external contact, every assertion still evaluated"
@@ -474,9 +606,29 @@ docker build -t "$IMAGE" ./projectiond
 # ----------------------------------------------------------------------------------------------------------
 step "starting a real PostgreSQL and migrating it"
 # ----------------------------------------------------------------------------------------------------------
-docker compose -f "$COMPOSE_FILE" up -d --wait postgres
+# BOUNDED, BECAUSE A WAIT WITH NO BOUND IS NOT A SLOW FAILURE BUT A HANG -- and a hang is worse than a
+# failure, since a failure is a verdict and a hang is a person deciding to give up. Phase 12's D4 found and
+# repaired exactly this in the Phase 11 mixed gate; both provider gates still carried it.
+docker compose -f "$COMPOSE_FILE" up -d --wait --wait-timeout "$PG_WAIT_SECONDS" postgres \
+  || die "the throwaway PostgreSQL did not become healthy inside ${PG_WAIT_SECONDS}s, so this run stops \
+rather than waiting on it for ever"
 npx tsx src/ops/migrate-cli.ts
-docker network create "$NETWORK" >/dev/null 2>&1 || true
+
+# THE NETWORK IS REMOVED ON THE WAY OUT ONLY IF THIS RUN CREATED IT.
+#
+# `docker network create … || true` followed by an unconditional `docker network rm` in the EXIT trap is
+# Phase 12's D5 -- "the cleanup destroys the network unconditionally, including one it did not create". The
+# attribution only ever held in one direction, and "the host was left as it was found" is a statement about a
+# SET rather than a count: a run that removes somebody else's network and creates its own satisfies every
+# count while violating the sentence. So ownership is decided HERE, once, before anything is created.
+if docker network inspect "$NETWORK" >/dev/null 2>&1; then
+  NETWORK_PREEXISTED=1
+  echo "  the network $NETWORK already existed; this run will USE it and will NOT remove it"
+else
+  NETWORK_PREEXISTED=0
+  docker network create "$NETWORK" >/dev/null \
+    || die "the gate network could not be created, and this run will not proceed on somebody else's"
+fi
 
 # ----------------------------------------------------------------------------------------------------------
 if [ "$MODE" = "fake" ]; then
@@ -596,7 +748,13 @@ register batch --file "$REL/out/register-batch.json"
 publish > "$WORK/out/publish.json"
 test "$(field outcome < "$WORK/out/publish.json")" = "published" || die "the generation was not published"
 
-node "$REL/config.cjs" "$REL/inputs/endpoint.json" "$WORK/config.json" "$CREDENTIAL"
+# THE OPERATOR'S ENDPOINT, NOT A FAKE-MODE PATH. This line read `$REL/inputs/endpoint.json` in BOTH modes.
+# In fake mode that file is written thirty lines above; in real mode it was never written at all, so
+# `readFileSync` threw ENOENT and the gate died here -- twelve steps into twenty, before it mounted anything.
+# `go:real-provider-gate` in real mode had therefore never completed a run on any host, and could not have.
+# `$ENDPOINT` is the operator's file in real mode and the fake-mode file in fake mode, which is what every
+# other call site on this path already used.
+node "$REL/config.cjs" "$ENDPOINT" "$WORK/config.json" "$CREDENTIAL"
 
 docker run -d --name "$MOUNT_CONTAINER" \
   --network "$NETWORK" --user 0:0 \
@@ -621,9 +779,77 @@ test "$ready" -eq 1 || { logs_tail "$MOUNT_CONTAINER"; die "the mount never beca
 # ----------------------------------------------------------------------------------------------------------
 step "READS — backward, past 90%, and the approved windows, digested against values from outside the mount"
 # ----------------------------------------------------------------------------------------------------------
-real_provider reads --objects "$OBJECTS" --mount "$WORK/mnt" --control "$REL/out/control.json" \
-  --out "$REL/out/reads.json" \
-  || { logs_tail "$MOUNT_CONTAINER"; die "the reads through the mount failed"; }
+# THE OUTER BOUND, PORTED IN SHAPE FROM THE PROVIDER-SPECIFIC GATE THAT ALREADY CLOSED THIS HOLE.
+# `real_provider reads` asserts `MOUNT_READ_DEADLINE_MS` AFTER a read returns, and a `readSync` already
+# blocked in the kernel against a wedged FUSE mount cannot be interrupted from inside the process that
+# issued it. Without something above it this step -- the only one where a real provider is on the other
+# end of a system call -- could hang for ever, and a gate that hangs reports nothing at all.
+command -v timeout >/dev/null 2>&1 \
+  || die "this host has no \`timeout\`, so the read through the mount could not be bounded. A gate that \
+cannot bound the one step that talks to a real provider must not report that step as proven"
+
+# THE BOUND IS DERIVED FROM THE CORPUS AND THERE IS NO KNOB, for the reason the provider-specific gate
+# gives: a configurable ceiling moves in the LOOSENING direction, and GNU `timeout` reads `0` as no
+# timeout at all. The object count is the one `register.cjs` already counted from the operator manifest
+# this run is about to read, so the ceiling cannot be set by anything but the corpus.
+READ_OBJECTS="$(field objects < "$WORK/out/register.json")"
+case "$READ_OBJECTS" in
+  ''|*[!0-9]*) die "the corpus did not yield an object count, so the read bound could not be derived from it \
+and a fixed one would be the guess this replaced" ;;
+esac
+test "$READ_OBJECTS" -ge 1 \
+  || die "the corpus declares no objects at all, which would make every assertion below vacuous"
+# THREE WINDOWS PER OBJECT -- the approved window, the one past 90% and the backward seek -- each
+# separately deadlined inside the reader. THE FACTOR OF TWO IS NOT PADDING: a window that overruns must
+# be allowed to FINISH so the reader can name it precisely, and only past that is a read wedged rather
+# than slow. Killing it first would report a hang where the gate has an exact answer.
+READ_WINDOW_DEADLINE_S=120
+READ_TIMEOUT_S=$(( READ_OBJECTS * 3 * READ_WINDOW_DEADLINE_S * 2 + 60 ))
+# AND THE KILL FOLLOWS THE TERM, BECAUSE OTHERWISE THE BOUND DOES NOT BIND IN THE CASE IT IS NAMED FOR.
+# `timeout` alone sends SIGTERM and then WAITS for the child, so a child SIGTERM cannot reach makes it
+# block for exactly as long as the child does. Linux waits on FUSE requests with `wait_event_killable`,
+# which answers fatal signals and not a SIGTERM it cannot deliver until the task returns to userspace.
+READ_KILL_GRACE_S=60
+
+# EXTRACTED SO THE OFFLINE SUITE CAN DRIVE THE SHIPPED INVOCATION rather than regex-match it. A test that
+# matched this command line would prove the string was present, not that the bound binds.
+bounded_read() {
+  _bound="$1"; shift
+  timeout --kill-after="$READ_KILL_GRACE_S" "$_bound" "$@"
+}
+
+echo "  the corpus declares $READ_OBJECTS object(s); bounding the read step at ${READ_TIMEOUT_S}s, with a"
+echo "  ${READ_KILL_GRACE_S}s grace before SIGKILL for a child SIGTERM cannot reach"
+set +e
+bounded_read "$READ_TIMEOUT_S" \
+  npx tsx src/ops/projection-real-provider-cli.ts reads \
+  --objects "$OBJECTS" --mount "$WORK/mnt" --control "$REL/out/control.json" \
+  --out "$REL/out/reads.json"
+read_status=$?
+set -e
+# EVERY OUTCOME IS NAMED, because "the reads failed" over a `timeout` that could not run is a
+# conflation. 124 is the bound firing; 137 is the child having ignored SIGTERM and been killed after the
+# grace; 125/126/127 are `timeout` ITSELF failing, which means the read was never bounded at all and
+# nothing about it may be reported as proven.
+case "$read_status" in
+  0) : ;;
+  124)
+    logs_tail "$MOUNT_CONTAINER"
+    die "the reads through the mount did not finish inside ${READ_TIMEOUT_S}s and were terminated. A read \
+that never returns is a failure, not a run still in progress" ;;
+  137)
+    logs_tail "$MOUNT_CONTAINER"
+    die "the reads through the mount ignored SIGTERM at the ${READ_TIMEOUT_S}s bound and were KILLED after \
+the ${READ_KILL_GRACE_S}s grace. That is the wedged-mount case this bound exists for" ;;
+  125|126|127)
+    logs_tail "$MOUNT_CONTAINER"
+    die "the read step could not be bounded: \`timeout\` itself failed (exit $read_status), so the reads \
+either never ran or ran unbounded. A gate that could not bound the one step that talks to a real provider \
+must not report that step as proven" ;;
+  *)
+    logs_tail "$MOUNT_CONTAINER"
+    die "reads through the mount failed (exit $read_status)" ;;
+esac
 
 # ----------------------------------------------------------------------------------------------------------
 step "the mount is READ-ONLY, checked as the unprivileged uid a media server actually runs as"
@@ -686,9 +912,20 @@ echo "  left behind: ${MOUNTPOINTS_LEFT:-<undetermined>} mountpoint(s), $CONTAIN
 # ----------------------------------------------------------------------------------------------------------
 step "the verdict"
 # ----------------------------------------------------------------------------------------------------------
+# THE ENDPOINT THIS RUN ACTUALLY USED IS HANDED IN, so `endpointExpires` is read off it rather than
+# written as a constant. The trap-listener and origin-counter observations are handed in as PATHS THAT
+# MAY NOT EXIST: this gate stands up no listener on a deliberately excluded origin and has no counter
+# surface on the real path, so those two are honestly UNTAKEN here and the record says so by name rather
+# than reporting a zero. A later tranche that stands one up files the observation at these paths and the
+# arm becomes a measurement without this line changing.
+TRAP_OBSERVATION="$WORK/out/trap-listener.json"
+ORIGIN_COUNTERS="$WORK/out/origin-counters.json"
+[ -f "$TRAP_OBSERVATION" ] || TRAP_OBSERVATION=""
+[ -f "$ORIGIN_COUNTERS" ] || ORIGIN_COUNTERS=""
 node "$REL/observations.cjs" "$REL/out/observations.json" \
   "$WRITE_REFUSED" "$CREATE_REFUSED" "$UNLINK_REFUSED" "$CHMOD_REFUSED" "$LEASE_TRACES" "$MODE" \
-  "$MOUNTPOINTS_LEFT" "$CONTAINERS_LEFT" "$RUN_DIRS_LEFT"
+  "$MOUNTPOINTS_LEFT" "$CONTAINERS_LEFT" "$RUN_DIRS_LEFT" \
+  "$ENDPOINT" "$TRAP_OBSERVATION" "$ORIGIN_COUNTERS"
 
 real_provider verdict --objects "$OBJECTS" --control "$REL/out/control.json" \
   $FIXTURE_FLAG \
@@ -696,6 +933,28 @@ real_provider verdict --objects "$OBJECTS" --control "$REL/out/control.json" \
   --results "$REL/out/results.json"
 
 real_provider report --results "$REL/out/results.json" --json "$REL/out/results-summary.json"
+
+# A SKIP IS NOT A PASS, AND `report` EXITS 0 WITH ONE. It prints the skipped count and returns zero, which
+# is right for a summary and wrong for evidence: a REAL run of this gate whose egress or refresh arm did
+# not run has not established the property, and a caller reading the exit status would be told it had. So
+# the gate reads its own results back and refuses the run rather than the report. Fake mode is deliberately
+# exempt -- there the skips are the gate saying which assertions its fake endpoint cannot reach, which is
+# the true statement it exists to make.
+if [ "$MODE" = "real" ]; then
+  SKIPPED_ARMS="$(node "$REL/skips.cjs" "$REL/out/results.json")" \
+    || die "the results could not be read back, so whether this run skipped anything is unknown -- and \
+an unknown skip count is not a zero"
+  if [ -n "$SKIPPED_ARMS" ]; then
+    echo >&2
+    echo "GATE FAILED: this REAL run SKIPPED: $SKIPPED_ARMS" >&2
+    echo "      A skip is not a pass and is never folded into one. The run reached the end and still" >&2
+    echo "      did not establish those properties, so its exit status must not say it did." >&2
+    echo "      Each skipped arm names the observation it lacked: the provenance block in" >&2
+    echo "      observations.json says which one was UNTAKEN and why." >&2
+    exit 1
+  fi
+  echo "  zero arms skipped: every assertion this run declares was reached and answered"
+fi
 
 if [ "$MODE" = "fake" ]; then
   echo
