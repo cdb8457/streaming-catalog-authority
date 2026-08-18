@@ -290,7 +290,7 @@ the review claimed, what an independent re-check of the shipped bytes at `f77871
 |---|---|---|---|
 | **B1** | Phase 12 is a self-declared NO-GO, which is §12.1's first entry criterion verbatim | **NO — superseded by the candidate.** The review read `a8d7232`. Two commits later, §10.9 records **GO**: three consecutive fresh complete sequences from one frozen candidate, and §10.10 measures the record commit | **CLEARED by the candidate**, not by this tranche. Recorded, and §2 carries the state |
 | **B2** | the generic gate's real mode dies at a hardcoded fake-mode endpoint path; the credential never reaches the daemon; `config.cjs` takes three arguments and destructures two | **YES, all three** | **REPAIRED** (`P13PRE-I2`) with a control that fails on the unrepaired bytes |
-| **B3** | `observations.cjs` writes `egressObservedAtListener`, `endpointExpires`, `disallowedOriginContacts`, `status429`, `retries` and `refreshesPerRead` as literals in both modes, so two RP3 arms skip forever | **YES** | **REPAIRED** (`P13PRE-I3`): every decision-bearing field is now derived from a file the run wrote, and the two RP3 arms answer from evidence. The **listener** an honest egress observation needs is stood up in fake mode, where it can be |
+| **B3** | `observations.cjs` writes `egressObservedAtListener`, `endpointExpires`, `disallowedOriginContacts`, `status429`, `retries` and `refreshesPerRead` as literals in both modes, so two RP3 arms skip forever | **YES** | **REPAIRED IN PART, AND THE PART IS NAMED.** The two fields that decided a **permanent skip** — `endpointExpires` and `egressObservedAtListener`, with `disallowedOriginContacts` behind it — are now read out of evidence the run wrote, and a run that files a listener observation **moves** them. The other three have **no counter surface on the real path**: the daemon exposes none, and adding one is a product change §4 forbids. They are read from an origin-counter observation where one exists and marked **UNTAKEN in `provenance`** where none does. **OUT OF SCOPE for the remainder, OWNER NAMED: a later authorised Phase 13, or the tranche that owns the daemon.** Standing up the excluded-origin listener inside this gate is also assigned there — shipping an unexercised container arrangement is the defect class this tranche exists to remove |
 | **B4** | *"the provider half only of `P11-R1`"* has no mechanism and no denominator | **YES** | **SUPERSEDED** in §8, and made structural: `PHASE13_PREENTRY_FORBIDDEN_EMITTABLE_IDS` plus a prefix refusal means no id of another tranche can carry a verdict here (`P13PRE-I9`) |
 | **B5** | four `-optional` wrappers run `projection-three-server-concurrency-gate.sh` instead of the gate they name | **YES — exactly four**, confirmed by a sweep of all 23 wrappers: `path-lifecycle`, `real-provider`, `torbox-mount`, `torbox-real` | **REPAIRED** (`P13PRE-I1`), all four, each with its own header prose. The sweep control asserts **every** wrapper, so a fifth cannot appear unnoticed |
 | **B6** | Phase 12's staging script refuses a Phase 13 staging directory, and `stage` would `rm -rf` Phase 12's preserved candidate | **YES** | **REPAIRED** (`P13PRE-I7`) by admitting one further **literal** marker rather than by parameterising the guard. A pre-entry directory is now stageable **without** clearing Phase 12's, and every other basename is refused exactly as before |
@@ -316,10 +316,95 @@ It is written here so it is a recorded finding rather than a discovery.
 
 ## 10. What was run, and what it said
 
-See §10 of this document as committed with the implementation. Every figure there is from this candidate,
-and **every one of them is offline**: a typecheck, the focused suites, the two new suites with their
-controls, and the full offline inventory from both shells. **No figure in this document came from a
-provider, a CDN, a credential, a media server or a host.**
+**EVERY FIGURE BELOW IS OFFLINE.** No provider, CDN, resolver, credential, media server, container, Tower or
+host was contacted, started, stopped, read for value or changed to produce any of them. No gate was run: this
+tranche repaired instruments and regressed the repairs, and **a repaired instrument is not a run**.
+
+### 10.1 STATUS — the instrument repair is complete; **PHASE 13 IS NOT ENTERED**
+
+| | |
+|---|---|
+| Base | integration `f77871f` |
+| Commits | five, listed in §10.2 |
+| Typecheck | `npx tsc --noEmit` — **clean** |
+| New suites | `projection-phase13-preentry` 35/0, `projection-phase13-preentry-gate-audit` 47/0 |
+| Controls | every repair carries one, and **each was watched failing on the unrepaired bytes** |
+| Provider contact | **none** |
+| Claims moved | **none.** Phase 10, Phase 11 tier one and Phase 12 stay GO; Phase 9 and Phase 11 tier two stay OPEN; `P11-R1` is **NOT RUN** |
+
+### 10.2 The commits
+
+| commit | what it is |
+|---|---|
+| `d3f4a12` | **the contract**, committed before any implementation: §5's claims, §5.3's thresholds, §6's origin policy, and the suite that asserts the prose and the closure function agree |
+| `c511365` | `P13PRE-I1` — the four miswired `-optional` wrappers, and a sweep over **every** wrapper in the tree |
+| `992275c` | `P13PRE-I2/I3/I4/I5/I8` — the real-mode input repair, the derived observations, the bounded waits, ownership-aware cleanup, and the skip refusal |
+| `639d07c` | `P13PRE-I6/I7` — the no-contact readiness recorder, and the second staging marker |
+| `1236a95` | the origin policy made **reachable**, and `P13PRE-I9` over the shipped bytes |
+
+### 10.3 The files
+
+**New (5):** `docs/PROJECTION_PHASE_13_PRE_ENTRY_INSTRUMENT_REPAIR.md`,
+`src/core/projection/phase13-preentry.ts`, `deploy/projection-preentry-readiness.sh`,
+`test/projection-phase13-preentry.ts`, `test/projection-phase13-preentry-gate-audit.ts`.
+
+**Modified (11):** the two provider gates, the four `-optional` wrappers, `projection-phase12-stage.sh`,
+`test/projection-real-provider.ts`, `test/suite-inventory.json`, `package.json`, `.gitignore`.
+
+**Not touched, and checked:** everything on `PHASE13_PREENTRY_FORBIDDEN_SOURCE` — the appliance script and
+its profile, the content plane, the gate cleanup helper, and `phase7.ts` through `phase12.ts`. **No
+`projectiond/` source. No product daemon change of any kind.**
+
+### 10.4 The soak trigger
+
+`phase9RequiresSoakRerun` over the **union** of the module's path list and §11's ownership table returns
+**FALSE**. Nothing this tranche touches is on `PHASE9_SOAK_TRIGGERING_SOURCE` — that list is six projection
+source modules, `deploy/projection-alpha.sh` and `docker-compose.projection-alpha.yml`, and this tranche
+modifies none of them. **No Phase 9 soak re-run is triggered.**
+
+### 10.5 The provider source allowlists
+
+**Zero of the eight moved.** `phase13-preentry.ts` names no provider, exactly as `phase12.ts` does not, so
+the boundary that stops provider knowledge leaking into the rest of `src/` did not have to be widened for a
+filename. All eight suites were run **to completion** — a stopped-part-way inventory is not a figure, which
+is Phase 11 §6.2's own lesson.
+
+### 10.6 What every control was watched doing
+
+`REPAIRS_WITHOUT_A_CONTROL_MAX` is zero, and a control nobody has watched fail is a control nobody should
+believe. Each of these was run against a deliberately unrepaired copy of the shipped bytes and **asserted to
+fail**:
+
+| repair | the tamper the control applies |
+|---|---|
+| `I1` | the wrapper's default returned to the three-server gate; and a wrapper edited to `exit 0` regardless of status |
+| `I2` | the real-mode call site returned to the fake-mode endpoint path; and a `config.cjs` that destructures two of its three arguments again |
+| `I3` | either of the two skip-deciding fields restored as a literal |
+| `I4` | `--wait-timeout` stripped from **either** gate, so a repair applied to one and not its twin fails |
+| `I5` | the cleanup returned to removing the network unconditionally; and a container named without this run's pid |
+| `I6` | the scrubber removed (and it **does** leak); a secret digested (and it **is** digested); a reaching command added to the shipped bytes |
+| `I7` | the marker handed to an environment variable; and a third marker slipped into the case |
+| `I8` | the skip reader's empty-file guard removed, so it prints nothing for an empty file and a caller reads that as "no skips" |
+
+### 10.7 A defect this tranche found in its own audit
+
+The no-contact check was first written as a regex **inside a template literal**, where `\s` is not a
+character class but the letter `s`. The pattern it compiled matched nothing. **It was green, and it was
+vacuous** — green for exactly the reason a wrapper that runs the wrong gate is green: nobody had made it
+fail. The matcher now lives in a named function built from a RegExp **source string**, it carries a control
+that drives it against code which really does invoke each command, and a second control tampers the
+**shipped bytes** and asserts the check catches it. A pattern that works on a fixture and misses the file is
+still vacuous, and those are two different claims.
+
+Two further defects were found by **running** rather than reading: `mktemp -d` under Git Bash answers a POSIX
+path the Node runtime resolves against the wrong drive root, and an absolute POSIX path handed to `npx tsx`
+does the same. Both would have appeared only when somebody tried to use the program.
+
+### 10.8 What is left on this host that these figures do not count
+
+Nothing. This tranche started no container, created no network or volume, staged nothing, and wrote outside
+the repository only into a scratch directory it removes. The `plan` mode writes one helper under
+`.projection-preentry-readiness/` and removes it, and that path is ignored by git.
 
 ---
 

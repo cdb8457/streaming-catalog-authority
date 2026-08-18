@@ -472,10 +472,18 @@ const count = (raw) => (raw === '' || raw === undefined ? Number.NaN : Number(ra
 //   disallowedOriginContacts <- the delta in that observation. Absent without a listener, never 0.
 //   status429 / retries / refreshesPerRead <- the origin-counter observation where the run has one.
 //
-// AND AN ABSENT SOURCE IS RECORDED AS ABSENT RATHER THAN AS A ZERO. `null` reaches the verdict as an
-// untaken observation; the numbers below fall back to the contract's own conservative reading only where
-// the verdict layer requires a number, and the provenance says which happened. §6.0 settled the same
+// AND AN ABSENT SOURCE IS NAMED AS ABSENT. `provenance` says UNTAKEN for every field this run had no way
+// to measure, and the gate REFUSES to report a real run as evidence while any decision-bearing arm skipped
+// -- which is where an untaken observation becomes a non-zero exit rather than a quiet zero. The numeric
+// fields themselves stay numbers, because the verdict layer types them that way; what changed is that the
+// record no longer lets "measured 0" and "nothing measured" print the same. §6.0 settled the same
 // three-valued question for the host preflight: an undetermined answer is reported, never passed.
+//
+// WHAT THIS TRANCHE DID NOT MAKE MEASURABLE, SAID PLAINLY. `status429`, `retries` and `refreshesPerRead`
+// have no counter surface on the real path: the daemon's Status document does not expose them, and adding
+// one is a PRODUCT change this tranche is forbidden to make. Where an origin-counter observation exists
+// they are read from it; where none does they fall back to the conservative reading AND the provenance
+// says UNTAKEN. That is a recorded limitation with an owner, not a measurement.
 const readJson = (file) => {
   try { return JSON.parse(require('node:fs').readFileSync(file, 'utf8')); } catch { return undefined; }
 };
