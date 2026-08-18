@@ -461,6 +461,47 @@ export const PHASE13_PREENTRY_NONCLAIMS = Object.freeze([
 ] as const);
 
 /**
+ * EVERY FINDING OF THE INDEPENDENT READINESS REVIEW, BY ID, IN THE REVIEW'S OWN ORDER.
+ *
+ * WHY THIS LIST EXISTS AND WHY IT IS HERE RATHER THAN ONLY IN THE DOCUMENT. `P13PRE-C3` says every readiness
+ * finding carries a disposition and `FINDINGS_WITHOUT_A_DISPOSITION_MAX` is zero — and an independent audit
+ * pointed out that NOTHING MEASURED IT. The §9 table was in fact complete, so the claim was unregressed
+ * rather than false; but this tranche's own rule is that a claim with a budget must have something able to
+ * move it, and a budget nothing can move is the exact defect `phase12SkippedClaims` was made a function to
+ * avoid.
+ *
+ * THE DENOMINATOR HAS TO LIVE OUTSIDE THE DOCUMENT IT MEASURES. A test that read the finding ids out of the
+ * same table it was checking would be green against a table missing a row and its heading alike — it would
+ * be counting the rows against themselves. So the review's finding set is recorded here, once, and
+ * `test/projection-phase13-preentry.ts` walks it against §9.
+ *
+ * ELEVEN BLOCKERS AND FIVE FINDINGS. The count is stated in the document's own header, and the suite asserts
+ * that sentence and this list agree — so neither can be edited alone.
+ */
+export const PHASE13_PREENTRY_READINESS_FINDINGS: readonly string[] = Object.freeze([
+  'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B9', 'B10', 'B11',
+  'F1', 'F2', 'F3', 'F4', 'F5',
+]);
+
+/**
+ * The dispositions §9 may record. A row whose disposition is none of these has not said what happened.
+ *
+ * IT IS A CLOSED SET SO THAT "MENTIONED" AND "DISPOSITIONED" CANNOT BE THE SAME THING. A row that names a
+ * finding and then says nothing about it is the failure mode this claim exists for: the finding stops being
+ * a question without ever having been answered.
+ */
+export const PHASE13_PREENTRY_DISPOSITIONS: readonly string[] = Object.freeze([
+  'REPAIRED',
+  'SUPERSEDED',
+  'OUT OF SCOPE',
+  'CLEARED',
+  'RESPECTED',
+  'RECORDED',
+  'REUSED',
+  'AVOIDED',
+]);
+
+/**
  * The paths this tranche is forbidden to modify.
  *
  * IT IS PHASE 12's LIST PLUS PHASE 12's OWN MODULE. A tranche that could edit the rules it is measured

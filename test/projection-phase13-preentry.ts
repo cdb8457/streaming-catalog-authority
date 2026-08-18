@@ -19,7 +19,9 @@ import {
   PHASE13_PREENTRY_MEANING,
   PHASE13_PREENTRY_NONCLAIMS,
   PHASE13_PREENTRY_OWNERSHIP_SECTION,
+  PHASE13_PREENTRY_DISPOSITIONS,
   PHASE13_PREENTRY_PRESERVED_STATES,
+  PHASE13_PREENTRY_READINESS_FINDINGS,
   PHASE13_PREENTRY_RULES,
   PHASE13_PREENTRY_TRANCHE_PATHS,
   originRotationDisposition,
@@ -338,6 +340,89 @@ test('a rotation is an ABORT with a reason, and never a FAIL about the product',
     assert(!String(originRotationDisposition(status)).includes('fail'),
       'a recheck status was turned into a failure of the product');
   }
+});
+
+h.section('P13PRE-C3 — the budget that nothing measured');
+
+/** §9's table, as a map from finding id to the row's disposition cell. */
+function dispositionTable(): ReadonlyMap<string, string> {
+  const document = read(CONTRACT);
+  const at = document.indexOf('## 9. Every readiness finding, and its disposition');
+  assert(at >= 0, `${CONTRACT} has no §9, so no finding can carry a disposition`);
+  const section = document.slice(at, document.indexOf('\n## ', at + 10));
+  const rows = new Map<string, string>();
+  for (const line of section.split('\n')) {
+    if (!line.startsWith('|')) continue;
+    const cells = line.split('|').map((cell) => cell.trim());
+    const id = /^\*\*([BF]\d+)\*\*$/.exec(cells[1] ?? '')?.[1];
+    // THE DISPOSITION IS THE LAST CELL, and it is read as a cell rather than searched for anywhere in the
+    // row — a row that merely MENTIONS the word "REPAIRED" in its description of the defect has not said
+    // what was done about it.
+    if (id !== undefined) rows.set(id, cells[cells.length - 2] ?? '');
+  }
+  return rows;
+}
+
+test('every readiness finding has a ROW in §9, and the count is the one the header states', () => {
+  const table = dispositionTable();
+  const missing = PHASE13_PREENTRY_READINESS_FINDINGS.filter((id) => !table.has(id));
+  assertEq(missing.length, 0, `§9 has no row for: ${missing.join(', ')}`);
+  // AND NO ROW FOR A FINDING THE REVIEW DID NOT MAKE, which is the other direction and would mean the
+  // denominator had quietly grown.
+  for (const id of table.keys()) {
+    assert(PHASE13_PREENTRY_READINESS_FINDINGS.includes(id),
+      `§9 disposes of ${id}, which the readiness review did not raise`);
+  }
+  // THE HEADER'S OWN ARITHMETIC. Eleven blockers and five findings; neither the sentence nor the list can be
+  // edited without the other.
+  const blockers = PHASE13_PREENTRY_READINESS_FINDINGS.filter((id) => id.startsWith('B')).length;
+  const findings = PHASE13_PREENTRY_READINESS_FINDINGS.filter((id) => id.startsWith('F')).length;
+  assertEq(blockers, 11, 'the blocker count moved');
+  assertEq(findings, 5, 'the finding count moved');
+  assert(read(CONTRACT).includes(`${'whose eleven blockers and five findings'}`),
+    'the document no longer states the finding count its §9 table is measured against');
+});
+
+test('FINDINGS_WITHOUT_A_DISPOSITION_MAX is MEASURED, and every row says what happened', () => {
+  // THE CLAIM HAD A BUDGET AND NOTHING MOVED IT. This is the measurement: a row whose last cell names none
+  // of the closed set of dispositions has mentioned a finding without answering it.
+  const table = dispositionTable();
+  const without = PHASE13_PREENTRY_READINESS_FINDINGS.filter((id) => {
+    const disposition = table.get(id) ?? '';
+    return !PHASE13_PREENTRY_DISPOSITIONS.some((word) => disposition.includes(word));
+  });
+  assertEq(without.length, PHASE13_PREENTRY_RULES.FINDINGS_WITHOUT_A_DISPOSITION_MAX,
+    `${without.length} finding(s) carry no disposition: ${without.join(', ')}`);
+  // AND EVERY OUT-OF-SCOPE ROW NAMES AN OWNER, because "out of scope" without one is a finding dropped
+  // rather than assigned.
+  for (const id of PHASE13_PREENTRY_READINESS_FINDINGS) {
+    const disposition = table.get(id) ?? '';
+    if (!disposition.includes('OUT OF SCOPE')) continue;
+    assert(/OWNER NAMED/.test(disposition),
+      `${id} is out of scope and names no owner, which is a finding dropped rather than assigned`);
+  }
+});
+
+test('CONTROL: the measurement BITES on a missing row and on a row that says nothing', () => {
+  // A CHECK NOBODY HAS WATCHED FAIL IS A CHECK NOBODY SHOULD BELIEVE, and this one exists precisely because
+  // the claim it measures went unmeasured. Both directions are driven over a tampered copy of the table.
+  const table = new Map(dispositionTable());
+  const complete = PHASE13_PREENTRY_READINESS_FINDINGS.filter((id) => !table.has(id));
+  assertEq(complete.length, 0, 'the fixture is not a complete table, so this control proves nothing');
+
+  const dropped = new Map(table);
+  dropped.delete('B10');
+  assertEq(PHASE13_PREENTRY_READINESS_FINDINGS.filter((id) => !dropped.has(id)).join(','), 'B10',
+    'removing a row is not seen, so a finding could stop being mentioned without anything noticing');
+
+  const silent = new Map(table);
+  silent.set('B11', 'a host observation this run did not take');
+  const without = PHASE13_PREENTRY_READINESS_FINDINGS.filter((id) => {
+    const disposition = silent.get(id) ?? '';
+    return !PHASE13_PREENTRY_DISPOSITIONS.some((word) => disposition.includes(word));
+  });
+  assertEq(without.join(','), 'B11',
+    'a row that mentions a finding without saying what happened to it reads as dispositioned');
 });
 
 h.section('the boundary this tranche drew around itself');
