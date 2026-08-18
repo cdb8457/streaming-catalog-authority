@@ -23,6 +23,13 @@ structural form of the same refusal.
 | Rules as code | `src/core/projection/phase13.ts` — written in a **later** commit than this document, deliberately |
 | Status | **NOT RUN.** §14 is the run record and it records that nothing has run |
 
+**WHY THIS FILE IS NOT NAMED AFTER THE PROVIDER, AND THE TITLE IS.** All eight provider source allowlists
+under `test/` walk `src/` and refuse any unlisted file that names the provider at all. `phase13.ts` carries
+this document's path in its ownership list, so a filename that named the provider would put the provider's
+name in `src/` and require eight security boundaries to move for a string. `phase12.ts` and
+`phase13-preentry.ts` avoided the same question the same way, and Phase 11 §6.2 records what widening those
+lists costs. **Zero allowlists moved for this tranche.**
+
 ---
 
 ## 1. What Phase 13 is for, in one paragraph
@@ -86,10 +93,10 @@ scans byte-exactly for both secrets, and probes read-only refusals as both an un
 
 ### 2.3 What a Phase 13 GO means, and no more
 
-> the operator's own entitled TorBox objects were published as a generation, resolved by the operator's own
-> account, and read back byte-correct through a read-only FUSE mount on the operator's own Unraid host,
-> three consecutive fresh times from one frozen candidate — with the API key never inside the daemon
-> container, the origin allowlist unmoved, and the host left as it was found.
+> the operator's own entitled objects were published as a generation, resolved by the operator's own
+> account, and read back byte-correct through a read-only FUSE mount on the operator's own host, three
+> consecutive fresh times from one frozen candidate — with the API key never inside the daemon container,
+> the origin allowlist unmoved, and the host left as it was found.
 
 **Ceiling sentence**, held as a constant so a summary that grew past it has to edit a module:
 
@@ -398,7 +405,7 @@ paths out of this table, unions them with the module's list, and runs `phase9Req
 
 | Path | New or modified | What changed |
 |---|---|---|
-| `docs/PROJECTION_PHASE_13_TORBOX_ACCEPTANCE.md` | new | this contract and its run record |
+| `docs/PROJECTION_PHASE_13_REAL_PROVIDER_ACCEPTANCE.md` | new | this contract and its run record |
 | `src/core/projection/phase13.ts` | new | §5's claims, §5.3's thresholds, §6's entry criteria and §7's exit criteria, as code |
 | `test/projection-phase13.ts` | new | the tranche's own rules, and the prose ↔ function agreement |
 | `docs/PROJECTION_PHASE_12_AUDIT_AND_PROVIDER_FREE_CLOSURE.md` | modified | **§13 ONLY** — the amendment superseding §12.1's two sentences and recording the candidate rule. No §1–§12 sentence, threshold, refusal, claim id or claim wording is edited |
