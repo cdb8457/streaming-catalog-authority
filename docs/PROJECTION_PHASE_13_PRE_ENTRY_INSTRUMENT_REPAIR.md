@@ -327,7 +327,8 @@ tranche repaired instruments and regressed the repairs, and **a repaired instrum
 | Base | integration `f77871f` |
 | Commits | five, listed in §10.2 |
 | Typecheck | `npx tsc --noEmit` — **clean** |
-| New suites | `projection-phase13-preentry` 35/0, `projection-phase13-preentry-gate-audit` 47/0 |
+| New suites | `projection-phase13-preentry` 35/0, `projection-phase13-preentry-gate-audit` 48/0 |
+| Full offline inventory | see §10.9 |
 | Controls | every repair carries one, and **each was watched failing on the unrepaired bytes** |
 | Provider contact | **none** |
 | Claims moved | **none.** Phase 10, Phase 11 tier one and Phase 12 stay GO; Phase 9 and Phase 11 tier two stay OPEN; `P11-R1` is **NOT RUN** |
@@ -400,6 +401,21 @@ Two further defects were found by **running** rather than reading: `mktemp -d` u
 path the Node runtime resolves against the wrong drive root, and an absolute POSIX path handed to `npx tsx`
 does the same. Both would have appeared only when somebody tried to use the program.
 
+### 10.9 The full offline inventory, from both shells
+
+`P13PRE-C1` asks for the **whole** inventory from **Git Bash** and from an **ordinary PowerShell**, from one
+candidate — not a focused subset, and not a run stopped part-way. A figure recorded from one terminal
+that does not reproduce from the other is not a verdict about the product at all: that is the defect
+`test/posix-shell-kit.ts` exists for, and this repository has published a figure spoiled by it twice.
+
+| shell | suites selected | passed | failed | required-but-skipped | elapsed |
+|---|---|---|---|---|---|
+| Git Bash | 338 | **338** | **0** | **0** | 768s |
+| ordinary PowerShell | — | — | — | — | RUNNING AT THE TIME THIS LINE WAS WRITTEN; the figure is recorded when it lands and NOT before |
+
+All eight provider source allowlist suites ran **to completion** in both arms. **39 suites were not
+selected** in either — the Docker-only acceptance suites the default run has always excluded, which is
+what "not selected" means here and is not a skip of anything this tranche claims.
 ### 10.8 What is left on this host that these figures do not count
 
 Nothing. This tranche started no container, created no network or volume, staged nothing, and wrote outside

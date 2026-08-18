@@ -1,5 +1,7 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -820,6 +822,45 @@ test('CONTROL: a recorder that digests a secret is CAUGHT', () => {
   const record = JSON.parse(result.out) as { inputs: Record<string, Record<string, unknown>> };
   assertEq(record.inputs['torbox-credential']?.digested, true,
     'the tampered recorder did not digest the secret, so the check above is not measuring that property');
+});
+
+test('DRIVEN: the whole record mode runs, and leaves nothing behind', () => {
+  // THE HELPER IS DRIVEN ABOVE; THIS DRIVES THE PROGRAM. A helper that answers correctly inside a shell
+  // script nobody can execute is a helper nobody runs before shipping it -- and the first two versions of
+  // this script could not run at all on the machine it was written on, because `mktemp -d` under Git Bash
+  // answers a POSIX path the Node runtime resolves against the wrong drive root. Only running it found that.
+  const shell = posixShell();
+  if (shell === null) { assert(true, NO_SHELL); return; }
+  const dir = freshDir();
+  writeFileSync(join(dir, 'torbox-credential'), 'a'.repeat(36));
+  writeFileSync(join(dir, 'credential'), 'b'.repeat(65));
+  writeJson(dir, 'objects.json', { objects: [] });
+  writeJson(dir, 'endpoint.json', { id: 'p', allowedOrigins: ['https://one.invalid', 'https://two.invalid'] });
+
+  const run = spawnSync(shellOrThrow(), [shPath(join(repoRoot, READINESS)), 'record'], {
+    encoding: 'utf8', timeout: 120_000, cwd: repoRoot,
+    env: { ...process.env, PROJECTION_PREENTRY_INPUT_DIR: shPath(dir) },
+  });
+  assertEq(run.status, 0, `the record mode failed: ${String(run.stderr ?? '')}`);
+  const record = JSON.parse(String(run.stdout ?? '')) as { allowlist: { allowedOriginCount: number } };
+  assertEq(record.allowlist.allowedOriginCount, 2, 'the record did not describe the allowlist');
+  assert(String(run.stderr ?? '').includes('NOTHING WAS CONTACTED'),
+    'the record mode does not say that it contacted nothing');
+
+  // AND IT REMOVES ITS OWN SCRATCH. A recorder that accumulated a directory per taking would be adding to
+  // the residue the phase it serves has to account for.
+  assertEq(existsSync(join(repoRoot, '.projection-preentry-readiness')), false,
+    'the recorder left its scratch directory behind');
+
+  // AN ABSENT CORPUS IS A SKIP, NOT A FAILURE AND NOT AN ANSWER.
+  const emptyDir = freshDir();
+  const skipped = spawnSync(shellOrThrow(), [shPath(join(repoRoot, READINESS)), 'record'], {
+    encoding: 'utf8', timeout: 120_000, cwd: repoRoot,
+    env: { ...process.env, PROJECTION_PREENTRY_INPUT_DIR: shPath(emptyDir) },
+  });
+  assertEq(skipped.status, 77, 'an absent corpus was not a skip');
+  assert(String(skipped.stderr ?? '').includes('NOTHING WAS CONTACTED'),
+    'the skip does not say that nothing was contacted');
 });
 
 // ---------------------------------------------------------------------------------------------------------

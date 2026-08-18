@@ -198,8 +198,15 @@ command -v node >/dev/null 2>&1 \
 # The recorder. Written as a file rather than inline so an offline suite can EXTRACT it and DRIVE it against
 # fixtures — the difference between checking that a string is present and checking that a program answers.
 # ----------------------------------------------------------------------------------------------------------
-SCRATCH="$(mktemp -d)"
-trap 'rm -rf "$SCRATCH" 2>/dev/null || true' EXIT
+# INSIDE THE REPOSITORY RATHER THAN IN /tmp, for the same reason the plan helper is: mktemp -d under Git
+# Bash answers a POSIX path the Node runtime resolves against the wrong drive root, so the helper would be
+# written somewhere the shell can see and the runtime cannot find. A program nobody can run on the machine
+# it is written on is a program nobody runs before shipping it. Removed on the way out, both ways.
+# AND IT IS HANDED TO node AS A PATH RELATIVE TO THE REPOSITORY ROOT, which the invocation below runs from.
+SCRATCH_REL=".projection-preentry-readiness/record-$$"
+SCRATCH="$ROOT/$SCRATCH_REL"
+mkdir -p "$SCRATCH"
+trap 'rm -rf "$SCRATCH" 2>/dev/null || true; rmdir "$ROOT/.projection-preentry-readiness" 2>/dev/null || true' EXIT
 chmod 700 "$SCRATCH"
 
 cat > "$SCRATCH/record.cjs" <<'RECORD'
@@ -334,7 +341,7 @@ RECORD
 SECRET_CSV="$(echo "$SECRET_FILES" | tr ' ' ',')"
 SHAPED_CSV="$(echo "$SHAPED_FILES" | tr ' ' ',')"
 
-node "$SCRATCH/record.cjs" "$INPUT_DIR" "$OUT" "$SECRET_CSV" "$SHAPED_CSV" \
+( cd "$ROOT" && node "$SCRATCH_REL/record.cjs" "$INPUT_DIR" "$OUT" "$SECRET_CSV" "$SHAPED_CSV" ) \
   || { echo "the readiness record could not be taken. NOTHING WAS CONTACTED, and an untaken record is not \
 an answer about the operator's inputs." >&2; exit 1; }
 
