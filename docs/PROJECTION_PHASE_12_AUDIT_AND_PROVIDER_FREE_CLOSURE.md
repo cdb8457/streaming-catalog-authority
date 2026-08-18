@@ -629,6 +629,19 @@ added no image. The wrapper's own transcripts were written under `/tmp`, copied 
 
 Recorded so that "the record commit is documentation-only" is a measurement rather than an assertion.
 
+**MEASURED ON COMMIT `034ba2e`**, the commit that carries §10.9, Phase 11's §10.8 and Phase 10's §11.9, and
+which differs from candidate `a8d7232` in those three documentation files and in nothing else.
+
+| | |
+|---|---|
+| `npx tsc --noEmit` | clean |
+| Full offline inventory, **Git Bash** | **336 selected / 336 passed / 0 failed / 0 required-but-skipped**, 745 s |
+| Full offline inventory, **an ordinary PowerShell** | **336 / 336 / 0 / 0**, 746 s |
+| `projection-phase10.ts` / `projection-phase11.ts` / `projection-phase12.ts` | 31 / 31, 39 / 39, 29 / 29 |
+| `projection-phase10-gate-audit.ts` / `projection-phase11-gate-audit.ts` | 29 / 29, 56 / 56 |
+| `projection-bounded-recovery.ts` — the OPERATOR SOURCE DIGEST | 52 / 52, **unmoved** |
+| `custody-runtime-closure.ts` | 39 / 39 |
+
 **WHY IT IS IN THE COMMIT AFTER THE ONE IT MEASURES, AND THIS IS THE REGRESS ENDING RATHER THAN CONTINUING.**
 The tree carrying §10.9 cannot also carry the figures produced by running against §10.9; §10.6 and §10.7
 chased that and it produced a second sequence rather than a third. So the run record commit is measured, and
