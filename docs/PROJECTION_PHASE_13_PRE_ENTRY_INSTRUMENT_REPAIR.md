@@ -474,6 +474,7 @@ and runs `phase9RequiresSoakRerun` over the **union**, so the soak question is a
 | `test/suite-inventory.json` | modified | the two new offline suites |
 | `package.json` | modified | the new scripts. **No existing script's meaning changes** |
 | `.gitignore` | modified | the readiness recorder's scratch directory, which it creates and removes |
+| `test/torbox-resolver.ts` | modified | one ordering check whose needle named a spelling rather than an act, and stopped matching when the compose invocation gained a per-run project (§12 D4) |
 
 **Not touched, and checked:** everything on `PHASE13_PREENTRY_FORBIDDEN_SOURCE` — the appliance script and
 its profile, the content plane, the gate cleanup helper, and `phase7.ts` through `phase12.ts`.
