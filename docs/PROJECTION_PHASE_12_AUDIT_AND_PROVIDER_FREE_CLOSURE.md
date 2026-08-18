@@ -871,3 +871,108 @@ them. A phase that needed it would be a phase that changed this document first.
 A second host, high availability, an uptime figure, a load figure, automatic source failover, indexer search,
 a download-selection policy, and instant Usenet streaming. Phase 11 §8's non-claims, inherited by every phase
 on this roadmap.
+
+---
+
+---
+
+## 13. AMENDMENT — §12.1's two wrong sentences, and the candidate its GO is recorded from
+
+**THIS SECTION CHANGES NO EVIDENCE AND REWRITES NO RUN RECORD.** §10 is kept whole, including §10.1's NO-GO
+and §10.9's GO. §5's eleven claims, §5.4's thresholds and §4's refusals are untouched, and §8 freezes them:
+nothing here moves one. What this section does is **supersede two sentences of the roadmap** and **record a
+fact about the candidate that the tree has made true since**. Both were named as operator prerequisites by
+the Phase 13 pre-entry tranche (§7 #2 and §7 #3 of
+`docs/PROJECTION_PHASE_13_PRE_ENTRY_INSTRUMENT_REPAIR.md`), and neither was that tranche's to enact.
+
+**IT IS WRITTEN BEFORE ANYTHING IS MEASURED AGAINST IT**, which is §8's own procedure: the document changes
+first, states what moved and why, and everything already measured against the old value is re-run.
+
+### 13.1 Superseded — *"the provider half only of `P11-R1`"*
+
+§12.1's **Claims it may close** row stands above, unedited, and is wrong.
+
+**There is no provider half of `P11-R1`.** The claim is a conjunction about **co-residency**: a real
+provider-backed entry **and** a real Usenet-admitted file sitting in **one published generation**. One
+entitled object alone in a generation demonstrates nothing about co-residency, so "the provider half" names
+no observable and has no denominator. Calling it a half is precisely the averaging Phase 11 §5.2 and this
+document's §2.5 forbid.
+
+**The code has always agreed and has always been stricter than this prose.** `phase11ClosureProblems` has no
+partial verdict, no half verdict and no per-claim close; a tier-one closure refuses to carry a tier-two
+verdict at all; and `PHASE13_PREENTRY_FORBIDDEN_EMITTABLE_IDS` refuses `P11-R1` by id as well as by prefix.
+So the supersession is a correction to a sentence, not a change to a rule.
+
+**What Phase 13 may do instead: mint a claim id of its own for what it actually observed.** `P11-R1` stays
+**NOT RUN** and is closed by Phase 14 at the earliest — it needs a real Usenet-admitted file, which is
+§12.2's subject and not §12.1's.
+
+### 13.2 Superseded — the instrument §12.1 names
+
+§12.1's **Exit criteria** row 1 names *"the real-provider gate and its three-run wrapper"*, and §12.1's
+**Dependencies** row names Phase 11's gate as repaired. The gate that sentence points at is
+`deploy/projection-real-provider-gate.sh`, and it stands above unedited.
+
+**A LATER PHASE 13 CONTRACT MUST NAME `deploy/projection-torbox-real-gate.sh` INSTEAD.** Two independent
+reasons, and either alone would be enough:
+
+1. **The generic gate's real mode had never run anywhere and, before the pre-entry tranche, could not** — it
+   died at a hardcoded fake-mode input path twelve steps into a twenty-step program. It is repaired now, and
+   the repair is regressed offline, but **a gate you are not running is a gate no repair has survived**.
+   Treat it as repaired rather than as proven.
+2. **It now REFUSES a real run outright**, and that is the honest answer rather than a defect. Three of its
+   five decision-bearing observations have no counter surface on the real path; the daemon exposes none and
+   adding one is a product change. So a real run carrying UNTAKEN fields is refused rather than reported —
+   which means the gate this roadmap row names **cannot produce complete real evidence at all**.
+
+The provider-specific gate is the mature instrument: it resolves in the daemon's own network namespace, never
+mounts the provider key into the daemon, bounds its read step with a corpus-derived ceiling, captures and
+asserts both container logs, scans byte-exactly for both secrets, and probes read-only refusals as both an
+unprivileged uid **and** uid 0.
+
+### 13.3 THE CANDIDATE — §10.9's GO IS RECORDED FROM `a8d7232`, AND THE TREE HAS MOVED SINCE
+
+**§10.9 IS NOT DISTURBED AND IS NOT RE-OPENED.** Three consecutive fresh complete sequences ran from
+`a8d7232`; §10.10 measures the record commit `034ba2e`; the daemon image digest was identical in all three
+and identical to `8be98c2` and `61445f2`. **That record stands exactly as written, and Phase 12 is GO.** It
+is a statement about `a8d7232`, and it remains true of `a8d7232` whatever else lands.
+
+**AND THAT IS PRECISELY WHY IT DOES NOT TRANSFER.** §7 #3 of the pre-entry document states the rule this
+document's own §5.3 implies: a Phase 13 run must use `a8d7232`, or a descendant whose only differences are
+documents Phase 12's suites do not read.
+
+**`fe4c1fd` IS NOT SUCH A DESCENDANT, AND THE DIFFERENCE IS NOT COSMETIC.** Between `a8d7232` and `fe4c1fd`
+the pre-entry tranche moved **bytes of the instruments a provider-free sequence exercises and bytes the
+sequence's own suites read**:
+
+| what moved | why a sequence has to be re-run for it |
+|---|---|
+| `deploy/projection-real-provider-gate.sh` | arm 7 of §10.9's sequence runs `go:real-provider-gate:fake`. Its real-mode input path, its bounded waits, its ownership-aware cleanup and its derived observations all changed |
+| `deploy/projection-torbox-real-gate.sh`, four `-optional` wrappers | four wrappers ran a gate other than the one their filenames name; all four now run their own |
+| `deploy/projection-phase12-stage.sh` | **arms 1 and 2 of every sequence.** A second staging marker was admitted |
+| `docker-compose.projection-real-provider.yml`, `docker-compose.projection-torbox.yml` | the network name became an env-var default, so the network belongs to a run rather than to the file |
+| `src/core/projection/real-provider.ts` | the verdict layer reads provenance and skips rather than passing. This is `src/` |
+| `test/projection-real-provider.ts`, `test/torbox-resolver.ts`, `test/suite-inventory.json`, `package.json` | **arm 9**, the full offline inventory, which is two of its selected suites and its own selection list |
+
+A Phase 13 candidate that includes this work therefore **needs Phase 12's complete sequence run again from
+it**, and the series **restarts at one** — exactly as §10.9's own campaign restarted when three test-only
+commits landed on top of `8be98c2` and `61445f2`. **Two sequences from two superseded candidates are not two
+thirds of three**, and that sentence is this document's, not an import.
+
+**WHAT THIS AMENDMENT DOES NOT DO.** It does not declare Phase 12 NO-GO, and it does not weaken §10.9. Phase
+12's GO is a closed record about a named commit. What it says is narrower and harder: **a later candidate has
+no Phase 12 GO of its own until the complete sequence has been run from it three consecutive fresh times with
+zero skips**, and until then that candidate is not admissible as a Phase 13 entry criterion 1.
+
+### 13.4 What moved, and what did not
+
+**Moved:** two roadmap sentences in §12.1, superseded here with the originals kept whole; and the addition of
+this section, which records the candidate rule already implied by §5.3 and §10.9.
+
+**Did not move:** every one of §5's eleven claims; every threshold in §5.4; every refusal in §4; every claim
+id and every claim wording; §6.3's untouchable list; §8's ceiling sentence; §10 in its entirety, including
+§10.1's NO-GO, §10.7's second sequence, §10.9's GO and §10.10's re-measurement; and §11's audit of Phase 11.
+**No verdict of any tranche is written, moved, re-worded or narrowed by this section.**
+
+**Phase 9's `P9-2`, `P9-3`, `P9-5` and `P9-11` stay OPEN. Phase 11 tier two stays OPEN and `P11-R1` is NOT
+RUN. Phase 13 is NOT ENTERED by this amendment**, which contacts nothing and runs nothing.
