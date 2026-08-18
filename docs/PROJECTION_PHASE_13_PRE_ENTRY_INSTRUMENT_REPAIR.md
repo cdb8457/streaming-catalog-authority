@@ -479,3 +479,53 @@ and runs `phase9RequiresSoakRerun` over the **union**, so the soak question is a
 its profile, the content plane, the gate cleanup helper, and `phase7.ts` through `phase12.ts`.
 
 ---
+
+---
+
+## 12. The independent audit of this tranche, and what it found
+
+**A second reader audited `32a230f` read-only, reproduced all sixteen readiness findings on the pre-repair
+bytes, confirmed nine of the twelve claims by driving the shipped code, and then found eight defects in the
+repair itself.** Its verdict was **ACCEPT the branch as integrable, REJECT the readiness conclusion** — and
+it was right on both counts. Every defect is dispositioned below, and each row that says REPAIRED names the
+commit that did it.
+
+### 12.1 The commits of this correction pass
+
+| commit | what it is |
+|---|---|
+| `23b3a17` | **D1/D2** — the verdict layer reads provenance; no arm passes from an untaken or empty measurement; the gate refuses a real run with any UNTAKEN field |
+| `4b4f61a` | **D4** — per-run compose project and network, inventory before creation, `--remove-orphans` deleted, set preservation asserted |
+| `3d40ead` | **D3** — `P13PRE-C3`'s budget is measured, with a control that bites in both directions |
+| `703a0e9` | **D5/D6/D7/D8** — the phantom ownership row, the self-describing commit count, B5's second hazard, the reaching-command matcher |
+
+### 12.2 Every defect, and its disposition
+
+| # | Severity | Finding | Confirmed? | Disposition |
+|---|---|---|---|---|
+| **D1** | HIGH | a repaired arm emits an **unmeasured PASS** where it used to emit an honest SKIP: `endpointExpires` derived true against a resolver endpoint flips `RP3-refresh-per-read` out of its skip into `atMost(worst, 1)`, and an empty `refreshesPerRead` maps to `worst = 0`, which passes | **YES — reproduced before repairing**, by extracting the shipped `observations.cjs` and feeding it to the shipped `transportResults`. Both states the auditor named, including all four RP3 arms green with a listener filed | **REPAIRED** (`23b3a17`). The verdict layer READS provenance per field and emits a named skip — never a pass, never a `measured` — for an untaken observation; `refresh-per-read` refuses three ways, including an EMPTY per-read list, because per-read emptiness means no read was recorded rather than that no read needed a refresh. The I3 audit now drives all **five** fields, and carries a regression that rebuilds the auditor's shape and a control proving a genuinely measured record is still green |
+| **D2** | MEDIUM | the shipped bytes assert a refusal that does not exist — `provenance` was written and never read | **YES** | **REPAIRED** (`23b3a17`). The refusal exists in two independent places: the verdict layer's skips, and a gate step that reads `provenance` through a helper importing `untakenTransportObservations` from the module that decides the verdicts, so the two cannot drift. The comment now describes what the code does |
+| **D3** | MEDIUM | `P13PRE-C3` has a budget and nothing measures it | **YES** | **REPAIRED** (`3d40ead`). The readiness finding set lives in the module — outside the table it measures, so the rows cannot be counted against themselves — and the suite walks it against §9, requires a disposition from a **closed set** in the row's last cell, requires an owner on every OUT OF SCOPE row, and carries a control that bites on a dropped row and on a row that mentions a finding without answering it |
+| **D4** | MEDIUM | `P13PRE-I5`'s claim covers containers, networks **and volumes**; the implementation covered the network, and both gates ran `down -v --remove-orphans` against a shared project namespace | **YES, and worse than stated** — the project name is **fixed in the compose file**, not derived from the working directory, and `docker-compose.projection-torbox.yml` is shared by **two gates** | **REPAIRED** (`4b4f61a`). Per-run compose project on every invocation, per-run network, `--remove-orphans` deleted outright, an inventory of all three kinds taken **before the first create**, and a **set difference** asserted on the success path — because a count passes the violation where one of theirs is removed and one of yours created |
+| **D4b** | — | *(found by this pass, not by the audit)* the previous ownership repair **leaked the network it created**: the compose file's `networks.default.name` was the same fixed string the gate created and conditionally removed, and `compose up` ran **before** the probe, so every run recorded its own network as pre-existing | **YES** | **REPAIRED** (`4b4f61a`). Ownership is read from the before-inventory, which is the only moment the question has an answer |
+| **D5** | LOW | §11, "THE AUTHORITY, and it is complete", lists `test/projection-phase12.ts` as modified; it is not | **YES** | **REPAIRED** (`703a0e9`). The row is gone, the module's path list drops it, and the completeness check is now **bidirectional and driven against git** — which immediately found three further gaps and a parser that silently dropped `.yml` and dotfiles |
+| **D6** | LOW | commit accounting off by one | **YES** | **REPAIRED** (`703a0e9`). No total is stated: the commits are listed, and a list that names its members cannot be off by one |
+| **D7** | LOW | B5's second hazard — the shared `PROJECTION_*_GATE_COMMAND` seam — is undispositioned | **YES** | **REPAIRED as a disposition** (`703a0e9`), row **B5b** in §9. The hazard is recorded as **dissolved rather than repaired**, and the decision not to split the seam is on the record with its reason |
+| **D8** | INFO | the reaching-command matcher omits `dig`, `nslookup`, `host`, `ping`, `getent` | **YES** | **REPAIRED** (`703a0e9`). Eighteen commands now, resolvers included. The shipped recorder invoked none of them either way — a list that holds by luck is not one that holds by construction |
+
+### 12.3 What the audit confirmed, and this pass did not disturb
+
+The auditor drove `I1`, `I6`, `I8`, `I9`, the origin-lifetime refusal and the closure function to their
+boundaries and found each sound; it independently reproduced `P13PRE-C1`'s figure from both shells; and it
+confirmed no provider contact, no Phase 13 or live claim closed, `P11-R1` NOT RUN, Phase 10–12 preserved,
+zero allowlists moved and the soak trigger FALSE. **None of that changed here**, and §10.9's figures were
+re-taken for this pass rather than carried over.
+
+### 12.4 The consequence that must not be read past
+
+**The generic real-provider gate's real mode now REFUSES rather than reporting success**, because it cannot
+take three of its five decision-bearing observations — the daemon exposes no counter surface and supplying
+one is a product change §4 forbids. That is the honest answer and it is a **named refusal**, not a skip
+folded into success. It also means the gate the Phase 12 roadmap row names as Phase 13's instrument still
+cannot produce complete real evidence; §8's second supersession, which names the provider-specific gate
+instead, stands unchanged and is now the load-bearing sentence rather than a preference.
