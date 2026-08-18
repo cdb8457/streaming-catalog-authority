@@ -452,7 +452,7 @@ test('this suite is in the offline inventory', () => {
 
 test('the tranche is reachable from a named npm script', () => {
   const scripts = (JSON.parse(read('package.json')) as { scripts: Record<string, string> }).scripts;
-  for (const name of ['test:phase13-preentry']) {
+  for (const name of ['test:phase13-preentry', 'go:preentry-readiness']) {
     assert(name in scripts, `${name} is not an npm script, so nobody can run it the documented way`);
   }
 });

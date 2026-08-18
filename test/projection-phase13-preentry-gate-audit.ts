@@ -55,6 +55,7 @@ const codeOf = (body: string): string => body.replace(/^\s*#.*$/gm, '');
 const GENERIC_GATE = 'deploy/projection-real-provider-gate.sh';
 const PROVIDER_GATE = 'deploy/projection-torbox-real-gate.sh';
 const STAGE = 'deploy/projection-phase12-stage.sh';
+const READINESS = 'deploy/projection-preentry-readiness.sh';
 
 // ---------------------------------------------------------------------------------------------------------
 h.section('P13PRE-I1 — every optional wrapper invokes the gate its own filename names');
@@ -599,12 +600,321 @@ test('CONTROL: a skip reader that prints nothing on an empty file is CAUGHT', ()
 });
 
 // ---------------------------------------------------------------------------------------------------------
+h.section('P13PRE-I6 — a no-contact readiness record emits shape only');
+// ---------------------------------------------------------------------------------------------------------
+
+/** The commands by which a shell program could reach something off this host. */
+const REACHING_COMMANDS = ['curl', 'wget', 'nc', 'ssh', 'openssl', 'telnet'] as const;
+
+/**
+ * Does this shell code INVOKE a command, as opposed to containing its letters?
+ *
+ * WHY THIS IS A FUNCTION WITH A CONTROL RATHER THAN A REGEX AT THE CALL SITE. The first version of this
+ * check was written inline in a template literal, where `\s` is not a character class but the letter `s`. The
+ * pattern it compiled matched NOTHING, so the check was green and vacuous -- green for exactly the reason a
+ * wrapper that runs the wrong gate is green: nobody made it fail. It now lives here, built from a RegExp
+ * SOURCE STRING where the escapes survive, and the test below drives it against code that really does
+ * invoke each command.
+ */
+function invokes(code: string, command: string): boolean {
+  // A command is invoked when it starts a line or follows a pipe, a semicolon, an ampersand, an opening
+  // parenthesis, a command substitution, or one of the keywords that begin a compound command.
+  const prefix = '(^|[|;&(]|[$][(]|\\bthen\\b|\\bdo\\b|\\belse\\b)[ \\t]*';
+  return new RegExp(prefix + command + '(\\s|$)', 'm').test(code);
+}
+
+test('the reaching-command matcher BITES, and does not fire on a word that merely contains one', () => {
+  // THE CONTROL FOR THE CHECK ITSELF. An audit nobody has watched fail is an audit nobody should
+  // believe, and that applies to the matcher as much as to the property it measures.
+  for (const command of REACHING_COMMANDS) {
+    assert(invokes(`${command} https://example.invalid`, command),
+      `the matcher does not see ${command} at the start of a line`);
+    assert(invokes(`RESULT="$(${command} --version)"`, command),
+      `the matcher does not see ${command} inside a command substitution`);
+    assert(invokes(`true | ${command} -x`, command),
+      `the matcher does not see ${command} after a pipe`);
+    assert(invokes(`if true; then ${command} -x; fi`, command),
+      `the matcher does not see ${command} after then`);
+  }
+  // AND IT DOES NOT FIRE ON THE LETTERS. `readFileSync` contains `nc`, and the honest version of this
+  // check has to tell those two apart rather than be weakened until it tells neither.
+  assert(!invokes("const { readFileSync, statSync } = require('node:fs');", 'nc'),
+    'the matcher reads readFileSync as an invocation of netcat');
+  assert(!invokes('# this comment mentions curl and ssh', 'curl'),
+    'the matcher fires on a mention rather than an invocation');
+});
+
+test('the recorder opens no socket, starts nothing, and says so', () => {
+  const body = read(READINESS);
+  const code = codeOf(body);
+  for (const forbidden of REACHING_COMMANDS) {
+    assert(!invokes(code, forbidden),
+      `the readiness recorder invokes ${forbidden}, so "it contacts nothing" is not true of it`);
+  }
+  for (const forbidden of ['docker run', 'docker compose', 'docker network', 'docker build']) {
+    assert(!code.includes(forbidden),
+      `the readiness recorder runs ${forbidden}, so it starts something`);
+  }
+  const helper = helperFrom(READINESS, 'RECORD');
+  for (const forbidden of ['node:http', 'node:https', 'node:net', 'node:dgram', 'node:tls', 'fetch(']) {
+    assert(!helper.includes(forbidden),
+      `the recorder's helper imports ${forbidden}, so it can reach something`);
+  }
+  assert(/exit 77/.test(code) && /NOTHING WAS CONTACTED/.test(body),
+    'the recorder cannot say 77, or does not say that a skip contacted nothing');
+});
+
+test('CONTROL: a readiness recorder that reaches out is CAUGHT, in the shipped bytes', () => {
+  // THE MATCHER'S CONTROL ABOVE PROVES THE PATTERN BITES ON A STRING THIS SUITE WROTE. This one proves it
+  // bites on the FILE, which is the thing the check is actually pointed at -- the two are not the same
+  // claim, and a pattern that worked on a fixture and missed the file would still be vacuous.
+  const body = read(READINESS);
+  for (const [tamper, command] of [
+    ['curl -fsS https://example.invalid >/dev/null\ncommand -v node', 'curl'],
+    ['RESOLVED="$(nc -z example.invalid 443)"\ncommand -v node', 'nc'],
+    ['if true; then ssh host true; fi\ncommand -v node', 'ssh'],
+  ] as const) {
+    const tampered = body.replace('command -v node', tamper);
+    assert(tampered !== body, `the ${command} tamper did not apply, so this control proves nothing`);
+    assert(invokes(codeOf(tampered), command),
+      `a readiness recorder that invokes ${command} is not seen to, so the no-contact check would `
+      + 'have stayed green while the program reached off this host');
+  }
+  // AND THE SHIPPED BYTES CARRY NONE OF THEM, which is what makes the check above a measurement rather
+  // than a pattern nobody has pointed at anything.
+  for (const command of REACHING_COMMANDS) {
+    assert(!invokes(codeOf(body), command), `the shipped recorder invokes ${command}`);
+  }
+});
+test('DRIVEN: the record carries existence, type, mode, digest, shape and counts — and no value', () => {
+  const helper = helperFrom(READINESS, 'RECORD');
+  const dir = freshDir();
+  writeFileSync(join(dir, 'torbox-credential'), 'a'.repeat(36));
+  writeFileSync(join(dir, 'credential'), 'b'.repeat(65));
+  writeJson(dir, 'objects.json', { objects: [{ ref: 'an-object-reference-nobody-may-print', label: 'a', sizeBytes: 10 }] });
+  writeJson(dir, 'endpoint.json', {
+    id: 'provider',
+    resolverUrl: 'https://api.example.invalid/resolve',
+    allowedOrigins: ['https://cdn2.example.invalid', 'https://cdn1.example.invalid'],
+  });
+
+  const result = runHelper(helper, [dir, '', 'torbox-credential,credential', 'objects.json,endpoint.json']);
+  assertEq(result.status, 0, `the record could not be taken: ${result.err}`);
+  const record = JSON.parse(result.out) as {
+    contactedAnything: boolean;
+    inputs: Record<string, Record<string, unknown>>;
+    allowlist: { allowedOriginCount: number; allowedOriginDigests: string[]; resolvesBeforeReading: boolean };
+  };
+
+  assertEq(record.contactedAnything, false, 'the record does not say it contacted nothing');
+
+  // THE SECRETS ARE DESCRIBED, NEVER DIGESTED. A digest of a 36-byte token is derived from its content, and
+  // nothing this program writes may be.
+  for (const secret of ['torbox-credential', 'credential']) {
+    const entry = record.inputs[secret];
+    assert(entry !== undefined, `${secret} is not described at all`);
+    assertEq(entry.exists, true, `${secret} exists and the record disagrees`);
+    assertEq(entry.type, 'regular-file', `${secret} type`);
+    assertEq(entry.nonEmpty, true, `${secret} non-emptiness`);
+    assertEq(entry.digested, false, `${secret} was DIGESTED, and a digest of a secret is derived from it`);
+    assertEq('sizeBytes' in entry, false, `${secret} carries a size, which is a fact about its value`);
+    assertEq('sha256Prefix' in entry, false, `${secret} carries a digest of its content`);
+  }
+
+  // THE SHAPED DOCUMENTS CARRY A WHOLE-FILE DIGEST AND A KEY SHAPE. The digest is the cheapest honest
+  // before/after evidence there is: two records agree exactly when nobody edited the file.
+  const endpoint = record.inputs['endpoint.json'];
+  assert(endpoint !== undefined, 'the endpoint document is not described');
+  assert(typeof endpoint.sha256Prefix === 'string' && String(endpoint.sha256Prefix).length === 16,
+    'the endpoint document carries no whole-file digest, so nothing can compare two records');
+  assertEq(endpoint.shape, 'allowedOrigins:array[2],id:string,resolverUrl:string',
+    'the shape is not the document\'s keys and types');
+
+  // THE ALLOWLIST IS A COUNT AND MEMBER DIGESTS, SORTED so a record differing only in ORDER does not read
+  // as movement.
+  assertEq(record.allowlist.allowedOriginCount, 2, 'the allowlist count is wrong');
+  assertEq(record.allowlist.allowedOriginDigests.length, 2, 'the member digests are missing');
+  assertEq([...record.allowlist.allowedOriginDigests].sort().join(','),
+    record.allowlist.allowedOriginDigests.join(','),
+    'the member digests are not sorted, so a reordered but unchanged allowlist would read as moved');
+  assertEq(record.allowlist.resolvesBeforeReading, true, 'a resolver endpoint was not recognised as one');
+
+  // AND NOTHING IT PRINTED IS A VALUE.
+  for (const secret of ['a'.repeat(36), 'b'.repeat(65), 'an-object-reference-nobody-may-print',
+    'cdn1.example.invalid', 'cdn2.example.invalid', 'https://api.example.invalid/resolve']) {
+    assert(!result.out.includes(secret),
+      `the record printed ${secret.slice(0, 24)}…, which is a value, a reference or an origin`);
+  }
+});
+
+test('DRIVEN: the record is identical across two takings of an unedited directory', () => {
+  // THIS IS THE PROPERTY THE WHOLE PROGRAM EXISTS FOR. The instrument that CAN answer the allowlist question
+  // spends a resolution to do it, and its answer legitimately CHANGES between two takings because the pool
+  // rotates — so a before/after built on it reports movement where nothing moved.
+  const helper = helperFrom(READINESS, 'RECORD');
+  const dir = freshDir();
+  writeFileSync(join(dir, 'torbox-credential'), 'a'.repeat(36));
+  writeFileSync(join(dir, 'credential'), 'b'.repeat(65));
+  writeJson(dir, 'objects.json', { objects: [] });
+  writeJson(dir, 'endpoint.json', { id: 'p', allowedOrigins: ['https://one.invalid'] });
+  const args = [dir, '', 'torbox-credential,credential', 'objects.json,endpoint.json'];
+  const before = runHelper(helper, args);
+  const after = runHelper(helper, args);
+  assertEq(before.status, 0, 'the first record failed');
+  assertEq(before.out, after.out,
+    'two records of an unedited directory differ, so the before/after comparison this exists for would '
+    + 'report movement where nothing moved');
+
+  // AND AN EDIT MOVES IT, which is what makes the comparison mean anything.
+  writeJson(dir, 'endpoint.json', { id: 'p', allowedOrigins: ['https://one.invalid', 'https://two.invalid'] });
+  const moved = runHelper(helper, args);
+  assert(moved.out !== before.out, 'an edited allowlist produced an identical record');
+});
+
+test('DRIVEN: the scrubber FAILS CLOSED rather than printing something it cannot stand behind', () => {
+  const helper = helperFrom(READINESS, 'RECORD');
+  const dir = freshDir();
+  writeFileSync(join(dir, 'torbox-credential'), 'a'.repeat(36));
+  writeFileSync(join(dir, 'credential'), 'b'.repeat(65));
+  writeJson(dir, 'objects.json', { objects: [] });
+  // A KEY IS EMITTED AS PART OF THE SHAPE, so a document whose KEY is a URL is the one route by which a
+  // locator could reach the record. The scrubber runs over the rendered document and refuses the whole
+  // thing rather than printing a redacted version of it.
+  writeJson(dir, 'endpoint.json', { 'https://leaked.invalid/path': 1, allowedOrigins: [] });
+  const leaky = runHelper(helper, [dir, '', 'torbox-credential,credential', 'objects.json,endpoint.json']);
+  assert(leaky.status !== 0, 'a record carrying a URL in a key was printed');
+  assertEq(leaky.out, '', 'the leaking record was printed before it was refused');
+  assert(leaky.err.includes('NOT printed'), 'the refusal does not say the record was withheld');
+});
+
+test('CONTROL: a recorder without its scrubber is CAUGHT', () => {
+  const helper = helperFrom(READINESS, 'RECORD');
+  const tampered = helper.replace(/for \(const \[pattern, what\] of FORBIDDEN\) \{[\s\S]*?\n\}\n/, '');
+  assert(tampered !== helper, 'the tamper did not apply, so this control proves nothing');
+  const dir = freshDir();
+  writeFileSync(join(dir, 'torbox-credential'), 'a'.repeat(36));
+  writeFileSync(join(dir, 'credential'), 'b'.repeat(65));
+  writeJson(dir, 'objects.json', { objects: [] });
+  writeJson(dir, 'endpoint.json', { 'https://leaked.invalid/path': 1, allowedOrigins: [] });
+  const result = runHelper(tampered, [dir, '', 'torbox-credential,credential', 'objects.json,endpoint.json']);
+  assertEq(result.status, 0, 'the unscrubbed recorder still refused, so the check above proves nothing');
+  assert(result.out.includes('https://leaked.invalid'),
+    'the unscrubbed recorder did not leak, so the scrubber check is not measuring the scrubber');
+});
+
+test('CONTROL: a recorder that digests a secret is CAUGHT', () => {
+  const helper = helperFrom(READINESS, 'RECORD');
+  const tampered = helper.replace(
+      "      exists: true, type: kind(stat), mode: mode(stat), nonEmpty: stat.size > 0,\n"
+      + "      digested: false, reason: 'a secret is described, never digested',",
+      "      exists: true, type: kind(stat), mode: mode(stat), nonEmpty: stat.size > 0,\n"
+      + "      digested: true, sha256Prefix: digest(readFileSync(join(dir, name), 'utf8')),");
+  assert(tampered !== helper, 'the tamper did not apply, so this control proves nothing');
+  const dir = freshDir();
+  writeFileSync(join(dir, 'torbox-credential'), 'a'.repeat(36));
+  writeFileSync(join(dir, 'credential'), 'b'.repeat(65));
+  writeJson(dir, 'objects.json', { objects: [] });
+  writeJson(dir, 'endpoint.json', { id: 'p', allowedOrigins: [] });
+  const result = runHelper(tampered, [dir, '', 'torbox-credential,credential', 'objects.json,endpoint.json']);
+  assertEq(result.status, 0, 'the tampered recorder failed for another reason, so this proves nothing');
+  const record = JSON.parse(result.out) as { inputs: Record<string, Record<string, unknown>> };
+  assertEq(record.inputs['torbox-credential']?.digested, true,
+    'the tampered recorder did not digest the secret, so the check above is not measuring that property');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+h.section('P13PRE-I7 — staging admits a guarded pre-entry directory and nothing else');
+// ---------------------------------------------------------------------------------------------------------
+
+test('the admitted markers are a CLOSED LIST OF LITERALS, and nothing external can add one', () => {
+  const code = codeOf(read(STAGE));
+  assert(/STAGE_MARKER="catalog-phase12-"/.test(code),
+    'the Phase 12 marker moved, and this tranche may not move it');
+  assert(/STAGE_MARKER_PREENTRY="catalog-phase13-preentry-"/.test(code),
+    'there is no pre-entry marker, so a pre-entry campaign must either stage over Phase 12\'s preserved '
+    + 'candidate or widen the guard');
+  // NEITHER MARKER READS AN ENVIRONMENT VARIABLE. A guard a caller can set is not a guard, and this is the
+  // difference between admitting a second literal and opening the set.
+  for (const marker of ['STAGE_MARKER', 'STAGE_MARKER_PREENTRY']) {
+    assert(!new RegExp(`${marker}="\\$\\{`).test(code),
+      `${marker} is set from the environment, which turns the guard into a parameter`);
+  }
+  assertEq(code.split('\n').filter((line) => /^\s*"\$STAGE_MARKER[A-Z_]*"\*\) : ;;$/.test(line)).length, 2,
+    'the marker case admits some number of prefixes other than exactly two');
+});
+
+test('every other refusal in the staging guard is UNCHANGED', () => {
+  const code = codeOf(read(STAGE));
+  for (const guard of ['*..*', 'must be an absolute path', 'names no staging directory']) {
+    assert(code.includes(guard), `the staging guard no longer refuses: ${guard}`);
+  }
+  // AND THE CLEAR IS STILL ONLY REACHABLE THROUGH THE GUARD.
+  const stageAt = code.indexOf('stage() {');
+  const body = code.slice(stageAt, code.indexOf('\n}\n', stageAt));
+  assert(body.indexOf('require_stage_dir') < body.indexOf('rm -rf'),
+    'the staging directory is cleared before the guard that says it may be');
+});
+
+test('DRIVEN: the guard admits exactly the two markers and refuses everything else', () => {
+  const shell = posixShell();
+  if (shell === null) { assert(true, NO_SHELL); return; }
+  // DRIVEN RATHER THAN READ, because the whole risk of widening a destructive guard is that the widening
+  // admits more than it says. The script is invoked with no host, so it stops at the ssh probe long before
+  // anything could be cleared -- and the marker refusal happens where it always did.
+  const probe = (dir: string): { status: number; err: string } => {
+    const result = spawnSync(shellOrThrow(), [shPath(join(repoRoot, STAGE)), 'stage'], {
+      encoding: 'utf8', timeout: 60_000,
+      env: { ...process.env, PROJECTION_PHASE12_HOST: '', PROJECTION_PHASE12_STAGE_DIR: dir },
+    });
+    return { status: result.status ?? -1, err: String(result.stderr ?? '') + String(result.stdout ?? '') };
+  };
+  // A MISSING HOST STOPS EVERY INVOCATION BEFORE THE GUARD, so what is compared is that the REFUSED names
+  // and the ADMITTED names reach the same place: the host check, and never the clear.
+  for (const dir of [
+    '/mnt/user/appdata/catalog-phase12-closure',
+    '/mnt/user/appdata/catalog-phase13-preentry-instrument',
+    '/mnt/user/appdata/catalog-phase1-torbox-real',
+    '/mnt/user/appdata/appdata',
+    '/mnt/user',
+  ]) {
+    const result = probe(dir);
+    assert(result.status !== 0, `stage returned 0 for ${dir}, and nothing here may succeed`);
+    assert(!result.err.includes('clearing and re-creating'),
+      `stage reached the clear step for ${dir} without a host, which is the one thing this guard prevents`);
+  }
+});
+
+test('CONTROL: a marker guard turned into a parameter is CAUGHT', () => {
+  const body = read(STAGE);
+  const tampered = body.replace(
+    'STAGE_MARKER_PREENTRY="catalog-phase13-preentry-"',
+    'STAGE_MARKER_PREENTRY="${PROJECTION_PHASE12_STAGE_MARKER:-catalog-phase13-preentry-}"',
+  );
+  assert(tampered !== body, 'the tamper did not apply, so this control proves nothing');
+  assert(/STAGE_MARKER_PREENTRY="\$\{/.test(codeOf(tampered)),
+    'a marker read from the environment does not read as one, so the check above would not have caught a '
+    + 'guard handed to its caller');
+});
+
+test('CONTROL: a third marker slipping into the guard is CAUGHT', () => {
+  const body = read(STAGE);
+  const tampered = body.replace(
+    '    "$STAGE_MARKER_PREENTRY"*) : ;;\n',
+    '    "$STAGE_MARKER_PREENTRY"*) : ;;\n    "$STAGE_MARKER_ANYTHING"*) : ;;\n',
+  );
+  assert(tampered !== body, 'the tamper did not apply, so this control proves nothing');
+  assertEq(codeOf(tampered).split('\n')
+    .filter((line) => /^\s*"\$STAGE_MARKER[A-Z_]*"\*\) : ;;$/.test(line)).length, 3,
+    'a third admitted marker is not counted, so the set could grow without the audit noticing');
+});
+
+// ---------------------------------------------------------------------------------------------------------
 h.section('the shipped shell is LF, which is what every byte-level pin here rests on');
 // ---------------------------------------------------------------------------------------------------------
 
 test('no script this audit slices carries a carriage return', () => {
   for (const path of [
-    GENERIC_GATE, PROVIDER_GATE, STAGE,
+    GENERIC_GATE, PROVIDER_GATE, STAGE, READINESS,
     ...optionalWrappers().map((name) => `deploy/${name}`),
   ]) {
     const raw = readFileSync(join(repoRoot, path));

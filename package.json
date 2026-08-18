@@ -744,7 +744,8 @@
     "test:phase9": "tsx src/ops/test-runner-cli.ts --group offline --filter usenet --filter phase9",
     "go:phase12-stage": "bash deploy/projection-phase12-stage.sh",
     "test:phase12": "tsx src/ops/test-runner-cli.ts --group offline --filter phase12",
-    "test:phase13-preentry": "tsx src/ops/test-runner-cli.ts --group offline --filter phase13-preentry"
+    "test:phase13-preentry": "tsx src/ops/test-runner-cli.ts --group offline --filter phase13-preentry",
+    "go:preentry-readiness": "bash deploy/projection-preentry-readiness.sh"
   },
   "dependencies": {
     "pg": "^8.13.1",

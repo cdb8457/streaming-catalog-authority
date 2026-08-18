@@ -50,6 +50,19 @@ COMMIT=""
 HOST="${PROJECTION_PHASE12_HOST:-}"
 STAGE_DIR="${PROJECTION_PHASE12_STAGE_DIR:-}"
 STAGE_MARKER="catalog-phase12-"
+# A SECOND MARKER, AND THE GUARD IS NOT WEAKENED BY IT.
+#
+# WHY THERE IS ONE AT ALL. The Phase 12 staging directory holds a candidate this repository deliberately
+# preserved, and `stage` begins by `rm -rf`-ing whatever it is pointed at. A pre-entry campaign that
+# staged into it would destroy that candidate; one that could not stage anywhere would have to widen the
+# guard, and a guard widened to a prefix or handed to an environment variable is not a guard.
+#
+# WHY THIS DOES NOT WEAKEN IT. The admitted set is a CLOSED LIST OF TWO LITERALS in this file. Nothing
+# external can add to it, no option sets it, and every other basename is refused by exactly the check
+# that refused it before. The absolute-path guard, the parent-traversal guard and the order of
+# guard-before-clear are all untouched. Going from one literal to two does not make the set open; it
+# makes it two.
+STAGE_MARKER_PREENTRY="catalog-phase13-preentry-"
 
 say()  { echo "[phase12] $*"; }
 fail() { echo "[phase12] FAILED: $*" >&2; exit 1; }
@@ -73,7 +86,10 @@ usage() {
   echo "  --commit   the candidate to stage. Defaults to HEAD, and is resolved to a full sha."
   echo
   echo "  PROJECTION_PHASE12_HOST        ssh target. Required. Never defaulted."
-  echo "  PROJECTION_PHASE12_STAGE_DIR   absolute directory on the host whose basename begins ${STAGE_MARKER}"
+  echo "  PROJECTION_PHASE12_STAGE_DIR   absolute directory on the host whose basename begins"
+  echo "                                 ${STAGE_MARKER} or ${STAGE_MARKER_PREENTRY} -- and nothing"
+  echo "                                 else. Any other name is REFUSED, which is why this script is"
+  echo "                                 allowed to clear a directory at all."
 }
 
 while [ "$#" -gt 0 ]; do
@@ -177,8 +193,10 @@ require_stage_dir() {
   # not empty.
   case "$(basename "$STAGE_DIR")" in
     "$STAGE_MARKER"*) : ;;
-    *) fail "the staging directory's name does not begin with '$STAGE_MARKER', so this script will not clear \
-it. That guard is why it is allowed to clear anything." ;;
+    "$STAGE_MARKER_PREENTRY"*) : ;;
+    *) fail "the staging directory's name begins with neither '$STAGE_MARKER' nor '$STAGE_MARKER_PREENTRY', \
+so this script will not clear it. That guard is why it is allowed to clear anything, and the set of \
+markers it admits is a closed list of two literals in this file rather than anything a caller can set." ;;
   esac
 }
 
