@@ -924,12 +924,18 @@ async function main(): Promise<void> {
     const gate = repoFile('deploy/projection-torbox-real-gate.sh');
     const skip = gate.indexOf('exit "$GATE_SKIP_STATUS"');
     assert(skip !== -1, 'the gate skips');
+    // THE NEEDLES NAME THE ACT, NOT ONE SPELLING OF IT. `docker compose -f "$COMPOSE_FILE" up` stopped
+    // matching the moment the gate gained a per-run `-p "$COMPOSE_PROJECT"` -- and `indexOf` returns -1 for
+    // an absent needle, so a check whose target had merely been REFORMATTED reported the ordering as
+    // violated. The property here is "nothing is created before the skip", and it is unchanged.
     for (const [what, needle] of [
-      ['an image build', 'docker build'],
-      ['a database', 'docker compose -f "$COMPOSE_FILE" up'],
-      ['a network', 'docker network create'],
+      ['an image build', /docker build /],
+      ['a database', /docker compose .*up -d/],
+      ['a network', /docker network create /],
     ] as const) {
-      assert(gate.indexOf(needle) > skip, `the skip must come before ${what}`);
+      const at = gate.search(needle);
+      assert(at !== -1, `the gate no longer ${what.replace(/^an? /, 'does a ')}, so this ordering check is stale`);
+      assert(at > skip, `the skip must come before ${what}`);
     }
     assert(/NOTHING WAS CONTACTED/.test(gate), 'and say so');
     assert(/It is not a pass and must not be reported as one/.test(gate),

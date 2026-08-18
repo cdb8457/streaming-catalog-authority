@@ -91,6 +91,16 @@ const GOOD_OBSERVATIONS = {
   // A LISTENER REALLY STOOD UP, which is what makes the egress line an assertion rather than a record. The
   // gate script itself passes `false` here and gets a skip; see the test that pins both directions.
   egressObservedAtListener: true,
+  // AND EVERY ONE OF THE FIVE WAS ACTUALLY MEASURED, which is what makes this a GOOD observation rather than
+  // merely a complete-looking one. An independent audit found `refresh-per-read` PASSING out of an empty list
+  // whose own provenance said UNTAKEN, so `transportResults` now refuses to assert any of these five against
+  // a budget unless the record says where the number came from. A fixture with no provenance would SKIP
+  // everything -- which is the correct answer to "nobody said where this came from" and is pinned below.
+  provenance: {
+    status429: 'the-origin-own-counters', retries: 'the-origin-own-counters',
+    refreshesPerRead: 'the-origin-own-counters', disallowedOriginContacts: 'the-listener-own-counters',
+    endpointExpires: 'derived-from-the-endpoint-document-this-run-used',
+  },
 } as const;
 
 const failedGates = (results: readonly { gate: string; verdict: string }[]): string[] =>
@@ -637,7 +647,11 @@ async function main(): Promise<void> {
     assert(/trap cleanup EXIT/.test(gate), 'cleanup runs however the gate ends');
     for (const [what, pattern] of [
       ['the daemon', /docker rm -f "\$MOUNT_CONTAINER"/],
-      ['the database', /docker compose -f "\$COMPOSE_FILE" down -v --remove-orphans/],
+      // THE TEARDOWN IS SCOPED TO THIS RUN'S OWN COMPOSE PROJECT, and `--remove-orphans` is deliberately
+      // absent: its whole job is to remove containers this compose file does not name, which against a
+      // shared project name is the definition of removing what the run did not create. `-v` stays, because
+      // with a per-run project it reaches this run's throwaway volumes and no others.
+      ['the database', /docker compose -f "\$COMPOSE_FILE" -p "\$COMPOSE_PROJECT" down -v[^-]/],
       ['the mount and run directory', /projection_gate_cleanup_run "\$GATE_ROOT" "\$WORK"/],
       ['and it reports what it left', /projection_gate_report_cleanliness/],
     ] as const) {
@@ -649,7 +663,17 @@ async function main(): Promise<void> {
     const gate = repoFile('deploy/projection-real-provider-gate.sh');
     const compose = repoFile('docker-compose.projection-real-provider.yml');
     assert(/PROJECTION_REAL_PROVIDER_GATE_PG_PORT:-5560/.test(compose), 'its own database port');
-    assert(/name: projection-real-provider-gate/.test(compose), 'its own Compose project name');
+    // ITS OWN COMPOSE PROJECT NAME IN THE FILE, AND A PER-RUN ONE ON EVERY INVOCATION. The file's name is
+    // now the DEFAULT rather than the identity: an audit found that a fixed project name is shared by every
+    // run of a gate — and, for the TorBox compose file, by two different gates — so a `down` from one run
+    // reached another's containers and volumes.
+    assert(/^name: projection-real-provider-gate$/m.test(compose), 'its own Compose project name');
+    assert(/COMPOSE_PROJECT="projection-rp-gate-\$\$"/.test(gate), 'and a per-run project on top of it');
+    assert(/NETWORK="projection-real-provider-gate-\$\$"/.test(gate), 'and a per-run network');
+    // COMMENTS STRIPPED, because the repair EXPLAINS the flag it removed and a raw scan would read the
+    // explanation as the thing being explained.
+    assert(!/down -v --remove-orphans/.test(gate.replace(/^\s*#.*$/gm, '')),
+      'and no teardown that removes containers this compose file does not name');
     assert(/MOUNT_CONTAINER="projection-rp-mount-\$\$"/.test(gate), 'pid-scoped container names');
     assert(/GATE_ROOT="\$PWD\/\.projection-real-provider-gate"/.test(gate), 'its own gate root');
     assert(!/\/mnt\/user\/media|appdata\/catalog\/repo/.test(gate),
@@ -1028,11 +1052,25 @@ async function main(): Promise<void> {
       `with no listener the egress line must SKIP, not pass; got ${unwatched.verdict}`);
     assert(/SKIP IS NOT A PASS/.test(unwatched.note ?? ''), 'and must say a skip is not a pass');
 
-    // WHERE A LISTENER REALLY WATCHED, IT IS STILL A HARD ASSERTION IN BOTH DIRECTIONS.
-    assert(egress({ ...record, egressObservedAtListener: true }).verdict === 'pass',
-      'an observed zero must still pass');
-    assert(egress({ ...record, egressObservedAtListener: true, disallowedOriginContacts: 1 }).verdict
-      === 'fail', 'and an observed contact must still fail');
+    // FLIPPING THE BOOLEAN ALONE IS NOT A MEASUREMENT, AND THIS IS THE SHAPE AN AUDIT FOUND SHIPPING
+    // ELSEWHERE. `egressObservedAtListener: true` with a provenance that still says nothing counted at the
+    // listener is the same fabrication one step further along: a listener asserted into existence and a
+    // count nobody took, asserted against a budget of zero.
+    const claimedButUncounted = egress({ ...record, egressObservedAtListener: true });
+    assert(claimedButUncounted.verdict === 'skip',
+      `claiming a listener while the count is UNTAKEN must SKIP, not pass; got ${claimedButUncounted.verdict}`);
+    assert(/NEITHER IS AN UNMEASURED ZERO/.test(claimedButUncounted.note ?? ''),
+      'and must say that an unmeasured zero is not a measurement either');
+
+    // WHERE A LISTENER REALLY WATCHED AND SOMETHING REALLY COUNTED, IT IS A HARD ASSERTION BOTH WAYS.
+    const counted = {
+      ...record,
+      egressObservedAtListener: true,
+      provenance: { ...record.provenance, disallowedOriginContacts: 'the-listener-own-counters' },
+    };
+    assert(egress(counted).verdict === 'pass', 'an observed zero must still pass');
+    assert(egress({ ...counted, disallowedOriginContacts: 1 }).verdict === 'fail',
+      'and an observed contact must still fail');
   });
 
   await test('THE DAEMON CONFIG NAMES THE CREDENTIAL BY PATH AND OPENS NO INSECURE DOOR BY DEFAULT', () => {
@@ -1042,11 +1080,19 @@ async function main(): Promise<void> {
     const { dir, script } = extract('config.cjs');
     const endpointPath = join(dir, 'endpoint.json');
     const out = join(dir, 'config.json');
+    // THE THIRD ARGUMENT IS NOW READ, AND ITS ABSENCE USED TO BE THE FINGERPRINT OF A CALL SITE NOBODY RAN.
+    // The gate passed `$CREDENTIAL` and this program destructured two of three arguments, so nothing noticed
+    // that in REAL mode the daemon's `tokenFile` pointed into an EMPTY directory. The Phase 13 pre-entry
+    // repair makes the argument load-bearing; these calls supply it, and the refusals it now makes are
+    // regressed in `test/projection-phase13-preentry-gate-audit.ts`, which owns that repair.
+    const credentialPath = join(dir, 'credential');
+    writeFileSync(credentialPath, 'a-credential-value-this-suite-invented\n');
     writeFileSync(endpointPath, JSON.stringify({
       id: 'provider', directBaseUrl: 'https://cdn.example.invalid/objects',
       allowedOrigins: ['https://cdn.example.invalid'],
     }));
-    assert(runNode(script, [endpointPath, out]).code === 0, 'config.cjs failed on a well-formed endpoint');
+    assert(runNode(script, [endpointPath, out, credentialPath]).code === 0,
+      'config.cjs failed on a well-formed endpoint');
 
     const text = readFileSync(out, 'utf8');
     const config = JSON.parse(text) as {
@@ -1067,7 +1113,12 @@ async function main(): Promise<void> {
       allowedOrigins: ['https://cdn.example.invalid'],
       allowInsecureHttp: 'false', allowPrivateAddresses: 'yes',
     }));
-    assert(runNode(script, [endpointPath, out]).code === 0, 'config.cjs failed on the typo endpoint');
+    assert(runNode(script, [endpointPath, out, credentialPath]).code === 0,
+      'config.cjs failed on the typo endpoint');
+    // AND THE CREDENTIAL'S VALUE STILL NEVER REACHES THE CONFIGURATION. It is named by path and opened by
+    // the daemon; making the argument load-bearing must not have made it readable.
+    assert(!readFileSync(out, 'utf8').includes('a-credential-value-this-suite-invented'),
+      'the credential value reached the daemon configuration, which is the one thing this file may not do');
     const typo = (JSON.parse(readFileSync(out, 'utf8')) as typeof config).endpoints[0]!;
     assert(typo.allowInsecureHttp === false && typo.allowPrivateAddresses === false,
       'a string value was treated as an opt-in; the relaxations must require a real boolean true');

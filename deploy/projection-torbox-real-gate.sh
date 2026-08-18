@@ -33,8 +33,35 @@ VERIFY_IMAGE="alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d
 NODE_IMAGE="node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32"
 
 COMPOSE_FILE="docker-compose.projection-torbox.yml"
-NETWORK="projection-torbox-real-gate"
+
+# THE COMPOSE PROJECT AND THE NETWORK BELONG TO THIS RUN, AND THE PROJECT USED TO BELONG TO TWO GATES.
+#
+# WHAT AN INDEPENDENT AUDIT FOUND. The teardown ran `docker compose down -v --remove-orphans` against
+# the project name fixed in the compose file -- and THIS compose file is shared with
+# `deploy/projection-torbox-mount-gate.sh`, so the two gates shared one project namespace.
+# `--remove-orphans` removes containers attached to that project which this compose file does not name,
+# i.e. the other gate's, and `-v` removes its volumes. Removing what the run did not create, under a
+# claim that it never happens, across two different programs on one host.
+#
+# THE PID IS THE IDENTITY, as it already is for every container this gate names. The compose file reads
+# the network name from the export below and defaults to the old shared one, so the mount gate --
+# another tranche's file, and not this one's to change -- is unaffected either way.
+COMPOSE_PROJECT="projection-tbr-gate-$$"
+NETWORK="projection-torbox-real-gate-$$"
+export PROJECTION_TORBOX_GATE_NETWORK="$NETWORK"
 PG_PORT="${PROJECTION_TORBOX_REAL_GATE_PG_PORT:-5580}"
+# THE COMPOSE WAIT'S BOUND. Phase 12's D4 found and repaired an unbounded `up -d --wait` in the Phase 11
+# mixed gate; both provider gates still carried it. A wait with no bound is not a slow failure but a
+# HANG, and a hang is worse than a failure because a failure is a verdict and a hang is a person
+# deciding to give up. Overridable for a slow host, and floor-checked below rather than trusted: GNU
+# tooling reads a duration of `0` as NO BOUND AT ALL.
+PG_WAIT_SECONDS="${PROJECTION_TORBOX_REAL_GATE_PG_WAIT_SECONDS:-180}"
+case "$PG_WAIT_SECONDS" in
+  ''|*[!0-9]*) echo "GATE FAILED: the compose wait bound is not a whole number of seconds" >&2; exit 1 ;;
+esac
+[ "$PG_WAIT_SECONDS" -ge 1 ] \
+  || { echo "GATE FAILED: a compose wait bound of 0 is NO BOUND AT ALL, which is the hang this value \
+exists to stop" >&2; exit 1; }
 RESOLVER_PORT="${PROJECTION_TORBOX_REAL_GATE_RESOLVER_PORT:-8140}"
 
 MOUNT_CONTAINER="projection-tbr-mount-$$"
@@ -123,8 +150,17 @@ preserve_failure_evidence() {
 cleanup() {
   docker rm -f "$RESOLVER_CONTAINER" >/dev/null 2>&1 || true
   docker rm -f "$MOUNT_CONTAINER" >/dev/null 2>&1 || true
-  docker compose -f "$COMPOSE_FILE" down -v --remove-orphans >/dev/null 2>&1 || true
-  docker network rm "$NETWORK" >/dev/null 2>&1 || true
+  # SCOPED TO THIS RUN'S OWN PROJECT, AND `--remove-orphans` IS GONE. `-v` is safe now and was not
+  # before: with a per-run project it reaches this run's throwaway volumes and no others.
+  # `--remove-orphans` exists to remove containers this compose file does not name, which is the
+  # definition of removing what the run did not create -- there is no version of this gate that wants it.
+  docker compose -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" down -v >/dev/null 2>&1 || true
+  # ONLY A NETWORK THIS RUN CREATED, decided from the BEFORE INVENTORY taken before anything existed.
+  # It defaults to 1 so a run that died before the inventory removes nothing: an unknown owner is not
+  # this run, and the safe default for a destructive step is to do nothing.
+  if [ "${NETWORK_PREEXISTED:-1}" = "0" ]; then
+    docker network rm "$NETWORK" >/dev/null 2>&1 || true
+  fi
   if [ "${CLEANED:-0}" = "1" ]; then
     # Already done and already ASSERTED. Repeating the report here would print a second, weaker statement
     # about the same thing.
@@ -710,17 +746,54 @@ if ! docker run --rm --device /dev/fuse:/dev/fuse "$VERIFY_IMAGE" test -c /dev/f
   echo "      It is not a pass and must not be reported as one." >&2
   exit "$GATE_SKIP_STATUS"
 fi
-docker compose -f "$COMPOSE_FILE" config >/dev/null || die "the gate's Compose file is not valid"
+docker compose -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" config >/dev/null || die "the gate's Compose file is not valid"
 npx tsx src/ops/projection-host-preflight-cli.ts propagation --path "$GATE_ROOT" --require
 npx tsx src/ops/projection-host-preflight-cli.ts traversal --path "$GATE_ROOT" --path "$WORK"
 
 # ----------------------------------------------------------------------------------------------------------
 step "building the production projectiond image, and migrating a throwaway PostgreSQL"
 # ----------------------------------------------------------------------------------------------------------
+# THE INVENTORY IS TAKEN BEFORE ANYTHING IS CREATED, which is the only moment at which "did this run
+# create it?" has an answer. Taken later, every probe answers "it was already there" -- which is how the
+# previous ownership repair came to leak the network it had created itself, because `compose up` ran
+# first and the probe believed what it found. It is a SET rather than a count: a run that removes
+# somebody else's container and creates its own satisfies every count while violating the sentence.
+docker ps -a --format '{{.Names}}' | LC_ALL=C sort > "$WORK/out/before-containers.txt" \
+  || die "the host could not list its containers, so no ownership question about them has an answer"
+docker network ls --format '{{.Name}}' | LC_ALL=C sort > "$WORK/out/before-networks.txt" \
+  || die "the host could not list its networks, so no ownership question about them has an answer"
+docker volume ls --format '{{.Name}}' | LC_ALL=C sort > "$WORK/out/before-volumes.txt" \
+  || die "the host could not list its volumes, so no ownership question about them has an answer"
+if grep -qxF "$NETWORK" "$WORK/out/before-networks.txt"; then
+  NETWORK_PREEXISTED=1
+  echo "  the network $NETWORK already existed; this run will USE it and will NOT remove it"
+else
+  NETWORK_PREEXISTED=0
+  echo "  the network $NETWORK does not exist; this run creates it and IS responsible for removing it"
+fi
+
 docker build -t "$IMAGE" ./projectiond
-docker compose -f "$COMPOSE_FILE" up -d --wait postgres
+docker compose -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" up -d --wait \
+  --wait-timeout "$PG_WAIT_SECONDS" postgres \
+  || die "the throwaway PostgreSQL did not become healthy inside ${PG_WAIT_SECONDS}s, so this run stops \
+rather than waiting on it for ever"
 npx tsx src/ops/migrate-cli.ts
-docker network create "$NETWORK" >/dev/null 2>&1 || true
+
+# THE NETWORK IS REMOVED ON THE WAY OUT ONLY IF THIS RUN CREATED IT.
+#
+# `docker network create … || true` followed by an unconditional `docker network rm` in the EXIT trap is
+# Phase 12's D5 -- "the cleanup destroys the network unconditionally, including one it did not create".
+# The attribution only ever held in one direction. "The host was left as it was found" is a statement
+# about a SET rather than a count, and a run that removes somebody else's network and creates its own
+# satisfies every count while violating the sentence. So ownership is decided HERE, once, before
+# anything is created, and the create no longer swallows its own failure.
+# CREATED ONLY IF THE BEFORE INVENTORY SAID IT WAS NOT THERE. `compose up` above brings this run's
+# network up from the compose file, so by here it usually exists and this is a no-op -- which is why the
+# create no longer swallows its failure: a failure for any other reason is a reason to stop.
+if [ "$NETWORK_PREEXISTED" = "0" ] && ! docker network inspect "$NETWORK" >/dev/null 2>&1; then
+  docker network create "$NETWORK" >/dev/null \
+    || die "the gate network could not be created, and this run will not proceed on somebody else's"
+fi
 
 # ----------------------------------------------------------------------------------------------------------
 step "publishing a generation whose sources are the operator's TorBox stable references"
@@ -1108,6 +1181,39 @@ echo "  evidence kept at $REL_GATE_ROOT/evidence/reads-$$.json"
 # be gone cannot cost the operator the record that justifies the verdict. The mountpoint half keeps §6.0's
 # three-valued treatment — a host that cannot enumerate its mounts skips it loudly — while the directory half
 # is unconditional, because every host can answer whether a directory exists.
+# ----------------------------------------------------------------------------------------------------------
+step "THE SETS — nothing that existed before this run is missing after it"
+# ----------------------------------------------------------------------------------------------------------
+# `PREEXISTING_RESOURCES_REMOVED_MAX` IS ZERO, AND THIS IS WHERE THAT NUMBER IS SPENT. Until now the only
+# ownership check in this gate was about the network, while the claim covered containers and volumes too --
+# and the teardown that could violate it was a `down -v --remove-orphans` against a project name shared by
+# every run of this gate and, on the TorBox compose file, by two different gates.
+#
+# IT IS A SET DIFFERENCE, NOT A COUNT COMPARISON. A run that removes somebody else's container and creates
+# its own leaves the count identical, so a count would report success for exactly the violation this
+# exists to catch. What is asserted is MEMBERSHIP: every name present before is present after.
+#
+# ONLY THE ONE DIRECTION IS A FAILURE. Names ADDED are this run's own residue, measured by `RESIDUE_MAX`
+# and by the cleanup verdict; names REMOVED are somebody else's property.
+#
+# IT RUNS BEFORE THE RUN DIRECTORY IS REMOVED, because the before-inventory lives inside it.
+for _kind in containers networks volumes; do
+  case "$_kind" in
+    containers) docker ps -a --format '{{.Names}}' ;;
+    networks)   docker network ls --format '{{.Name}}' ;;
+    volumes)    docker volume ls --format '{{.Name}}' ;;
+  esac | LC_ALL=C sort > "$WORK/out/after-$_kind.txt" \
+    || die "the host could not list its $_kind after the run, so set preservation cannot be asserted"
+  # `comm -23` is what existed BEFORE and does not exist NOW. Both sides were sorted under the C locale
+  # on the way in, which is what makes the comparison mean anything on a host with any other collation.
+  _gone="$(comm -23 "$WORK/out/before-$_kind.txt" "$WORK/out/after-$_kind.txt" | grep -c . )"
+  echo "  $_kind that existed before and are gone now: $_gone (budget 0)"
+  if [ "${_gone:-1}" -ne 0 ]; then
+    comm -23 "$WORK/out/before-$_kind.txt" "$WORK/out/after-$_kind.txt" | head -20 >&2
+    die "this run removed $_gone $_kind it did not create. The host was NOT left as it was found, and a \
+count of the same size would have hidden it"
+  fi
+done
 projection_gate_cleanup_run "$GATE_ROOT" "$WORK" "$VERIFY_IMAGE" || true
 
 OWN_MOUNTS_LEFT="$(projection_gate_mounts_under "$WORK")"

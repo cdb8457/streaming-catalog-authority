@@ -40,4 +40,11 @@ services:
 
 networks:
   default:
-    name: projection-real-provider-gate
+    # THE NETWORK BELONGS TO A RUN, NOT TO THE FILE.
+    #
+    # A FIXED NAME HERE WAS SHARED BY EVERY RUN OF THE GATE, and it collided with the name the gate
+    # script itself created and conditionally removed -- so `compose up` created the network, the
+    # gate's ownership probe then found it and called it pre-existing, and the run leaked its own
+    # network every time. The gate exports a per-run name; the old value is the default so nothing
+    # that invokes this file without one changes behaviour.
+    name: ${PROJECTION_REAL_PROVIDER_GATE_NETWORK:-projection-real-provider-gate}

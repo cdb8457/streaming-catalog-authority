@@ -580,6 +580,81 @@ export interface TransportObservations {
   readonly egressObservedAtListener: boolean;
   /** Whether the endpoint resolves references before reading, so refresh assertions apply at all. */
   readonly endpointExpires: boolean;
+  /**
+   * WHERE EACH DECISION-BEARING NUMBER ABOVE CAME FROM. Absent, empty, or beginning `UNTAKEN` means NOBODY
+   * MEASURED IT, and an unmeasured observation can never produce a pass.
+   *
+   * WHY THIS FIELD EXISTS, AND IT IS THE DEFECT AN INDEPENDENT AUDIT FOUND IN THE REPAIR THAT CAME BEFORE IT.
+   * `endpointExpires` was changed from a literal `false` to a value DERIVED from the endpoint document, which
+   * is right — but against a resolver endpoint it becomes `true`, and that flipped `refresh-per-read` out of
+   * its honest skip and into `atMost(worst, 1)`. `refreshesPerRead` was still `[]`, because there is no
+   * counter surface on the real path, and an empty list maps to `worst = 0`, and `atMost(0, 1)` PASSES. So a
+   * repair that removed a literal deciding a skip installed a literal deciding a PASS: a fabricated refresh
+   * verdict on the one path that matters, on a real provider, with nothing able to fail it.
+   *
+   * The gate was already WRITING this provenance and nothing READ it. It is read here now, because this is
+   * the module that owns the sentence "a skip is not a pass" and the same sentence in the other direction —
+   * AN UNMEASURED NUMBER IS NOT A MEASUREMENT OF ZERO.
+   */
+  readonly provenance?: TransportProvenance;
+}
+
+/**
+ * Where each decision-bearing transport observation came from, as the gate's own words.
+ *
+ * IT IS A STRING RATHER THAN A BOOLEAN ON PURPOSE. A boolean would say only that something was untaken; the
+ * string says WHY, and that sentence is what an operator reads in the skip note instead of a fabricated
+ * number. The gate writes these; `isUntakenProvenance` below is what makes them load-bearing.
+ */
+export interface TransportProvenance {
+  readonly retries?: string;
+  readonly status429?: string;
+  readonly refreshesPerRead?: string;
+  readonly disallowedOriginContacts?: string;
+  readonly endpointExpires?: string;
+}
+
+/** The prefix the gate writes when it had no way to take an observation. */
+export const UNTAKEN_PROVENANCE_PREFIX = 'UNTAKEN';
+
+/**
+ * Was this observation taken at all?
+ *
+ * IT FAILS CLOSED IN EVERY UNCERTAIN DIRECTION. An absent provenance, an empty one, and one that names itself
+ * UNTAKEN are all "nobody measured this" — because a caller that forgot to say where a number came from has
+ * told us exactly as much about it as a caller that said nothing could measure it.
+ */
+export function isUntakenProvenance(provenance: string | undefined): boolean {
+  return provenance === undefined
+    || provenance.trim() === ''
+    || provenance.trim().toUpperCase().startsWith(UNTAKEN_PROVENANCE_PREFIX);
+}
+
+/**
+ * The transport observations whose provenance says nobody took them, as field names.
+ *
+ * `deploy/projection-real-provider-gate.sh` refuses a REAL run while this list is non-empty, which is the
+ * refusal a comment in that file used to promise and no code performed.
+ */
+export function untakenTransportObservations(observed: TransportObservations): readonly string[] {
+  const provenance = observed.provenance ?? {};
+  const fields: readonly (keyof TransportProvenance)[] = [
+    'retries', 'status429', 'refreshesPerRead', 'disallowedOriginContacts', 'endpointExpires',
+  ];
+  return fields.filter((field) => isUntakenProvenance(provenance[field]));
+}
+
+/** The skip a decision-bearing observation that nobody took must produce, and never a pass. */
+function untakenSkip(gate: string, what: string, why: string | undefined): GateResult {
+  return {
+    gate,
+    verdict: 'skip',
+    note: 'SKIPPED, AND A SKIP IS NOT A PASS -- BUT NEITHER IS AN UNMEASURED ZERO. Nothing measured '
+      + `${what} on this path, so there is no number to assert against a budget. The gate's own record says: `
+      + `"${why ?? '(no provenance was supplied at all, which says as much as saying nothing could measure '
+      + 'it)'}". An empty measurement asserted against a ceiling is a pass nothing can fail, which is the `
+      + 'defect this line exists to refuse',
+  };
 }
 
 /**
@@ -590,40 +665,83 @@ export interface TransportObservations {
  * is correct behaviour; a 429 met and retried without bound is a defect, and the difference is a count.
  */
 export function transportResults(gate: string, observed: TransportObservations): readonly GateResult[] {
-  const results: GateResult[] = [
-    atMost(`${gate}-retries-bounded`, observed.retries, MAX_RETRIES_PER_READ,
-      'retries after a retryable failure stayed inside the contract bound. This is NOT a load test and no '
-      + '429 was provoked: what is asserted is that meeting one is bounded, not that one was made to happen'),
-    observed.egressObservedAtListener
-      ? exactly(`${gate}-egress-allowlist`, observed.disallowedOriginContacts, 0,
-        'nothing reached an origin the allowlist does not name, observed at a listener the gate stands up on '
-        + 'the origin it deliberately excluded')
-      : {
-        gate: `${gate}-egress-allowlist`, verdict: 'skip',
-        note: 'SKIPPED, AND A SKIP IS NOT A PASS: this gate stands up no listener on the excluded origin, so '
-          + 'it cannot observe a contact with one. This line used to be a hard PASS against a zero the gate '
-          + 'wrote for itself, under a note claiming a listener that does not exist here. G26 asserts the '
-          + 'allowlist in full against a listener the lease gate really does stand up',
-      },
-  ];
+  // THE PROVENANCE IS READ FIRST, AND EVERY ARM BELOW IS GATED ON IT. Each of these five numbers used to be
+  // asserted against a ceiling whatever its origin, so a zero nobody measured and a zero somebody counted
+  // produced the same verdict — and on the real path, where no counter surface exists, that meant a pass.
+  const provenance = observed.provenance ?? {};
+  const results: GateResult[] = [];
 
-  results.push({
-    gate: `${gate}-429-observed`, verdict: 'pass',
-    note: `RECORDED, ASSERTED BY NOTHING — the provider answered 429 ${observed.status429} time(s). A real `
-      + 'provider is entitled to rate-limit and this gate does not treat that as a defect; G16 asserts zero '
-      + '429s, and it does so against the FAKE endpoint where the harness controls the load',
-  });
+  results.push(isUntakenProvenance(provenance.retries)
+    ? untakenSkip(`${gate}-retries-bounded`, 'how many retries the daemon made', provenance.retries)
+    : atMost(`${gate}-retries-bounded`, observed.retries, MAX_RETRIES_PER_READ,
+      'retries after a retryable failure stayed inside the contract bound. This is NOT a load test and no '
+      + '429 was provoked: what is asserted is that meeting one is bounded, not that one was made to happen'));
+
+  // THE EGRESS LINE NEEDS BOTH A LISTENER AND A COUNT SOMEBODY TOOK AT IT. Either alone is a declaration.
+  if (!observed.egressObservedAtListener) {
+    results.push({
+      gate: `${gate}-egress-allowlist`, verdict: 'skip',
+      note: 'SKIPPED, AND A SKIP IS NOT A PASS: this gate stands up no listener on the excluded origin, so '
+        + 'it cannot observe a contact with one. This line used to be a hard PASS against a zero the gate '
+        + 'wrote for itself, under a note claiming a listener that does not exist here. G26 asserts the '
+        + 'allowlist in full against a listener the lease gate really does stand up',
+    });
+  } else if (isUntakenProvenance(provenance.disallowedOriginContacts)) {
+    // A LISTENER STOOD UP AND NOTHING COUNTED AT IT is the same fabrication one step further along.
+    results.push(untakenSkip(`${gate}-egress-allowlist`,
+      'how many contacts the excluded-origin listener saw', provenance.disallowedOriginContacts));
+  } else {
+    results.push(exactly(`${gate}-egress-allowlist`, observed.disallowedOriginContacts, 0,
+      'nothing reached an origin the allowlist does not name, observed at a listener the gate stands up on '
+      + 'the origin it deliberately excluded'));
+  }
+
+  // THE 429 LINE ASSERTS NOTHING AND STILL MAY NOT INVENT ITS NUMBER. It carries no budget, so it cannot
+  // become a false assertion — but it PRINTS a count, and a count nobody took printed as prose is a
+  // statement about a real provider's behaviour that no run made.
+  results.push(isUntakenProvenance(provenance.status429)
+    ? untakenSkip(`${gate}-429-observed`, 'how many times the provider answered 429', provenance.status429)
+    : {
+      gate: `${gate}-429-observed`, verdict: 'pass',
+      note: `RECORDED, ASSERTED BY NOTHING — the provider answered 429 ${observed.status429} time(s). A real `
+        + 'provider is entitled to rate-limit and this gate does not treat that as a defect; G16 asserts zero '
+        + '429s, and it does so against the FAKE endpoint where the harness controls the load',
+    });
 
   // --- one refresh per read, and only where the endpoint has expiring access material ---------------------
-  if (!observed.endpointExpires) {
+  //
+  // THREE WAYS THIS MUST NOT BECOME A PASS, AND THE SECOND IS THE ONE THAT SHIPPED:
+  //
+  //   1. NOBODY ESTABLISHED WHETHER THE ENDPOINT EXPIRES AT ALL. Then neither branch below is known to be
+  //      the right one, and choosing either is a guess dressed as a verdict.
+  //   2. THE ENDPOINT EXPIRES AND NOBODY COUNTED THE REFRESHES. `[]` maps to `worst = 0` and `atMost(0, 1)`
+  //      passes. This is the audit's D1: derived data cannot fabricate a measurement.
+  //   3. THE LIST IS EMPTY EVEN THOUGH SOMETHING COUNTED. `refreshesPerRead` is PER READ, so an empty list
+  //      against an expiring endpoint means NO READ WAS RECORDED -- which is not the same fact as "no read
+  //      needed a refresh", and only the second of those would be evidence.
+  if (isUntakenProvenance(provenance.endpointExpires)) {
+    results.push(untakenSkip(`${gate}-refresh-per-read`,
+      'whether this endpoint has expiring access material at all', provenance.endpointExpires));
+  } else if (!observed.endpointExpires) {
     results.push({
       gate: `${gate}-refresh-per-read`, verdict: 'skip',
       note: 'SKIPPED, AND A SKIP IS NOT A PASS: the supplied endpoint serves stable references directly and '
         + 'has no expiring access material, so there is nothing to refresh. G24–G26 assert the refresh '
         + 'contract in full against the fake endpoint, which does have it',
     });
+  } else if (isUntakenProvenance(provenance.refreshesPerRead)) {
+    results.push(untakenSkip(`${gate}-refresh-per-read`,
+      'how many times a single read re-resolved expiring access material', provenance.refreshesPerRead));
+  } else if (observed.refreshesPerRead.length === 0) {
+    results.push({
+      gate: `${gate}-refresh-per-read`, verdict: 'skip',
+      note: 'SKIPPED, AND A SKIP IS NOT A PASS: the endpoint has expiring access material and the per-read '
+        + 'refresh list is EMPTY, which means no read was recorded rather than that no read needed a '
+        + 'refresh. Only the second of those would be evidence, and the two are not the same fact. An empty '
+        + 'list reduced to a worst case of zero and asserted against a ceiling is a pass nothing can fail',
+    });
   } else {
-    const worst = observed.refreshesPerRead.length === 0 ? 0 : Math.max(...observed.refreshesPerRead);
+    const worst = Math.max(...observed.refreshesPerRead);
     results.push(atMost(`${gate}-refresh-per-read`, worst, MAX_ACCESS_REFRESHES_PER_READ,
       'a read that met expired access material re-resolved it AT MOST once. A second refresh inside one read '
       + 'is the shape of a resolution storm, and the product terminalises it rather than looping'));
