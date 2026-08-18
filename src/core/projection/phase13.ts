@@ -396,31 +396,39 @@ export interface Phase13EntryState {
  */
 export function phase13EntryRefusals(state: Phase13EntryState): readonly string[] {
   const refusals: string[] = [];
-  const required = (value: boolean | undefined, criterion: string, sentence: string): void => {
+  // EVERY REFUSAL NAMES THE FIELD IT IS ABOUT, NOT JUST THE CRITERION.
+  //
+  // WHY, AND IT WAS FOUND BY RUNNING THIS FUNCTION RATHER THAN BY READING IT. Several criteria are carried by
+  // more than one field — E5 by three, E8 by four — and a message built only from the criterion label
+  // produced TWO IDENTICAL SENTENCES for two different unevaluated things. A reader working through the list
+  // cannot tell which field to go and fill in, and a list with a repeated line reads as a rendering bug
+  // rather than as two findings. The field name is what makes each refusal actionable.
+  const required = (value: boolean | undefined, criterion: string, field: string, sentence: string): void => {
     if (value === undefined) {
-      refusals.push(`${criterion} was not evaluated, and an unevaluated criterion is not a satisfied one`);
+      refusals.push(`${criterion} (${field}) was not evaluated, and an unevaluated criterion is not a `
+        + 'satisfied one');
       return;
     }
-    if (!value) refusals.push(`${criterion}: ${sentence}`);
+    if (!value) refusals.push(`${criterion} (${field}): ${sentence}`);
   };
-  const count = (value: number | undefined, criterion: string, sentence: string, max = 0): void => {
+  const count = (value: number | undefined, criterion: string, field: string, sentence: string, max = 0): void => {
     if (typeof value !== 'number') {
-      refusals.push(`${criterion} was not measured, and an unmeasured figure is not a zero`);
+      refusals.push(`${criterion} (${field}) was not measured, and an unmeasured figure is not a zero`);
       return;
     }
-    if (value > max) refusals.push(`${criterion}: ${sentence} (${value}, budget ${max})`);
+    if (value > max) refusals.push(`${criterion} (${field}): ${sentence} (${value}, budget ${max})`);
   };
 
-  required(state.contractCommitted, 'E1',
+  required(state.contractCommitted, 'E1', 'contractCommitted',
     'the Phase 13 contract is not committed, so the run would choose the claims it is measured by');
-  required(state.phase12Amended, 'E2',
+  required(state.phase12Amended, 'E2', 'phase12Amended',
     'Phase 12 §12.1\'s two superseded sentences are not amended in Phase 12\'s own document');
 
   if (state.candidate === undefined || !/^[0-9a-f]{7,40}$/.test(state.candidate)) {
     refusals.push('E3: no frozen candidate commit is named, so no figure this run produces belongs to a tree');
   }
-  count(state.stagedFilesDiffering, 'E3', 'the staged tree is not byte-identical to the candidate');
-  count(state.stagedTextFilesWithCarriageReturn, 'E3',
+  count(state.stagedFilesDiffering, 'E3', 'stagedFilesDiffering', 'the staged tree is not byte-identical to the candidate');
+  count(state.stagedTextFilesWithCarriageReturn, 'E3', 'stagedTextFilesWithCarriageReturn',
     'text files carrying a carriage return reached the host, so the tree there is not the commit');
 
   if (typeof state.phase12SequencesFromThisCandidate !== 'number') {
@@ -432,17 +440,17 @@ export function phase13EntryRefusals(state: Phase13EntryState): readonly string[
       + 'record about the commit it was measured from and does not transfer to a descendant that moved the '
       + 'staging script, the gates or the suites');
   }
-  count(state.phase12SkipsInThoseSequences, 'E4', 'a Phase 12 sequence skipped an arm, and a skip is not a pass');
+  count(state.phase12SkipsInThoseSequences, 'E4', 'phase12SkipsInThoseSequences', 'a Phase 12 sequence skipped an arm, and a skip is not a pass');
 
-  required(state.operatorInputsPresent, 'E5',
+  required(state.operatorInputsPresent, 'E5', 'operatorInputsPresent',
     'the operator has not placed all four inputs, so the gate would exit 77 having contacted nothing');
-  required(state.operatorSecretsDistinctAndRestricted, 'E5',
+  required(state.operatorSecretsDistinctAndRestricted, 'E5', 'operatorSecretsDistinctAndRestricted',
     'the two secret files are not both mode 0600 and different values; equal values would put the account '
     + 'credential in the daemon that talks to arbitrary provider-supplied hosts');
-  required(state.operatorConfirmedEntitledObjectByReference, 'E5',
+  required(state.operatorConfirmedEntitledObjectByReference, 'E5', 'operatorConfirmedEntitledObjectByReference',
     'no entitled object has been confirmed by the operator, and Phase 13 never lists an account');
 
-  required(state.allowlistRecordTaken, 'E6',
+  required(state.allowlistRecordTaken, 'E6', 'allowlistRecordTaken',
     'no no-contact readiness record has been taken, so there is no before to compare an after against');
   if (typeof state.allowedOriginCount !== 'number' || state.allowedOriginCount < 1) {
     refusals.push('E6: the origin allowlist admits no member this run could be served from, and widening it '
@@ -475,10 +483,10 @@ export function phase13EntryRefusals(state: Phase13EntryState): readonly string[
   } else if (state.otherGateCampaignRunning) {
     refusals.push('E8: another gate campaign is running on the host');
   }
-  count(state.projectionContainersOnHost, 'E8',
+  count(state.projectionContainersOnHost, 'E8', 'projectionContainersOnHost',
     'the host already carries projection containers, so this run would inherit a namespace');
-  required(state.gatePortsFree, 'E8', 'the gate\'s ports are not free');
-  required(state.baselineTakenImmediatelyBefore, 'E8',
+  required(state.gatePortsFree, 'E8', 'gatePortsFree', 'the gate\'s ports are not free');
+  required(state.baselineTakenImmediatelyBefore, 'E8', 'baselineTakenImmediatelyBefore',
     'the before-baseline was not taken immediately before the run; a sampled fact paired with a fresh one '
     + 'invents an instant');
 

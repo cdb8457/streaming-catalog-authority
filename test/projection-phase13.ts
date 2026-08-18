@@ -304,6 +304,32 @@ test('AN UNEVALUATED CRITERION IS REFUSED AS LOUDLY AS A FAILED ONE, field by fi
   }
 });
 
+test('EVERY REFUSAL IS DISTINCT AND NAMES THE FIELD SOMEBODY HAS TO GO AND FILL IN', () => {
+  // FOUND BY RUNNING THIS FUNCTION RATHER THAN BY READING IT, while driving the campaign's own entry state.
+  // Several criteria are carried by more than one field — E5 by three, E8 by four — and a message built only
+  // from the criterion label produced TWO IDENTICAL SENTENCES for two different unevaluated things. A reader
+  // working through the list cannot tell which field to fill in, and a list with a repeated line reads as a
+  // rendering bug rather than as two findings.
+  const empty = phase13EntryRefusals({});
+  assertEq(new Set(empty).size, empty.length,
+    `two entry refusals are the same sentence, so one of them names nothing actionable:\n${empty.join('\n')}`);
+  // AND EVERY FIELD OF THE READY STATE APPEARS BY NAME IN THE REFUSAL ITS ABSENCE PRODUCES.
+  for (const key of Object.keys(ready()) as Array<keyof Phase13EntryState>) {
+    const partial = { ...ready() };
+    delete partial[key];
+    const added = phase13EntryRefusals(partial);
+    if (key === 'originPlan' || key === 'candidate' || key === 'allowedOriginCount'
+      || key === 'originRecheckExitStatus' || key === 'originRecheckAgeMinutes'
+      || key === 'phase12SequencesFromThisCandidate' || key === 'otherGateCampaignRunning') {
+      // These seven are refused by a sentence of their own that already says which measurement is missing.
+      assert(added.length > 0, `dropping ${String(key)} produced no refusal`);
+      continue;
+    }
+    assert(added.some((one) => one.includes(`(${String(key)})`)),
+      `dropping ${String(key)} produced a refusal that does not name the field: ${added.join(' | ')}`);
+  }
+});
+
 test('E4 refuses a candidate that inherited another commit\'s Phase 12 GO', () => {
   // THE CRITERION MOST LIKELY TO BE ARGUED WITH. Phase 12's GO is a closed record about `a8d7232`, and
   // between that commit and any candidate carrying the pre-entry repair the STAGING SCRIPT that is arms 1
@@ -314,7 +340,7 @@ test('E4 refuses a candidate that inherited another commit\'s Phase 12 GO', () =
       `${sequences} complete Phase 12 sequence(s) from this candidate was admitted`);
   }
   assert(phase13EntryRefusals({ ...ready(), phase12SkipsInThoseSequences: 1 })
-    .some((one) => one.startsWith('E4:')), 'a Phase 12 sequence that skipped an arm was admitted');
+    .some((one) => one.startsWith('E4 ')), 'a Phase 12 sequence that skipped an arm was admitted');
 });
 
 test('E7 tells a rotation from a failure to measure, and neither is a licence to widen anything', () => {
@@ -347,9 +373,14 @@ test('E9 reads the pre-entry module\'s own origin policy rather than a copy of i
 test('E5 never asks for a value, and the refusals name a shape rather than a secret', () => {
   const refusals = phase13EntryRefusals({});
   for (const refusal of refusals) {
-    assert(!/[A-Za-z0-9_-]{24,}/.test(refusal),
+    // THE FIELD NAME IN PARENTHESES IS STRIPPED FIRST, AND IT IS NOT AN EXEMPTION. A refusal names the field
+    // somebody has to go and fill in — `stagedTextFilesWithCarriageReturn` is twenty-eight characters and
+    // matches the value shape exactly — and a schema key is a schema, not a secret. What must not appear is
+    // a value, so the check is over everything the refusal says APART from the key it names.
+    const body = refusal.replace(/\([A-Za-z][A-Za-z0-9]*\)/g, '(field)');
+    assert(!/[A-Za-z0-9_-]{24,}/.test(body),
       `an entry refusal carries a value-shaped string, which is what a token and a reference both look like: ${refusal}`);
-    assert(!/[a-z][a-z0-9+.-]*:\/\//i.test(refusal), `an entry refusal carries a URL: ${refusal}`);
+    assert(!/[a-z][a-z0-9+.-]*:\/\//i.test(body), `an entry refusal carries a URL: ${refusal}`);
   }
 });
 
