@@ -598,6 +598,11 @@ if [ "$MODE" = "real" ]; then
   install -m 600 "$CREDENTIAL_FILE" "$WORK/inputs/credential" \
     || die "the operator's credential could not be placed where the daemon opens it, and a daemon \
 with no credential fails every read for a reason no assertion in this gate names"
+  # THE FILE THE DAEMON WILL ACTUALLY OPEN, which in real mode is the COPY rather than the operator's
+  # original. `config.cjs` checks the path it is handed, so handing it the source would check a file
+  # the daemon never reads -- the same one-remove-from-the-truth shape as asserting a mount by its
+  # fstype rather than by its mountinfo tuple.
+  DAEMON_CREDENTIAL="$REL/inputs/credential"
 else
   FIXTURE_FLAG="--fixture-endpoint"
   echo "  FAKE MODE: no credential, no external contact, every assertion still evaluated"
@@ -710,6 +715,8 @@ JSON
   ENDPOINT="$REL/inputs/endpoint.json"
   CONTROL_ENDPOINT="$REL/inputs/endpoint-control.json"
   CREDENTIAL="$REL/inputs/credential"
+  # In fake mode the credential the daemon opens IS the one every other step names.
+  DAEMON_CREDENTIAL="$REL/inputs/credential"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
@@ -762,7 +769,7 @@ test "$(field outcome < "$WORK/out/publish.json")" = "published" || die "the gen
 # `go:real-provider-gate` in real mode had therefore never completed a run on any host, and could not have.
 # `$ENDPOINT` is the operator's file in real mode and the fake-mode file in fake mode, which is what every
 # other call site on this path already used.
-node "$REL/config.cjs" "$ENDPOINT" "$WORK/config.json" "$CREDENTIAL"
+node "$REL/config.cjs" "$ENDPOINT" "$WORK/config.json" "$DAEMON_CREDENTIAL"
 
 docker run -d --name "$MOUNT_CONTAINER" \
   --network "$NETWORK" --user 0:0 \

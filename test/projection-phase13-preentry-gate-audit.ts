@@ -265,8 +265,16 @@ test('no call site on the real-mode path names the fake-mode input file', () => 
   assert(!/config\.cjs" "\$REL\/inputs\/endpoint\.json"/.test(code),
     'the daemon configuration is still built from the fake-mode endpoint path, so a real run dies at ENOENT '
     + 'before it mounts anything — which is why real mode had never completed a run on any host');
-  assert(/node "\$REL\/config\.cjs" "\$ENDPOINT" "\$WORK\/config\.json" "\$CREDENTIAL"/.test(code),
-    'the daemon configuration is not built from the endpoint this run actually selected');
+  assert(/node "\$REL\/config\.cjs" "\$ENDPOINT" "\$WORK\/config\.json" "\$DAEMON_CREDENTIAL"/.test(code),
+    'the daemon configuration is not built from the endpoint this run selected and the credential the '
+    + 'daemon will actually open');
+  // AND IT IS THE FILE THE DAEMON OPENS, NOT THE ONE THE OPERATOR SUPPLIED. In real mode those are two
+  // different paths -- the second is a copy of the first -- and checking the source would check a file the
+  // daemon never reads, which is the same one-remove-from-the-truth shape as asserting a mount by its
+  // fstype rather than by its mountinfo tuple.
+  assertEq((code.match(/DAEMON_CREDENTIAL="\$REL\/inputs\/credential"/g) ?? []).length, 2,
+    'the daemon credential path is not set once per mode, so one mode points config.cjs at a file the '
+    + 'daemon does not open');
 });
 
 test('the operator\'s credential is placed where the daemon opens it', () => {
@@ -316,8 +324,8 @@ test('DRIVEN: config.cjs REFUSES to build a daemon configuration around a missin
 test('CONTROL: the unrepaired real-mode endpoint path is CAUGHT', () => {
   const body = read(GENERIC_GATE);
   const tampered = body.replace(
-    'node "$REL/config.cjs" "$ENDPOINT" "$WORK/config.json" "$CREDENTIAL"',
-    'node "$REL/config.cjs" "$REL/inputs/endpoint.json" "$WORK/config.json" "$CREDENTIAL"',
+    'node "$REL/config.cjs" "$ENDPOINT" "$WORK/config.json" "$DAEMON_CREDENTIAL"',
+    'node "$REL/config.cjs" "$REL/inputs/endpoint.json" "$WORK/config.json" "$DAEMON_CREDENTIAL"',
   );
   assert(tampered !== body, 'the tamper did not apply, so this control proves nothing');
   assert(/config\.cjs" "\$REL\/inputs\/endpoint\.json"/.test(codeOf(tampered)),
