@@ -122,3 +122,6 @@ deploy/ci/acceptance/playwright-report/
 .projection-mount-truth-gate/
 .projection-mount-health-gate/
 .projection-sustained-outage-gate/
+
+# The Phase 13 pre-entry readiness recorder writes its plan helper here and removes it again.
+.projection-preentry-readiness/

@@ -909,6 +909,141 @@ test('CONTROL: a third marker slipping into the guard is CAUGHT', () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------
+h.section('the origin policy is REACHABLE, not a function nobody calls');
+// ---------------------------------------------------------------------------------------------------------
+
+test('the plan mode reads its policy from the contract\'s own module rather than restating it', () => {
+  const helper = helperFrom(READINESS, 'PLAN');
+  assert(/src\/core\/projection\/phase13-preentry\.ts/.test(helper),
+    'the plan helper does not import the contract module, so it carries its own copy of a threshold — and a '
+    + 'script with its own copy is a script whose threshold can drift in the direction that lets a run start');
+  assert(/originStabilityRefusals/.test(helper), 'the plan helper does not call the policy function');
+  for (const restated of ['ORIGIN_RECORD_MAX_AGE_MINUTES =', 'ORIGIN_LIFETIME_SAFETY_MARGIN_MINUTES =']) {
+    assert(!helper.includes(restated), `the plan helper restates ${restated} instead of reading it`);
+  }
+  assert(/process\.exit\(refusals\.length === 0 \? 0 : 70\)/.test(helper),
+    'the plan helper does not answer 70 for a refusal, so a caller cannot tell "may not start" from a crash');
+});
+
+test('DRIVEN: a sequence that does not fit inside one origin turn is REFUSED, and 70 is not a failure', () => {
+  const shell = posixShell();
+  if (shell === null) { assert(true, NO_SHELL); return; }
+  const plan = (args: readonly string[]): { status: number; out: string } => {
+    const result = spawnSync(shellOrThrow(), [shPath(join(repoRoot, READINESS)), 'plan', ...args], {
+      encoding: 'utf8', timeout: 180_000, cwd: repoRoot,
+      env: { ...process.env, PROJECTION_PREENTRY_INPUT_DIR: shPath(freshDir()) },
+    });
+    return { status: result.status ?? -1, out: String(result.stdout ?? '') + String(result.stderr ?? '') };
+  };
+
+  const fits = plan(['--origin-lifetime-min', '40', '--sequence-minutes', '25', '--record-age-min', '5']);
+  assertEq(fits.status, 0, `a fitting sequence was refused: ${fits.out}`);
+  assert(fits.out.includes('MAY START'), 'a permitted sequence does not say so');
+
+  const overlong = plan(['--origin-lifetime-min', '40', '--sequence-minutes', '35', '--record-age-min', '5']);
+  assertEq(overlong.status, 70,
+    'a sequence longer than one origin turn was allowed to start, or answered something other than 70');
+  assert(overlong.out.includes('does not cover it'), 'the refusal does not name the reason');
+  // AND THE REFUSAL SAYS WHAT MUST NOT BE DONE ABOUT IT. The temptation a rotation creates is to widen the
+  // allowlist until it goes green, which is a blocker rather than a step.
+  assert(overlong.out.includes('BLOCKER AND NOT A STEP'),
+    'the refusal does not say that widening the allowlist is a blocker, which is the response it exists to '
+    + 'prevent');
+  assert(!/FAIL(ED|URE)? of the product/i.test(overlong.out) || overlong.out.includes('NONE of them is a '
+    + 'failure of the'), 'the refusal reads as a failure of the product');
+
+  // AN UNMEASURED LIFETIME IS REFUSED RATHER THAN ASSUMED GENEROUS.
+  const unmeasured = plan(['--sequence-minutes', '25', '--record-age-min', '5']);
+  assertEq(unmeasured.status, 70, 'a plan with no measured origin lifetime was allowed to start');
+  assert(unmeasured.out.includes('never measured'), 'the refusal does not name the missing measurement');
+
+  // AND A STALE RECORD IS AN ANSWER ABOUT A DIFFERENT ORIGIN.
+  const stale = plan(['--origin-lifetime-min', '40', '--sequence-minutes', '25', '--record-age-min', '600']);
+  assertEq(stale.status, 70, 'a stale origin record was trusted');
+});
+
+test('the plan mode contacts nothing either', () => {
+  const code = codeOf(read(READINESS));
+  const planAt = code.indexOf('if [ "$MODE" = "plan" ]; then');
+  assert(planAt >= 0, 'there is no plan mode');
+  const planBlock = code.slice(planAt, code.indexOf('\nfi\n', planAt));
+  for (const forbidden of REACHING_COMMANDS) {
+    assert(!invokes(planBlock, forbidden), `the plan mode invokes ${forbidden}`);
+  }
+  assert(!/docker /.test(planBlock), 'the plan mode runs docker');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+h.section('P13PRE-I9 — no earlier tranche\'s claim is written, and one mount keeps one owner');
+// ---------------------------------------------------------------------------------------------------------
+
+test('no file this tranche ships emits a verdict for another tranche\'s claim', () => {
+  // THE ROADMAP ROW SAYS A LATER PHASE MAY CLOSE "the provider half only of P11-R1". There is no such half,
+  // and this is the check that no file here quietly grew one.
+  const shipped = [GENERIC_GATE, PROVIDER_GATE, STAGE, READINESS,
+    ...optionalWrappers().map((name) => `deploy/${name}`)];
+  for (const path of shipped) {
+    const body = read(path);
+    for (const forbidden of ['P11-R1', 'P11-R2', 'P11-R3', 'P11-R4', 'P9-2', 'P9-3', 'P9-5', 'P9-11']) {
+      assert(!body.includes(forbidden),
+        `${path} names ${forbidden}, and a script that can name a claim of another tranche is a script that `
+        + 'can record a verdict for one');
+    }
+  }
+});
+
+test('one mount point keeps exactly one owner', () => {
+  // §4's fourth refusal. Neither gate may write a second daemon into a Compose service, and neither may
+  // mount, bind or unmount inside the appliance's own mount point.
+  for (const gate of [GENERIC_GATE, PROVIDER_GATE]) {
+    const code = codeOf(read(gate));
+    // EACH GATE MOUNTS INSIDE ITS OWN RUN DIRECTORY, and nowhere else.
+    for (const line of code.split('\n').filter((one) => one.includes(':/mnt/projection'))) {
+      assert(/\$WORK\/mnt:\/mnt\/projection/.test(line),
+        `${gate} binds something other than its own run directory at the daemon's mount point: ${line.trim()}`);
+    }
+    // AND NEITHER TOUCHES THE APPLIANCE'S CONTAINER OR NETWORK.
+    for (const owned of ['projection-alpha-projectiond', 'docker network rm projection-alpha']) {
+      assert(!code.includes(owned),
+        `${gate} names ${owned}, and the appliance's mount point has exactly one owner`);
+    }
+  }
+});
+
+test('cleanup removes only containers this run named, and only its own compose project', () => {
+  for (const gate of [GENERIC_GATE, PROVIDER_GATE]) {
+    const code = codeOf(read(gate));
+    // EVERY `docker rm -f` NAMES A CONTAINER CARRYING THIS SHELL'S PID, so nothing else on the host can be
+    // removed and no concurrent run can be blamed for a leak of this one's.
+    for (const line of code.split('\n').filter((one) => /docker rm -f/.test(one))) {
+      assert(/\$[A-Z_]*CONTAINER/.test(line),
+        `${gate} removes a container it did not name: ${line.trim()}`);
+    }
+    for (const variable of code.match(/[A-Z_]*CONTAINER="[^"]*"/g) ?? []) {
+      assert(variable.includes('-$$"'),
+        `${gate} names a container without this shell's pid (${variable}), so a concurrent run's container `
+        + 'could be removed by this one');
+    }
+    // AND `compose down -v` IS SCOPED TO THIS GATE'S OWN COMPOSE FILE, so the volumes it removes are its own.
+    for (const line of code.split('\n').filter((one) => /compose .*down/.test(one))) {
+      assert(/-f "\$COMPOSE_FILE"/.test(line),
+        `${gate} brings down a compose project it did not name: ${line.trim()}`);
+    }
+  }
+});
+
+test('CONTROL: a container name without this run\'s pid is CAUGHT', () => {
+  const body = read(PROVIDER_GATE);
+  const tampered = body.replace('MOUNT_CONTAINER="projection-tbr-mount-$$"',
+    'MOUNT_CONTAINER="projection-tbr-mount"');
+  assert(tampered !== body, 'the tamper did not apply, so this control proves nothing');
+  const named = (codeOf(tampered).match(/[A-Z_]*CONTAINER="[^"]*"/g) ?? []);
+  assert(named.some((one) => !one.includes('-$$"')),
+    'a container named without this run\'s pid still reads as pid-scoped, so a cleanup could remove a '
+    + 'concurrent run\'s container and this audit would not say so');
+});
+
+// ---------------------------------------------------------------------------------------------------------
 h.section('the shipped shell is LF, which is what every byte-level pin here rests on');
 // ---------------------------------------------------------------------------------------------------------
 

@@ -41,27 +41,140 @@
 set -euo pipefail
 export MSYS_NO_PATHCONV=1
 
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
 INPUT_DIR="${PROJECTION_PREENTRY_INPUT_DIR:-/mnt/user/appdata/catalog/secrets/real-provider/torbox}"
 OUT=""
+MODE="record"
+ORIGIN_LIFETIME_MIN=""
+SEQUENCE_MINUTES=""
+RECORD_AGE_MIN=""
+OBSERVED_POOL=""
 
 usage() {
-  echo "usage: projection-preentry-readiness.sh [--out <file>]"
+  echo "usage: projection-preentry-readiness.sh [record|plan] [options]"
   echo
-  echo "  Reads the operator's inputs and writes ONE redaction-safe observation. CONTACTS NOTHING."
+  echo "  record   read the operator's inputs and write ONE redaction-safe observation. The default."
+  echo "  plan     ask whether a bounded sequence may START against a rotating origin pool."
   echo
-  echo "  --out   where to write the observation. Defaults to stdout only."
+  echo "  BOTH MODES CONTACT NOTHING. No socket, no resolver, no container, no host."
+  echo
+  echo "  --out                    where to write the observation (record mode). Defaults to stdout only."
+  echo "  --origin-lifetime-min N  the SHORTEST turn observed for a member of the pool, in minutes."
+  echo "  --sequence-minutes N     the bounded duration the sequence declares for itself."
+  echo "  --record-age-min N       how old the origin record backing the plan is, in minutes."
+  echo "  --observed-pool N        how many distinct origins the pool was observed serving from."
   echo
   echo "  PROJECTION_PREENTRY_INPUT_DIR   the approved input DIRECTORY. Never a value, never a file."
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    record|plan) MODE="$1" ;;
     --out) shift; OUT="${1:-}" ;;
+    --origin-lifetime-min) shift; ORIGIN_LIFETIME_MIN="${1:-}" ;;
+    --sequence-minutes) shift; SEQUENCE_MINUTES="${1:-}" ;;
+    --record-age-min) shift; RECORD_AGE_MIN="${1:-}" ;;
+    --observed-pool) shift; OBSERVED_POOL="${1:-}" ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; echo "unknown argument" >&2; exit 1 ;;
   esac
   shift
 done
+
+# ----------------------------------------------------------------------------------------------------------
+# PLAN MODE. May a bounded sequence START against a pool that rotates faster than the sequence takes?
+#
+# WHY THIS IS A REFUSAL BEFORE A RUN RATHER THAN A DIAGNOSIS AFTER ONE. The measured pool serves from seven
+# distinct origins, each for roughly forty to eighty-four minutes, cycling back. A three-run provider
+# sequence includes three image builds, three migrations and three mounts. A rotation across it is LIKELY
+# rather than hypothetical, and its signature is precise: `stat` succeeds, the listing is perfect, and every
+# read fails EIO in well under a second. Without this, that reads as a hard FAIL about the product -- and the
+# temptation it creates is to widen `allowedOrigins` until it goes green, which is a BLOCKER and not a step.
+#
+# THE POLICY IS READ FROM THE CONTRACT'S OWN MODULE rather than restated here, for the reason the Phase 11
+# gate gives about its own minimums: a script carrying its own copy of a threshold is a script whose
+# threshold can drift from the document's, silently, in the direction that lets a run start.
+if [ "$MODE" = "plan" ]; then
+  command -v npx >/dev/null 2>&1 \
+    || { echo "the plan could not be evaluated: this host has no npx" >&2; exit 1; }
+  # INSIDE THE REPOSITORY RATHER THAN IN /tmp, and for a reason a Windows host makes immediate: `mktemp -d`
+  # under Git Bash answers a POSIX path the Node runtime resolves against the wrong drive root, so the helper
+  # is written somewhere the shell can see and the runtime cannot find. Every gate in this tree writes its
+  # scratch under a `.projection-*` directory in the repository for the same reason; this one does too, and
+  # removes it on the way out.
+  # AND IT IS HANDED TO `npx tsx` AS A PATH RELATIVE TO THE REPOSITORY ROOT, which is what the gates do with
+  # their own $REL. An absolute POSIX path under Git Bash reaches the Node runtime as a drive-rooted spelling
+  # of a directory that does not exist; the relative one is correct in every shell because the invocation
+  # already runs from $ROOT.
+  PLAN_REL=".projection-preentry-readiness/plan-$$"
+  PLAN_SCRATCH="$ROOT/$PLAN_REL"
+  mkdir -p "$PLAN_SCRATCH"
+  chmod 700 "$PLAN_SCRATCH"
+  cat > "$PLAN_SCRATCH/plan.mts" <<'PLAN'
+// The origin-stability refusals, READ FROM THE CONTRACT'S OWN MODULE rather than restated here.
+//
+// It prints one refusal per line and exits 70 when there is at least one -- the same status the origin
+// recheck uses for "the serving origin is NOT allowed", because both mean the same thing to a caller: the
+// sequence does not start, and this is not a failure of the product.
+const root = process.env.PREENTRY_ROOT_URL as string;
+const module_ = await import(`${root}src/core/projection/phase13-preentry.ts`);
+const number_ = (raw: string | undefined): number | undefined =>
+  raw === undefined || raw === '' ? undefined : Number(raw);
+const refusals = module_.originStabilityRefusals({
+  shortestObservedOriginLifetimeMinutes: number_(process.env.PREENTRY_ORIGIN_LIFETIME_MIN),
+  boundedSequenceDurationMinutes: number_(process.env.PREENTRY_SEQUENCE_MINUTES),
+  originRecordAgeMinutes: number_(process.env.PREENTRY_RECORD_AGE_MIN),
+  allowedOriginCount: number_(process.env.PREENTRY_ALLOWED_ORIGIN_COUNT),
+  observedPoolSize: number_(process.env.PREENTRY_OBSERVED_POOL),
+}) as readonly string[];
+for (const refusal of refusals) console.log(refusal);
+process.exit(refusals.length === 0 ? 0 : 70);
+PLAN
+
+  # THE ALLOWLIST COUNT COMES FROM THE OPERATOR'S OWN ENDPOINT DOCUMENT WHERE THERE IS ONE, and is left
+  # unset where there is not -- an absent count is not a count of zero, and the policy refuses on the pair
+  # only when it has both numbers.
+  ALLOWED_ORIGIN_COUNT=""
+  if [ -f "$INPUT_DIR/endpoint.json" ] && command -v node >/dev/null 2>&1; then
+    ALLOWED_ORIGIN_COUNT="$(node -p \
+      "JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')).allowedOrigins.length" \
+      "$INPUT_DIR/endpoint.json" 2>/dev/null || printf '')"
+  fi
+
+  ROOT_NATIVE="$( (cd "$ROOT" && pwd -W) 2>/dev/null || printf '%s' "$ROOT" )"
+  ROOT_URL="file:///$(printf '%s' "$ROOT_NATIVE" | sed 's|^/||')/"
+  set +e
+  ( cd "$ROOT" \
+    && PREENTRY_ROOT_URL="$ROOT_URL" \
+       PREENTRY_ORIGIN_LIFETIME_MIN="$ORIGIN_LIFETIME_MIN" \
+       PREENTRY_SEQUENCE_MINUTES="$SEQUENCE_MINUTES" \
+       PREENTRY_RECORD_AGE_MIN="$RECORD_AGE_MIN" \
+       PREENTRY_ALLOWED_ORIGIN_COUNT="$ALLOWED_ORIGIN_COUNT" \
+       PREENTRY_OBSERVED_POOL="$OBSERVED_POOL" \
+       npx tsx "$PLAN_REL/plan.mts" )
+  plan_status=$?
+  set -e
+  rm -rf "$PLAN_SCRATCH" 2>/dev/null || true
+  rmdir "$ROOT/.projection-preentry-readiness" 2>/dev/null || true
+  case "$plan_status" in
+    0)
+      echo >&2
+      echo "THE SEQUENCE MAY START. Nothing was contacted to say so; this is a statement about a declared" >&2
+      echo "duration and a measured pool, and it closes no claim of any phase." >&2
+      exit 0 ;;
+    70)
+      echo >&2
+      echo "THE SEQUENCE MAY NOT START. Each line above is a reason, and NONE of them is a failure of the" >&2
+      echo "product. WIDENING THE ORIGIN ALLOWLIST IS A BLOCKER AND NOT A STEP: a rotation is escalated as a" >&2
+      echo "count and a digest, never resolved by editing endpoint.json." >&2
+      exit 70 ;;
+    *)
+      echo "the plan could not be evaluated (exit $plan_status), which is NOT the same as permission to" >&2
+      echo "start. An unevaluated policy is not a satisfied one." >&2
+      exit 1 ;;
+  esac
+fi
 
 # THE SECRET FILES ARE NAMED HERE SO THE RECORDER CAN REFUSE TO DIGEST THEM, rather than relying on whoever
 # adds the next input to remember which ones hold a value.
