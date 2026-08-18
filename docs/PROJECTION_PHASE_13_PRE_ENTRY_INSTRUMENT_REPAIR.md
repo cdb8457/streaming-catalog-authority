@@ -415,28 +415,36 @@ terminal that does not reproduce from the other is not a verdict about the produ
 defect `test/posix-shell-kit.ts` exists for, and this repository has published a figure spoiled by it
 twice.
 
-**BOTH ARMS BELOW WERE RUN AGAIN FROM `42d5578`, AND THE EARLIER PAIR IS NOT COUNTED.** An earlier Git
-Bash arm and an earlier PowerShell arm both answered 338/338 — and the tree moved under them, by three
-commits and by one respectively. A figure measured on a tree that is not the candidate belongs to no
-commit, which is Phase 6 §11.1.1's own rule; so the series restarted on the frozen tree and both arms
-below are of that one commit and nothing else.
+**Measured on `321a43b`**, the head of the correction pass §12 records. An earlier pair of arms was
+taken on `32a230f` and is superseded rather than carried over: a figure measured on a tree that is not
+the candidate belongs to no commit.
 
 | shell | suites selected | passed | failed | not selected | required-but-skipped | elapsed |
 |---|---|---|---|---|---|---|
-| Git Bash | 338 | **338** | **0** | 39 | **0** | 739s |
-| ordinary PowerShell | 338 | **338** | **0** | 39 | **0** | 743s |
+| Git Bash | 338 | **338** | **0** | 39 | **0** | 745s |
+| ordinary PowerShell | 338 | **338** | **0** | 39 | **0** | 716s |
 
-Both arms report `RESULT: PASS — every selected suite ran and exited zero.` All eight provider source
-allowlist suites ran **to completion** in both. The **39 not selected** are the Docker-only acceptance
-suites the default run has always excluded; "not selected" is not "skipped", and this tranche claims
-nothing that depends on them.
+Both arms report `RESULT: PASS — every selected suite ran and exited zero.` All eight
+provider source allowlist suites ran **to completion** in both. The **39 not selected** are the
+Docker-only acceptance suites the default run has always excluded; "not selected" is not "skipped".
 
-**THE ONE COMMIT AFTER THE MEASUREMENT IS THIS SECTION RECORDING IT**, which is the shape Phase 12 §10.10
-used for the same problem: a tree carrying a campaign's record cannot also carry the figures produced by
-running against that record. The commit that adds this table changes **one document and nothing else**,
-and the suites that read this document were re-run against it — `projection-phase13-preentry` 35/0 and
-`projection-phase13-preentry-gate-audit` 48/0. The regress is stopped one commit later rather than
-chased.
+#### The first attempt at this pair was RED, and it was the disk
+
+The first Git Bash arm reported **336 passed, 2 failed** — `torbox-resolver.ts` and `complete-backup.ts`. Both
+failures were `ENOSPC`: the host was at **100% of 931 GB with 151 MB free**, and the two suites that
+went red are the two that write a large file — one copies a Node binary to build a stub shell, the other
+takes a database dump larger than any in-memory bound. **Neither failure was in a suite this pass
+touched, and neither was in the assertion this pass changed** in `torbox-resolver.ts`; the failing check
+there was the shell-selection control, which could not copy its stub.
+
+**The cause was 4,509 abandoned test-fixture directories** under `%TEMP%` — `mkdtemp` scratch left by
+suites that were interrupted, across many sessions. Removing exactly those prefixes freed **7.1 GB**.
+Both suites then passed standalone (84/0 and 49/0) and both inventory arms went green.
+
+**It is recorded rather than quietly re-run for one reason:** a red offline run on this host is a real
+signal, and the way to tell a disk from a defect is to name which suites failed, why, and what changed
+between the red run and the green one. Nothing in the repository changed between them — `321a43b` is the
+head of both.
 ### 10.8 What is left on this host that these figures do not count
 
 Nothing. This tranche started no container, created no network or volume, staged nothing, and wrote outside
