@@ -325,10 +325,10 @@ tranche repaired instruments and regressed the repairs, and **a repaired instrum
 | | |
 |---|---|
 | Base | integration `f77871f` |
-| Commits | five, listed in §10.2 |
+| Commits | eight, listed in §10.2 |
 | Typecheck | `npx tsc --noEmit` — **clean** |
 | New suites | `projection-phase13-preentry` 35/0, `projection-phase13-preentry-gate-audit` 48/0 |
-| Full offline inventory | see §10.9 |
+| Full offline inventory | **338 selected, 338 passed, 0 failed, 0 required-but-skipped**, from BOTH shells, from one frozen commit. §10.9 |
 | Controls | every repair carries one, and **each was watched failing on the unrepaired bytes** |
 | Provider contact | **none** |
 | Claims moved | **none.** Phase 10, Phase 11 tier one and Phase 12 stay GO; Phase 9 and Phase 11 tier two stay OPEN; `P11-R1` is **NOT RUN** |
@@ -342,6 +342,9 @@ tranche repaired instruments and regressed the repairs, and **a repaired instrum
 | `992275c` | `P13PRE-I2/I3/I4/I5/I8` — the real-mode input repair, the derived observations, the bounded waits, ownership-aware cleanup, and the skip refusal |
 | `639d07c` | `P13PRE-I6/I7` — the no-contact readiness recorder, and the second staging marker |
 | `1236a95` | the origin policy made **reachable**, and `P13PRE-I9` over the shipped bytes |
+| `55f353e` | this run record, and two sentences corrected to say what the code actually does |
+| `e6ca23c` | the recorder made runnable on the machine it was written on, and driven end to end |
+| `42d5578` | `config.cjs` handed the credential the DAEMON opens rather than the one the operator supplied |
 
 ### 10.3 The files
 
@@ -401,21 +404,36 @@ Two further defects were found by **running** rather than reading: `mktemp -d` u
 path the Node runtime resolves against the wrong drive root, and an absolute POSIX path handed to `npx tsx`
 does the same. Both would have appeared only when somebody tried to use the program.
 
-### 10.9 The full offline inventory, from both shells
+### 10.9 The full offline inventory, from both shells, from ONE frozen commit
 
-`P13PRE-C1` asks for the **whole** inventory from **Git Bash** and from an **ordinary PowerShell**, from one
-candidate — not a focused subset, and not a run stopped part-way. A figure recorded from one terminal
-that does not reproduce from the other is not a verdict about the product at all: that is the defect
-`test/posix-shell-kit.ts` exists for, and this repository has published a figure spoiled by it twice.
+`P13PRE-C1` asks for the **whole** inventory from **Git Bash** and from an **ordinary PowerShell**, from
+one candidate — not a focused subset, and not a run stopped part-way. A figure recorded from one
+terminal that does not reproduce from the other is not a verdict about the product at all: that is the
+defect `test/posix-shell-kit.ts` exists for, and this repository has published a figure spoiled by it
+twice.
 
-| shell | suites selected | passed | failed | required-but-skipped | elapsed |
-|---|---|---|---|---|---|
-| Git Bash | 338 | **338** | **0** | **0** | 768s |
-| ordinary PowerShell | — | — | — | — | RUNNING AT THE TIME THIS LINE WAS WRITTEN; the figure is recorded when it lands and NOT before |
+**BOTH ARMS BELOW WERE RUN AGAIN FROM `42d5578`, AND THE EARLIER PAIR IS NOT COUNTED.** An earlier Git
+Bash arm and an earlier PowerShell arm both answered 338/338 — and the tree moved under them, by three
+commits and by one respectively. A figure measured on a tree that is not the candidate belongs to no
+commit, which is Phase 6 §11.1.1's own rule; so the series restarted on the frozen tree and both arms
+below are of that one commit and nothing else.
 
-All eight provider source allowlist suites ran **to completion** in both arms. **39 suites were not
-selected** in either — the Docker-only acceptance suites the default run has always excluded, which is
-what "not selected" means here and is not a skip of anything this tranche claims.
+| shell | suites selected | passed | failed | not selected | required-but-skipped | elapsed |
+|---|---|---|---|---|---|---|
+| Git Bash | 338 | **338** | **0** | 39 | **0** | 739s |
+| ordinary PowerShell | 338 | **338** | **0** | 39 | **0** | 743s |
+
+Both arms report `RESULT: PASS — every selected suite ran and exited zero.` All eight provider source
+allowlist suites ran **to completion** in both. The **39 not selected** are the Docker-only acceptance
+suites the default run has always excluded; "not selected" is not "skipped", and this tranche claims
+nothing that depends on them.
+
+**THE ONE COMMIT AFTER THE MEASUREMENT IS THIS SECTION RECORDING IT**, which is the shape Phase 12 §10.10
+used for the same problem: a tree carrying a campaign's record cannot also carry the figures produced by
+running against that record. The commit that adds this table changes **one document and nothing else**,
+and the suites that read this document were re-run against it — `projection-phase13-preentry` 35/0 and
+`projection-phase13-preentry-gate-audit` 48/0. The regress is stopped one commit later rather than
+chased.
 ### 10.8 What is left on this host that these figures do not count
 
 Nothing. This tranche started no container, created no network or volume, staged nothing, and wrote outside
