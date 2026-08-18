@@ -571,3 +571,47 @@ written or touched, no §4 refusal and no §5.1 threshold moved, and §§1–10 
 Phase 12's bounded change to this tranche is one line of `docker-compose.projection-phase10.yml`, the registry
 reset in the rehearsal, and this section. Its reasons are in
 `docs/PROJECTION_PHASE_12_AUDIT_AND_PROVIDER_FREE_CLOSURE.md` §6.2 and §11.
+
+### 11.9 PHASE 10 IS **GO** — recorded by Phase 12, whose campaign ran the complete sequence three consecutive fresh times
+
+**§11.1's NO-GO IS SUPERSEDED AND IS KEPT WHOLE ABOVE**, and so is §11.8's "the status does not move to GO".
+Both were true of the trees they were written about, and a run record edited to agree with a later run is
+not a record.
+
+**WHAT MOVED, AND IT IS THE ONE THING §11.8 SAID WAS MISSING.** §11.8 recorded that the rehearsal had run end
+to end on the real host and three consecutive fresh times through `go:phase10-rehearsal:three`, and that
+`phase10ClosureProblems` still refused for one reason: `P10-10` asks for three consecutive fresh runs of the
+**complete sequence**, which is the rehearsal **plus** the offline inventory from both shells **plus** the
+provider-free regression subset, and that campaign ran the complete sequence once. Phase 12 has now run it
+**three consecutive fresh times from one frozen candidate**, `a8d7232`, with **zero skips**. The two earlier
+campaigns are not counted toward that three: they ran from `8be98c2` and `61445f2`, and §5 asks the ten
+claims of **one** candidate.
+
+**WHAT THE THREE SEQUENCES MEASURED.** In each one, `deploy/projection-phase10-rehearsal.sh` ran end to end
+on the real Unraid host — **6 arms, 6 passed, 0 failed, exit 0**, `hand-run tsx invocations against the
+namespace: 0` — and `go:phase10-rehearsal:three` completed **3 of 3, none skipped**, exit 0. The
+provider-free regression subset (`alpha-acceptance`, `real-provider-gate --fake`, `publisher-mount`,
+`restart-topology`) was exit 0 on all four. The full offline inventory passed **336 / 336 / 0 failed / 0
+required-but-skipped** from Git Bash and from an ordinary PowerShell, from that one candidate, and
+`npx tsc --noEmit` was clean. The host's container, network and volume sets were **46 / 18 / 47 before and
+46 / 18 / 47 after, 0 differing in each**, with zero mountpoints left under the staging directory and
+`endpoint.json` **absent before and absent after**, asserted by the rehearsal rather than promised. The
+operator source digest is unmoved and `phase9RequiresSoakRerun` over the touched paths is **FALSE**, so the
+Phase 8 soak is not re-opened.
+
+**`phase10ClosureProblems`, RUN OVER THAT EVIDENCE, RETURNS ZERO PROBLEMS.** All ten claims carry a pass
+verdict. The six the rehearsal answers carry `rehearsal=true` exactly as it stamped them; `P10-1`, `P10-2`,
+`P10-7` and `P10-10` do not, because the inventory, the wrapper, the regression subset and the campaign's
+own count are what answered them — which is the refusal `PHASE10_SEQUENCE_LEVEL_GATE_IDS` exists to make.
+**Phase 10 is GO.**
+
+**WHAT A PHASE 10 GO DOES NOT SAY.** It says nothing about a provider: this tranche is provider-free by
+construction and every one of its ten claims was answerable without one. **Phase 9 is unchanged** —
+`P9-2`, `P9-3`, `P9-5` and `P9-11` are exactly as open as this document left them, and §8's prerequisite
+(that they be run from a Phase 10-or-later candidate) is **discharged by none of this**. No soak, no load
+figure, no uptime figure, no second host, no release.
+
+**AND NOTHING IN THIS DOCUMENT MOVED EXCEPT THIS SECTION.** No §4 refusal, no §5.1 threshold, no claim id
+and no claim wording; §§1–10 are untouched. The full record of the campaign, its per-sequence figures and
+the control that proves its green is not vacuous are in
+`docs/PROJECTION_PHASE_12_AUDIT_AND_PROVIDER_FREE_CLOSURE.md` §10.9.

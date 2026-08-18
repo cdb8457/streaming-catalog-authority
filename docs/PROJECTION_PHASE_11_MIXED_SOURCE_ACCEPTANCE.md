@@ -508,3 +508,44 @@ when both sides were empty, which is exactly what the first host run produced wh
 They are recorded in `docs/PROJECTION_PHASE_12_AUDIT_AND_PROVIDER_FREE_CLOSURE.md` §11, with a control for
 each. **No threshold in §5.3, no refusal in §4, no claim id and no claim wording moved**, and §§1–9 of this
 document are untouched.
+
+### 10.8 TIER ONE IS **GO** — recorded by Phase 12, whose campaign ran the complete tier-one sequence three consecutive fresh times
+
+**§10.1's NO-GO IS SUPERSEDED AND IS KEPT WHOLE ABOVE**, and so is §10.7. Both were true of the trees they
+were written about, and a run record edited to agree with a later run is not a record.
+
+**WHAT MOVED.** §10.7 recorded that the gate had reached all six of its arms on the real host, and that
+`phase11ClosureProblems` still refused tier one for one reason: the four sequence-level claims ask about a
+**set** of runs, and one campaign is not that set. Phase 12 has now run the complete tier-one sequence —
+the mixed gate, the three-run wrapper, the provider-free regression subset, and the full offline inventory
+from **both** shells — **three consecutive fresh times from one frozen candidate**, `a8d7232`, with **zero
+skips**. Neither of the two earlier campaigns is counted toward that three: they ran from `8be98c2` and
+`61445f2`, and §5 asks the ten tier-one claims of **one** candidate.
+
+**WHAT THE THREE SEQUENCES MEASURED, ON THE REAL UNRAID HOST.** In each one, `deploy/projection-phase11-
+mixed-gate.sh` **REACHED all six predeclared arms and passed all six**, exit 0, with `declared arms
+unreached: 0` and `cross-source fields disturbed: 0 total`; `go:phase11-mixed-gate:three` completed **3 of
+3, none skipped**, exit 0; the provider-free regression subset was exit 0 on all four gates; the full
+offline inventory passed **336 / 336 / 0 failed / 0 required-but-skipped** from Git Bash and from an
+ordinary PowerShell; and the host's container, network and volume sets were **46 / 18 / 47 before and
+46 / 18 / 47 after, 0 differing in each**, with zero mountpoints left under the staging directory and
+`endpoint.json` absent before and after.
+
+**`phase11ClosureProblems`, TIER ONE, RUN OVER THAT EVIDENCE, RETURNS ZERO PROBLEMS.** All ten tier-one
+claims carry a pass verdict; the six arms carry `fake=true` exactly as the gate stamped them, and the four
+sequence-level claims do not, because the wrapper and the inventory rather than the fake gate are what
+answered them. §5's tier-one closure rule is met and **tier one is GO**.
+
+**WHAT A TIER-ONE GO SAYS, IN §8's OWN WORDS AND NO MORE.** It is a GO on the **instrument**: the gate
+exists, can fail, and reached every arm in fake mode. **It closes nothing about the mixed product.**
+
+**TIER TWO IS UNTOUCHED AND STAYS EXACTLY AS OPEN AS THIS DOCUMENT LEFT IT.** `P11-R1`, `P11-R2`, `P11-R3`
+and `P11-R4` are **NOT RUN** and no fake run may record one; §9.2's operator inputs do not exist in this
+repository. **Phase 9 is unchanged**: `P9-2`, `P9-3`, `P9-5` and `P9-11` are as open as Phase 10 left them,
+and Phase 10 §8's prerequisite is inherited and discharged by none of this.
+
+**AND NOTHING IN THIS DOCUMENT MOVED EXCEPT THIS SECTION.** No §5.3 threshold, no §4 refusal, no claim id
+and no claim wording; §§1–9 are byte-identical to `dd315a7`, measured rather than promised, and
+`src/core/projection/phase11.ts` has not changed by one line since that commit. The full record of the
+campaign, its per-sequence figures and the control that proves its green is not vacuous are in
+`docs/PROJECTION_PHASE_12_AUDIT_AND_PROVIDER_FREE_CLOSURE.md` §10.9.
