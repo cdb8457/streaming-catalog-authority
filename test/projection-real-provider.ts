@@ -91,6 +91,16 @@ const GOOD_OBSERVATIONS = {
   // A LISTENER REALLY STOOD UP, which is what makes the egress line an assertion rather than a record. The
   // gate script itself passes `false` here and gets a skip; see the test that pins both directions.
   egressObservedAtListener: true,
+  // AND EVERY ONE OF THE FIVE WAS ACTUALLY MEASURED, which is what makes this a GOOD observation rather than
+  // merely a complete-looking one. An independent audit found `refresh-per-read` PASSING out of an empty list
+  // whose own provenance said UNTAKEN, so `transportResults` now refuses to assert any of these five against
+  // a budget unless the record says where the number came from. A fixture with no provenance would SKIP
+  // everything -- which is the correct answer to "nobody said where this came from" and is pinned below.
+  provenance: {
+    status429: 'the-origin-own-counters', retries: 'the-origin-own-counters',
+    refreshesPerRead: 'the-origin-own-counters', disallowedOriginContacts: 'the-listener-own-counters',
+    endpointExpires: 'derived-from-the-endpoint-document-this-run-used',
+  },
 } as const;
 
 const failedGates = (results: readonly { gate: string; verdict: string }[]): string[] =>
@@ -1028,11 +1038,25 @@ async function main(): Promise<void> {
       `with no listener the egress line must SKIP, not pass; got ${unwatched.verdict}`);
     assert(/SKIP IS NOT A PASS/.test(unwatched.note ?? ''), 'and must say a skip is not a pass');
 
-    // WHERE A LISTENER REALLY WATCHED, IT IS STILL A HARD ASSERTION IN BOTH DIRECTIONS.
-    assert(egress({ ...record, egressObservedAtListener: true }).verdict === 'pass',
-      'an observed zero must still pass');
-    assert(egress({ ...record, egressObservedAtListener: true, disallowedOriginContacts: 1 }).verdict
-      === 'fail', 'and an observed contact must still fail');
+    // FLIPPING THE BOOLEAN ALONE IS NOT A MEASUREMENT, AND THIS IS THE SHAPE AN AUDIT FOUND SHIPPING
+    // ELSEWHERE. `egressObservedAtListener: true` with a provenance that still says nothing counted at the
+    // listener is the same fabrication one step further along: a listener asserted into existence and a
+    // count nobody took, asserted against a budget of zero.
+    const claimedButUncounted = egress({ ...record, egressObservedAtListener: true });
+    assert(claimedButUncounted.verdict === 'skip',
+      `claiming a listener while the count is UNTAKEN must SKIP, not pass; got ${claimedButUncounted.verdict}`);
+    assert(/NEITHER IS AN UNMEASURED ZERO/.test(claimedButUncounted.note ?? ''),
+      'and must say that an unmeasured zero is not a measurement either');
+
+    // WHERE A LISTENER REALLY WATCHED AND SOMETHING REALLY COUNTED, IT IS A HARD ASSERTION BOTH WAYS.
+    const counted = {
+      ...record,
+      egressObservedAtListener: true,
+      provenance: { ...record.provenance, disallowedOriginContacts: 'the-listener-own-counters' },
+    };
+    assert(egress(counted).verdict === 'pass', 'an observed zero must still pass');
+    assert(egress({ ...counted, disallowedOriginContacts: 1 }).verdict === 'fail',
+      'and an observed contact must still fail');
   });
 
   await test('THE DAEMON CONFIG NAMES THE CREDENTIAL BY PATH AND OPENS NO INSECURE DOOR BY DEFAULT', () => {

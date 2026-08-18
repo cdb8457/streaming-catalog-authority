@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { createHarness, assert, assertEq } from './usenet-kit.js';
 import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 import { NO_SHELL, posixShell, shPath, shellOrThrow } from './posix-shell-kit.js';
+import { transportResults } from '../src/core/projection/real-provider.js';
 
 // Projection Phase 13 PRE-ENTRY — the adversarial audit over the SHIPPED BYTES.
 //
@@ -445,6 +446,233 @@ test('CONTROL: restoring either literal is CAUGHT', () => {
       `a restored ${field} literal does not read as a literal, so the check above would not have caught the `
       + 'defect that shipped');
   }
+});
+
+// ---------------------------------------------------------------------------------------------------------
+h.section('P13PRE-I3 (extended) — all FIVE decision-bearing fields, and provenance that is READ');
+// ---------------------------------------------------------------------------------------------------------
+
+/** The five fields a transport verdict is decided by, read from the module that decides them. */
+const DECISION_BEARING = [
+  'retries', 'status429', 'refreshesPerRead', 'disallowedOriginContacts', 'endpointExpires',
+] as const;
+
+/** The observation record the shipped helper writes, for a given endpoint/trap/counters triple. */
+function observationRecord(endpoint: string, trap: string, counters: string, mode = 'real'): any {
+  const helper = helperFrom(GENERIC_GATE, 'OBSERVATIONS');
+  const out = join(freshDir(), 'observations.json');
+  const result = runHelper(helper, [out, 'true', 'true', 'true', 'true', '0', mode,
+    '0', '0', '0', endpoint, trap, counters]);
+  assertEq(result.status, 0, `the observation record could not be written: ${result.err}`);
+  return JSON.parse(readFileSync(out, 'utf8'));
+}
+
+const resolverEndpoint = (): string => writeJson(freshDir(), 'resolver.json', {
+  id: 'tb', resolverUrl: 'https://resolver.invalid/r', allowedOrigins: ['https://cdn.invalid'],
+});
+const directEndpoint = (): string => writeJson(freshDir(), 'direct.json', {
+  id: 'fake', directBaseUrl: 'http://fakerange:8099/direct', allowedOrigins: ['http://fakerange:8099'],
+});
+const verdictFor = (record: unknown, arm: string): { verdict: string; note?: string; measured?: number } =>
+  transportResults('RP3', record as never).find((one) => one.gate === `RP3-${arm}`)!;
+
+test('the record names the provenance of ALL FIVE decision-bearing fields, by the module\'s own field names', () => {
+  // WHY THIS IS FIVE AND NOT THREE. The record used to carry a single `transportCounters` key standing for
+  // `retries`, `status429` AND `refreshesPerRead` -- and `real-provider.ts` looks provenance up PER FIELD, so
+  // a key the module never consults is a provenance nothing enforces. That is exactly how `refresh-per-read`
+  // came to pass out of an empty list: the record said UNTAKEN under a name no assertion read.
+  const record = observationRecord(resolverEndpoint(), '', '');
+  for (const field of DECISION_BEARING) {
+    assert(typeof record.provenance?.[field] === 'string' && record.provenance[field] !== '',
+      `the record carries no provenance for ${field}, so nothing can refuse a verdict decided by it`);
+  }
+  // AND NO FIELD IS A LITERAL IN THE HELPER. A value written the same way in both modes is a number no run
+  // can move, whichever direction it decides.
+  const helper = helperFrom(GENERIC_GATE, 'OBSERVATIONS');
+  for (const field of DECISION_BEARING) {
+    assert(!new RegExp(`^\\s*${field}: (false|true|0|\\[\\]),`, 'm').test(helper),
+      `${field} is written as a literal, so the arm it decides can never be reached by any run`);
+  }
+});
+
+test('DRIVEN: every one of the five, UNTAKEN, produces a SKIP and never a pass', () => {
+  // ONE FIELD AT A TIME, over a record that is otherwise fully measured, so each arm's refusal is attributed
+  // to its own provenance rather than to whichever one happened to be missing first.
+  const taken = {
+    status429: 0, retries: 0, refreshesPerRead: [1], disallowedOriginContacts: 0,
+    egressObservedAtListener: true, endpointExpires: true,
+    provenance: {
+      status429: 'counted', retries: 'counted', refreshesPerRead: 'counted',
+      disallowedOriginContacts: 'counted', endpointExpires: 'derived-from-the-endpoint-document',
+    },
+  };
+  // The fully measured record is green, so this check is falsifiable in the other direction too.
+  for (const arm of ['retries-bounded', '429-observed', 'egress-allowlist', 'refresh-per-read']) {
+    assertEq(verdictFor(taken, arm).verdict, 'pass', `a fully measured record did not pass ${arm}`);
+  }
+
+  const armOf: Record<string, string> = {
+    retries: 'retries-bounded', status429: '429-observed',
+    disallowedOriginContacts: 'egress-allowlist', refreshesPerRead: 'refresh-per-read',
+    endpointExpires: 'refresh-per-read',
+  };
+  for (const field of DECISION_BEARING) {
+    for (const untaken of [undefined, '', 'UNTAKEN-nothing-could-measure-this', 'untaken-lower-case']) {
+      const record = { ...taken, provenance: { ...taken.provenance, [field]: untaken } };
+      const result = verdictFor(record, armOf[field]!);
+      assertEq(result.verdict, 'skip',
+        `${armOf[field]} with ${field} provenance ${String(untaken)} produced ${result.verdict}, not a skip`);
+      assertEq(result.measured, undefined,
+        `${armOf[field]} reported a measurement it did not take, which is what makes it assertable`);
+    }
+  }
+});
+
+test('DRIVEN: an EMPTY per-read refresh list is a skip even when something counted', () => {
+  // `refreshesPerRead` IS PER READ. An empty list against an expiring endpoint means NO READ WAS RECORDED,
+  // which is not the same fact as "no read needed a refresh" -- and only the second would be evidence. The
+  // old code reduced the empty list to a worst case of zero and asserted it against a ceiling of one.
+  const record = {
+    status429: 0, retries: 0, refreshesPerRead: [] as number[], disallowedOriginContacts: 0,
+    egressObservedAtListener: true, endpointExpires: true,
+    provenance: {
+      status429: 'counted', retries: 'counted', refreshesPerRead: 'counted',
+      disallowedOriginContacts: 'counted', endpointExpires: 'derived',
+    },
+  };
+  const refresh = verdictFor(record, 'refresh-per-read');
+  assertEq(refresh.verdict, 'skip', 'an empty per-read refresh list produced a verdict rather than a skip');
+  assert(/no read was recorded/.test(refresh.note ?? ''),
+    'the skip does not say that an empty list means no read was recorded');
+  // AND A LIST WITH SOMETHING IN IT IS STILL A HARD ASSERTION BOTH WAYS.
+  assertEq(verdictFor({ ...record, refreshesPerRead: [1] }, 'refresh-per-read').verdict, 'pass', 'one refresh');
+  assertEq(verdictFor({ ...record, refreshesPerRead: [2] }, 'refresh-per-read').verdict, 'fail', 'two refreshes');
+});
+
+test('REGRESSION: the auditor\'s all-four-arms-green state is reproduced on the OLD bytes and CAUGHT on these', () => {
+  // THE DEFECT, AS THE AUDIT DROVE IT. Real mode, a RESOLVER endpoint -- which is what the real path is for
+  // -- no origin-counter surface, and a clean listener observation filed (the state the scheduled listener
+  // work reaches). On the pre-repair bytes every one of the four RP3 arms went green, carrying a fabricated
+  // refresh verdict on a real provider.
+  //
+  // THE OLD SHAPE IS RECONSTRUCTED RATHER THAN IMPORTED, because the point is the SHAPE: a record with the
+  // five numbers present, `endpointExpires` true, `refreshesPerRead` empty, and no per-field provenance for
+  // the counters. That is precisely what the old helper wrote.
+  const oldShape = {
+    status429: 0, retries: 0, refreshesPerRead: [] as number[], disallowedOriginContacts: 0,
+    egressObservedAtListener: true, endpointExpires: true,
+    provenance: {
+      endpointExpires: 'derived-from-the-endpoint-document-this-run-used',
+      egressObservedAtListener: 'measured-at-a-listener-this-run-stood-up-on-a-deliberately-excluded-origin',
+      disallowedOriginContacts: 'the-delta-of-that-listener-own-counters',
+      // THE ONE KEY THE OLD RECORD CARRIED FOR THREE FIELDS, AND WHICH THE MODULE NEVER LOOKED UP.
+      transportCounters: 'UNTAKEN-no-origin-counter-surface-on-this-path',
+    },
+  };
+  const arms = ['retries-bounded', 'egress-allowlist', '429-observed', 'refresh-per-read'] as const;
+  const verdicts = arms.map((arm) => verdictFor(oldShape, arm).verdict);
+  assert(!verdicts.every((verdict) => verdict === 'pass'),
+    `all four RP3 arms went green on the shape the audit found: ${arms.map((a, i) => `${a}=${verdicts[i]}`).join(' ')}`);
+  // AND SPECIFICALLY THE ONE THE AUDIT NAMED.
+  const refresh = verdictFor(oldShape, 'refresh-per-read');
+  assertEq(refresh.verdict, 'skip', 'RP3-refresh-per-read still passes from an empty, unattributed list');
+  assertEq(refresh.measured, undefined, 'and it still reports a measurement nobody took');
+
+  // THE CONTROL: the same record with the counters GENUINELY measured is green again, so this regression is
+  // not "everything skips now" -- it is "an unmeasured number cannot be asserted".
+  const measured = {
+    ...oldShape,
+    refreshesPerRead: [1],
+    provenance: {
+      ...oldShape.provenance,
+      retries: 'counted', status429: 'counted', refreshesPerRead: 'counted',
+    },
+  };
+  for (const arm of arms) {
+    assertEq(verdictFor(measured, arm).verdict, 'pass', `a genuinely measured record did not pass ${arm}`);
+  }
+});
+
+test('DRIVEN: the gate\'s own record on the real path leaves the three counter arms SKIPPED', () => {
+  // END TO END THROUGH THE SHIPPED HELPER rather than over a hand-built record: this is the state a real run
+  // of this gate actually reaches today, and the arms it must not report as proven.
+  const record = observationRecord(resolverEndpoint(), '', '');
+  for (const arm of ['retries-bounded', '429-observed', 'refresh-per-read']) {
+    assertEq(verdictFor(record, arm).verdict, 'skip', `${arm} did not skip on the real path`);
+  }
+  // AND FAKE MODE IS UNCHANGED: a direct endpoint has nothing to refresh, and it says so for that reason
+  // rather than for want of a counter.
+  const fake = observationRecord(directEndpoint(), '', '', 'fake');
+  const refresh = verdictFor(fake, 'refresh-per-read');
+  assertEq(refresh.verdict, 'skip', 'the fake path stopped skipping the refresh arm');
+  assert(/serves stable references directly/.test(refresh.note ?? ''),
+    'the fake path skips the refresh arm for the wrong reason');
+});
+
+test('the gate READS the provenance it writes, and refuses a REAL run on any UNTAKEN field', () => {
+  const code = codeOf(read(GENERIC_GATE));
+  // THE COMMENT THAT PROMISED THIS REFUSAL SHIPPED BEFORE THE REFUSAL DID. `provenance` was written and
+  // never read; the only refusal was the skip check, and an UNTAKEN counter produced a PASS.
+  assert(/npx tsx "\$REL\/untaken\.mts"/.test(code),
+    'nothing in the gate reads the provenance it writes, so the record is decoration');
+  assert(/if \[ "\$MODE" = "real" \]; then/.test(code) && /UNTAKEN_FIELDS/.test(code),
+    'the gate does not refuse a real run whose observations were not taken');
+  // THE LIST OF FIELDS AND THE UNTAKEN RULE COME FROM THE MODULE, not from a copy in the gate.
+  const helper = helperFrom(GENERIC_GATE, 'UNTAKEN');
+  assert(/src\/core\/projection\/real-provider\.ts/.test(helper)
+    && /untakenTransportObservations/.test(helper),
+    'the gate carries its own copy of which fields matter, so its refusal can drift from the verdict layer');
+  for (const restated of ['UNTAKEN-', "'retries'", "'status429'"]) {
+    assert(!helper.includes(restated), `the untaken helper restates ${restated} instead of importing it`);
+  }
+  // AND IT ORDERS THE REFUSAL BEFORE THE VERDICT, so a real run with holes never emits a document at all.
+  assert(code.indexOf('untaken.mts') < code.indexOf('real_provider verdict'),
+    'the provenance refusal runs after the verdict, so a holed document is emitted before anything objects');
+});
+
+test('CONTROL: restoring the one-key provenance is CAUGHT', () => {
+  // THE EXACT PRE-REPAIR SHAPE: one `transportCounters` key covering three fields the module looks up
+  // individually. The audit's whole point is that this reads as "provenance is present" while enforcing
+  // nothing, so the check must be over the FIELD NAMES the module consults.
+  const helper = helperFrom(GENERIC_GATE, 'OBSERVATIONS');
+  const tampered = helper.replace(
+    /    retries: originCounters === undefined[\s\S]*?'the-origin-own-counters-before-and-after-the-reads',\n(?=  \},)/,
+    "    transportCounters: originCounters === undefined\n"
+    + "      ? 'UNTAKEN-no-origin-counter-surface-on-this-path'\n"
+    + "      : 'the-origin-own-counters-before-and-after-the-reads',\n",
+  );
+  assert(tampered !== helper, 'the tamper did not apply, so this control proves nothing');
+  const out = join(freshDir(), 'observations.json');
+  const endpoint = resolverEndpoint();
+  assertEq(runHelper(tampered, [out, 'true', 'true', 'true', 'true', '0', 'real',
+    '0', '0', '0', endpoint, '', '']).status, 0, 'the tampered helper failed for another reason');
+  const record = JSON.parse(readFileSync(out, 'utf8')) as { provenance: Record<string, string> };
+  for (const field of ['retries', 'status429', 'refreshesPerRead']) {
+    assertEq(record.provenance[field], undefined,
+      `the tampered record still names ${field}, so the check above is not measuring per-field provenance`);
+  }
+  // AND THE MODULE STILL REFUSES IT, because absent provenance fails closed -- which is why the two halves
+  // of this repair are independent rather than one guarding the other.
+  assertEq(verdictFor({
+    status429: 0, retries: 0, refreshesPerRead: [], disallowedOriginContacts: 0,
+    egressObservedAtListener: true, endpointExpires: true, provenance: record.provenance,
+  }, 'refresh-per-read').verdict, 'skip', 'the module accepted a record with no per-field provenance');
+});
+
+test('CONTROL: a verdict layer that stops reading provenance is CAUGHT', () => {
+  // THE MODULE-SIDE TAMPER. `isUntakenProvenance` returning false for everything is exactly the pre-repair
+  // behaviour, and it must put the all-four-green state back -- otherwise this suite's regression above
+  // would pass against bytes that never had the defect.
+  const module_ = read('src/core/projection/real-provider.ts');
+  const tampered = module_.replace(
+    /export function isUntakenProvenance\(provenance: string \| undefined\): boolean \{[\s\S]*?\n\}/,
+    'export function isUntakenProvenance(_provenance: string | undefined): boolean {\n  return false;\n}',
+  );
+  assert(tampered !== module_, 'the tamper did not apply, so this control proves nothing');
+  assert(/return false;/.test(tampered) && !/UNTAKEN_PROVENANCE_PREFIX\)/.test(
+    tampered.slice(tampered.indexOf('export function isUntakenProvenance'),
+      tampered.indexOf('export function untakenTransportObservations'))),
+  'a verdict layer that ignores provenance still reads as enforcing it, so nothing here measures the repair');
 });
 
 // ---------------------------------------------------------------------------------------------------------

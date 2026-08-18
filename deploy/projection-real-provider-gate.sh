@@ -392,6 +392,34 @@ if (unreadable > 0) {
 console.log(String(hits));
 SCAN
 
+cat > "$WORK/untaken.mts" <<'UNTAKEN'
+// The decision-bearing transport observations nobody took, READ FROM THE CONTRACT'S OWN MODULE.
+//
+// WHY IT IMPORTS RATHER THAN RE-IMPLEMENTS. The list of fields and the rule for what counts as UNTAKEN
+// both live in `real-provider.ts`, which is also what decides the verdicts. A gate carrying its own copy
+// of either would be a gate whose refusal could drift from the module's -- silently, in the direction
+// that lets a run finish. `untakenTransportObservations` is the same function the verdict layer's skips
+// are derived from, so the refusal here and the skips there cannot disagree.
+//
+// IT FAILS CLOSED. An unreadable or unparseable observation record exits non-zero rather than printing
+// nothing, because printing nothing is indistinguishable from "every field was measured".
+const root = process.env.RP_ROOT_URL as string;
+const module_ = await import(`${root}src/core/projection/real-provider.ts`);
+const { readFileSync } = await import('node:fs');
+const path = process.argv[2];
+if (typeof path !== 'string' || path === '') {
+  console.error('no observation record was named, so nothing can be said about what was measured');
+  process.exit(1);
+}
+const record = JSON.parse(readFileSync(path, 'utf8'));
+const untaken = module_.untakenTransportObservations(record) as readonly string[];
+for (const field of untaken) {
+  const why = record?.provenance?.[field] ?? '(no provenance at all)';
+  console.log(`${field}=${why}`);
+}
+process.exit(0);
+UNTAKEN
+
 cat > "$WORK/skips.cjs" <<'SKIPS'
 // The ids of every arm this run SKIPPED, one line, comma-separated, empty when there were none.
 //
@@ -472,11 +500,22 @@ const count = (raw) => (raw === '' || raw === undefined ? Number.NaN : Number(ra
 //   disallowedOriginContacts <- the delta in that observation. Absent without a listener, never 0.
 //   status429 / retries / refreshesPerRead <- the origin-counter observation where the run has one.
 //
-// AND AN ABSENT SOURCE IS NAMED AS ABSENT. `provenance` says UNTAKEN for every field this run had no way
-// to measure, and the gate REFUSES to report a real run as evidence while any decision-bearing arm skipped
-// -- which is where an untaken observation becomes a non-zero exit rather than a quiet zero. The numeric
-// fields themselves stay numbers, because the verdict layer types them that way; what changed is that the
-// record no longer lets "measured 0" and "nothing measured" print the same. §6.0 settled the same
+// AND AN ABSENT SOURCE IS NAMED AS ABSENT, AND THE NAMING IS NOW LOAD-BEARING.
+//
+// WHAT THIS COMMENT USED TO CLAIM, AND WHAT AN AUDIT FOUND. It said the gate "REFUSES to report a real run as
+// evidence while any of these says UNTAKEN". THERE WAS NO SUCH CHECK. `provenance` was written and never
+// read; the only refusal was the skip check, and an UNTAKEN counter field produced a PASS rather than a skip.
+// A comment asserting a refusal that does not exist is worse than no comment: it is the sentence that leads a
+// careful reader to conclude the hole is already closed.
+//
+// THE REFUSAL EXISTS NOW, IN TWO PLACES, AND BOTH READ THIS BLOCK:
+//   `src/core/projection/real-provider.ts` skips -- never passes -- any arm whose provenance is UNTAKEN, so
+//   an unmeasured number cannot be asserted against a ceiling; and
+//   the `untaken.cjs` step below refuses a REAL run outright while any of the five is UNTAKEN, so the run
+//   exits non-zero rather than emitting a document with holes in it.
+//
+// The numeric fields themselves stay numbers, because the verdict layer types them that way; what changed is
+// that "measured 0" and "nothing measured" can no longer produce the same verdict. §6.0 settled the same
 // three-valued question for the host preflight: an undetermined answer is reported, never passed.
 //
 // WHAT THIS TRANCHE DID NOT MAKE MEASURABLE, SAID PLAINLY. `status429`, `retries` and `refreshesPerRead`
@@ -519,6 +558,16 @@ const record = {
   // THE PROVENANCE OF EVERY DECISION-BEARING FIELD, so 'this was measured' and 'nothing could measure it'
   // are never the same line. The gate refuses to report a REAL run as evidence while any of these says
   // UNTAKEN, which is what stops an absence being read as a zero.
+  // THE PROVENANCE OF EVERY DECISION-BEARING FIELD, KEYED BY THE FIELD ITSELF.
+  //
+  // IT USED TO NAME THREE THINGS AND COVER FIVE. `transportCounters` was one key standing for `retries`,
+  // `status429` AND `refreshesPerRead`, and `real-provider.ts` reads provenance PER FIELD -- so a key the
+  // module never looks up is a provenance nothing enforces. That is how `refresh-per-read` came to pass from
+  // an empty list: the record said UNTAKEN under a name no assertion consulted.
+  //
+  // EVERY KEY BELOW IS A FIELD NAME IN `TransportProvenance`, and `untakenTransportObservations` walks
+  // exactly those five. A field renamed on one side and not the other fails the audit rather than silently
+  // becoming unenforced.
   provenance: {
     endpointExpires: endpointExpiresFrom,
     egressObservedAtListener: egressObservedAtListener
@@ -527,8 +576,14 @@ const record = {
     disallowedOriginContacts: egressObservedAtListener
       ? 'the-delta-of-that-listener-own-counters'
       : 'UNTAKEN-there-was-no-listener-to-count-at',
-    transportCounters: originCounters === undefined
-      ? 'UNTAKEN-no-origin-counter-surface-on-this-path'
+    retries: originCounters === undefined
+      ? 'UNTAKEN-no-daemon-retry-counter-surface-on-this-path'
+      : 'the-origin-own-counters-before-and-after-the-reads',
+    status429: originCounters === undefined
+      ? 'UNTAKEN-no-origin-429-counter-surface-on-this-path'
+      : 'the-origin-own-counters-before-and-after-the-reads',
+    refreshesPerRead: originCounters === undefined
+      ? 'UNTAKEN-no-per-read-refresh-counter-surface-on-this-path'
       : 'the-origin-own-counters-before-and-after-the-reads',
   },
   readOnly: {
@@ -941,6 +996,50 @@ node "$REL/observations.cjs" "$REL/out/observations.json" \
   "$WRITE_REFUSED" "$CREATE_REFUSED" "$UNLINK_REFUSED" "$CHMOD_REFUSED" "$LEASE_TRACES" "$MODE" \
   "$MOUNTPOINTS_LEFT" "$CONTAINERS_LEFT" "$RUN_DIRS_LEFT" \
   "$ENDPOINT" "$TRAP_OBSERVATION" "$ORIGIN_COUNTERS"
+
+# ----------------------------------------------------------------------------------------------------------
+step "the provenance of every decision-bearing observation, READ rather than merely written"
+# ----------------------------------------------------------------------------------------------------------
+# THE REFUSAL A COMMENT USED TO PROMISE AND NO CODE PERFORMED. An independent audit drove the shipped
+# `observations.cjs` into the shipped `transportResults` and found `RP3-refresh-per-read` PASSING with
+# `measured=0` out of an empty list whose own provenance said UNTAKEN -- and, with a listener observation
+# filed, all four RP3 arms green on a real provider with a fabricated refresh verdict.
+#
+# TWO THINGS CLOSE IT, AND THIS IS THE SECOND. The verdict module now SKIPS any arm whose provenance is
+# UNTAKEN, so no such arm can pass. This step goes further for a REAL run: it refuses the run outright,
+# because a real-provider document with holes in it is not evidence and its exit status must not say it is.
+#
+# FAKE MODE IS DELIBERATELY EXEMPT, AS IT IS FROM THE SKIP REFUSAL. There the untaken fields are the gate
+# saying which assertions its own fake endpoint cannot reach, which is the true statement it exists to
+# make -- and the arms SKIP there rather than passing, which is the property this whole change is about.
+RP_ROOT_NATIVE="$( (cd "$PWD" && pwd -W) 2>/dev/null || printf '%s' "$PWD" )"
+RP_ROOT_URL="file:///$(printf '%s' "$RP_ROOT_NATIVE" | sed 's|^/||')/"
+set +e
+UNTAKEN_FIELDS="$(RP_ROOT_URL="$RP_ROOT_URL" npx tsx "$REL/untaken.mts" "$REL/out/observations.json")"
+untaken_status=$?
+set -e
+[ "$untaken_status" -eq 0 ] \
+  || die "the observation record's provenance could not be read, so which fields were measured is \
+unknown -- and an unknown provenance is not a measured one"
+
+if [ -n "$UNTAKEN_FIELDS" ]; then
+  echo "  UNTAKEN decision-bearing observations:"
+  echo "$UNTAKEN_FIELDS" | sed 's/^/    /'
+  if [ "$MODE" = "real" ]; then
+    echo >&2
+    echo "GATE FAILED: this REAL run could not take every decision-bearing observation." >&2
+    echo "$UNTAKEN_FIELDS" | sed 's/^/      /' >&2
+    echo "      Each line names a field and why nothing measured it. An unmeasured number is NOT a" >&2
+    echo "      measurement of zero, and a real-provider document with holes in it is not evidence." >&2
+    echo "      The arms those fields decide now SKIP rather than pass; this refusal is why the RUN" >&2
+    echo "      does not report success anyway." >&2
+    exit 1
+  fi
+  echo "  FAKE MODE: the fields above are what this gate's own fake endpoint cannot measure, and the"
+  echo "  arms they decide SKIP rather than pass. Nothing here is reported as proven."
+else
+  echo "  every decision-bearing observation was taken, and each names where it came from"
+fi
 
 real_provider verdict --objects "$OBJECTS" --control "$REL/out/control.json" \
   $FIXTURE_FLAG \
