@@ -328,9 +328,9 @@ tranche repaired instruments and regressed the repairs, and **a repaired instrum
 | | |
 |---|---|
 | Base | integration `f77871f` |
-| Commits | the work is listed commit by commit in §10.2 and §12.1. **No total is stated here**: an audit found this row off by one, and it was off by one because it counted a set that every further commit changes — including the commit that corrected the count. A list that names its members cannot be off by one; a number describing itself always can |
+| Commits | the work is listed commit by commit in §10.2, §12.1 and §12.5. **No total is stated here**: an audit found this row off by one, and it was off by one because it counted a set that every further commit changes — including the commit that corrected the count. A list that names its members cannot be off by one; a number describing itself always can. **§12.5 is the repair of a residue of that repair** — a re-audit found the three record-writing commits unlisted, so the sentence claimed a completeness the list did not deliver |
 | Typecheck | `npx tsc --noEmit` — **clean** |
-| New suites | `projection-phase13-preentry` 35/0, `projection-phase13-preentry-gate-audit` 48/0 |
+| New suites | `projection-phase13-preentry` **39/0**, `projection-phase13-preentry-gate-audit` **65/0**, measured at `54aa744`. **The figures that stood here were 35/0 and 48/0** — byte-identical to `32a230f`, i.e. never re-measured after the correction pass added checks, and nothing pinned them. A re-audit found it. §13 records the pass that repaired it and carries its own, later figures; these two belong to the commit named beside them and are not restated to agree with a subsequent tree |
 | Full offline inventory | **338 selected, 338 passed, 0 failed, 0 required-but-skipped**, from BOTH shells, from one frozen commit. §10.9 |
 | Controls | every repair carries one, and **each was watched failing on the unrepaired bytes** |
 | Provider contact | **none** |
@@ -355,8 +355,17 @@ tranche repaired instruments and regressed the repairs, and **a repaired instrum
 `src/core/projection/phase13-preentry.ts`, `deploy/projection-preentry-readiness.sh`,
 `test/projection-phase13-preentry.ts`, `test/projection-phase13-preentry-gate-audit.ts`.
 
-**Modified (11):** the two provider gates, the four `-optional` wrappers, `projection-phase12-stage.sh`,
-`test/projection-real-provider.ts`, `test/suite-inventory.json`, `package.json`, `.gitignore`.
+**Modified (15):** the two provider gates, the four `-optional` wrappers, `projection-phase12-stage.sh`,
+`docker-compose.projection-real-provider.yml`, `docker-compose.projection-torbox.yml`,
+`src/core/projection/real-provider.ts`, `test/projection-real-provider.ts`, `test/torbox-resolver.ts`,
+`test/suite-inventory.json`, `package.json`, `.gitignore`.
+
+**THIS PARAGRAPH SAID ELEVEN, AND GIT SAYS FIFTEEN.** A re-audit found it: the four the correction pass §12
+added — the two Compose files, `real-provider.ts` and `test/torbox-resolver.ts` — were never added here, and
+the omission mattered most for `src/core/projection/real-provider.ts`, which carries the D1 repair and is
+this tranche's principal `src/` change. **§11 was correct throughout**, and is the declared authority, and is
+bidirectionally test-enforced against git; this paragraph was measured by nothing, which is why it drifted.
+It is now measured: §13's suite asserts this list and §11's table name the same set.
 
 **Not touched, and checked:** everything on `PHASE13_PREENTRY_FORBIDDEN_SOURCE` — the appliance script and
 its profile, the content plane, the gate cleanup helper, and `phase7.ts` through `phase12.ts`. **No
@@ -538,3 +547,102 @@ one is a product change §4 forbids. That is the honest answer and it is a **nam
 folded into success. It also means the gate the Phase 12 roadmap row names as Phase 13's instrument still
 cannot produce complete real evidence; §8's second supersession, which names the provider-specific gate
 instead, stands unchanged and is now the load-bearing sentence rather than a preference.
+
+### 12.5 The three commits §12.1 and §10.2 do not name
+
+Recorded here because §10.1's sentence — *"the work is listed commit by commit"* — claimed more than the two
+lists delivered, and a re-audit counted **14 of 17**. All three are **documentation-only single-file edits to
+this contract**, so no code commit was ever unaccounted; the D6 repair is materially right and this is its
+residue. Naming them costs nothing and makes the sentence true.
+
+| commit | what it is |
+|---|---|
+| `de065d1` | §10.9 — the record commit measured, and the earlier pair of figures not counted |
+| `ed3c79f` | §12 — every defect the independent audit found, and its disposition |
+| `54aa744` | §10.9 — both offline arms re-measured on the correction pass, and the red run that preceded them named |
+
+And one more, which is not this tranche's commit and is why the list can now stop growing: **`fe4c1fd`**, the
+merge that carried this branch into the pushed integration line. It is the commit every figure in §13 below
+is measured **from**, and it changes no file of its own.
+
+---
+
+---
+
+## 13. The final re-audit's residuals, and a defect found by repairing them
+
+**A third reader re-audited the correction pass at `54aa744`, read-only, drove every prior defect to its
+boundary, and returned ACCEPT on both counts** — the branch as integrable, and the instrument as repaired,
+withdrawing the earlier REJECT because D1 was proved closed by reproducing the exact false pass and watching
+it skip. It found **no blocker and no false green**. What it did find was three stale figures in the run
+record and five recorded limitations. This section is what was done about all eight.
+
+**NOTHING HERE CONTACTS A PROVIDER EITHER.** No credential was read, no allowlist was moved, no host state
+changed, `endpoint.json` was neither read nor written, and **Phase 13 is still NOT ENTERED**. Every claim of
+every tranche is exactly where §2 left it.
+
+### 13.1 The three stale figures
+
+| # | What was stale | Repair |
+|---|---|---|
+| **N1** | §10.3's *"Modified (11)"*, which omitted the four files the correction pass added — including `src/core/projection/real-provider.ts`, this tranche's principal `src/` change | **REPAIRED.** The paragraph names all fifteen, says what it said before, and is now **measured**: a check asserts §10.3's enumeration and §11's table name the same set, so the two can no longer disagree |
+| **N2** | §10.1's suite figures — 35/0 and 48/0, byte-identical to `32a230f`, never re-measured after the correction pass added checks | **REPAIRED.** 39/0 and 65/0 at `54aa744`, with the commit named beside them. §13.4 carries this pass's own later figures rather than overwriting theirs |
+| **N3** | the commit list named 14 of 17 | **REPAIRED** in §12.5, by naming the three |
+
+### 13.2 The five recorded limitations
+
+| # | What it was | Disposition |
+|---|---|---|
+| **N4** | per-run identity rested on `$$`, unique among live processes in **one** pid namespace — while the claim the names carry is absolute | **REPAIRED.** Both gates derive `RUN_ID` once, from a named `projection_run_id` function they carry **byte-identically**: the pid, kept because it is what a person greps for in `docker ps`, plus four bytes of entropy. It **refuses rather than falling back to the pid** — a run that cannot be named distinctly is a run whose cleanup may reach another's, and that is a reason to stop before creating anything. Controls: a sweep proving no bare `$$` survives outside the derivation, the derivation **driven twice in ONE shell** and asserted to differ, and a pid-only derivation **driven** and asserted to collide |
+| **N5** | `trap-listener.json` and `origin-counters.json` — the two files that would turn three SKIPPED transport arms into measurements — were read from `$WORK/out`, which is 0777 | **REPAIRED.** They are read from `$WORK/observations`, which is **0700 and mounted into no container**. The 0777 that remains on `cache`, `mnt` and `out` now carries its reason in the file: a container running as an unpredictable uid writes into all three. Control: an observation moved back into the 0777 directory is caught |
+| **N6** | set preservation was asserted on the **success path only**; every path out through `die` ran the EXIT trap's `down -v` with nothing measuring it | **REPAIRED.** One `set_preservation_losses` function, two call sites: the success path asserts through it, and the EXIT trap measures through it after the success path's early return. **The trap may move a verdict in one direction only** — it captures the status it was entered with and calls `exit 1` only when that was zero. Controls: the removal a count would hide, driven for **all three kinds** against the shipped function; a run that created nothing reported UNMEASURED rather than preserved; and the failure-path call removed and caught |
+| **N7** | one control asserted on tampered **source text** and never executed it, so it never demonstrated the defect returning | **REPAIRED.** The tampered module is written out and **run** through `node --import tsx`, and the two arms provenance alone decides are asserted to go back to an unmeasured PASS. The arm the **second** half of the D1 repair holds is asserted to stay a skip, because a control that required all four to go green would be a control that required one repair to do the work of two |
+| **N8** | the git-driven §11 check recorded a **pass** when it could not ask — `assert(true, …)` on a missing candidate — in a tranche whose §4 refuses to fold a skip into a pass | **REPAIRED, FAIL-CLOSED.** A checkout that cannot resolve the candidate fails the check by name. And the *other* direction was widened rather than weakened: every file the branch touches must be claimed by the ownership table of **some phase document added since the candidate**, so a successor tranche's files are accounted for by their own table and a change to an **earlier** tranche's file is still unlisted. Control: a dropped row stops being claimed, and a document with no ownership section claims nothing |
+
+### 13.3 THE DEFECT THIS PASS FOUND, AND IT WOULD HAVE KILLED THE FIRST REAL RUN
+
+Repairing N6 meant driving the shipped set-preservation loop instead of reading it, and it does not survive
+the case it was written for.
+
+```
+_gone="$(comm -23 "$WORK/out/before-$_kind.txt" "$WORK/out/after-$_kind.txt" | grep -c . )"
+```
+
+**`grep -c` exits 1 when the count is zero.** Both gates set `set -euo pipefail` on their first lines, so
+that assignment **aborts the script** — silently, with no `die` message, after the verdict had been printed
+— on exactly the runs that satisfied the check. A run that removed nothing died; a run that removed
+something reported it. The check was inverted end to end.
+
+**IT HAD NEVER RUN, AND COULD NOT HAVE.** It was added by `4b4f61a`, after Phase 12's campaign; this gate
+needs a real provider, and the generic gate's real mode refuses for want of a counter surface. Three
+independent readers — the readiness review, the audit, the re-audit — read these bytes and none of them
+executed this line.
+
+**AND THE CONTROL THAT EXISTED DID NOT CATCH IT, WHICH IS THE PART WORTH KEEPING.** `DRIVEN: the set
+difference catches a removal a count would hide` re-typed the pipeline into its own harness **with `|| true`
+appended**. It drove a correct version of a line the gate shipped wrong, and went green. *A control that
+retypes what it measures is measuring the retyping* — the new ones lift the function out of the shipped file
+and run **that**.
+
+Repaired by `|| true`, which keeps the count `grep` already printed and drops the status that only ever meant
+"none". Regressed by driving the **shipped** function, from **both** gates, over a host it removed nothing
+from.
+
+### 13.4 What was run for this pass
+
+**EVERY FIGURE IS OFFLINE.** No provider, CDN, resolver, credential, media server, container or host was
+contacted, started, stopped, read for value or changed to produce any of them.
+
+| | |
+|---|---|
+| Base | integration `fe4c1fd` |
+| Typecheck | `npx tsc --noEmit` — **clean** |
+| The two suites | `projection-phase13-preentry` **41/0**, `projection-phase13-preentry-gate-audit` **76/0** |
+| Controls | every repair above carries one, and each was watched failing on the unrepaired bytes |
+| Provider contact | **none** |
+| Claims moved | **none.** Phase 10, Phase 11 tier one and Phase 12 stay GO; Phase 9 and Phase 11 tier two stay OPEN; `P11-R1` is **NOT RUN**; **Phase 13 is NOT ENTERED** |
+
+**The full offline inventory from both shells is recorded in the Phase 13 preparation document**, not here:
+it was taken from a candidate that includes this pass *and* that tranche's work, and a figure measured on a
+tree that is not this tranche's belongs to that tree's record. §10.9's arms are unchanged and are still the
+figure for `321a43b`.

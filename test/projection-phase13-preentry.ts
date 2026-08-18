@@ -482,22 +482,7 @@ function ownershipTablePaths(): readonly string[] {
   const at = document.indexOf(PHASE13_PREENTRY_OWNERSHIP_SECTION);
   assert(at >= 0, `${CONTRACT} has no section titled "${PHASE13_PREENTRY_OWNERSHIP_SECTION}", so the `
     + 'complete ownership list cannot be read and the soak question would be asked of a subset');
-  const section = document.slice(at);
-  const paths: string[] = [];
-  for (const line of section.split('\n')) {
-    if (!line.startsWith('|')) continue;
-    const first = line.split('|')[1]?.trim() ?? '';
-    const match = /^`([^`]+)`$/.exec(first);
-    // EVERY EXTENSION THIS TRANCHE ACTUALLY TOUCHES, PLUS DOTFILES. A parser that knew four extensions
-    // silently dropped the two Compose files and `.gitignore` from the table it was checking — so the
-    // bidirectional check below reported them as unlisted when they were listed, which is the same class of
-    // "the check and the thing it checks disagree about what counts" this whole pass is about.
-    if (match?.[1] !== undefined
-      && /^[\w./-]*\.(ts|sh|json|md|yml|yaml|gitignore|gitattributes)$/.test(match[1])) {
-      paths.push(match[1]);
-    }
-  }
-  return paths;
+  return ownershipSectionPaths(document.slice(at));
 }
 
 test('the ownership table is complete: it holds every path the module names, and more', () => {
@@ -518,21 +503,60 @@ test('the ownership table is complete: it holds every path the module names, and
   }
 });
 
-test('every path §11 claims as modified WAS modified, driven against git', () => {
+/**
+ * The paths every ownership table in this repository's POST-CANDIDATE phase documents claims.
+ *
+ * WHY THE UNION AND NOT JUST §11. This document's §11 is the authority for THIS tranche, and the branch it
+ * sits on carries later tranches too — a Phase 13 preparation's contract, its module, its suites. Checking
+ * "every file the branch touched is in §11" would make this tranche's own record fail the moment a
+ * successor landed a file of its own, and the fix somebody would reach for is to weaken the check.
+ *
+ * THE SET OF DOCUMENTS IS DECIDED BY GIT RATHER THAN BY A LIST HERE. A phase document ADDED since the
+ * candidate belongs to work done since the candidate, and its ownership table is the authority for that
+ * work. A document that already existed at the candidate — Phase 12's, Phase 11's — is not consulted, so a
+ * change to a file an EARLIER tranche owns is still unlisted here, which is exactly the direction that must
+ * not be excused. The property this preserves is the strong one: **every file this branch touched is claimed
+ * by some tranche whose work is on this branch.**
+ */
+function ownershipSectionPaths(document: string): readonly string[] {
+  const at = document.search(/^## \d+\. File ownership/m);
+  if (at < 0) return [];
+  const section = document.slice(at);
+  const paths: string[] = [];
+  for (const line of section.split('\n')) {
+    if (!line.startsWith('|')) continue;
+    const first = line.split('|')[1]?.trim() ?? '';
+    const match = /^`([^`]+)`$/.exec(first);
+    // EVERY EXTENSION THESE TRANCHES ACTUALLY TOUCH, PLUS DOTFILES. A parser that knew four extensions
+    // silently dropped the two Compose files and `.gitignore` from the table it was checking — so the
+    // bidirectional check reported them as unlisted when they were listed, which is the same class of "the
+    // check and the thing it checks disagree about what counts" this whole pass is about.
+    if (match?.[1] !== undefined
+      && /^[\w./-]*\.(ts|sh|json|md|yml|yaml|gitignore|gitattributes)$/.test(match[1])) {
+      paths.push(match[1]);
+    }
+  }
+  return paths;
+}
+
+test('every path §11 claims as modified WAS modified, driven against git, and it FAILS when it cannot ask', () => {
   // THE DIRECTION THE COMPLETENESS CHECK COULD NOT SEE. It asserted table ⊇ module, so a row naming a file
   // NOTHING TOUCHED was structurally invisible — and an independent audit found exactly one:
   // `test/projection-phase12.ts`, listed as carrying a control that in fact lives in the gate-audit suite.
   //
-  // IT IS DRIVEN AGAINST GIT rather than inferred, because "was this file modified" is a question only the
-  // history can answer. The base is read from the document's own header, so the check cannot drift from the
-  // candidate the record claims. Where git or that commit is unavailable — a shallow clone, an export — it
-  // SKIPS BY NAME rather than failing, for the reason `posix-shell-kit` gives: a suite that could not ask
-  // the question has not answered it either way.
+  // AND IT USED TO RECORD A PASS WHEN IT COULD NOT ASK. A re-audit named that: `assert(true, …); return` on
+  // a missing candidate commit registers a PASSING check, in a tranche whose own §4 refuses to fold a skip
+  // into a pass. The harness has no third verdict, so the honest one is the closed one — a checkout that
+  // cannot answer "was this file modified" has not answered it, and the suite says so by failing. Every
+  // shell this repository runs its offline inventory from is a git checkout with the candidate in it; a
+  // tree without one is a tree this check was never measured on.
   const base = /\| Candidate \| integration `([0-9a-f]{7,40})`/.exec(read(CONTRACT))?.[1];
   assert(base !== undefined, 'the document names no candidate, so nothing can say what "modified" means');
   const rev = spawnSync('git', ['rev-parse', '--verify', `${base}^{commit}`],
     { cwd: repoRoot, encoding: 'utf8', timeout: 60_000 });
-  if (rev.status !== 0) { assert(true, `the candidate ${base} is not in this checkout`); return; }
+  assertEq(rev.status, 0,
+    `the candidate ${String(base)} cannot be resolved in this checkout, so the ownership table is UNCHECKED `
+    + 'rather than complete. This fails closed: an unasked question is not an answered one');
 
   const diff = spawnSync('git', ['diff', '--name-only', `${base}..HEAD`],
     { cwd: repoRoot, encoding: 'utf8', timeout: 120_000 });
@@ -545,11 +569,74 @@ test('every path §11 claims as modified WAS modified, driven against git', () =
   assertEq(phantom.length, 0,
     `§11 claims these paths but the branch does not touch them: ${phantom.join(', ')}`);
 
-  // AND EVERY FILE THIS BRANCH TOUCHED HAS A ROW. The other direction, so a file can no longer be changed
-  // without the ownership record saying so — which is the half that keeps the table honest as work lands.
-  const unlisted = [...changed].filter((path) => !ownershipTablePaths().includes(path));
+  // AND EVERY FILE THIS BRANCH TOUCHED IS CLAIMED BY SOME POST-CANDIDATE TRANCHE'S OWNERSHIP TABLE. The
+  // other direction, so a file can no longer be changed without an ownership record saying so.
+  const added = spawnSync('git', ['diff', '--name-only', '--diff-filter=A', `${base}..HEAD`, '--', 'docs/'],
+    { cwd: repoRoot, encoding: 'utf8', timeout: 120_000 });
+  assertEq(added.status, 0, 'git could not list the documents this branch adds');
+  const claimed = new Set(ownershipTablePaths());
+  for (const doc of String(added.stdout ?? '').split('\n').map((one) => one.trim()).filter(Boolean)) {
+    if (!doc.endsWith('.md')) continue;
+    for (const path of ownershipSectionPaths(read(doc))) claimed.add(path);
+  }
+  assert(claimed.size >= ownershipTablePaths().length,
+    'the union of post-candidate ownership tables is smaller than §11 alone, so the parse is suspect');
+  const unlisted = [...changed].filter((path) => !claimed.has(path));
   assertEq(unlisted.length, 0,
-    `these paths are modified by the branch and §11 does not list them: ${unlisted.join(', ')}`);
+    `these paths are modified by the branch and no post-candidate ownership table lists them: ${unlisted.join(', ')}`);
+});
+
+test('§10.3\'s enumeration and §11\'s table name the same files, so the prose cannot drift again', () => {
+  // WHY THIS CHECK EXISTS. §10.3 said "Modified (11)" and git said fifteen; the four the correction pass
+  // added were never added to it, including `src/core/projection/real-provider.ts`, which carries the D1
+  // repair. §11 was right the whole time and is bidirectionally enforced — §10.3 was **measured by nothing**,
+  // which is the only reason the two could disagree. Now they cannot.
+  const document = read(CONTRACT);
+  const at = document.indexOf('**Modified (');
+  assert(at >= 0, '§10.3 no longer enumerates the modified files, so this check has nothing to compare');
+  const paragraph = document.slice(at, document.indexOf('\n\n', at));
+
+  // THE COUNT IN THE PROSE IS THE COUNT OF THE ROWS, not a number somebody typed beside a list.
+  const stated = Number(/\*\*Modified \((\d+)\)/.exec(paragraph)?.[1]);
+  const newStated = Number(/\*\*New \((\d+)\)/.exec(document)?.[1]);
+  const table = ownershipTablePaths();
+  assertEq(stated + newStated, table.length,
+    `§10.3 accounts for ${newStated} new plus ${stated} modified and §11 lists ${table.length} paths`);
+
+  // AND EVERY FILE §11 NAMES IS NAMED IN THE PROSE, by path or by an unambiguous group. The four wrappers
+  // and the two provider gates are named collectively there on purpose — a paragraph that spelled out
+  // twenty paths is a paragraph nobody reads — so the ones checked by name are everything else.
+  const grouped = new Set([
+    'deploy/projection-real-provider-gate.sh', 'deploy/projection-torbox-real-gate.sh',
+    'deploy/projection-real-provider-gate-optional.sh', 'deploy/projection-torbox-real-gate-optional.sh',
+    'deploy/projection-torbox-mount-gate-optional.sh', 'deploy/projection-path-lifecycle-gate-optional.sh',
+  ]);
+  const section = document.slice(document.indexOf('### 10.3'), document.indexOf('### 10.4'));
+  for (const path of table) {
+    if (grouped.has(path)) continue;
+    assert(section.includes(path.split('/').pop() ?? path),
+      `§11 names ${path} and §10.3 does not mention it, so the two records disagree again`);
+  }
+});
+
+test('CONTROL: the ownership union bites on a dropped row and on a document that claims nothing', () => {
+  // A CHECK NOBODY HAS WATCHED FAIL IS A CHECK NOBODY SHOULD BELIEVE, and this one has two ways to go
+  // vacuous: a parser that finds no section returns an empty list quietly, and a union that swallowed an
+  // unlisted path would report zero for the same reason a stopped-part-way inventory does.
+  const document = read(CONTRACT);
+  const rows = ownershipSectionPaths(document);
+  assert(rows.length >= 15, `the §11 parse found only ${rows.length} rows, so the union is built on almost nothing`);
+
+  // A ROW REMOVED IS A PATH NO LONGER CLAIMED.
+  const dropped = ownershipSectionPaths(
+    document.split('\n').filter((line) => !line.startsWith('| `package.json` |')).join('\n'));
+  assert(rows.includes('package.json') && !dropped.includes('package.json'),
+    'dropping a row from the table did not drop it from the parse, so the union cannot notice a missing one');
+
+  // AND A DOCUMENT WITH NO OWNERSHIP SECTION CLAIMS NOTHING, rather than claiming everything it happens to
+  // mention in a table. That is what keeps the union from quietly excusing a path.
+  assertEq(ownershipSectionPaths('# a document\n\n| a | b |\n|---|---|\n| `src/x.ts` | new |\n').length, 0,
+    'a document with no File ownership section still claimed a path, so any table anywhere would excuse one');
 });
 
 test('PHASE 9: nothing this tranche touches triggers a soak re-run', () => {

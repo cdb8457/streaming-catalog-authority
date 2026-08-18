@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import {
-  chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync,
+  chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -786,7 +786,7 @@ test('the compose project belongs to THIS RUN, and every compose invocation says
   // create, under the claim that it never happens.
   for (const [gate, prefix] of [[GENERIC_GATE, 'projection-rp-gate-'], [PROVIDER_GATE, 'projection-tbr-gate-']] as const) {
     const code = codeOf(read(gate));
-    assert(new RegExp(`COMPOSE_PROJECT="${prefix}\\$\\$"`).test(code),
+    assert(new RegExp(`COMPOSE_PROJECT="${prefix}\\$\\{RUN_ID\\}"`).test(code),
       `${gate} has no per-run compose project, so its teardown reaches every other run of it`);
     const composeCalls = code.replace(/\\\n\s*/g, ' ')
       .split('\n').filter((line) => /docker compose /.test(line));
@@ -822,7 +822,7 @@ test('the network is per-run, and the compose file no longer fixes its name', ()
     [PROVIDER_GATE, 'docker-compose.projection-torbox.yml', 'PROJECTION_TORBOX_GATE_NETWORK'],
   ] as const) {
     const code = codeOf(read(gate));
-    assert(/^NETWORK="[a-z-]+-\$\$"$/m.test(code),
+    assert(/^NETWORK="[a-z-]+-\$\{RUN_ID\}"$/m.test(code),
       `${gate}'s network is not per-run, so two runs on one host share one and neither owns it`);
     assert(new RegExp(`export ${envVar}="\\$NETWORK"`).test(code),
       `${gate} does not hand its per-run network name to the compose file`);
@@ -876,8 +876,9 @@ test('the sets are compared as MEMBERSHIP and asserted, not counted and reported
     // count is identical; only a set difference sees it.
     assert(/comm -23 "\$WORK\/out\/before-\$_kind\.txt" "\$WORK\/out\/after-\$_kind\.txt"/.test(code),
       `${gate} compares inventories by count rather than by membership`);
-    assert(/die "this run removed \$_gone \$_kind it did not create/.test(code),
-      `${gate} reports a removed pre-existing resource rather than failing on it`);
+    assert(/^set_preservation_losses \\\n {2}\|\| die "this run removed a container, network or volume it did not create\./m
+      .test(code),
+    `${gate} reports a removed pre-existing resource rather than failing on it`);
     // AND IT RUNS WHILE THE BEFORE-INVENTORY STILL EXISTS, i.e. before the run directory is removed.
     //
     // THE ANCHOR IS THE SUCCESS-PATH CALL, NOT THE ONE IN THE EXIT TRAP. Both call the same helper; the
@@ -885,9 +886,9 @@ test('the sets are compared as MEMBERSHIP and asserted, not counted and reported
     // as broken while measuring nothing — which is what the first version of this very check did. The
     // line-start anchor is what tells the two apart.
     const cleanupAt = code.search(/^projection_gate_cleanup_run /m);
-    const commAt = code.indexOf(`comm -23`);
+    const assertAt = code.search(/^set_preservation_losses \\$/m);
     assert(cleanupAt > 0, `${gate} has no success-path cleanup call, so this ordering check has no anchor`);
-    assert(commAt > 0 && commAt < cleanupAt,
+    assert(assertAt > 0 && assertAt < cleanupAt,
       `${gate} compares the sets after deleting the directory the before-inventory lives in`);
     // BOTH SIDES SORTED UNDER THE C LOCALE, or `comm` is comparing two differently ordered lists and its
     // answer is about the host's collation rather than about the host. Three before-inventories are written
@@ -1526,8 +1527,8 @@ test('cleanup removes only containers this run named, and only its own compose p
         `${gate} removes a container it did not name: ${line.trim()}`);
     }
     for (const variable of code.match(/[A-Z_]*CONTAINER="[^"]*"/g) ?? []) {
-      assert(variable.includes('-$$"'),
-        `${gate} names a container without this shell's pid (${variable}), so a concurrent run's container `
+      assert(variable.includes('-${RUN_ID}"'),
+        `${gate} names a container without this run's id (${variable}), so a concurrent run's container `
         + 'could be removed by this one');
     }
     // AND `compose down -v` IS SCOPED TO THIS GATE'S OWN COMPOSE FILE, so the volumes it removes are its own.
@@ -1538,15 +1539,336 @@ test('cleanup removes only containers this run named, and only its own compose p
   }
 });
 
-test('CONTROL: a container name without this run\'s pid is CAUGHT', () => {
+test('CONTROL: a container name without this run\'s id is CAUGHT', () => {
   const body = read(PROVIDER_GATE);
-  const tampered = body.replace('MOUNT_CONTAINER="projection-tbr-mount-$$"',
+  const tampered = body.replace('MOUNT_CONTAINER="projection-tbr-mount-${RUN_ID}"',
     'MOUNT_CONTAINER="projection-tbr-mount"');
   assert(tampered !== body, 'the tamper did not apply, so this control proves nothing');
   const named = (codeOf(tampered).match(/[A-Z_]*CONTAINER="[^"]*"/g) ?? []);
-  assert(named.some((one) => !one.includes('-$$"')),
-    'a container named without this run\'s pid still reads as pid-scoped, so a cleanup could remove a '
+  assert(named.some((one) => !one.includes('-${RUN_ID}"')),
+    'a container named without this run\'s id still reads as run-scoped, so a cleanup could remove a '
     + 'concurrent run\'s container and this audit would not say so');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+h.section('N4/N5/N6 — the limitations an independent re-audit recorded, and the defect repairing them found');
+// ---------------------------------------------------------------------------------------------------------
+
+/**
+ * A top-level shell function lifted whole out of a gate.
+ *
+ * THE CLOSING BRACE IS THE ONE IN COLUMN ZERO, which is what tells a function's end from a `|| {` block
+ * inside it. Anything else would slice a region this suite is not sure of, and `test/helpers/shell-source.ts`
+ * exists because a slice nobody is sure of fails silently in both directions.
+ */
+function shellFunction(gatePath: string, name: string): string {
+  const body = read(gatePath);
+  const open = body.indexOf(`\n${name}() {\n`);
+  assert(open >= 0, `${gatePath} defines no ${name}, so nothing here can be driven`);
+  const close = body.indexOf('\n}\n', open);
+  assert(close > open, `${gatePath}'s ${name} has no closing brace in column zero`);
+  return body.slice(open + 1, close + 2);
+}
+
+/** Run a script under the POSIX shell this suite found by EXECUTING candidates, in a throwaway directory. */
+function runShell(script: string): { status: number; out: string; err: string } {
+  const dir = freshDir();
+  const path = join(dir, 'drive.sh');
+  writeFileSync(path, script);
+  const result = spawnSync(shellOrThrow(), [shPath(path)], { encoding: 'utf8', timeout: 60_000 });
+  return {
+    status: result.status ?? -1,
+    out: String(result.stdout ?? '').trim(),
+    err: String(result.stderr ?? '').trim(),
+  };
+}
+
+test('N4: no name in either gate is the bare pid, and the id is derived once by a named function', () => {
+  // WHAT THE RE-AUDIT NAMED. `$$` is unique among LIVE processes in ONE pid namespace. The sentence these
+  // names carry — no two runs share a container, a volume, a network or a project — is ABSOLUTE, and two
+  // runs in separate pid namespaces on one Docker host, or a stale project from a crashed run whose pid has
+  // been reused, are both permitted by it. The pid is kept; entropy is what makes the sentence true.
+  for (const gate of [GENERIC_GATE, PROVIDER_GATE]) {
+    const code = codeOf(read(gate));
+    assert(/^RUN_ID="\$\(projection_run_id\)" \|\| exit 1$/m.test(code),
+      `${gate} does not derive a run id, or does not stop when it cannot`);
+    // AND THE DERIVATION IS ABOVE ITS OWN FIRST USE. A top-level call before its definition is one of the
+    // classes this suite exists for, and it has happened twice in this repository.
+    assert(code.indexOf('projection_run_id() {') < code.indexOf('RUN_ID="$(projection_run_id)"'),
+      `${gate} calls projection_run_id above its own definition`);
+    // NO SURVIVING BARE PID ANYWHERE ELSE IN THE CODE, including in a name added after this check was
+    // written. The derivation itself is the one place `$$` legitimately appears, so it is cut out first
+    // rather than matched around — a filter on the line's text would also excuse any future line that
+    // happened to mention the function.
+    const outside = code.split(shellFunction(gate, 'projection_run_id')).join('\n');
+    const bare = outside.split('\n').filter((line) => /\$\$/.test(line));
+    assertEq(bare.length, 0,
+      `${gate} still names something with the bare pid: ${bare.map((one) => one.trim()).join('; ')}`);
+  }
+  // AND THE TWO GATES CARRY THE SAME DERIVATION, so a repair to one is a repair to both.
+  assertEq(shellFunction(GENERIC_GATE, 'projection_run_id'), shellFunction(PROVIDER_GATE, 'projection_run_id'),
+    'the two gates derive their run ids differently, so the collision boundary is closed in only one');
+});
+
+test('DRIVEN: two ids taken in ONE shell — same pid — are different', () => {
+  const shell = posixShell();
+  if (shell === null) { assert(true, NO_SHELL); return; }
+  const derive = shellFunction(PROVIDER_GATE, 'projection_run_id');
+  const result = runShell(`set -euo pipefail\n${derive}\nprojection_run_id\necho\nprojection_run_id\necho\n`);
+  assertEq(result.status, 0, `the shipped derivation failed on this host: ${result.err}`);
+  const [first, second] = result.out.split('\n').map((one) => one.trim());
+  for (const id of [first, second]) {
+    assert(/^[0-9]+-[0-9a-f]{8}$/.test(String(id)),
+      `the run id ${String(id)} is not <pid>-<8 hex>, which is what has to be a legal Docker name component`);
+  }
+  assertEq(String(first).split('-')[0], String(second).split('-')[0],
+    'the two ids do not share a pid, so this control is not measuring one shell');
+  assert(first !== second,
+    'two runs that share a pid namespace got the same id, which is the collision the entropy exists to close');
+});
+
+test('CONTROL: a derivation that returns the pid alone is CAUGHT by driving it', () => {
+  // THE PRE-REPAIR BEHAVIOUR, EXECUTED rather than described: the same shell, twice, one id.
+  const shell = posixShell();
+  if (shell === null) { assert(true, NO_SHELL); return; }
+  const result = runShell('set -euo pipefail\n'
+    + 'projection_run_id() { printf \'%s\' "$$"; }\n'
+    + 'projection_run_id\necho\nprojection_run_id\necho\n');
+  assertEq(result.status, 0, 'the tampered derivation could not be driven');
+  const [first, second] = result.out.split('\n').map((one) => one.trim());
+  assertEq(first, second,
+    'a pid-only derivation produced two different ids in one shell, so the control above proves nothing');
+});
+
+test('N5: the two decision-bearing observations are read from a 0700 directory no container mounts', () => {
+  // WHAT THE RE-AUDIT NAMED. `trap-listener.json` and `origin-counters.json` are the two files that would
+  // turn three SKIPPED transport arms into measurements, and they were read from `$WORK/out`, which is 0777
+  // because a container running as another uid writes into it. Nothing writes them today, so the refusal
+  // holds by construction — but the tranche that stands the listener up inherits the trust question, and a
+  // verdict is only as trustworthy as the least-privileged thing that can author its input.
+  const code = codeOf(read(GENERIC_GATE));
+  assert(/mkdir -p .*"\$WORK\/observations"/.test(code), 'the gate creates no observations directory');
+  assert(/^chmod 700 "\$WORK\/observations"$/m.test(code),
+    'the observations directory is not 0700, so any user on the host can author a decision-bearing input');
+  for (const name of ['trap-listener\\.json', 'origin-counters\\.json']) {
+    assert(new RegExp(`"\\$WORK/observations/${name}"`).test(code),
+      `${name} is not read from the observations directory`);
+    assert(!new RegExp(`"\\$WORK/out/${name}"`).test(code),
+      `${name} is still read from the 0777 output directory`);
+  }
+  // AND NO CONTAINER MOUNTS IT. A 0700 directory bind-mounted into a container running as root is 0700 to
+  // nobody who matters.
+  assert(!/-v "\$WORK\/observations/.test(code),
+    'a container mounts the observations directory, so its mode says nothing about who can write it');
+  // THE 0777 THAT REMAINS IS EXPLAINED WHERE IT IS, rather than left to be discovered again.
+  assert(/# 0777 BECAUSE A CONTAINER RUNNING AS ANOTHER UID WRITES INTO THESE THREE/.test(read(GENERIC_GATE)),
+    'the remaining 0777 carries no reason, so the next reader has to rediscover why it cannot be narrowed');
+});
+
+test('CONTROL: an observation read back out of the 0777 directory is CAUGHT', () => {
+  const tampered = codeOf(read(GENERIC_GATE))
+    .replace('"$WORK/observations/trap-listener.json"', '"$WORK/out/trap-listener.json"');
+  assert(!/"\$WORK\/observations\/trap-listener\.json"/.test(tampered),
+    'the tamper did not apply, so this control proves nothing');
+  assert(/"\$WORK\/out\/trap-listener\.json"/.test(tampered),
+    'a decision-bearing observation moved back into the world-writable directory still reads as protected');
+});
+
+test('N6: set preservation is asserted on the success path AND measured on every failure path', () => {
+  for (const gate of [GENERIC_GATE, PROVIDER_GATE]) {
+    const code = codeOf(read(gate));
+    // ONE DEFINITION, TWO CALL SITES, and the trap's is inside the trap.
+    assertEq((code.match(/^set_preservation_losses\(\) \{$/gm) ?? []).length, 1,
+      `${gate} defines the set-preservation measurement more than once, so the two can drift`);
+    assert(/^set_preservation_losses \\$/m.test(code),
+      `${gate} does not assert set preservation on the success path`);
+    assert(/^ {2}if ! set_preservation_losses; then$/m.test(code),
+      `${gate} never measures set preservation on a failure path, so the teardown after a die is unwatched`);
+    // THE TRAP'S COPY IS INSIDE cleanup(), AFTER THE EARLY RETURN THE SUCCESS PATH TAKES.
+    const cleanupAt = code.indexOf('cleanup() {');
+    const trapCall = code.indexOf('if ! set_preservation_losses; then');
+    const trapEnd = code.indexOf('\ntrap cleanup EXIT');
+    assert(cleanupAt >= 0 && trapCall > cleanupAt && trapCall < trapEnd,
+      `${gate}'s failure-path measurement is not inside its EXIT trap`);
+    assert(code.indexOf('if [ "${CLEANED:-0}" = "1" ]; then') < trapCall,
+      `${gate} measures again after the success path already asserted, which prints a weaker second answer`);
+    // AND THE TRAP MOVES THE VERDICT IN ONE DIRECTION ONLY. An EXIT trap that could turn a red run green is
+    // the thing every comment in these files warns about; this one exits only when it was entered with 0.
+    assert(/^ {2}_exit_status=\$\?$/m.test(code),
+      `${gate}'s trap does not capture the status it was entered with, so it cannot avoid overwriting one`);
+    assert(/if \[ "\$\{_exit_status:-0\}" -eq 0 \]; then exit 1; fi/.test(code),
+      `${gate}'s trap can move a verdict in a direction other than red`);
+    assert(!/exit 0/.test(code.slice(cleanupAt, trapEnd)),
+      `${gate}'s EXIT trap can exit zero, which folds a failure into a pass`);
+  }
+});
+
+test('CONTROL: removing the failure-path measurement is CAUGHT', () => {
+  const code = codeOf(read(PROVIDER_GATE));
+  const tampered = code.replace(/ {2}if ! set_preservation_losses; then/, '  if false; then');
+  assert(tampered !== code, 'the tamper did not apply, so this control proves nothing');
+  assert(!/^ {2}if ! set_preservation_losses; then$/m.test(tampered),
+    'a gate whose failure path measures nothing still reads as measuring it');
+});
+
+test('DRIVEN: the SHIPPED measurement survives the case it was written for — zero removals', () => {
+  // THE DEFECT THIS FOUND, AND IT WAS FOUND BY RUNNING RATHER THAN BY READING. The loop this function
+  // replaces computed its count as `_gone="$(comm ... | grep -c . )"`, and `grep -c` EXITS 1 WHEN THE COUNT
+  // IS ZERO. Under `set -euo pipefail` — which both gates set on their first lines — that assignment ABORTS
+  // THE SCRIPT. So the shipped check killed the run on exactly the runs that satisfied it, silently, after
+  // the verdict had already been printed. Nobody had seen it because nobody could: this gate needs a
+  // provider, and the generic gate's real mode refuses.
+  //
+  // THE OLD DRIVEN CONTROL DID NOT CATCH IT, and that is the part worth keeping. It re-typed the pipeline
+  // into its own harness WITH `|| true` appended, so it drove a correct version of a line the gate shipped
+  // wrong. A control that retypes what it measures is measuring the retyping.
+  const shell = posixShell();
+  if (shell === null) { assert(true, NO_SHELL); return; }
+  for (const gate of [GENERIC_GATE, PROVIDER_GATE]) {
+    const fn = shellFunction(gate, 'set_preservation_losses');
+    const work = freshDir();
+    mkdirSync(join(work, 'out'), { recursive: true });
+    const names = ['alpha', 'beta', 'gamma'];
+    for (const kind of ['containers', 'networks', 'volumes']) {
+      writeFileSync(join(work, 'out', `before-${kind}.txt`), `${names.join('\n')}\n`);
+    }
+    const listing = names.map((one) => `'${one}'`).join(' ');
+    const stub = 'docker() {\n'
+      + '  case "$1 $2" in\n'
+      + `    "ps -a")      printf '%s\\n' ${listing} ;;\n`
+      + `    "network ls") printf '%s\\n' ${listing} ;;\n`
+      + `    "volume ls")  printf '%s\\n' ${listing} ;;\n`
+      + '    *) return 1 ;;\n'
+      + '  esac\n'
+      + '}\n';
+    const result = runShell(`set -euo pipefail\nWORK="${shPath(work)}"\n${stub}${fn}\n`
+      + 'set_preservation_losses\necho "RETURNED $?"\n');
+    assertEq(result.status, 0,
+      `${gate}'s set-preservation measurement ABORTED on a host it removed nothing from: ${result.err}`);
+    assert(/RETURNED 0/.test(result.out),
+      `${gate}'s measurement did not return success when nothing was removed: ${result.out}`);
+    assert(/gone now: 0 \(budget 0\)/.test(result.out),
+      `${gate}'s measurement did not report a zero for each kind: ${result.out}`);
+  }
+});
+
+test('DRIVEN: the SHIPPED measurement fails on the removal a count would hide, for all three kinds', () => {
+  const shell = posixShell();
+  if (shell === null) { assert(true, NO_SHELL); return; }
+  const fn = shellFunction(PROVIDER_GATE, 'set_preservation_losses');
+  const drive = (after: Record<string, readonly string[]>): { status: number; out: string; err: string } => {
+    const work = freshDir();
+    mkdirSync(join(work, 'out'), { recursive: true });
+    for (const kind of ['containers', 'networks', 'volumes']) {
+      writeFileSync(join(work, 'out', `before-${kind}.txt`), 'alpha\nbeta\ngamma\n');
+    }
+    const arm = (kind: string, key: string): string =>
+      `    "${key}") printf '%s\\n' ${after[kind]!.map((one) => `'${one}'`).join(' ')} ;;\n`;
+    const stub = 'docker() {\n  case "$1 $2" in\n'
+      + arm('containers', 'ps -a') + arm('networks', 'network ls') + arm('volumes', 'volume ls')
+      + '    *) return 1 ;;\n  esac\n}\n';
+    return runShell(`set -euo pipefail\nWORK="${shPath(work)}"\n${stub}${fn}\n`
+      + 'if set_preservation_losses; then echo "RETURNED 0"; else echo "RETURNED nonzero"; fi\n');
+  };
+
+  const all = ['alpha', 'beta', 'gamma'];
+  // THE CASE A COUNT CANNOT SEE: one of theirs gone, one of mine created. Same size, different set.
+  for (const kind of ['containers', 'networks', 'volumes']) {
+    const after: Record<string, readonly string[]> = { containers: all, networks: all, volumes: all };
+    after[kind] = ['alpha', 'gamma', 'mine'];
+    const result = drive(after);
+    assertEq(result.status, 0, `the driver itself failed for ${kind}: ${result.err}`);
+    assert(/RETURNED nonzero/.test(result.out),
+      `a removed ${kind} masked by a creation of the same size was not seen, which is the case a count `
+      + 'comparison is satisfied by');
+    assert(/beta/.test(result.err), `the failure does not name what went missing: ${result.err}`);
+  }
+  // AND THIS RUN'S OWN NEW RESOURCE IS NOT A REMOVAL OF SOMEBODY ELSE'S.
+  const added = { containers: [...all, 'mine'], networks: all, volumes: all };
+  assert(/RETURNED 0/.test(drive(added).out), 'this run\'s own new container was counted as a removal');
+});
+
+test('DRIVEN: a kind whose before-inventory was never taken is UNMEASURED, not preserved', () => {
+  // A RUN THAT DIED BEFORE THE INVENTORY CREATED NOTHING, and "did this run remove it?" has no answer yet.
+  // Reporting it as preserved would be the skip folded into a pass this whole tranche exists to refuse.
+  const shell = posixShell();
+  if (shell === null) { assert(true, NO_SHELL); return; }
+  const fn = shellFunction(PROVIDER_GATE, 'set_preservation_losses');
+  const work = freshDir();
+  mkdirSync(join(work, 'out'), { recursive: true });
+  const result = runShell(`set -euo pipefail\nWORK="${shPath(work)}"\n`
+    + 'docker() { return 1; }\n' + fn
+    + '\nif set_preservation_losses; then echo "RETURNED 0"; else echo "RETURNED nonzero"; fi\n');
+  assertEq(result.status, 0, `the driver itself failed: ${result.err}`);
+  assertEq((result.out.match(/UNMEASURED rather than satisfied/g) ?? []).length, 3,
+    `all three kinds should be named as unmeasured when no inventory was taken: ${result.out}`);
+  assert(/RETURNED 0/.test(result.out),
+    'a run that created nothing was reported as having removed something');
+});
+
+test('N7: the verdict-layer control EXECUTES the tampered module rather than reading it', () => {
+  // WHAT THE RE-AUDIT NAMED. `CONTROL: a verdict layer that stops reading provenance is CAUGHT` asserted only
+  // on the tampered SOURCE TEXT — unlike every sibling control it never ran the tampered module, so it never
+  // demonstrated that the all-four-green state comes back. A control that reads a tamper instead of running
+  // it is a control that has not seen the defect.
+  const module_ = read('src/core/projection/real-provider.ts');
+  const tampered = module_.replace(
+    /export function isUntakenProvenance\(provenance: string \| undefined\): boolean \{[\s\S]*?\n\}/,
+    'export function isUntakenProvenance(_provenance: string | undefined): boolean {\n  return false;\n}',
+  );
+  assert(tampered !== module_, 'the tamper did not apply, so this control proves nothing');
+
+  // THE MODULE IMPORTS ONLY `node:crypto` AND A TYPE, so a copy of it runs anywhere. The driver is handed to
+  // node with `--import tsx`, which is how every other executed TypeScript in this repository is run, and
+  // from the repository root — an absolute POSIX path under Git Bash reaches the runtime as a drive-rooted
+  // spelling of a directory that does not exist, which §10.7 records as costing a day.
+  const dir = freshDir();
+  writeFileSync(join(dir, 'tampered.ts'), tampered);
+  writeFileSync(join(dir, 'drive.mts'),
+    "import { transportResults } from './tampered.ts';\n"
+    + 'const record = JSON.parse(process.argv[2]);\n'
+    + "const arms = ['retries-bounded', 'egress-allowlist', '429-observed', 'refresh-per-read'];\n"
+    + 'console.log(JSON.stringify(arms.map((arm) => '
+    + "transportResults('RP3', record).find((one) => one.gate === 'RP3-' + arm).verdict)));\n");
+
+  // THE EXACT SHAPE THE AUDIT FOUND: real mode, a resolver endpoint, no counter surface, a listener filed.
+  const oldShape = {
+    status429: 0, retries: 0, refreshesPerRead: [] as number[], disallowedOriginContacts: 0,
+    egressObservedAtListener: true, endpointExpires: true,
+    provenance: {
+      endpointExpires: 'derived-from-the-endpoint-document-this-run-used',
+      egressObservedAtListener: 'measured-at-a-listener-this-run-stood-up-on-a-deliberately-excluded-origin',
+      disallowedOriginContacts: 'the-delta-of-that-listener-own-counters',
+      transportCounters: 'UNTAKEN-no-origin-counter-surface-on-this-path',
+    },
+  };
+  const run = spawnSync(process.execPath,
+    ['--import', 'tsx', join(dir, 'drive.mts'), JSON.stringify(oldShape)],
+    { cwd: repoRoot, encoding: 'utf8', timeout: 120_000 });
+  assertEq(run.status, 0, `the tampered module could not be executed: ${String(run.stderr ?? '').slice(-800)}`);
+  const arms = ['retries-bounded', 'egress-allowlist', '429-observed', 'refresh-per-read'] as const;
+  const tamperedVerdicts = JSON.parse(String(run.stdout ?? '[]').trim()) as string[];
+  const shipped = arms.map((arm) => verdictFor(oldShape, arm).verdict);
+
+  // THE D1 REPAIR HAS TWO INDEPENDENT HALVES AND THIS TAMPER REMOVES ONE, so what it must demonstrate is
+  // that half returning — NOT the whole pre-repair state. `refresh-per-read` is refused a second time, by
+  // the EMPTY per-read list rule, and it stays a skip here; asserting all four green would be asserting
+  // that one repair does the work of two, which is how a control comes to require a defect to pass.
+  for (const arm of ['retries-bounded', '429-observed'] as const) {
+    const at = arms.indexOf(arm);
+    assertEq(shipped[at], 'skip', `${arm} does not skip on the shipped module, so this control has no defect `
+      + 'to reproduce');
+    assertEq(tamperedVerdicts[at], 'pass',
+      `${arm} did not go back to an unmeasured PASS when the verdict layer stopped reading provenance, so `
+      + 'the sibling regression would pass against bytes that never carried the defect');
+  }
+  // AND THE ARM THE SECOND HALF OF THE REPAIR HOLDS IS STILL REFUSED, which is what says the two halves are
+  // independent rather than one guarding the other.
+  assertEq(tamperedVerdicts[arms.indexOf('refresh-per-read')], 'skip',
+    'the empty per-read list stopped being refused once provenance was ignored, so the two halves of the '
+    + 'D1 repair are not independent after all');
+  assertEq(shipped.filter((one) => one === 'skip').length > tamperedVerdicts.filter((one) => one === 'skip').length,
+    true, 'the tampered module refused at least as much as the shipped one, so nothing was executed');
 });
 
 // ---------------------------------------------------------------------------------------------------------

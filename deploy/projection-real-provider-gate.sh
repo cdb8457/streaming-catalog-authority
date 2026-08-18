@@ -54,10 +54,42 @@ COMPOSE_FILE="docker-compose.projection-real-provider.yml"
 # inventory below is taken BEFORE anything is created, which is the only moment at which the question
 # "did this run create it?" has an answer.
 #
-# THE PID IS THE IDENTITY. Every other name in this gate already carries it, so two runs on one host
-# share no container, no volume, no network and no project.
-COMPOSE_PROJECT="projection-rp-gate-$$"
-NETWORK="projection-real-provider-gate-$$"
+
+# THE RUN IDENTITY, AND WHY IT IS NOT THE PID ALONE.
+#
+# WHAT AN INDEPENDENT RE-AUDIT NAMED. Every name below used to be `<something>-$$`, and the sentence those
+# names carry is ABSOLUTE: no two runs share a container, a volume, a network or a compose project. `$$` does
+# not deliver an absolute sentence. It is unique among LIVE processes in ONE pid namespace, and two runs of
+# this gate in SEPARATE pid namespaces on one Docker host -- each inside its own container, which is an
+# ordinary way to run a gate from CI -- can hold the same pid at the same moment. A stale project left by a
+# crashed run whose pid has since been reused collides the same way, against a run that is not concurrent
+# with it at all. Neither is likely. Both are permitted by a claim that says never.
+#
+# SO THE PID IS KEPT AND FOUR BYTES OF ENTROPY ARE ADDED. The pid is what a person greps for in `docker ps`
+# while a run is live, and losing it would cost more than the collision does; the entropy is what makes the
+# sentence true rather than probable. The id is `<pid>-<8 hex>`, which is a legal Docker name component and a
+# legal path component in every shell this gate runs under.
+#
+# IT REFUSES RATHER THAN FALLING BACK TO THE PID. A host that can produce neither /dev/urandom nor $RANDOM
+# cannot give this run an identity, and a run with no identity is a run whose cleanup may reach another's --
+# which is the whole thing these names exist to prevent. That is a reason to stop before creating anything.
+projection_run_id() {
+  _entropy="$(od -An -N4 -tx1 < /dev/urandom 2>/dev/null | tr -d ' \n' || true)"
+  case "$_entropy" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) printf '%s-%s' "$$" "$_entropy"; return 0 ;;
+  esac
+  _entropy="$(printf '%04x%04x' "$((RANDOM % 65536))" "$((RANDOM % 65536))" 2>/dev/null || true)"
+  case "$_entropy" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) printf '%s-%s' "$$" "$_entropy"; return 0 ;;
+  esac
+  echo "GATE FAILED: this host can produce no run entropy, so this run cannot be given a name no other run \
+can hold. It stops here rather than creating anything under a name it may share" >&2
+  return 1
+}
+RUN_ID="$(projection_run_id)" || exit 1
+
+COMPOSE_PROJECT="projection-rp-gate-${RUN_ID}"
+NETWORK="projection-real-provider-gate-${RUN_ID}"
 # The compose file reads this, so the network compose creates is this run's rather than a shared one.
 export PROJECTION_REAL_PROVIDER_GATE_NETWORK="$NETWORK"
 PG_PORT="${PROJECTION_REAL_PROVIDER_GATE_PG_PORT:-5560}"
@@ -67,13 +99,13 @@ PG_PORT="${PROJECTION_REAL_PROVIDER_GATE_PG_PORT:-5560}"
 PG_WAIT_SECONDS="${PROJECTION_REAL_PROVIDER_GATE_PG_WAIT_SECONDS:-180}"
 FAKE_PORT="${PROJECTION_REAL_PROVIDER_GATE_FAKE_PORT:-8130}"
 
-MOUNT_CONTAINER="projection-rp-mount-$$"
-FAKE_CONTAINER="projection-rp-fake-$$"
+MOUNT_CONTAINER="projection-rp-mount-${RUN_ID}"
+FAKE_CONTAINER="projection-rp-fake-${RUN_ID}"
 
 GATE_ROOT="$PWD/.projection-real-provider-gate"
 REL_GATE_ROOT=".projection-real-provider-gate"
-REL=".projection-real-provider-gate/run-$$"
-WORK="$GATE_ROOT/run-$$"
+REL=".projection-real-provider-gate/run-${RUN_ID}"
+WORK="$GATE_ROOT/run-${RUN_ID}"
 
 # SET ONLY WHEN THE SUCCESS-PATH CLEANUP HAS RUN AND BEEN ASSERTED. Until then the EXIT trap is the only
 # thing that cleans up, which is what every failure path relies on.
@@ -112,14 +144,67 @@ export ADMIN_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:${PG_PORT}/c
 export DATABASE_URL="postgresql://app:app@127.0.0.1:${PG_PORT}/catalog"
 export PROJECTION_REAL_PROVIDER_GATE_PG_PORT="$PG_PORT"
 
+# WHAT THIS RUN REMOVED THAT IT DID NOT CREATE, AS A SET DIFFERENCE, ON EVERY PATH OUT.
+#
+# WHY IT IS A FUNCTION AND NOT A LOOP AT THE END. An independent re-audit named this measurement as
+# SUCCESS-PATH ONLY: it ran after the last step, and every path that left through `die` ran the EXIT trap's
+# `docker compose ... down -v` with nothing measuring what that took. The per-run project bounds the blast
+# radius and is the real mitigation, but a claim measured only where it is least likely to be violated is a
+# claim measured in the wrong place. The interesting teardown is the one after a failure.
+#
+# AND A DEFECT FOUND BY DRIVING IT RATHER THAN BY READING IT. The loop this replaces computed the count as
+# `_gone="$(comm ... | grep -c . )"`, and `grep -c` EXITS 1 WHEN THE COUNT IS ZERO. Under `set -euo
+# pipefail` that assignment aborts the script -- so the shipped check killed the run on exactly the runs
+# that satisfied it, silently, after the verdict. Nobody saw it because nobody could: this gate needs a
+# provider and the generic gate's real mode refuses. `|| true` keeps the count grep already printed and
+# drops the status that only ever meant "none".
+#
+# IT PRINTS ONE LINE PER KIND AND RETURNS NON-ZERO IF ANY NAME PRESENT BEFORE IS ABSENT NOW. Names ADDED are
+# this run's own residue, measured by the cleanup verdict; names REMOVED are somebody else's property.
+# `comm -23` is what existed BEFORE and does not exist NOW; both sides were sorted under the C locale on the
+# way in, which is what makes the comparison mean anything on a host with any other collation.
+#
+# A KIND WHOSE BEFORE-INVENTORY WAS NEVER TAKEN IS NAMED AS UNMEASURED rather than reported as preserved: a
+# run that died before the inventory created nothing, and "did this run remove it?" has no answer yet.
+set_preservation_losses() {
+  _lost=0
+  for _kind in containers networks volumes; do
+    if [ ! -s "${WORK:-}/out/before-$_kind.txt" ]; then
+      echo "  $_kind: no before-inventory was taken, so set preservation is UNMEASURED rather than satisfied"
+      continue
+    fi
+    case "$_kind" in
+      containers) docker ps -a --format '{{.Names}}' ;;
+      networks)   docker network ls --format '{{.Name}}' ;;
+      volumes)    docker volume ls --format '{{.Name}}' ;;
+    esac | LC_ALL=C sort > "$WORK/out/after-$_kind.txt" || {
+      echo "  $_kind could not be listed after the run, so set preservation cannot be asserted" >&2
+      _lost=1
+      continue
+    }
+    _gone="$(comm -23 "$WORK/out/before-$_kind.txt" "$WORK/out/after-$_kind.txt" | grep -c . || true)"
+    echo "  $_kind that existed before and are gone now: $_gone (budget 0)"
+    if [ "${_gone:-1}" -ne 0 ]; then
+      comm -23 "$WORK/out/before-$_kind.txt" "$WORK/out/after-$_kind.txt" | head -20 >&2
+      _lost=1
+    fi
+  done
+  [ "$_lost" = "0" ]
+}
+
 # THE TRAP IS THE FAILURE PATH'S CLEANUP, AND IT CAN ONLY EVER REPORT.
 #
-# `projection_gate_report_cleanliness` explains why in its own comment: a non-zero return from an EXIT trap
-# overwrites the gate's exit status, which would turn a failing run into a passing one — or a passing one into
-# a failure for a reason that has nothing to do with the data plane. So on the SUCCESS path the gate does not
-# rely on this at all; it cleans up explicitly, asserts the result, and sets CLEANED. This stays exactly as it
-# was for every path that leaves through `die`.
+# `projection_gate_report_cleanliness` explains why in its own comment. So on the SUCCESS path the gate does
+# not rely on this at all; it cleans up explicitly, asserts the result, and sets CLEANED. This stays a report
+# for every path that leaves through `die`, with ONE exception added below and bounded in one direction.
+#
+# AND THE SENTENCE THAT USED TO BE HERE WAS WRONG, WHICH MATTERS BECAUSE A DESIGN RESTED ON IT. It said a
+# non-zero RETURN from an EXIT trap overwrites the gate's exit status. It does not: bash keeps the status the
+# script was exiting with unless the trap calls `exit` itself. So a report can never fold a failure into a
+# pass by returning non-zero, and the one place below that must turn a green run red calls `exit` explicitly
+# and only when the status it was entered with was zero.
 cleanup() {
+  _exit_status=$?
   docker rm -f "$MOUNT_CONTAINER" "$FAKE_CONTAINER" >/dev/null 2>&1 || true
   # SCOPED TO THIS RUN'S OWN PROJECT, AND `--remove-orphans` IS GONE.
   #
@@ -140,6 +225,17 @@ cleanup() {
     # about the same thing.
     return 0
   fi
+  # THE FAILURE PATH'S SET-PRESERVATION MEASUREMENT, and the only place this trap may move a verdict.
+  #
+  # Reached only when the success path did NOT run its own assertion, i.e. on every path out through `die`.
+  # The teardown above has already run, so what this measures is what the teardown took.
+  if ! set_preservation_losses; then
+    echo "GATE FAILED: this run removed a container, network or volume it did not create. The host was NOT left as it was found, and a count of the same size would have hidden it" >&2
+    # WORSE, NEVER BETTER. A failing run keeps the status it already had; a run that was about to exit 0
+    # while its teardown removed somebody else's property becomes a failure here. An EXIT trap that could
+    # move a verdict the other way is the thing every comment in this file warns about.
+    if [ "${_exit_status:-0}" -eq 0 ]; then exit 1; fi
+  fi
   if [ -n "${WORK:-}" ]; then
     projection_gate_cleanup_run "$GATE_ROOT" "$WORK" "$VERIFY_IMAGE" || true
     projection_gate_report_cleanliness "$GATE_ROOT" "$WORK" || true
@@ -158,10 +254,23 @@ real_provider() { npx tsx src/ops/projection-real-provider-cli.ts "$@"; }
 
 GATE_SKIP_STATUS=77
 
-mkdir -p "$WORK/manifest" "$WORK/cache" "$WORK/mnt" "$WORK/out" "$WORK/inputs"
+mkdir -p "$WORK/manifest" "$WORK/cache" "$WORK/mnt" "$WORK/out" "$WORK/inputs" "$WORK/observations"
 chmod 755 "$GATE_ROOT" "$WORK"
 chmod 700 "$WORK/inputs"
+# 0777 BECAUSE A CONTAINER RUNNING AS ANOTHER UID WRITES INTO THESE THREE, AND FOR NO OTHER REASON. The
+# image's default user is not root and the daemon's cache, its mount point and the run's scratch output all
+# have to be writable from inside; there is no uid this gate can predict and no group it can join.
 chmod 777 "$WORK/cache" "$WORK/mnt" "$WORK/out"
+# AND THE OBSERVATIONS DIRECTORY IS 0700, WHICH IS THE WHOLE REASON IT EXISTS.
+#
+# WHAT AN INDEPENDENT RE-AUDIT NAMED. The two files that would turn three SKIPPED transport arms into
+# measurements -- the excluded-origin listener observation and the origin counter delta -- were read from
+# `$WORK/out`, which is 0777. Nothing writes them today, so the refusal holds by construction; but the
+# tranche that stands the listener up would be filing decision-bearing evidence into a directory every
+# user on the host can write, and a verdict is only as trustworthy as the least-privileged thing that can
+# author its input. So they are read from a directory NO CONTAINER MOUNTS and no other user can write,
+# and a later tranche has to file them through a path this gate controls.
+chmod 700 "$WORK/observations"
 
 cat > "$WORK/jq.cjs" <<'JQ'
 // One field out of a JSON document on stdin, for shells that have no jq.
@@ -1030,7 +1139,7 @@ CONTAINERS_LEFT="$(docker ps -aq \
 #
 # ONLY `run-*` IS COUNTED, not every directory under the gate root: the evidence copied out below also lives
 # there, and counting it would fail the gate for doing the right thing.
-RUN_DIRS_LEFT="$(find "$GATE_ROOT" -mindepth 1 -maxdepth 1 -type d -name 'run-*' ! -name "run-$$" 2>/dev/null \
+RUN_DIRS_LEFT="$(find "$GATE_ROOT" -mindepth 1 -maxdepth 1 -type d -name 'run-*' ! -name "run-${RUN_ID}" 2>/dev/null \
   | wc -l | tr -d ' ')"
 
 echo "  left behind: ${MOUNTPOINTS_LEFT:-<undetermined>} mountpoint(s), $CONTAINERS_LEFT container(s), $RUN_DIRS_LEFT foreign run directory(ies)"
@@ -1044,8 +1153,8 @@ step "the verdict"
 # surface on the real path, so those two are honestly UNTAKEN here and the record says so by name rather
 # than reporting a zero. A later tranche that stands one up files the observation at these paths and the
 # arm becomes a measurement without this line changing.
-TRAP_OBSERVATION="$WORK/out/trap-listener.json"
-ORIGIN_COUNTERS="$WORK/out/origin-counters.json"
+TRAP_OBSERVATION="$WORK/observations/trap-listener.json"
+ORIGIN_COUNTERS="$WORK/observations/origin-counters.json"
 [ -f "$TRAP_OBSERVATION" ] || TRAP_OBSERVATION=""
 [ -f "$ORIGIN_COUNTERS" ] || ORIGIN_COUNTERS=""
 node "$REL/observations.cjs" "$REL/out/observations.json" \
@@ -1177,9 +1286,9 @@ copy_evidence() {
     || die "the preserved copy of $1 does not match what the run wrote"
 }
 
-copy_evidence "out/results.json" "results-$$.jsonl"
-copy_evidence "out/results-summary.json" "results-summary-$$.json"
-echo "  evidence kept at $REL_GATE_ROOT/evidence/results-summary-$$.json (scrubbed before it was printed)"
+copy_evidence "out/results.json" "results-${RUN_ID}.jsonl"
+copy_evidence "out/results-summary.json" "results-summary-${RUN_ID}.json"
+echo "  evidence kept at $REL_GATE_ROOT/evidence/results-summary-${RUN_ID}.json (scrubbed before it was printed)"
 
 # ----------------------------------------------------------------------------------------------------------
 step "THE SETS — nothing that existed before this run is missing after it"
@@ -1197,23 +1306,9 @@ step "THE SETS — nothing that existed before this run is missing after it"
 # and by the cleanup verdict; names REMOVED are somebody else's property.
 #
 # IT RUNS BEFORE THE RUN DIRECTORY IS REMOVED, because the before-inventory lives inside it.
-for _kind in containers networks volumes; do
-  case "$_kind" in
-    containers) docker ps -a --format '{{.Names}}' ;;
-    networks)   docker network ls --format '{{.Name}}' ;;
-    volumes)    docker volume ls --format '{{.Name}}' ;;
-  esac | LC_ALL=C sort > "$WORK/out/after-$_kind.txt" \
-    || die "the host could not list its $_kind after the run, so set preservation cannot be asserted"
-  # `comm -23` is what existed BEFORE and does not exist NOW. Both sides were sorted under the C locale
-  # on the way in, which is what makes the comparison mean anything on a host with any other collation.
-  _gone="$(comm -23 "$WORK/out/before-$_kind.txt" "$WORK/out/after-$_kind.txt" | grep -c . )"
-  echo "  $_kind that existed before and are gone now: $_gone (budget 0)"
-  if [ "${_gone:-1}" -ne 0 ]; then
-    comm -23 "$WORK/out/before-$_kind.txt" "$WORK/out/after-$_kind.txt" | head -20 >&2
-    die "this run removed $_gone $_kind it did not create. The host was NOT left as it was found, and a \
-count of the same size would have hidden it"
-  fi
-done
+set_preservation_losses \
+  || die "this run removed a container, network or volume it did not create. The host was NOT left as it \
+was found, and a count of the same size would have hidden it"
 projection_gate_cleanup_run "$GATE_ROOT" "$WORK" "$VERIFY_IMAGE" || true
 
 OWN_MOUNTS_LEFT="$(projection_gate_mounts_under "$WORK")"
