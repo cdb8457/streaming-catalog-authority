@@ -39,4 +39,8 @@ services:
 
 networks:
   default:
-    name: projection-torbox-gate
+    # THE NETWORK BELONGS TO A RUN, NOT TO THE FILE. See the real-provider compose file for the whole
+    # argument. This file is shared by TWO gates -- the TorBox mount gate and the real TorBox gate -- so
+    # a fixed name here was one namespace two different programs tore down out from under each other.
+    # The old value is the default, so a caller that exports nothing behaves exactly as before.
+    name: ${PROJECTION_TORBOX_GATE_NETWORK:-projection-torbox-gate}

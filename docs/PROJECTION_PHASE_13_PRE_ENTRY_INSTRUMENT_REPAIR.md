@@ -305,6 +305,8 @@ the review claimed, what an independent re-check of the shipped bytes at `f77871
 | **F4** | the no-contact preflights that already exist, and their ordering is already right | **YES** | **REUSED.** The new recorder adds the one shape none of them emits and re-implements none of them |
 | **F5** | Phase 12's staging preflight probes Phase 10/11's ports, not a provider run's | **YES** | **OUT OF SCOPE, OWNER NAMED: a later authorised Phase 13.** A port list is a statement about which gate is about to run, and this tranche runs none |
 
+**A second finding this correction pass added, and it is a shared-namespace teardown.** `deploy/projection-torbox-mount-gate.sh` shares `docker-compose.projection-torbox.yml` with the real TorBox gate, and until this pass both tore down a project name **fixed in that file** with `down -v --remove-orphans` — so either gate could remove the other's containers and volumes. The real TorBox gate now has a project and a network of its own, which removes the hazard **in the direction this tranche owns**: the mount gate can no longer reach it. The mount gate can still reach its own concurrent runs, it is **another tranche's file**, and it is left alone rather than repaired here. **OUT OF SCOPE, OWNER NAMED: the tranche that owns `projection-torbox-mount-gate.sh`.** The compose file's network name is now an env-var default, so that gate behaves exactly as before unless its owner opts in.
+
 **One finding the re-check added, which the review did not name.** The unbounded `docker compose … up -d
 --wait` is not confined to the two provider gates: a sweep at `f77871f` finds it in roughly twenty gate
 scripts, of which only `projection-phase11-mixed-gate.sh` carries `--wait-timeout`. The other eighteen are

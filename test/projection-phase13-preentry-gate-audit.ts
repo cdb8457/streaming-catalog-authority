@@ -58,6 +58,7 @@ const codeOf = (body: string): string => body.replace(/^\s*#.*$/gm, '');
 const GENERIC_GATE = 'deploy/projection-real-provider-gate.sh';
 const PROVIDER_GATE = 'deploy/projection-torbox-real-gate.sh';
 const STAGE = 'deploy/projection-phase12-stage.sh';
+const CONTRACT = 'docs/PROJECTION_PHASE_13_PRE_ENTRY_INSTRUMENT_REPAIR.md';
 const READINESS = 'deploy/projection-preentry-readiness.sh';
 
 // ---------------------------------------------------------------------------------------------------------
@@ -679,9 +680,19 @@ test('CONTROL: a verdict layer that stops reading provenance is CAUGHT', () => {
 h.section('P13PRE-I4 — every compose and provider wait is bounded');
 // ---------------------------------------------------------------------------------------------------------
 
-/** Every `docker compose … up -d --wait` invocation in a script, as whole lines. */
+/**
+ * Every `docker compose … up -d --wait` invocation in a script, as whole COMMANDS.
+ *
+ * LINE CONTINUATIONS ARE JOINED FIRST, and that is not a tidying detail: a sweep that read raw lines
+ * reported an invocation as unbounded the moment somebody wrapped it, because `--wait-timeout` had moved to
+ * the next line. A check that fails when a command is reformatted is a check nobody can keep, and a check
+ * that only ever saw one-line commands would miss a bound genuinely removed from a wrapped one.
+ */
 function composeWaits(gatePath: string): readonly string[] {
-  return codeOf(read(gatePath)).split('\n').filter((line) => /docker compose .*up -d --wait/.test(line));
+  return codeOf(read(gatePath))
+    .replace(/\\\n\s*/g, ' ')
+    .split('\n')
+    .filter((line) => /docker compose .*up -d --wait/.test(line));
 }
 
 test('EVERY compose-up in both provider gates carries a bound', () => {
@@ -734,7 +745,8 @@ test('CONTROL: an unbounded compose-up in EITHER gate is CAUGHT', () => {
     const body = read(gate);
     const tampered = body.replace(/ --wait-timeout "\$PG_WAIT_SECONDS"/, '');
     assert(tampered !== body, `the ${gate} tamper did not apply, so this control proves nothing`);
-    const waits = codeOf(tampered).split('\n').filter((line) => /docker compose .*up -d --wait/.test(line));
+    const waits = codeOf(tampered).replace(/\\\n\s*/g, ' ')
+      .split('\n').filter((line) => /docker compose .*up -d --wait/.test(line));
     assert(waits.some((wait) => !/--wait-timeout/.test(wait)),
       `an unbounded compose-up in ${gate} still reads as bounded, so a repair applied to one gate and not `
       + 'the other would pass');
@@ -765,6 +777,209 @@ test('ownership is decided BEFORE anything is created, and cleanup reads it', ()
       `${gate} still creates its network with || true, so a failure to create is indistinguishable from `
       + 'joining somebody else\'s');
   }
+});
+
+test('the compose project belongs to THIS RUN, and every compose invocation says so', () => {
+  // WHAT AN AUDIT FOUND. `down -v --remove-orphans` ran against a project name FIXED IN THE COMPOSE FILE, so
+  // it was shared by every run of the gate -- and the TorBox compose file is shared by TWO gates, so one
+  // gate's teardown removed the other's containers and volumes. That is removing what the run did not
+  // create, under the claim that it never happens.
+  for (const [gate, prefix] of [[GENERIC_GATE, 'projection-rp-gate-'], [PROVIDER_GATE, 'projection-tbr-gate-']] as const) {
+    const code = codeOf(read(gate));
+    assert(new RegExp(`COMPOSE_PROJECT="${prefix}\\$\\$"`).test(code),
+      `${gate} has no per-run compose project, so its teardown reaches every other run of it`);
+    const composeCalls = code.replace(/\\\n\s*/g, ' ')
+      .split('\n').filter((line) => /docker compose /.test(line));
+    assert(composeCalls.length >= 2, `${gate} has fewer compose invocations than expected`);
+    for (const call of composeCalls) {
+      assert(/-p "\$COMPOSE_PROJECT"/.test(call),
+        `${gate} runs compose without its own project: ${call.trim()} — one invocation left unscoped puts the `
+        + 'whole namespace back');
+    }
+  }
+});
+
+test('--remove-orphans is GONE from both provider gates', () => {
+  // IT IS NOT MERELY UNNECESSARY ONCE THE PROJECT IS UNIQUE. Its entire job is to remove containers this
+  // compose file does not name, which is the definition of removing what the run did not create.
+  for (const gate of [GENERIC_GATE, PROVIDER_GATE]) {
+    const code = codeOf(read(gate));
+    assert(!/--remove-orphans/.test(code),
+      `${gate} still passes --remove-orphans, so its teardown can remove a concurrent run's containers`);
+    // AND `-v` IS STILL THERE, because with a per-run project it reaches this run's throwaway volumes and
+    // no others -- dropping it would leak a volume per run instead.
+    assert(/down -v/.test(code), `${gate} no longer removes its own volumes, so every run leaks one`);
+  }
+});
+
+test('the network is per-run, and the compose file no longer fixes its name', () => {
+  // THE DEFECT THE PREVIOUS OWNERSHIP REPAIR INTRODUCED, WHICH THE AUDIT DID NOT REACH. The compose file
+  // declared `networks.default.name` as the SAME fixed string the gate created and conditionally removed.
+  // `compose up` ran first, so the probe found the network compose had just created, called it pre-existing,
+  // and the run LEAKED ITS OWN NETWORK on every invocation.
+  for (const [gate, composeFile, envVar] of [
+    [GENERIC_GATE, 'docker-compose.projection-real-provider.yml', 'PROJECTION_REAL_PROVIDER_GATE_NETWORK'],
+    [PROVIDER_GATE, 'docker-compose.projection-torbox.yml', 'PROJECTION_TORBOX_GATE_NETWORK'],
+  ] as const) {
+    const code = codeOf(read(gate));
+    assert(/^NETWORK="[a-z-]+-\$\$"$/m.test(code),
+      `${gate}'s network is not per-run, so two runs on one host share one and neither owns it`);
+    assert(new RegExp(`export ${envVar}="\\$NETWORK"`).test(code),
+      `${gate} does not hand its per-run network name to the compose file`);
+    const compose = read(composeFile);
+    assert(new RegExp(`name: \\$\\{${envVar}:-`).test(compose),
+      `${composeFile} still fixes the network name, so compose creates a shared network whatever the gate says`);
+  }
+});
+
+test('the ownership inventory is taken BEFORE the first create, and the decision is read from it', () => {
+  for (const gate of [GENERIC_GATE, PROVIDER_GATE]) {
+    const code = codeOf(read(gate));
+    for (const kind of ['containers', 'networks', 'volumes']) {
+      assert(new RegExp(`> "\\$WORK/out/before-${kind}\\.txt"`).test(code),
+        `${gate} takes no before-inventory of ${kind}, so the claim covers what nothing measured`);
+    }
+    // THE ORDER IS THE WHOLE POINT. Taken after the first create, every probe answers "it was already there".
+    const inventoryAt = code.indexOf('before-networks.txt');
+    const buildAt = code.indexOf('docker build -t "$IMAGE"');
+    const composeUpAt = code.indexOf('up -d --wait');
+    assert(inventoryAt >= 0 && buildAt > inventoryAt && composeUpAt > inventoryAt,
+      `${gate} inventories the host after it has already created something, so ownership is unanswerable`);
+    // AND THE DECISION IS READ FROM THE INVENTORY FILE, not from a live probe that the create already moved.
+    assert(/grep -qxF "\$NETWORK" "\$WORK\/out\/before-networks\.txt"/.test(code),
+      `${gate} decides network ownership from something other than the before-inventory`);
+    assert(!/^if docker network inspect "\$NETWORK" >\/dev\/null 2>&1; then$/m.test(code),
+      `${gate} still decides ownership from a live probe taken after compose created the network`);
+  }
+});
+
+test('the sets are compared as MEMBERSHIP and asserted, not counted and reported', () => {
+  for (const gate of [GENERIC_GATE, PROVIDER_GATE]) {
+    const code = codeOf(read(gate));
+    // THE AFTER-INVENTORY IS ONE LOOP OVER THE THREE KINDS, so what is asserted is that the loop exists,
+    // that it enumerates all three, and that each branch asks docker the right question. A check that
+    // grepped for `after-containers.txt` would be green only against three copy-pasted blocks and red
+    // against the loop that replaced them — a check about the shape of the code rather than what it covers.
+    assert(/for _kind in containers networks volumes; do/.test(code),
+      `${gate} does not sweep containers, networks and volumes over one list`);
+    assert(/> "\$WORK\/out\/after-\$_kind\.txt"/.test(code),
+      `${gate} writes no after-inventory per kind`);
+    for (const [kind, query] of [
+      ['containers', "docker ps -a --format '{{.Names}}'"],
+      ['networks', "docker network ls --format '{{.Name}}'"],
+      ['volumes', "docker volume ls --format '{{.Name}}'"],
+    ] as const) {
+      assert(new RegExp(`${kind}\\)\\s*${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`).test(code),
+        `${gate}'s inventory loop does not ask the host for its ${kind}`);
+    }
+    // A COUNT WOULD PASS THE VIOLATION. Remove one of somebody else's and create one of your own and the
+    // count is identical; only a set difference sees it.
+    assert(/comm -23 "\$WORK\/out\/before-\$_kind\.txt" "\$WORK\/out\/after-\$_kind\.txt"/.test(code),
+      `${gate} compares inventories by count rather than by membership`);
+    assert(/die "this run removed \$_gone \$_kind it did not create/.test(code),
+      `${gate} reports a removed pre-existing resource rather than failing on it`);
+    // AND IT RUNS WHILE THE BEFORE-INVENTORY STILL EXISTS, i.e. before the run directory is removed.
+    //
+    // THE ANCHOR IS THE SUCCESS-PATH CALL, NOT THE ONE IN THE EXIT TRAP. Both call the same helper; the
+    // trap's copy is indented and appears FIRST in the file, so a check that found it reported every gate
+    // as broken while measuring nothing — which is what the first version of this very check did. The
+    // line-start anchor is what tells the two apart.
+    const cleanupAt = code.search(/^projection_gate_cleanup_run /m);
+    const commAt = code.indexOf(`comm -23`);
+    assert(cleanupAt > 0, `${gate} has no success-path cleanup call, so this ordering check has no anchor`);
+    assert(commAt > 0 && commAt < cleanupAt,
+      `${gate} compares the sets after deleting the directory the before-inventory lives in`);
+    // BOTH SIDES SORTED UNDER THE C LOCALE, or `comm` is comparing two differently ordered lists and its
+    // answer is about the host's collation rather than about the host. Three before-inventories are written
+    // explicitly and the three after-inventories share one loop line, so four sorts cover all six files.
+    assertEq((code.match(/LC_ALL=C sort > "\$WORK\/out\/before-/g) ?? []).length, 3,
+      `${gate} does not sort all three before-inventories under the C locale`);
+    assertEq((code.match(/LC_ALL=C sort > "\$WORK\/out\/after-\$_kind\.txt"/g) ?? []).length, 1,
+      `${gate} does not sort its after-inventories under the C locale`);
+  }
+});
+
+test('DRIVEN: the set difference catches a removal a count would hide', () => {
+  // THE LOGIC ITSELF, over fixtures, because the shipped loop cannot be run here without a Docker host. What
+  // is driven is the exact `comm -23` the gate uses, including the case a count cannot see.
+  const shell = posixShell();
+  if (shell === null) { assert(true, NO_SHELL); return; }
+  const dir = freshDir();
+  const write = (name: string, lines: readonly string[]): string => {
+    const path = join(dir, name);
+    writeFileSync(path, `${[...lines].sort().join('\n')}\n`);
+    return path;
+  };
+  const gone = (before: string, after: string): number => {
+    const result = spawnSync(shellOrThrow(),
+      ['-c', `comm -23 "${shPath(before)}" "${shPath(after)}" | grep -c . || true`],
+      { encoding: 'utf8', timeout: 60_000 });
+    return Number(String(result.stdout ?? '0').trim());
+  };
+
+  const before = write('before.txt', ['alpha', 'beta', 'gamma']);
+  assertEq(gone(before, write('same.txt', ['alpha', 'beta', 'gamma'])), 0, 'an unchanged host reported a removal');
+  assertEq(gone(before, write('added.txt', ['alpha', 'beta', 'gamma', 'mine'])), 0,
+    'this run\'s own new resource was counted as a removal of somebody else\'s');
+  assertEq(gone(before, write('removed.txt', ['alpha', 'gamma'])), 1, 'a removed resource was not seen');
+  // THE ONE A COUNT CANNOT SEE: one of theirs gone, one of mine created. Same size, different set.
+  const swapped = write('swapped.txt', ['alpha', 'gamma', 'mine']);
+  assertEq(readFileSync(swapped, 'utf8').trim().split('\n').length,
+    readFileSync(before, 'utf8').trim().split('\n').length, 'the fixture is not the equal-count case');
+  assertEq(gone(before, swapped), 1,
+    'a removal masked by a creation of the same size was not seen, which is the case a count comparison '
+    + 'reports as success');
+});
+
+test('CONTROL: putting --remove-orphans or the shared project back is CAUGHT', () => {
+  for (const gate of [GENERIC_GATE, PROVIDER_GATE]) {
+    const body = read(gate);
+
+    const orphans = body.replace('down -v >/dev/null 2>&1 || true',
+      'down -v --remove-orphans >/dev/null 2>&1 || true');
+    assert(orphans !== body, `the --remove-orphans tamper did not apply to ${gate}`);
+    assert(/--remove-orphans/.test(codeOf(orphans)),
+      `a restored --remove-orphans is not seen in ${gate}, so the check above proves nothing`);
+
+    const shared = body.replace(/-p "\$COMPOSE_PROJECT" down -v/, 'down -v');
+    assert(shared !== body, `the shared-project tamper did not apply to ${gate}`);
+    const unscoped = codeOf(shared).split('\n')
+      .filter((line) => /docker compose /.test(line) && !/-p "\$COMPOSE_PROJECT"/.test(line));
+    assert(unscoped.length > 0,
+      `a compose teardown returned to the shared project namespace still reads as scoped in ${gate}`);
+  }
+});
+
+test('CONTROL: an inventory taken after the first create is CAUGHT', () => {
+  const body = read(GENERIC_GATE);
+  // Move the whole inventory step below the image build, which is what "after the first create" means here.
+  const stepStart = body.indexOf('step "INVENTORY —');
+  const stepEnd = body.indexOf('step "building the production projectiond image"');
+  assert(stepStart > 0 && stepEnd > stepStart, 'the inventory step could not be located');
+  const inventory = body.slice(stepStart, stepEnd);
+  const tampered = body.slice(0, stepStart) + body.slice(stepEnd).replace(
+    'docker build -t "$IMAGE" ./projectiond\n', `docker build -t "$IMAGE" ./projectiond\n${inventory}`);
+  assert(tampered !== body, 'the tamper did not apply, so this control proves nothing');
+  const code = codeOf(tampered);
+  assert(code.indexOf('before-networks.txt') > code.indexOf('docker build -t "$IMAGE"'),
+    'an inventory taken after the first create still reads as taken before it, so the ordering check above '
+    + 'would not have caught the defect that shipped');
+});
+
+test('the TorBox MOUNT gate still shares its project, and that is recorded rather than silently fixed', () => {
+  // NOT THIS TRANCHE'S FILE. `deploy/projection-torbox-mount-gate.sh` shares the TorBox compose file, and
+  // until its owner scopes its project it can still tear down its own concurrent runs. What it can no longer
+  // do is reach the REAL TorBox gate, because that gate now has a project of its own — which is the
+  // direction that mattered here.
+  const mount = codeOf(read('deploy/projection-torbox-mount-gate.sh'));
+  assert(/--remove-orphans/.test(mount),
+    'the mount gate no longer carries the hazard this row records; the disposition in §9 is now stale');
+  assert(!/-p "\$COMPOSE_PROJECT"/.test(mount),
+    'the mount gate has been scoped after all; update the §9 disposition rather than leaving it');
+  // AND THE DOCUMENT SAYS SO, with an owner named.
+  const doc = read(CONTRACT);
+  assert(/projection-torbox-mount-gate\.sh/.test(doc),
+    'the document does not name the gate that still shares the namespace, so the finding is undisclosed');
 });
 
 test('CONTROL: an unconditional network removal is CAUGHT', () => {

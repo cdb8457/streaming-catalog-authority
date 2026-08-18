@@ -37,7 +37,29 @@ VERIFY_IMAGE="alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d
 GO_IMAGE="golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651"
 
 COMPOSE_FILE="docker-compose.projection-real-provider.yml"
-NETWORK="projection-real-provider-gate"
+
+# THE COMPOSE PROJECT AND THE NETWORK BELONG TO THIS RUN, AND THE OLD NAMES BELONGED TO EVERY RUN.
+#
+# WHAT AN INDEPENDENT AUDIT FOUND. The teardown ran `docker compose down -v --remove-orphans` against a
+# project name FIXED IN THE COMPOSE FILE -- so it was shared by every run of this gate, and for the
+# TorBox compose file by two DIFFERENT gates. `--remove-orphans` removes containers attached to that
+# project that are not in this compose file, i.e. a concurrent run's, and `-v` removes its volumes. That
+# is a concrete instance of removing what the run did not create, under a claim -- P13PRE-I5 -- that it
+# never happens. It is the two-gates-on-one-host hazard Phase 12 §7 R7 names.
+#
+# AND A SECOND DEFECT THE AUDIT DID NOT REACH, INTRODUCED BY THE OWNERSHIP PROBE ITSELF. The compose
+# file declared `networks.default.name: projection-real-provider-gate` -- THE SAME NAME the gate then
+# created and conditionally removed. `compose up` ran FIRST, so the probe found the network compose had
+# just created, called it pre-existing, and the run LEAKED ITS OWN NETWORK on every invocation. The
+# inventory below is taken BEFORE anything is created, which is the only moment at which the question
+# "did this run create it?" has an answer.
+#
+# THE PID IS THE IDENTITY. Every other name in this gate already carries it, so two runs on one host
+# share no container, no volume, no network and no project.
+COMPOSE_PROJECT="projection-rp-gate-$$"
+NETWORK="projection-real-provider-gate-$$"
+# The compose file reads this, so the network compose creates is this run's rather than a shared one.
+export PROJECTION_REAL_PROVIDER_GATE_NETWORK="$NETWORK"
 PG_PORT="${PROJECTION_REAL_PROVIDER_GATE_PG_PORT:-5560}"
 # THE COMPOSE WAIT'S BOUND. Overridable for a slow host, and floor-checked below rather than trusted:
 # GNU tooling reads a duration of `0` as NO BOUND AT ALL, so an override of zero would silently remove
@@ -99,10 +121,17 @@ export PROJECTION_REAL_PROVIDER_GATE_PG_PORT="$PG_PORT"
 # was for every path that leaves through `die`.
 cleanup() {
   docker rm -f "$MOUNT_CONTAINER" "$FAKE_CONTAINER" >/dev/null 2>&1 || true
-  docker compose -f "$COMPOSE_FILE" down -v --remove-orphans >/dev/null 2>&1 || true
-  # ONLY A NETWORK THIS RUN CREATED. `NETWORK_PREEXISTED` is 1 when the ownership probe found one already
-  # there, and it defaults to 1 here so a run that died BEFORE the probe removes nothing -- an unknown owner
-  # is not this run, and the safe default for a destructive step is to do nothing.
+  # SCOPED TO THIS RUN'S OWN PROJECT, AND `--remove-orphans` IS GONE.
+  #
+  # `-v` is safe now and was not before: with a per-run project it removes this run's throwaway volumes
+  # and can reach no other. `--remove-orphans` is not merely unnecessary once the project is unique --
+  # it is the flag whose whole job is to remove containers this compose file does not name, which is the
+  # definition of removing what the run did not create. There is no version of this gate that wants it.
+  docker compose -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" down -v >/dev/null 2>&1 || true
+  # ONLY A NETWORK THIS RUN CREATED. `NETWORK_PREEXISTED` is 1 when the BEFORE INVENTORY -- taken before
+  # anything was created -- already held this name, and it defaults to 1 here so a run that died before
+  # the inventory removes nothing. An unknown owner is not this run, and the safe default for a
+  # destructive step is to do nothing.
   if [ "${NETWORK_PREEXISTED:-1}" = "0" ]; then
     docker network rm "$NETWORK" >/dev/null 2>&1 || true
   fi
@@ -667,6 +696,38 @@ npx tsx src/ops/projection-host-preflight-cli.ts propagation --path "$GATE_ROOT"
 npx tsx src/ops/projection-host-preflight-cli.ts traversal --path "$GATE_ROOT" --path "$WORK"
 
 # ----------------------------------------------------------------------------------------------------------
+step "INVENTORY — every container, network and volume on this host BEFORE anything is created"
+# ----------------------------------------------------------------------------------------------------------
+# THE ONLY MOMENT AT WHICH "DID THIS RUN CREATE IT?" HAS AN ANSWER. Taken after the first create, the
+# question is unanswerable and every probe answers "it was already there" -- which is exactly how the
+# previous ownership repair came to leak the network it had itself created, because `compose up` ran
+# first and the probe believed it.
+#
+# IT IS A SET, NOT A COUNT. "The host was left as it was found" is a statement about membership, and a
+# run that removes somebody else's container and creates its own satisfies every count while violating
+# the sentence. The success path below asserts the difference; the EXIT trap can only report it, for the
+# reason `projection_gate_report_cleanliness` gives in its own words.
+docker ps -a --format '{{.Names}}' | LC_ALL=C sort > "$WORK/out/before-containers.txt" \
+  || die "the host could not list its containers, so no ownership question about them has an answer"
+docker network ls --format '{{.Name}}' | LC_ALL=C sort > "$WORK/out/before-networks.txt" \
+  || die "the host could not list its networks, so no ownership question about them has an answer"
+docker volume ls --format '{{.Name}}' | LC_ALL=C sort > "$WORK/out/before-volumes.txt" \
+  || die "the host could not list its volumes, so no ownership question about them has an answer"
+echo "  before: $(grep -c . "$WORK/out/before-containers.txt") container(s), \
+$(grep -c . "$WORK/out/before-networks.txt") network(s), \
+$(grep -c . "$WORK/out/before-volumes.txt") volume(s)"
+
+# OWNERSHIP IS DECIDED FROM THAT INVENTORY, BEFORE THE FIRST CREATE. Nothing below this line may change
+# the answer, which is the whole difference from a probe taken later.
+if grep -qxF "$NETWORK" "$WORK/out/before-networks.txt"; then
+  NETWORK_PREEXISTED=1
+  echo "  the network $NETWORK already existed; this run will USE it and will NOT remove it"
+else
+  NETWORK_PREEXISTED=0
+  echo "  the network $NETWORK does not exist; this run will create it and IS responsible for removing it"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 step "building the production projectiond image"
 # ----------------------------------------------------------------------------------------------------------
 docker build -t "$IMAGE" ./projectiond
@@ -677,23 +738,18 @@ step "starting a real PostgreSQL and migrating it"
 # BOUNDED, BECAUSE A WAIT WITH NO BOUND IS NOT A SLOW FAILURE BUT A HANG -- and a hang is worse than a
 # failure, since a failure is a verdict and a hang is a person deciding to give up. Phase 12's D4 found and
 # repaired exactly this in the Phase 11 mixed gate; both provider gates still carried it.
-docker compose -f "$COMPOSE_FILE" up -d --wait --wait-timeout "$PG_WAIT_SECONDS" postgres \
+docker compose -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" up -d --wait \
+  --wait-timeout "$PG_WAIT_SECONDS" postgres \
   || die "the throwaway PostgreSQL did not become healthy inside ${PG_WAIT_SECONDS}s, so this run stops \
 rather than waiting on it for ever"
 npx tsx src/ops/migrate-cli.ts
 
-# THE NETWORK IS REMOVED ON THE WAY OUT ONLY IF THIS RUN CREATED IT.
-#
-# `docker network create … || true` followed by an unconditional `docker network rm` in the EXIT trap is
-# Phase 12's D5 -- "the cleanup destroys the network unconditionally, including one it did not create". The
-# attribution only ever held in one direction, and "the host was left as it was found" is a statement about a
-# SET rather than a count: a run that removes somebody else's network and creates its own satisfies every
-# count while violating the sentence. So ownership is decided HERE, once, before anything is created.
-if docker network inspect "$NETWORK" >/dev/null 2>&1; then
-  NETWORK_PREEXISTED=1
-  echo "  the network $NETWORK already existed; this run will USE it and will NOT remove it"
-else
-  NETWORK_PREEXISTED=0
+# THE NETWORK IS CREATED ONLY IF THE BEFORE INVENTORY SAID IT WAS NOT THERE, and the inventory
+# was taken before `compose up` rather than after it. `compose up` brings up this run's network
+# from the compose file, so by here it usually exists already and this is a no-op -- which is
+# correct and is why the create no longer swallows a failure into `|| true`: a create that fails
+# for any reason other than "it is already there" is a reason to stop.
+if [ "$NETWORK_PREEXISTED" = "0" ] && ! docker network inspect "$NETWORK" >/dev/null 2>&1; then
   docker network create "$NETWORK" >/dev/null \
     || die "the gate network could not be created, and this run will not proceed on somebody else's"
 fi
@@ -1125,6 +1181,39 @@ copy_evidence "out/results.json" "results-$$.jsonl"
 copy_evidence "out/results-summary.json" "results-summary-$$.json"
 echo "  evidence kept at $REL_GATE_ROOT/evidence/results-summary-$$.json (scrubbed before it was printed)"
 
+# ----------------------------------------------------------------------------------------------------------
+step "THE SETS — nothing that existed before this run is missing after it"
+# ----------------------------------------------------------------------------------------------------------
+# `PREEXISTING_RESOURCES_REMOVED_MAX` IS ZERO, AND THIS IS WHERE THAT NUMBER IS SPENT. Until now the only
+# ownership check in this gate was about the network, while the claim covered containers and volumes too --
+# and the teardown that could violate it was a `down -v --remove-orphans` against a project name shared by
+# every run of this gate and, on the TorBox compose file, by two different gates.
+#
+# IT IS A SET DIFFERENCE, NOT A COUNT COMPARISON. A run that removes somebody else's container and creates
+# its own leaves the count identical, so a count would report success for exactly the violation this
+# exists to catch. What is asserted is MEMBERSHIP: every name present before is present after.
+#
+# ONLY THE ONE DIRECTION IS A FAILURE. Names ADDED are this run's own residue, measured by `RESIDUE_MAX`
+# and by the cleanup verdict; names REMOVED are somebody else's property.
+#
+# IT RUNS BEFORE THE RUN DIRECTORY IS REMOVED, because the before-inventory lives inside it.
+for _kind in containers networks volumes; do
+  case "$_kind" in
+    containers) docker ps -a --format '{{.Names}}' ;;
+    networks)   docker network ls --format '{{.Name}}' ;;
+    volumes)    docker volume ls --format '{{.Name}}' ;;
+  esac | LC_ALL=C sort > "$WORK/out/after-$_kind.txt" \
+    || die "the host could not list its $_kind after the run, so set preservation cannot be asserted"
+  # `comm -23` is what existed BEFORE and does not exist NOW. Both sides were sorted under the C locale
+  # on the way in, which is what makes the comparison mean anything on a host with any other collation.
+  _gone="$(comm -23 "$WORK/out/before-$_kind.txt" "$WORK/out/after-$_kind.txt" | grep -c . )"
+  echo "  $_kind that existed before and are gone now: $_gone (budget 0)"
+  if [ "${_gone:-1}" -ne 0 ]; then
+    comm -23 "$WORK/out/before-$_kind.txt" "$WORK/out/after-$_kind.txt" | head -20 >&2
+    die "this run removed $_gone $_kind it did not create. The host was NOT left as it was found, and a \
+count of the same size would have hidden it"
+  fi
+done
 projection_gate_cleanup_run "$GATE_ROOT" "$WORK" "$VERIFY_IMAGE" || true
 
 OWN_MOUNTS_LEFT="$(projection_gate_mounts_under "$WORK")"

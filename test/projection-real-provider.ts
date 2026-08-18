@@ -647,7 +647,11 @@ async function main(): Promise<void> {
     assert(/trap cleanup EXIT/.test(gate), 'cleanup runs however the gate ends');
     for (const [what, pattern] of [
       ['the daemon', /docker rm -f "\$MOUNT_CONTAINER"/],
-      ['the database', /docker compose -f "\$COMPOSE_FILE" down -v --remove-orphans/],
+      // THE TEARDOWN IS SCOPED TO THIS RUN'S OWN COMPOSE PROJECT, and `--remove-orphans` is deliberately
+      // absent: its whole job is to remove containers this compose file does not name, which against a
+      // shared project name is the definition of removing what the run did not create. `-v` stays, because
+      // with a per-run project it reaches this run's throwaway volumes and no others.
+      ['the database', /docker compose -f "\$COMPOSE_FILE" -p "\$COMPOSE_PROJECT" down -v[^-]/],
       ['the mount and run directory', /projection_gate_cleanup_run "\$GATE_ROOT" "\$WORK"/],
       ['and it reports what it left', /projection_gate_report_cleanliness/],
     ] as const) {
@@ -659,7 +663,17 @@ async function main(): Promise<void> {
     const gate = repoFile('deploy/projection-real-provider-gate.sh');
     const compose = repoFile('docker-compose.projection-real-provider.yml');
     assert(/PROJECTION_REAL_PROVIDER_GATE_PG_PORT:-5560/.test(compose), 'its own database port');
-    assert(/name: projection-real-provider-gate/.test(compose), 'its own Compose project name');
+    // ITS OWN COMPOSE PROJECT NAME IN THE FILE, AND A PER-RUN ONE ON EVERY INVOCATION. The file's name is
+    // now the DEFAULT rather than the identity: an audit found that a fixed project name is shared by every
+    // run of a gate — and, for the TorBox compose file, by two different gates — so a `down` from one run
+    // reached another's containers and volumes.
+    assert(/^name: projection-real-provider-gate$/m.test(compose), 'its own Compose project name');
+    assert(/COMPOSE_PROJECT="projection-rp-gate-\$\$"/.test(gate), 'and a per-run project on top of it');
+    assert(/NETWORK="projection-real-provider-gate-\$\$"/.test(gate), 'and a per-run network');
+    // COMMENTS STRIPPED, because the repair EXPLAINS the flag it removed and a raw scan would read the
+    // explanation as the thing being explained.
+    assert(!/down -v --remove-orphans/.test(gate.replace(/^\s*#.*$/gm, '')),
+      'and no teardown that removes containers this compose file does not name');
     assert(/MOUNT_CONTAINER="projection-rp-mount-\$\$"/.test(gate), 'pid-scoped container names');
     assert(/GATE_ROOT="\$PWD\/\.projection-real-provider-gate"/.test(gate), 'its own gate root');
     assert(!/\/mnt\/user\/media|appdata\/catalog\/repo/.test(gate),
