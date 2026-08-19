@@ -636,8 +636,9 @@ contacted, started, stopped, read for value or changed to produce any of them.
 | | |
 |---|---|
 | Base | integration `fe4c1fd` |
+| Measured on | `cdbad42`, the Phase 13 preparation tranche's frozen candidate — **three consecutive fresh times** |
 | Typecheck | `npx tsc --noEmit` — **clean** |
-| The two suites | `projection-phase13-preentry` **41/0**, `projection-phase13-preentry-gate-audit` **76/0** |
+| The two suites | `projection-phase13-preentry` **42/0**, `projection-phase13-preentry-gate-audit` **76/0**. The pre-entry suite gained one check after this pass: its own §11 parse was found reading past its own section — holding by luck rather than by construction — and the bound plus its control are recorded in the Phase 13 preparation document, not here |
 | Controls | every repair above carries one, and each was watched failing on the unrepaired bytes |
 | Provider contact | **none** |
 | Claims moved | **none.** Phase 10, Phase 11 tier one and Phase 12 stay GO; Phase 9 and Phase 11 tier two stay OPEN; `P11-R1` is **NOT RUN**; **Phase 13 is NOT ENTERED** |

@@ -437,16 +437,140 @@ Phase 13's own sequence claim is measured through is frozen at the candidate.
 | `P11-R1` | **NOT RUN**, and it has no half |
 | What has been done | this contract; the Phase 12 amendment; the pre-entry instrument repair and its re-audit residuals; and the preparation campaign §14.2 records |
 
-### 14.2 The preparation campaign — what it is and what it is NOT
+### 14.2 The preparation campaign — what it is, and what it is NOT
 
-This section is filled in by the tranche that wrote this contract. **It is not a Phase 13 run and closes no
-claim of §5.** It records the provider-free work that has to exist before an entry decision can honestly be
-made: the amended Phase 12 sequence run from a candidate that includes this work, the no-contact readiness
-record taken on the host, and the entry criteria evaluated one by one.
+**IT IS NOT A PHASE 13 RUN AND IT CLOSES NO CLAIM OF §5.** No provider, CDN, resolver, indexer, NNTP server,
+media server or production container was contacted. No credential was read for value, printed, written into
+evidence or rotated. `endpoint.json` was **not read for value**, not written, and its `allowedOrigins` was
+not widened, reordered or edited. Every Tier A and Tier S claim of §5 is **unrecorded**, which is not the
+same as skipped and is not the same as failed.
 
-*(Filled in below by the preparation tranche.)*
+What it did was discharge the provider-free half of §6, so that the entry decision in §14.3 is a decision
+about measured facts rather than about intentions.
 
-### 14.3 The entry decision
+#### 14.2.1 The candidate, and its own Phase 12 GO — **E3, E4**
 
-*(Filled in below. It is a decision about §6's criteria and nothing else, and it is NOT an authorisation to
-contact a provider — that is the operator's, and it needs the operator's own window.)*
+**`cdbad42bf04d4653af7ac26a6a00fa15087e7736`.** The complete Phase 12 provider-free sequence ran from it
+**three consecutive fresh times, zero skips, on the operator's real Unraid host**, and Phase 12 §13.5 is that
+record. Staged three separate times, **0 files differing and 0 text files carrying a CR** each time. The
+daemon image digest is `sha256:216f1ae6…` in all three — **the same digest `a8d7232` produced**, which is
+what says no daemon byte moved across the pre-entry repair, its residuals or the Phase 12 amendment.
+
+`phase10ClosureProblems`, `phase11ClosureProblems` (tier one), `phase12ClosureProblems` and
+`phase13PreEntryClosureProblems` were **run** over this campaign's verdicts and each returned **0 problems**;
+the same evidence with one byte changed returns problems from all three, and at two sequences rather than
+three `phase12ClosureProblems` returns 2. **E4 is satisfied.**
+
+#### 14.2.2 The no-contact readiness record — **E6**, and nothing else
+
+`deploy/projection-preentry-readiness.sh record` was run **on the real host**, against the operator's own
+approved input directory, **twice**. **IT CONTACTS NOTHING**: no socket is opened, no resolver started, no
+container run, no resolution spent. Its scrubber runs over the RENDERED record and **fails closed** — a
+suspected leak refuses the whole record rather than printing something it cannot stand behind.
+
+**WHAT IT REPORTED, AND THIS IS THE WHOLE OF WHAT MAY BE WRITTEN DOWN:**
+
+| what | shape only |
+|---|---|
+| the input directory | present, `directory`, mode **0700** |
+| the two secret files | present, `regular-file`, mode **0600**, non-empty, **not digested** — a digest of a short token is derived from its content, and nothing this program writes may be |
+| `objects.json` | present, `regular-file`, mode **0600**, whole-file digest `b3962c49…`, shape `array[1]` |
+| `endpoint.json` | present, `regular-file`, mode **0600**, whole-file digest `fce52a48…`, shape `allowInsecureHttp:boolean, allowPrivateAddresses:boolean, allowedOrigins:array[6], id:string` |
+| the origin allowlist | **6 members**, as **6 member digests**, sorted |
+| the endpoint's transport shape | names **neither** a resolver URL nor a direct base URL |
+
+**THE TWO RECORDS ARE IDENTICAL IN EVERY DIGEST**, which is the demonstration that the before/after method
+`P13-A8` rests on works without contacting anything: a digest of a file nobody edited is the same digest.
+
+**AND THE LAST ROW IS A SECOND, INDEPENDENT CONFIRMATION THAT §2.2 NAMES THE RIGHT INSTRUMENT.** An
+`endpoint.json` naming neither transport is exactly what the provider-specific gate REQUIRES — it constructs
+the resolver URL from a network namespace it creates — and exactly what the generic real-provider gate
+REFUSES. The operator's directory is prepared for the gate this contract names, and would make the other one
+fail rather than skip.
+
+**NO VALUE, NO URL, NO ORIGIN, NO OBJECT REFERENCE, NO MEDIA IDENTITY AND NO OPERATOR SHARE PATH IS IN THIS
+DOCUMENT**, and none was read out to produce that table. A member digest is not a locator and cannot be
+dialled.
+
+#### 14.2.3 The host, measured immediately after the campaign — **E8, partly**
+
+46 containers / 18 networks / 47 volumes, **identical to how the campaign found them**; **0** `projection-*`
+containers; no appliance container and no appliance network; **0** mountpoints under the staging directory;
+ports 5670 / 5680 / 8300 / 5580 / 8140 all free; no other gate campaign running. What the campaign left is
+named with its size in Phase 12 §13.5, including one image it re-pulled.
+
+#### 14.2.4 The entry criteria, run rather than summarised — `phase13EntryRefusals`
+
+| # | Criterion | Result |
+|---|---|---|
+| **E1** | the contract is committed before anything is run | **MET.** `6cf953a` precedes every commit that measures anything |
+| **E2** | Phase 12 is amended by its own §8 procedure | **MET.** Phase 12 §13, commit `50492b4` |
+| **E3** | the candidate is frozen, staged, byte-identical both ways | **MET.** 0 differing, 0 CR, three times |
+| **E4** | the candidate carries a Phase 12 GO of its own | **MET.** Phase 12 §13.5 |
+| **E5** | the operator's four inputs, both secrets 0600 **and different values**, and one entitled object confirmed **by reference only** | **NOT MET — TWO FIELDS UNEVALUATED.** All four inputs are present at 0600 and non-empty. Whether the two secrets **differ** cannot be answered without reading their contents, which §4's first refusal forbids this tranche; the gate's own preflight answers it at run time with a `cmp` inside the process. And no operator has confirmed an entitled object |
+| **E6** | the allowlist exists, is serving, and admits the pool | **PARTIALLY MET.** The record is taken and the allowlist admits **6** members. Whether those six are the pool the operator's objects are served from is E7's and E9's question, and the answer below is no |
+| **E7** | the origin recheck inside the hour, exit 0 | **NOT MET — NOT MEASURED.** `deploy/projection-provider-origin-recheck.sh` **starts a resolver and spends one resolution against the operator's metered account**, which is provider contact and is forbidden here. **Not measured is not allowed**, and this refusal is the contract working rather than failing |
+| **E8** | no other campaign, residue accounted for, **a fresh before-baseline** | **NOT MET — one field.** No other campaign is running, the residue is accounted for and the ports are free; but a baseline taken now is a **sampled** fact by the time a run starts, and pairing it with a fresh one invents an instant. It must be re-taken immediately before the run |
+| **E9** | the origin-stability plan | **NOT MET — TWO REFUSALS, AND ONE OF THEM IS THE FINDING OF THIS CAMPAIGN.** See §14.3 |
+
+`phase13MayEnter` returns **false**, with **seven** refusals. Each names the field somebody has to go and
+fill in.
+
+### 14.3 THE ENTRY DECISION — **PHASE 13 ENTRY IS NOT AUTHORISED**
+
+**Not one of the seven refusals is a fact about the product.** Four are measurements nobody has taken yet,
+two need a person, and one is a fact about the provider's CDN that the operator has to act on.
+
+**THE ONE THAT MATTERS MOST IS E9, AND IT IS EXACTLY WHAT §8 EXISTS FOR.** The pool is observed serving from
+**seven** distinct origins — `docs/PROJECTION_ALPHA_OPERATOR_RUNBOOK.md` measured that on this host across
+one day, each origin served for roughly forty to eighty-four minutes, cycling back — and the operator's
+allowlist admits **six**. Some member of the pool is therefore **outside** it, and a rotation onto that
+member during a three-run sequence is **certain given enough time**. Its signature is precise: `stat`
+succeeds, the listing is perfect, and every read fails `EIO` in well under a second.
+
+**THAT WOULD READ AS A HARD FAIL ABOUT THE PRODUCT, AND IT IS NOT ONE.** A Phase 13 run started today would
+very likely go red for a reason that has nothing to do with the data plane, and the natural next move —
+widen `allowedOrigins` until it goes green — is the one thing §4's second refusal, §8, and Phase 12 §12.1 all
+forbid. **A widening made to turn a run green is a permanent change to an egress control, made under time
+pressure, to admit a host nobody verified.** It is escalated as a **count and a digest**, which is what
+§14.2.2's table is, and the operator decides.
+
+**AND THE SECOND E9 REFUSAL IS THE HONEST ONE ABOUT THIS RECORD ITSELF.** The seven-origin figure is a
+sampled fact from a runbook, not a measurement taken within `ORIGIN_RECORD_MAX_AGE_MINUTES` of a run. The
+plan is refused for carrying no current age, not merely for the count.
+
+#### What is left for an operator, and it is all of it
+
+Every one of these needs a person, a window, or a resolution against a metered account. **None is this
+tranche's to discharge, and none of them can be discharged by reading.**
+
+1. **Confirm the two secret files are different values** (E5). The gate's own preflight does this with a
+   `cmp` inside the process and fails closed if they are equal; nothing here may read them.
+2. **Confirm at least one entitled object, by reference only** (E5). The reference never enters an emitted
+   document.
+3. **Reconcile the allowlist with the observed pool** (E6, E9) — the count is 6 against an observed 7. This
+   is an operator decision about an egress control, escalated here as a count and a digest and **not** made
+   by this tranche.
+4. **Run `deploy/projection-provider-origin-recheck.sh` inside the hour before the sequence** (E7). Exit 0
+   proceeds; **exit 70 is a blocker escalated as a digest and never widened**; anything else is not measured,
+   and not measured is not allowed.
+5. **Declare a bounded sequence duration and take a current origin measurement** (E9), so the plan is about
+   the origin being served now rather than about a different one.
+6. **Take the before-baseline immediately before the run** (E8).
+
+Only then does `phase13MayEnter` return true — and **even then it is not an authorisation**. It says the
+criteria this repository can check are met. Contacting a provider is the operator's decision, in the
+operator's own window, against the operator's own metered account.
+
+#### The state of every claim, unchanged by all of this
+
+**PHASE 13 IS NOT ENTERED AND NOT RUN.** All eight Tier A arms and all three Tier S claims are
+**unrecorded**. `phase13ClosureProblems` given this campaign's evidence returns **twelve** problems — the
+mode is not `real`, and each of the eleven claims has no verdict — which is the function refusing to close
+anything, driven rather than asserted.
+
+**`P11-R1` IS NOT RUN AND HAS NO HALF.** **Phase 9's `P9-2`, `P9-3`, `P9-5` and `P9-11` stay OPEN.** **Phase
+11 tier two stays OPEN.** **Phase 10, Phase 11 tier one and Phase 12's `a8d7232` record stay GO**, and Phase
+12 now additionally records a GO for `cdbad42` in its own §13.5. **Phase 14 and Phase 15 are NOT ENTERED and
+no work of theirs was begun.** `phase9RequiresSoakRerun` over every path this branch touches returns
+**FALSE**; **zero** of the provider source allowlists moved; **zero** `projectiond/` files changed.
