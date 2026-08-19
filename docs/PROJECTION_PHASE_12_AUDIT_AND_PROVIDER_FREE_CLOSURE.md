@@ -1123,3 +1123,50 @@ two hours of host and development-host time — were thrown away because a suite
 latent parse defect that only the run record could expose. Keeping them would have meant publishing figures
 from a tree that no longer exists, which is what §10.9 wrote about its own two superseded campaigns. **A
 campaign that survives a repair to its own candidate is a campaign whose figures belong to no tree.**
+
+### 13.6 THE RE-MEASUREMENT ON THE RECORD COMMIT, WHICH IS NOT A FOURTH SEQUENCE
+
+Recorded so that "the record commit is documentation-only" is a **measurement** rather than an assertion —
+§10.10's procedure, applied to §13.5's campaign.
+
+**MEASURED ON COMMIT `2453ab5`**, the commit that carries §13.5 and the Phase 13 preparation document's §14,
+and which differs from candidate `cdbad42` in **three documentation files and in nothing else**.
+
+| | |
+|---|---|
+| `npx tsc --noEmit` | **clean** |
+| Full offline inventory, **Git Bash** | **339 selected / 339 passed / 0 failed / 39 not selected / 0 required-but-skipped**, 745 s — `RESULT: PASS` |
+| Full offline inventory, **an ordinary PowerShell** | **339 / 339 / 0 / 39 / 0**, 742 s — `RESULT: PASS` |
+| `projection-phase9` / `projection-phase10` / `projection-phase11` / `projection-phase12` | 39/0 · 31/0 · 39/0 · 29/0 |
+| `projection-phase13` / `projection-phase13-preentry` / `projection-phase13-preentry-gate-audit` | 30/0 · 42/0 · 76/0 |
+| `projection-phase8-gate-audit` / `projection-phase9-gate-audit` / `projection-phase10-gate-audit` / `projection-phase11-gate-audit` | 17/0 · 19/0 · 29/0 · 56/0 |
+| `projection-real-provider` / `torbox-resolver` / `torbox-boundary` | 75/0 · 84/0 (5 win32 blocks skipped) · 7/0 |
+| `projection-bounded-recovery` — the OPERATOR SOURCE DIGEST | 52/0, **unmoved** |
+| `custody-runtime-closure` / `projection-gate-embedded-programs` | 39/0 · 64/0 |
+| working tree, entering and leaving | clean / clean |
+| `phase9RequiresSoakRerun` over every path changed since `a8d7232` (26) and since `fe4c1fd` (12) | **FALSE** both times; **zero** `projectiond/` files changed |
+| the eight provider source allowlist suites, diffed since `a8d7232` | **zero moved** |
+
+**WHY IT IS IN THE COMMIT AFTER THE ONE IT MEASURES, AND THIS IS THE REGRESS ENDING RATHER THAN CONTINUING.**
+The tree carrying §13.5 cannot also carry the figures produced by running against §13.5. So the record commit
+is measured, its figures land in the next commit, which names the tree they belong to, and it stops there. **A
+third commit measuring the second is not taken, and would prove nothing the second does not.**
+
+**IT CLOSES NOTHING AND IS COUNTED IN NOTHING.** The host tier was not re-run on the record commit and no
+figure in §13.5 depends on it. Its only job is to show that the documentation edits carrying this campaign's
+record leave every suite that reads them green.
+
+### 13.7 WHAT IS LEFT ON THE HOST, MEASURED AFTER EVERYTHING
+
+| what | size | note |
+|---|---|---|
+| `/mnt/user/appdata/catalog-phase13-preentry-authorization` | 125 MB | this campaign's staging directory |
+| `/mnt/user/appdata/catalog-phase12-closure` | 125 MB | **§10.8's, untouched.** Its preserved candidate was never at risk: the staging script's guard admits two literal markers and this campaign's directory carries the other one |
+| `projectiond:phase13prep-frozen` | 10.3 MB | the image `216f1ae6…` was built into |
+| `projectiond:phase12-frozen` | 10.3 MB | §10.8's, untouched |
+| `golang:1.26` | 874 MB | **re-pulled by this campaign.** Sequence 1's preflight reported it ABSENT where §10.8 recorded it cached; the Phase 11 mixed gate runs the fake range origin through it. An image is not a container, a network or a volume, so it moves none of §13.5's SET figures — and it is named here rather than left to be found |
+
+**Containers / networks / volumes: 46 / 18 / 47 — identical to how the campaign found them.** Zero
+`projection-*` containers, no appliance container, no appliance network, **zero mountpoints** under the
+staging directory. The two orchestration wrappers' own transcripts — 57 files across `/root` and
+`/mnt/user/appdata` — were read off the host and **deleted**, along with the host-side runner script.

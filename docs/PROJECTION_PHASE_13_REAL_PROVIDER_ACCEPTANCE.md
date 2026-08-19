@@ -574,3 +574,15 @@ anything, driven rather than asserted.
 12 now additionally records a GO for `cdbad42` in its own §13.5. **Phase 14 and Phase 15 are NOT ENTERED and
 no work of theirs was begun.** `phase9RequiresSoakRerun` over every path this branch touches returns
 **FALSE**; **zero** of the provider source allowlists moved; **zero** `projectiond/` files changed.
+
+### 14.4 The record commit, measured
+
+Phase 12 §13.6 carries it: the commit that added §14 above was re-measured — `npx tsc --noEmit` clean, the
+**full offline inventory 339/339/0 failed/0 required-but-skipped from Git Bash AND from an ordinary
+PowerShell**, seventeen suites green one by one including all four gate audits, the soak trigger **FALSE**
+over every path changed since `a8d7232` and since `fe4c1fd`, **zero** `projectiond/` files, and **zero** of
+the eight provider source allowlists moved. The working tree was clean entering and leaving.
+
+**IT CLOSES NOTHING.** It shows that the documentation edits carrying this record leave every suite that
+reads them green, and Phase 12 §13.7 records exactly what is left on the host. **Phase 13 is still NOT RUN
+and NOT ENTERED.**
