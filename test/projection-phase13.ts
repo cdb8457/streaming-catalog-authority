@@ -448,12 +448,34 @@ h.section('ownership, the soak question, and the boundary that did not move');
 
 /** Every path in the document's §13 ownership table. The parse fails loudly rather than returning nothing. */
 function ownershipTablePaths(): readonly string[] {
-  const document = read(CONTRACT);
+  return ownershipSectionOf(read(CONTRACT));
+}
+
+/**
+ * §13's table, and NOTHING BELOW IT.
+ *
+ * WHY THE SECTION IS BOUNDED, AND IT WAS FOUND BY RUNNING RATHER THAN BY READING. The first version sliced
+ * from the ownership heading TO THE END OF THE DOCUMENT, which was harmless only while §14 was a stub. The
+ * moment the run record grew a table naming `objects.json` and `endpoint.json` — the operator's inputs,
+ * described by shape — the parse claimed them as paths this tranche owns, and the git-driven check then
+ * reported two phantom rows that were never in §13 at all. **A parser whose answer depends on what somebody
+ * writes below it is a parser measuring the wrong thing**, and the failure was in the direction that reads
+ * as a defect in the record rather than in the check.
+ *
+ * THE END BOUNDARY IS THE NEXT `## ` HEADING, matched with `\r?\n` so it holds in a CRLF checkout as well as
+ * in the LF worktree an agent wrote it in — the same line-ending trap that cost this repository four release
+ * baselines. Where there is no next heading the section runs to the end, which is correct rather than
+ * lucky: there is nothing below it to swallow.
+ */
+function ownershipSectionOf(document: string): readonly string[] {
   const at = document.indexOf(PHASE13_OWNERSHIP_SECTION);
   assert(at >= 0, `${CONTRACT} has no section titled "${PHASE13_OWNERSHIP_SECTION}", so the complete `
     + 'ownership list cannot be read and the soak question would be asked of a subset');
+  const rest = document.slice(at + PHASE13_OWNERSHIP_SECTION.length);
+  const next = /\r?\n## /.exec(rest);
+  const section = next === null ? rest : rest.slice(0, next.index);
   const paths: string[] = [];
-  for (const line of document.slice(at).split('\n')) {
+  for (const line of section.split('\n')) {
     if (!line.startsWith('|')) continue;
     const match = /^`([^`]+)`$/.exec(line.split('|')[1]?.trim() ?? '');
     if (match?.[1] !== undefined
@@ -463,6 +485,32 @@ function ownershipTablePaths(): readonly string[] {
   }
   return paths;
 }
+
+test('CONTROL: the §13 parse stops at its own section, and answers the same under CRLF', () => {
+  // THE DEFECT, DRIVEN. A run record written below §13 legitimately names files by shape — the operator's
+  // `objects.json` and `endpoint.json` among them — and an unbounded slice claimed them as paths this
+  // tranche owns. The git-driven check then reported them as rows §13 claims and the branch does not touch,
+  // which reads as a defect in the record rather than in the parser.
+  const real = read(CONTRACT);
+  const grown = `${real}\n\n## 99. A later section that names files by shape\n\n`
+    + '| Path | note |\n|---|---|\n| `objects.json` | the operator\'s own, described by shape |\n'
+    + '| `endpoint.json` | the same |\n';
+  assertEq(ownershipSectionOf(grown).join(','), ownershipSectionOf(real).join(','),
+    'a table written BELOW §13 changed what §13 is read as claiming, so the parse is unbounded');
+  assert(!ownershipSectionOf(grown).includes('objects.json'),
+    'the parse claimed an operator input as a path this tranche owns');
+
+  // AND THE SAME ANSWER IN A CRLF CHECKOUT. `.gitattributes` pins `*.sh` and `*.go` to LF and nothing else,
+  // so this `.md` is LF in the worktree an agent wrote it in and CRLF in an ordinary Windows checkout of the
+  // identical tree hash. A boundary matched with a bare LF would miss there and swallow the rest of the file.
+  const crlf = grown.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
+  assertEq(ownershipSectionOf(crlf).join(','), ownershipSectionOf(real).join(','),
+    'the ownership section parses differently under CRLF, so the completeness check is about a line ending');
+
+  // AND THE PARSE IS NOT VACUOUS: it finds the whole table it is supposed to.
+  assert(ownershipSectionOf(real).length >= 12,
+    `the §13 parse found only ${ownershipSectionOf(real).length} rows, so it is measuring almost nothing`);
+});
 
 test('the ownership table is complete: it holds every path the module names, and more', () => {
   const table = ownershipTablePaths();

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -482,7 +482,19 @@ function ownershipTablePaths(): readonly string[] {
   const at = document.indexOf(PHASE13_PREENTRY_OWNERSHIP_SECTION);
   assert(at >= 0, `${CONTRACT} has no section titled "${PHASE13_PREENTRY_OWNERSHIP_SECTION}", so the `
     + 'complete ownership list cannot be read and the soak question would be asked of a subset');
-  return ownershipSectionPaths(document.slice(at));
+  // BOUNDED AT THE NEXT `## ` HEADING, and this was HOLDING BY LUCK rather than by construction. The slice
+  // used to run to the end of the document, and §12 and §13 below it are full of tables — they happen not to
+  // put a bare backticked path in a first cell, so nothing was claimed that should not have been. The sister
+  // suite's identical parse was NOT so lucky: a run record grew a table naming the operator's `objects.json`
+  // and `endpoint.json` by shape, and the unbounded slice claimed both as paths that tranche owns. A list
+  // that holds by luck is not one that holds by construction.
+  //
+  // `\r?\n` because `.gitattributes` pins `*.sh` and `*.go` to LF and nothing else, so this `.md` is LF here
+  // and CRLF in an ordinary Windows checkout of the identical tree hash.
+  const rest = document.slice(at + PHASE13_PREENTRY_OWNERSHIP_SECTION.length);
+  const next = /\r?\n## /.exec(rest);
+  return ownershipSectionPaths(PHASE13_PREENTRY_OWNERSHIP_SECTION
+    + (next === null ? rest : rest.slice(0, next.index)));
 }
 
 test('the ownership table is complete: it holds every path the module names, and more', () => {
@@ -625,6 +637,18 @@ test('CONTROL: every document parser here answers the same on a CRLF rendering o
 
   assertEq(ownershipSectionPaths(crlf).join(','), ownershipSectionPaths(lf).join(','),
     'the ownership table parses differently under CRLF, so the completeness check is about a line ending');
+  // AND §11's PARSE STOPS AT §11. A table written below it — §12's defect rows, §13's residual rows, or a
+  // run record naming a file by shape — must not change what §11 is read as claiming.
+  const claimed = ownershipTablePaths();
+  assert(!claimed.includes('objects.json') && !claimed.includes('endpoint.json'),
+    '§11\'s parse reaches past its own section and claims a file named in a later table');
+  // AND EVERY PATH IT CLAIMS IS A FILE THAT EXISTS. A parse that reached into a later table would claim the
+  // operator's `objects.json` — a name with no file behind it in this repository — and this is the check
+  // that says so without depending on which later table happens to be there.
+  for (const path of claimed) {
+    assert(existsSync(join(repoRoot, path)),
+      `§11's parse claims ${path}, and no such file is in this repository — the slice has reached past §11`);
+  }
   const a = modifiedEnumeration(lf);
   const b = modifiedEnumeration(crlf);
   assertEq(b.stated, a.stated, '§10.3\'s modified count reads differently under CRLF');
