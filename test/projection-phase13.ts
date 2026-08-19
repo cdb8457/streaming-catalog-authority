@@ -28,11 +28,15 @@ import {
   PHASE13_SEQUENCE_GATE_IDS,
   PHASE13_TRANCHE_PATHS,
   phase13BudgetKeyFor,
+  phase13BudgetKeysFor,
   phase13ClosureProblems,
   phase13Closed,
   phase13EntryRefusals,
+  phase13ExitRefusals,
+  phase13ExitSatisfied,
   phase13MayEnter,
   type Phase13EntryState,
+  type Phase13ExitState,
   type Phase13GateResult,
 } from '../src/core/projection/phase13.js';
 
@@ -132,12 +136,48 @@ test('a claim with a budget has one, and a claim without one is not given a plac
     if (key === undefined) continue;
     assert(key in PHASE13_RULES, `${id} names a budget ${key} the module does not carry`);
   }
-  // THE TWO CLAIMS §5 GIVES NO BUDGET, and the one it gives a RANGE rather than a ceiling.
+  // THE ONE CLAIM §5 GIVES NO BUDGET, and the one it gives a RANGE rather than a ceiling.
   assertEq(phase13BudgetKeyFor(PHASE13_CLOSURE_GATE_IDS[1]), undefined, 'P13-A2 has nothing to count');
-  assertEq(phase13BudgetKeyFor(PHASE13_CLOSURE_GATE_IDS[9]), undefined, 'P13-S2 has nothing to count');
   assertEq(phase13BudgetKeyFor(PHASE13_CLOSURE_GATE_IDS[3]), undefined,
     'P13-A4 is measured against a RANGE and must not be squeezed into the single-ceiling path, which has '
     + 'nowhere to put its floor');
+  // AND `P13-S2` DOES HAVE SOMETHING TO COUNT, which is the defect this assertion used to enshrine. §5.2
+  // gives it `CONSECUTIVE_FRESH_RUNS` and `SKIPPED_CLAIMS_MAX`, and while the function answered `undefined`
+  // a result set that recorded the claim the way §5.2 documents it was ACTIVELY REFUSED as having invented
+  // a budget.
+  assertEq(phase13BudgetKeyFor(PHASE13_CLOSURE_GATE_IDS[9]), 'SKIPPED_CLAIMS_MAX',
+    'P13-S2 carries no ceiling, so §5.2 and the function disagree again');
+});
+
+test('EVERY BUDGET §5 NAMES FOR A CLAIM IS THE BUDGET THE FUNCTION MAPS IT TO, claim by claim', () => {
+  // WHY THIS IS THE STRUCTURAL TEST THIS SUITE WAS MISSING. §5's header says the suite makes the list and
+  // the document agree "so the defect Phase 12 found at its own §11.4 cannot recur here". It had recurred,
+  // in the BUDGET COLUMN — the one part of §5 nothing compared. The old checks asserted that every threshold
+  // NAME appears somewhere in the document and that a returned key exists in `PHASE13_RULES`; neither can
+  // see a claim whose column names two thresholds and whose mapping names one, or none.
+  const document = read(CONTRACT);
+  const lines = document.split(/\r?\n/);
+  for (const id of PHASE13_CLOSURE_GATE_IDS) {
+    const row = lines.find((line) => line.startsWith(`| \`${id}\``));
+    assert(row !== undefined, `§5 has no table row for ${id}`);
+    const cells = row!.split('|').map((cell) => cell.trim());
+    // The Budget column is the LAST cell of the row, after the trailing empty one the pipe leaves.
+    const documented = [...cells[cells.length - 2]!.matchAll(/`([A-Z0-9_]+)`/g)].map((one) => one[1]!);
+    const mapped = phase13BudgetKeysFor(id);
+    assertEq(mapped.join(', '), documented.join(', '),
+      `§5's Budget column for ${id} and phase13BudgetKeysFor disagree`);
+    for (const key of mapped) {
+      assert(key in PHASE13_RULES, `${id} names a budget ${key} the module does not carry`);
+    }
+    // AND THE SINGLE CEILING THE `measured`/`budget` PAIR IS COMPARED AGAINST IS ONE OF THEM, so the two
+    // functions cannot drift from each other either.
+    const one = phase13BudgetKeyFor(id);
+    if (one !== undefined) {
+      assert(mapped.includes(one), `${id} is measured against ${one}, which §5 does not give it`);
+    } else {
+      assert(mapped.length !== 1, `${id} has exactly one documented budget and no ceiling reads it`);
+    }
+  }
 });
 
 // ---------------------------------------------------------------------------------------------------------
@@ -153,9 +193,14 @@ function honest(): { mode: 'real' | 'fake'; results: Phase13GateResult[] } {
       continue;
     }
     const key = phase13BudgetKeyFor(id);
+    // THE SECOND BUDGET §5 GIVES THREE CLAIMS IS CARRIED BY ITS OWN NAMED FIELD, because the pair on the
+    // result is ONE number and §5's column names two.
+    const second = id.startsWith('P13-A7-') ? { residueSurviving: 0 }
+      : id.startsWith('P13-S1-') || id.startsWith('P13-S2-') ? { consecutiveFreshRuns: 3 }
+        : {};
     results.push(key === undefined
-      ? { gate: id, verdict: 'pass' }
-      : { gate: id, verdict: 'pass', measured: 0, budget: PHASE13_RULES[key] });
+      ? { gate: id, verdict: 'pass', ...second }
+      : { gate: id, verdict: 'pass', measured: 0, budget: PHASE13_RULES[key], ...second });
   }
   return { mode: 'real', results };
 }
@@ -244,6 +289,81 @@ test('P13-A4 IS REFUSED IN BOTH DIRECTIONS, AND A RATIO WITH NO DENOMINATOR IS R
     'a zero object count was accepted as a denominator');
 });
 
+test('EVERY BUDGET §5 NAMES IS ACTUALLY READ, driven one threshold at a time', () => {
+  // A STRUCTURAL AGREEMENT IS NOT ENOUGH ON ITS OWN. `phase13BudgetKeysFor` could name a threshold the
+  // closure function never looks at, which is exactly the shape of the defect: `RESIDUE_MAX` was in
+  // `PHASE13_RULES`, in §5.3's table and in §5.1's Budget column for `P13-A7`, and NO FUNCTION READ IT. So
+  // every documented budget is driven past its own edge here and the refusal is required to arrive.
+  const at = (id: string): number => PHASE13_CLOSURE_GATE_IDS.indexOf(id as never);
+  const drive = (id: string, patch: Partial<Phase13GateResult>): readonly string[] => {
+    const run = honest();
+    run.results[at(id)] = { ...run.results[at(id)]!, ...patch } as Phase13GateResult;
+    return phase13ClosureProblems(run);
+  };
+  const A7 = 'P13-A7-the-host-is-left-as-it-was-found';
+  const S1 = 'P13-S1-three-consecutive-fresh-real-runs-zero-skips';
+  const S2 = 'P13-S2-the-candidate-carries-a-phase-12-go-of-its-own';
+
+  // `RESIDUE_MAX` — the budget §5.1 gives `P13-A7`'s residue half, over and unmeasured.
+  assert(drive(A7, { residueSurviving: 1 }).some((one) => /surviving artefact/.test(one)),
+    'a run that left something behind passed P13-A7 on a set-loss count of zero');
+  assert(drive(A7, { residueSurviving: undefined }).some((one) => /residue nobody counted/.test(one)),
+    'P13-A7 passed without measuring what survived');
+  // `HOST_SET_LOSSES_MAX` is still the ceiling the pair on the result is compared against.
+  assert(drive(A7, { measured: 1 }).some((one) => /against a budget of 0/.test(one)),
+    'a set loss was admitted');
+
+  // `CONSECUTIVE_FRESH_RUNS` — a FLOOR, and the only one either sequence claim has. Every ceiling in this
+  // contract is satisfied by ONE run with no skips.
+  for (const id of [S1, S2]) {
+    for (const runs of [0, 1, 2]) {
+      assert(drive(id, { consecutiveFreshRuns: runs }).some((one) => /consecutive fresh run/.test(one)),
+        `${id} passed on ${runs} run(s), so "three consecutive fresh" is a title rather than a measurement`);
+    }
+    assert(drive(id, { consecutiveFreshRuns: undefined }).some((one) => /how many consecutive fresh runs/.test(one)),
+      `${id} passed without counting its runs at all`);
+  }
+
+  // `SKIPPED_CLAIMS_MAX` — the ceiling §5.2 gives `P13-S2`, which the function used to refuse outright.
+  assertEq(phase13BudgetKeyFor(S2), 'SKIPPED_CLAIMS_MAX', 'P13-S2 has no ceiling');
+  assert(drive(S2, { measured: 1 }).some((one) => /against a budget of 0/.test(one)),
+    'a Phase 12 sequence that skipped a claim still satisfied P13-S2');
+});
+
+test('NO THRESHOLD IN THE CONTRACT IS ONE NOTHING CAN MOVE — the D3 class, closed', () => {
+  // PHASE 12 FOUND THIS IN THE PRE-ENTRY TRANCHE: `P13PRE-C3` had a budget and nothing could move it. It
+  // recurred here — `REPAIRS_WITHOUT_A_CONTROL_MAX` was in `PHASE13_RULES` and in §5.3's table, was named by
+  // no claim's Budget column and was read by no function at all. A threshold nothing can move is a threshold
+  // that cannot fail, and a contract's own table is the last place that should be true.
+  const namedByAClaim = new Set<string>();
+  for (const id of PHASE13_CLOSURE_GATE_IDS) for (const key of phase13BudgetKeysFor(id)) namedByAClaim.add(key);
+
+  // The entry gate is the other reader, and it is DRIVEN rather than grepped: each threshold below is proved
+  // to be readable by producing the refusal only it can produce.
+  const readByAnEntryCriterion = new Map<string, () => boolean>([
+    ['ORIGIN_RECORD_MAX_AGE_MINUTES', () => phase13EntryRefusals(
+      { ...ready(), originRecheckAgeMinutes: PHASE13_RULES.ORIGIN_RECORD_MAX_AGE_MINUTES + 1 },
+    ).some((one) => one.startsWith('E7:') && /minutes old/.test(one))],
+    ['ORIGIN_LIFETIME_SAFETY_MARGIN_MINUTES', () => phase13EntryRefusals({
+      ...ready(),
+      originPlan: { ...ready().originPlan, boundedSequenceDurationMinutes: 35 },
+    }).some((one) => /margin/.test(one))],
+    ['REPAIRS_WITHOUT_A_CONTROL_MAX', () => phase13EntryRefusals(
+      { ...ready(), repairsWithoutAControlInCandidate: PHASE13_RULES.REPAIRS_WITHOUT_A_CONTROL_MAX + 1 },
+    ).some((one) => one.includes('(repairsWithoutAControlInCandidate)'))],
+    ['CONSECUTIVE_FRESH_RUNS', () => phase13EntryRefusals(
+      { ...ready(), phase12SequencesFromThisCandidate: PHASE13_RULES.CONSECUTIVE_FRESH_RUNS - 1 },
+    ).some((one) => one.startsWith('E4:'))],
+  ]);
+  for (const [key, driver] of readByAnEntryCriterion) {
+    assert(driver(), `${key} is in PHASE13_RULES and nothing this suite can drive reads it`);
+  }
+  for (const key of Object.keys(PHASE13_RULES)) {
+    assert(namedByAClaim.has(key) || readByAnEntryCriterion.has(key),
+      `${key} is a budget no claim names and no criterion reads, so nothing can ever move it`);
+  }
+});
+
 // ---------------------------------------------------------------------------------------------------------
 h.section('§6 — the entry criteria, and the field nobody filled in');
 // ---------------------------------------------------------------------------------------------------------
@@ -269,6 +389,7 @@ function ready(): Phase13EntryState {
     projectionContainersOnHost: 0,
     gatePortsFree: true,
     baselineTakenImmediatelyBefore: true,
+    repairsWithoutAControlInCandidate: 0,
     originPlan: {
       shortestObservedOriginLifetimeMinutes: 40,
       boundedSequenceDurationMinutes: 20,
@@ -370,6 +491,91 @@ test('E9 reads the pre-entry module\'s own origin policy rather than a copy of i
     .some((one) => one.startsWith('E9:')), 'a pool larger than the allowlist was admitted');
 });
 
+test('E6 AND E9 CARRY TWO COPIES OF ONE FACT, AND THE HEADLINE BLOCKER CANNOT BE ERASED BY THE SECOND', () => {
+  // THE CAMPAIGN'S OWN REAL FIGURES. §14.2.2 records an allowlist of SIX members; §14.3 records a pool
+  // observed serving from SEVEN, and calls that refusal "the one that matters most". E6 reads
+  // `allowedOriginCount` and E9 reads `originPlan.allowedOriginCount` — two independently supplied copies of
+  // ONE fact — and while nothing asserted they agree, filling the plan's copy in as SEVEN made the
+  // six-against-seven refusal DISAPPEAR and `phase13MayEnter` returned true. No provider fact had to move.
+  const real: Phase13EntryState = {
+    ...ready(),
+    allowedOriginCount: 6,
+    originPlan: { ...ready().originPlan!, allowedOriginCount: 7, observedPoolSize: 7 },
+  };
+  const refusals = phase13EntryRefusals(real);
+  assert(refusals.some((one) => one.startsWith('E6/E9')
+    && one.includes('(allowedOriginCount, originPlan.allowedOriginCount)')),
+    'two disagreeing copies of the allowlist count were admitted, and the E9 blocker vanished with them');
+  assertEq(phase13MayEnter(real), false, 'a divergent allowlist count authorised entry');
+
+  // AND WITH THE COPIES AGREEING, THE BLOCKER §14.3 NAMES IS BACK, stated as the pool against the allowlist.
+  const honestCounts: Phase13EntryState = {
+    ...ready(),
+    allowedOriginCount: 6,
+    originPlan: { ...ready().originPlan!, allowedOriginCount: 6, observedPoolSize: 7 },
+  };
+  assert(phase13EntryRefusals(honestCounts).some((one) => one.startsWith('E9:')
+    && /WIDENING THE ALLOWLIST IS A BLOCKER AND NOT A STEP/.test(one)),
+    'the six-against-seven blocker is not raised when the two copies agree');
+  // THE REFUSAL IS NEVER A RECONCILIATION. Picking one of the two numbers would be this module deciding
+  // which of the operator's measurements is real.
+  assert(!phase13EntryRefusals(real).some((one) => /widen/i.test(one) && /allowlist to/i.test(one)),
+    'a refusal suggested moving the allowlist');
+});
+
+test('AN UNMEASURED POOL IS NOT A SMALL ONE, and a zero is still a measurement', () => {
+  // THE ONE FIELD WHERE NOT MEASURED USED TO READ AS SATISFIED. `originStabilityRefusals` guards its pool
+  // comparison with `typeof allowed === 'number' && typeof pool === 'number'`, so an ABSENT
+  // `observedPoolSize` — or an absent plan-side `allowedOriginCount` — produced NO refusal at all, while an
+  // unmeasured lifetime, an unbounded duration and an ageless record are each refused there BY NAME.
+  //
+  // IT IS REFUSED AT E9's OWN SITE RATHER THAN INSIDE THE IMPORTED FUNCTION, and that is not a preference:
+  // `phase13-preentry.ts` is on `PHASE13_FORBIDDEN_SOURCE` and §4's ninth refusal forbids this tranche from
+  // editing the instrument it is measured through.
+  for (const field of ['observedPoolSize', 'allowedOriginCount'] as const) {
+    const plan: Record<string, unknown> = { ...ready().originPlan! };
+    delete plan[field];
+    const state = { ...ready(), originPlan: plan } as Phase13EntryState;
+    assert(phase13EntryRefusals(state).some((one) => one.includes(`(originPlan.${field})`)),
+      `a plan with no ${field} was admitted, so an unmeasured pool read as a satisfied one`);
+    assertEq(phase13MayEnter(state), false, `an incomplete origin plan authorised entry (${field})`);
+  }
+  // AND NEITHER IS A NUMBER THAT IS NOT A COUNT.
+  for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+    const state = {
+      ...ready(), originPlan: { ...ready().originPlan!, observedPoolSize: bad },
+    };
+    assert(phase13EntryRefusals(state).some((one) => one.includes('(originPlan.observedPoolSize)')),
+      `a pool size of ${String(bad)} was admitted as a measurement`);
+  }
+  // A ZERO IS STILL A MEASUREMENT AND IS NOT REFUSED HERE. E6's own criterion is what refuses an allowlist
+  // admitting nobody, and it names its own field when it does.
+  const zeroed = {
+    ...ready(), allowedOriginCount: 0,
+    originPlan: { ...ready().originPlan!, allowedOriginCount: 0, observedPoolSize: 0 },
+  };
+  assert(!phase13EntryRefusals(zeroed).some((one) => one.includes('(originPlan.observedPoolSize)')),
+    'an observed pool of zero was refused as unmeasured, which it is not');
+  assert(phase13EntryRefusals(zeroed).some((one) => one.startsWith('E6:')),
+    'an allowlist admitting no member was admitted');
+});
+
+test('THE FIELD-DROP SWEEP REACHES INSIDE THE ORIGIN PLAN, which is where it used to stop', () => {
+  // WHY THE OLD SWEEP MISSED F2. It iterated the TOP-LEVEL keys of `Phase13EntryState` only, and E9's whole
+  // criterion arrives as ONE of them. Dropping `originPlan` refused; dropping a field INSIDE it did not.
+  const plan = ready().originPlan!;
+  const keys = Object.keys(plan);
+  assert(keys.length >= 5, `the plan has only ${keys.length} fields, so this sweep is not thorough`);
+  for (const key of keys) {
+    const partial: Record<string, unknown> = { ...plan };
+    delete partial[key];
+    const state = { ...ready(), originPlan: partial } as Phase13EntryState;
+    assert(phase13EntryRefusals(state).length > 0,
+      `dropping originPlan.${key} left every entry criterion satisfied, so nothing measures it`);
+    assertEq(phase13MayEnter(state), false, `an origin plan missing ${key} authorised entry`);
+  }
+});
+
 test('E5 never asks for a value, and the refusals name a shape rather than a secret', () => {
   const refusals = phase13EntryRefusals({});
   for (const refusal of refusals) {
@@ -381,6 +587,109 @@ test('E5 never asks for a value, and the refusals name a shape rather than a sec
     assert(!/[A-Za-z0-9_-]{24,}/.test(body),
       `an entry refusal carries a value-shaped string, which is what a token and a reference both look like: ${refusal}`);
     assert(!/[a-z][a-z0-9+.-]*:\/\//i.test(body), `an entry refusal carries a URL: ${refusal}`);
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------
+h.section('§7 — the exit criteria, which used to be six labels');
+// ---------------------------------------------------------------------------------------------------------
+
+/** A complete, honest exit state. Every test below is this with one thing changed. */
+function exited(): Phase13ExitState {
+  return {
+    wrapperRunsCompleted: 3,
+    wrapperRunsSkipped: 0,
+    wrapperExitStatus: 0,
+    candidate: 'a8d7232',
+    credentialReadPrintedOrChanged: false,
+    providerOutageInduced: false,
+    allowlistWholeFileDigestUnchanged: true,
+    allowlistMemberDigestsUnchanged: true,
+    allowlistMembersMoved: 0,
+    hostSetLosses: 0,
+    residueSurviving: 0,
+    applianceUntouched: true,
+    tamperedEvidenceStillRefused: true,
+  };
+}
+
+test('a complete honest exit state satisfies §7, so the refusals below are about what changed', () => {
+  assertEq(phase13ExitRefusals(honest(), exited()).join(' | '), '', 'an honest exit was refused');
+  assertEq(phase13ExitSatisfied(honest(), exited()), true, 'an honest exit did not satisfy §7');
+});
+
+test('§7 IS CODE RATHER THAN SIX LABELS, and every criterion refuses by name', () => {
+  // WHAT THIS REPLACES. §13's ownership row says this module carries "§6's entry criteria and §7's exit
+  // criteria, as code". §6 had a function; §7 had `PHASE13_EXIT_CRITERIA` — six strings — and a check that
+  // each label has a row in the document. X3 ("no credential was read…") and X5 ("the host is left as it
+  // was found") had NO executable counterpart at all.
+  const empty = phase13ExitRefusals({ mode: 'fake', results: [] }, {});
+  for (const criterion of PHASE13_EXIT_CRITERIA) {
+    assert(empty.some((one) => one.startsWith(criterion)),
+      `an entirely unevaluated exit state produced no refusal for ${criterion}`);
+  }
+  // AND EVERY FIELD IS SWEPT, because the failure mode of an exit gate is the same as an entry gate's: a
+  // criterion nobody filled in.
+  const keys = Object.keys(exited()) as Array<keyof Phase13ExitState>;
+  assert(keys.length >= 13, `the exit state has only ${keys.length} fields, so this sweep is not thorough`);
+  for (const key of keys) {
+    const partial = { ...exited() };
+    delete partial[key];
+    assert(phase13ExitRefusals(honest(), partial).length > 0,
+      `dropping ${String(key)} left every exit criterion satisfied, so nothing measures it`);
+  }
+});
+
+test('X2 AND X6 ARE READ OFF THE EVIDENCE, not declared beside it', () => {
+  // A DECLARATION ABOUT VERDICTS IS A SECOND COPY OF THE VERDICTS, and the two can disagree. X2 and X6 are
+  // therefore computed from the result set the run actually produced.
+  const fake = { ...honest(), mode: 'fake' as const };
+  assert(phase13ExitRefusals(fake, exited()).some((one) => one.startsWith('X2:')),
+    'a provider-free rehearsal satisfied X2');
+  const missing = honest();
+  missing.results.splice(0, 1);
+  assert(phase13ExitRefusals(missing, exited()).some((one) => one.startsWith('X2 (P13-A1-')),
+    'a Tier A claim with no verdict satisfied X2');
+  const skipped = honest();
+  skipped.results[0] = { ...skipped.results[0]!, verdict: 'skip' };
+  assert(phase13ExitRefusals(skipped, exited()).some((one) => one.startsWith('X2 (P13-A1-')),
+    'a skipped Tier A claim satisfied X2');
+  // X6 IS BOTH HALVES: the closure function empty, AND the same evidence with one byte changed refused.
+  assert(phase13ExitRefusals(skipped, exited()).some((one) => one.startsWith('X6:')),
+    'X6 passed while phase13ClosureProblems had something to say');
+  assert(phase13ExitRefusals(honest(), { ...exited(), tamperedEvidenceStillRefused: false })
+    .some((one) => one.startsWith('X6 (tamperedEvidenceStillRefused)')),
+    'a green nobody proved is about anything satisfied X6');
+});
+
+test('X1, X3, X4 and X5 refuse in the direction that would let a GO be written', () => {
+  const refused = (state: Phase13ExitState, prefix: string, why: string): void => {
+    assert(phase13ExitRefusals(honest(), state).some((one) => one.startsWith(prefix)), why);
+  };
+  for (const runs of [0, 1, 2]) {
+    refused({ ...exited(), wrapperRunsCompleted: runs }, 'X1 (wrapperRunsCompleted)',
+      `${runs} completed run(s) satisfied X1`);
+  }
+  refused({ ...exited(), wrapperRunsSkipped: 1 }, 'X1 (wrapperRunsSkipped)', 'a skipped run satisfied X1');
+  refused({ ...exited(), wrapperExitStatus: 77 }, 'X1 (wrapperExitStatus)', 'exit 77 satisfied X1');
+  refused({ ...exited(), candidate: 'not-a-commit' }, 'X1 (candidate)', 'an unnamed candidate satisfied X1');
+  refused({ ...exited(), credentialReadPrintedOrChanged: true }, 'X3 (credentialReadPrintedOrChanged)',
+    'a run that read a credential satisfied X3');
+  refused({ ...exited(), providerOutageInduced: true }, 'X3 (providerOutageInduced)',
+    'a run that induced an outage satisfied X3');
+  refused({ ...exited(), allowlistWholeFileDigestUnchanged: false }, 'X4', 'a moved allowlist satisfied X4');
+  refused({ ...exited(), allowlistMemberDigestsUnchanged: false }, 'X4', 'a moved member satisfied X4');
+  refused({ ...exited(), allowlistMembersMoved: 1 }, 'X4 (allowlistMembersMoved)', 'a widening satisfied X4');
+  refused({ ...exited(), hostSetLosses: 1 }, 'X5 (hostSetLosses)', 'a set loss satisfied X5');
+  refused({ ...exited(), residueSurviving: 1 }, 'X5 (residueSurviving)', 'surviving residue satisfied X5');
+  refused({ ...exited(), applianceUntouched: false }, 'X5 (applianceUntouched)',
+    'a moved appliance satisfied X5');
+});
+
+test('NO EXIT REFUSAL CARRIES A VALUE, A URL OR A MEMBER', () => {
+  for (const refusal of phase13ExitRefusals({ mode: 'fake', results: [] }, {})) {
+    const body = refusal.replace(/\([A-Za-z][A-Za-z0-9-]*\)/g, '(field)');
+    assert(!/[a-z][a-z0-9+.-]*:\/\//i.test(body), `an exit refusal carries a URL: ${refusal}`);
   }
 });
 
@@ -403,6 +712,36 @@ test('the document still carries the ceiling sentence and the meaning', () => {
   for (const fragment of PHASE13_MEANING.split(', ')) {
     assert(contract.includes(fragment.replace(/\.$/, '')), `§2.3 no longer says: ${fragment}`);
   }
+});
+
+test('THE PROVIDER-NEUTRAL WORDING OF §2.3 STOPS AT §2.3, and §3.1 and §5.1 still pin the instrument', () => {
+  // WHAT THIS IS A CONTROL FOR, AND IT IS A RESIDUAL RATHER THAN A REPAIR. The commit that ADDED
+  // `phase13.ts` also edited §2.3's GO-meaning block quote, dropping the provider's name and the host
+  // vendor's, so that `PHASE13_MEANING` could carry the sentence without putting the provider's name in
+  // `src/` — where it would have required all eight provider source allowlists to move for a string. That
+  // edit ran in the WIDENING direction and it was made in the implementation commit rather than the
+  // contract commit, which is recorded in §2.3 rather than rewritten: history is not falsified here.
+  //
+  // WHAT THE CONTROL PREVENTS is the widening spreading. §3.1 names the two gate scripts, the operator's own
+  // Unraid host and the operator's own TorBox account; §5.1 names the TorBox credential and the TorBox
+  // stable references. If a later summary neutralises those the way §2.3 was neutralised, this fails.
+  const contract = flat(CONTRACT);
+  for (const pin of ['operator\'s real Unraid host', 'own already-served TorBox account',
+    'deploy/projection-torbox-real-gate.sh', 'deploy/projection-torbox-real-gate-three.sh']) {
+    assert(contract.includes(pin), `§3.1 no longer pins the instrument: ${pin}`);
+  }
+  for (const pin of ['the TorBox credential is **absent from the daemon container\'s filesystem**',
+    'operator\'s TorBox stable references']) {
+    assert(contract.includes(pin), `§5.1 no longer pins the provider: ${pin}`);
+  }
+  // AND THE MODULE STILL NAMES NEITHER, which is the reason the sentence was neutralised in the first place
+  // and is asserted here beside the pins rather than a hundred lines away from them.
+  const module = read(MODULE);
+  for (const name of ['TorBox', 'torbox', 'Unraid', 'unraid']) {
+    assert(!module.includes(name), `${MODULE} names ${name}, so a source allowlist has to move for a string`);
+  }
+  assert(!PHASE13_MEANING.includes('TorBox') && !PHASE13_MEANING.includes('Unraid'),
+    'PHASE13_MEANING names the provider or the host vendor');
 });
 
 test('the document still states every non-claim, so a summary cannot grow one', () => {

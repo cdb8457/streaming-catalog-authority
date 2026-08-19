@@ -153,22 +153,51 @@ export const PHASE13_GATE_TITLES: Readonly<Record<Phase13GateId, string>> = Obje
 });
 
 /**
- * The budget a claim is measured against, or `undefined` where §5 gives it none.
+ * EVERY budget §5's Budget column gives a claim, in the document's own order.
+ *
+ * WHY THE MAPPING IS A LIST, AND IT WAS FOUND BY RUNNING BOTH SIDES RATHER THAN BY READING EITHER. §5's
+ * Budget column names TWO thresholds for four of the eleven claims, and the first version of this module
+ * returned one key per claim. A single-key answer cannot say "and also", so `RESIDUE_MAX` — the budget §5.1
+ * gives `P13-A7`'s residue half — was read by nothing, `CONSECUTIVE_FRESH_RUNS` was read by nothing at
+ * closure, and `P13-S2` was given no budget at all and therefore ACTIVELY REFUSED a result set that recorded
+ * itself the way §5.2 documents it. That is Phase 12 §11.4's defect — the shipped function disagreeing with
+ * the prose it was written from — recurring in the one part of §5 the suite never compared.
  *
  * A CLAIM WITH NO BUDGET HAS NOTHING TO MEASURE, and a run that supplies a measurement for one has invented
  * a budget. `phase13ClosureProblems` refuses both directions, which is Phase 11's rule and Phase 12's.
  */
+export function phase13BudgetKeysFor(gate: string): readonly Phase13RuleKey[] {
+  if (gate.startsWith('P13-A1-')) return ['PREFLIGHT_CONTACTS_MAX'];
+  if (gate.startsWith('P13-A3-')) return ['READ_MISMATCHES_MAX'];
+  if (gate.startsWith('P13-A4-')) return ['RESOLUTIONS_PER_OBJECT_MIN', 'RESOLUTIONS_PER_OBJECT_MAX'];
+  if (gate.startsWith('P13-A5-')) return ['SECRET_TRACES_MAX'];
+  if (gate.startsWith('P13-A6-')) return ['WRITE_PATHS_ADMITTED_MAX'];
+  if (gate.startsWith('P13-A7-')) return ['HOST_SET_LOSSES_MAX', 'RESIDUE_MAX'];
+  if (gate.startsWith('P13-A8-')) return ['ALLOWLIST_MEMBERS_MOVED_MAX'];
+  if (gate.startsWith('P13-S1-')) return ['CONSECUTIVE_FRESH_RUNS', 'SKIPPED_RUNS_MAX'];
+  if (gate.startsWith('P13-S2-')) return ['CONSECUTIVE_FRESH_RUNS', 'SKIPPED_CLAIMS_MAX'];
+  if (gate.startsWith('P13-S3-')) return ['REQUIRED_BUT_SKIPPED_MAX'];
+  // `P13-A2` is the one claim §5 gives no budget: a generation is published and mounted or it is not, and
+  // there is no number of it.
+  return [];
+}
+
+/**
+ * The ONE ceiling a claim's own `measured`/`budget` pair is compared against, or `undefined`.
+ *
+ * IT IS DERIVED FROM `phase13BudgetKeysFor` RATHER THAN RESTATED, so the two cannot drift. Where §5 names a
+ * second threshold it is measured by its own named field on the result — a set loss and a survivor are
+ * different events, and a floor on runs is the half a single-ceiling shape drops.
+ */
 export function phase13BudgetKeyFor(gate: string): Phase13RuleKey | undefined {
-  if (gate.startsWith('P13-A1-')) return 'PREFLIGHT_CONTACTS_MAX';
-  if (gate.startsWith('P13-A3-')) return 'READ_MISMATCHES_MAX';
-  if (gate.startsWith('P13-A5-')) return 'SECRET_TRACES_MAX';
-  if (gate.startsWith('P13-A6-')) return 'WRITE_PATHS_ADMITTED_MAX';
+  const keys = phase13BudgetKeysFor(gate);
+  if (keys.length === 1) return keys[0];
+  // `P13-A4` is the one claim measured against a RANGE, and it is handled on its own below rather than
+  // squeezed into a single-ceiling shape that would drop its floor.
+  if (gate.startsWith('P13-A4-')) return undefined;
   if (gate.startsWith('P13-A7-')) return 'HOST_SET_LOSSES_MAX';
-  if (gate.startsWith('P13-A8-')) return 'ALLOWLIST_MEMBERS_MOVED_MAX';
   if (gate.startsWith('P13-S1-')) return 'SKIPPED_RUNS_MAX';
-  if (gate.startsWith('P13-S3-')) return 'REQUIRED_BUT_SKIPPED_MAX';
-  // `P13-A2` and `P13-S2` have nothing to count; `P13-A4` is the one claim measured against a RANGE, and it
-  // is handled on its own below rather than squeezed into a single-ceiling shape that would drop its floor.
+  if (gate.startsWith('P13-S2-')) return 'SKIPPED_CLAIMS_MAX';
   return undefined;
 }
 
@@ -179,6 +208,24 @@ export interface Phase13GateResult {
   readonly budget?: number;
   /** `P13-A4` only: how many objects the measurement is per. A ratio with no denominator is a number. */
   readonly perObjectDenominator?: number;
+  /**
+   * `P13-A7` only: how many artefacts of this run SURVIVED on the host, against `RESIDUE_MAX`.
+   *
+   * IT IS NOT THE SAME NUMBER AS `measured`. `HOST_SET_LOSSES_MAX` counts names that were present before and
+   * are absent after — things the run DESTROYED. A mountpoint, a run directory or a container the run
+   * CREATED and left behind is a loss of nothing and a residue of one, and §5.1 gives the claim both budgets
+   * because "left as it was found" is broken in both directions.
+   */
+  readonly residueSurviving?: number;
+  /**
+   * `P13-S1` and `P13-S2` only: how many consecutive fresh runs the claim actually counted, against
+   * `CONSECUTIVE_FRESH_RUNS`, which is a FLOOR.
+   *
+   * WHY IT IS A SEPARATE FIELD. Every other number in this contract is a ceiling, and one run with zero
+   * skips satisfies every ceiling these two claims carry. "Two of three passed" is not what three
+   * consecutive fresh runs means, and without this the sentence is a title rather than a measurement.
+   */
+  readonly consecutiveFreshRuns?: number;
 }
 
 export interface Phase13Results {
@@ -315,6 +362,43 @@ export function phase13ClosureProblems(results: Phase13Results): readonly string
       continue;
     }
 
+    // §5 GIVES THREE CLAIMS A SECOND BUDGET, AND A BUDGET NOTHING READS IS A BUDGET NOTHING CAN MOVE.
+    //
+    // THEY ARE CHECKED HERE, BEFORE THE SINGLE-CEILING PATH, because the pair on the result is one number
+    // and §5's column names two. `P13-A7` is measured against `HOST_SET_LOSSES_MAX` AND `RESIDUE_MAX`: a
+    // name that was there before and is gone after is a LOSS, a mountpoint or a run directory this run
+    // created and left behind is a RESIDUE, and "left as it was found" is broken in both directions.
+    // `P13-S1` and `P13-S2` are each measured against a ceiling on skips AND a floor on runs — and every
+    // ceiling in this contract is satisfied by ONE run, so without the floor "three consecutive fresh" is a
+    // title rather than a measurement.
+    if (gateId.startsWith('P13-A7-')) {
+      if (typeof result.residueSurviving !== 'number') {
+        problems.push(`${gateId} passed without recording how much of this run survived on the host; §5.1 `
+          + 'measures it against RESIDUE_MAX as well as against the set losses, and a residue nobody counted '
+          + 'is not a zero');
+        continue;
+      }
+      if (result.residueSurviving > PHASE13_RULES.RESIDUE_MAX) {
+        problems.push(`${gateId} passed while reporting ${result.residueSurviving} surviving artefact(s) `
+          + `against a residue budget of ${PHASE13_RULES.RESIDUE_MAX}; a set loss of zero says nothing about `
+          + 'what the run left behind');
+        continue;
+      }
+    }
+    if (gateId.startsWith('P13-S1-') || gateId.startsWith('P13-S2-')) {
+      if (typeof result.consecutiveFreshRuns !== 'number') {
+        problems.push(`${gateId} passed without recording how many consecutive fresh runs it counted; zero `
+          + 'skips out of a number nobody recorded is not three consecutive fresh runs');
+        continue;
+      }
+      if (result.consecutiveFreshRuns < PHASE13_RULES.CONSECUTIVE_FRESH_RUNS) {
+        problems.push(`${gateId} passed while reporting ${result.consecutiveFreshRuns} consecutive fresh `
+          + `run(s) and §5 asks for ${PHASE13_RULES.CONSECUTIVE_FRESH_RUNS}; two of three is not two thirds `
+          + 'of three, and a floor is not satisfied by a ceiling');
+        continue;
+      }
+    }
+
     const key = phase13BudgetKeyFor(gateId);
     if (key === undefined) {
       if (result.measured !== undefined || result.budget !== undefined) {
@@ -366,6 +450,15 @@ export interface Phase13EntryState {
   readonly candidate?: string;
   readonly stagedFilesDiffering?: number;
   readonly stagedTextFilesWithCarriageReturn?: number;
+  /**
+   * E3 — how many repairs the candidate carries that no control fails on.
+   *
+   * THIS IS THE FIELD `REPAIRS_WITHOUT_A_CONTROL_MAX` IS READ THROUGH, and it exists because a threshold
+   * nothing can move is the D3 defect the pre-entry tranche found in `P13PRE-C3` and repaired for itself.
+   * The rule is this module's own: a defect found on the way to a run is repaired WITH a control that fails
+   * on the unrepaired bytes, and a repair nobody proved is a repair whose defect can come back green.
+   */
+  readonly repairsWithoutAControlInCandidate?: number;
   /** E4 — the complete Phase 12 provider-free sequence, from THIS candidate. */
   readonly phase12SequencesFromThisCandidate?: number;
   readonly phase12SkipsInThoseSequences?: number;
@@ -430,6 +523,9 @@ export function phase13EntryRefusals(state: Phase13EntryState): readonly string[
   count(state.stagedFilesDiffering, 'E3', 'stagedFilesDiffering', 'the staged tree is not byte-identical to the candidate');
   count(state.stagedTextFilesWithCarriageReturn, 'E3', 'stagedTextFilesWithCarriageReturn',
     'text files carrying a carriage return reached the host, so the tree there is not the commit');
+  count(state.repairsWithoutAControlInCandidate, 'E3', 'repairsWithoutAControlInCandidate',
+    'the candidate carries a repair that no control fails on, so nothing says the defect is gone rather '
+    + 'than merely quiet', PHASE13_RULES.REPAIRS_WITHOUT_A_CONTROL_MAX);
 
   if (typeof state.phase12SequencesFromThisCandidate !== 'number') {
     refusals.push('E4 was not measured: how many complete Phase 12 provider-free sequences have run from '
@@ -455,6 +551,30 @@ export function phase13EntryRefusals(state: Phase13EntryState): readonly string[
   if (typeof state.allowedOriginCount !== 'number' || state.allowedOriginCount < 1) {
     refusals.push('E6: the origin allowlist admits no member this run could be served from, and widening it '
       + 'is a BLOCKER rather than a step');
+  }
+
+  // E6 AND E9 CARRY TWO COPIES OF ONE FACT, AND NOTHING USED TO ASSERT THEY AGREE.
+  //
+  // FOUND BY RUNNING THIS FUNCTION RATHER THAN BY READING IT, on the campaign's own real figures. E6 reads
+  // `allowedOriginCount` and E9 reads `originPlan.allowedOriginCount`. Filling the plan's copy in as the
+  // OBSERVED POOL SIZE rather than as the allowlist's count made §14.3's six-against-seven refusal — the one
+  // that document calls "the one that matters most" — DISAPPEAR, and `phase13MayEnter` returned true with an
+  // empty list. No provider fact had to move; one field was filled in inconsistently, and the gate
+  // authorised entry. That is precisely the drift this module's header warns about, in precisely the
+  // direction that lets a run start.
+  //
+  // IT IS REFUSED RATHER THAN RECONCILED. Picking one of the two numbers here would be this module deciding
+  // which of the operator's measurements is the real one, and the pool comparison §8 turns on would then be
+  // made against a number nobody took.
+  if (state.originPlan !== undefined
+    && typeof state.allowedOriginCount === 'number'
+    && typeof state.originPlan.allowedOriginCount === 'number'
+    && state.allowedOriginCount !== state.originPlan.allowedOriginCount) {
+    refusals.push('E6/E9 (allowedOriginCount, originPlan.allowedOriginCount): the allowlist is described as '
+      + `admitting ${state.allowedOriginCount} member(s) by the readiness record and `
+      + `${state.originPlan.allowedOriginCount} by the origin-stability plan. They are two copies of ONE `
+      + 'fact and they disagree, so at least one of them is not a measurement, and the pool comparison §8 '
+      + 'turns on would be made against a number nobody took');
   }
 
   if (typeof state.originRecheckExitStatus !== 'number') {
@@ -494,6 +614,30 @@ export function phase13EntryRefusals(state: Phase13EntryState): readonly string[
     refusals.push('E9 was not evaluated: no origin-stability plan was supplied, and an unmeasured origin '
       + 'lifetime is not a generous one');
   } else {
+    // THE PLAN'S TWO COUNTS ARE REFUSED HERE RATHER THAN INSIDE `originStabilityRefusals`, AND THAT IS NOT A
+    // PREFERENCE. `phase13-preentry.ts` is on `PHASE13_FORBIDDEN_SOURCE` and §4's ninth refusal forbids this
+    // tranche from editing the instrument it is measured through, so the missing refusals are added at the
+    // one site this tranche owns — E9's own — and the imported function is left byte-identical.
+    //
+    // WHAT IT MISSES, MEASURED RATHER THAN READ. `originStabilityRefusals` guards its pool comparison with
+    // `typeof allowed === 'number' && typeof pool === 'number'`, so an ABSENT `observedPoolSize`, or an
+    // absent plan-side `allowedOriginCount`, produces NO refusal at all — while an unmeasured lifetime, an
+    // unbounded duration and an ageless record are each refused there by name. The pool was the one field in
+    // that function where NOT MEASURED read as satisfied, and §8's own sentence is the opposite: not
+    // measured is not allowed.
+    //
+    // A ZERO IS STILL A MEASUREMENT AND IS NOT REFUSED HERE. What is refused is an absent, an infinite, a
+    // NaN and a negative count — none of which is a number of origins anybody observed.
+    const planCount = (value: number | undefined, field: string, sentence: string): void => {
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+        refusals.push(`E9 (originPlan.${field}) was not measured: ${sentence}, and an unmeasured pool is `
+          + 'not a small one');
+      }
+    };
+    planCount(state.originPlan.observedPoolSize, 'observedPoolSize',
+      'how many distinct origins the pool was observed serving from is the question §8 turns on');
+    planCount(state.originPlan.allowedOriginCount, 'allowedOriginCount',
+      'the plan carries no allowlist count for an observed pool to be compared against');
     for (const reason of originStabilityRefusals(state.originPlan)) refusals.push(`E9: ${reason}`);
   }
 
@@ -508,6 +652,175 @@ export function phase13EntryRefusals(state: Phase13EntryState): readonly string[
  */
 export function phase13MayEnter(state: Phase13EntryState): boolean {
   return phase13EntryRefusals(state).length === 0;
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// §7 — the exit criteria, as a function rather than as six labels
+// ---------------------------------------------------------------------------------------------------------
+
+/**
+ * The facts §7 asks about that a result set cannot carry.
+ *
+ * WHY THIS INTERFACE EXISTS AT ALL. §13's ownership row says this module carries "§6's entry criteria and
+ * §7's exit criteria, as code". §6 had `phase13EntryRefusals`; §7 had `PHASE13_EXIT_CRITERIA` — SIX STRINGS —
+ * and a suite that asserted each label has a row in the document. X3 and X5 had no executable counterpart at
+ * all, so half of that ownership sentence was a label rather than a claim. Every field here is optional and
+ * every absent one is a refusal, for the same reason every one of §6's is.
+ */
+export interface Phase13ExitState {
+  /** X1 — the wrapper's own three answers, rather than a sentence about them. */
+  readonly wrapperRunsCompleted?: number;
+  readonly wrapperRunsSkipped?: number;
+  readonly wrapperExitStatus?: number;
+  /** X1 — one frozen candidate, named, and the same one all three runs ran from. */
+  readonly candidate?: string;
+  /**
+   * X3 — the two refusals §4 opens with, as facts about what happened rather than as intentions.
+   *
+   * THEY ARE STATED IN THE FAILING DIRECTION ON PURPOSE. An absent `credentialReadPrintedOrChanged` is
+   * refused, `true` is refused, and only an explicit `false` passes — so nobody discharges X3 by leaving a
+   * field out.
+   */
+  readonly credentialReadPrintedOrChanged?: boolean;
+  readonly providerOutageInduced?: boolean;
+  /** X4 — the before and after readiness records, compared by digest rather than by count alone. */
+  readonly allowlistWholeFileDigestUnchanged?: boolean;
+  readonly allowlistMemberDigestsUnchanged?: boolean;
+  readonly allowlistMembersMoved?: number;
+  /** X5 — the host, as the set arithmetic §5.1 gives `P13-A7`, plus what survived. */
+  readonly hostSetLosses?: number;
+  readonly residueSurviving?: number;
+  readonly applianceUntouched?: boolean;
+  /**
+   * X6 — the non-vacuity control.
+   *
+   * `phase13ClosureProblems` returning empty is half of X6. The other half is the same evidence with ONE
+   * BYTE CHANGED still being refused, because a function that returns empty for everything returns empty for
+   * a real run too.
+   */
+  readonly tamperedEvidenceStillRefused?: boolean;
+}
+
+/**
+ * Every reason a Phase 13 GO may not be recorded, as sentences. Empty means §7 is satisfied.
+ *
+ * IT IS NOT A GO EVEN WHEN IT IS EMPTY, for the same reason `phase13MayEnter` is not an authorisation: it
+ * says the criteria this repository can check are met over the evidence it was handed.
+ */
+export function phase13ExitRefusals(results: Phase13Results, state: Phase13ExitState): readonly string[] {
+  const refusals: string[] = [];
+  const required = (value: boolean | undefined, criterion: string, field: string, sentence: string): void => {
+    if (value === undefined) {
+      refusals.push(`${criterion} (${field}) was not evaluated, and an unevaluated criterion is not a `
+        + 'satisfied one');
+      return;
+    }
+    if (!value) refusals.push(`${criterion} (${field}): ${sentence}`);
+  };
+  const ceiling = (value: number | undefined, criterion: string, field: string, sentence: string,
+    max: number): void => {
+    if (typeof value !== 'number') {
+      refusals.push(`${criterion} (${field}) was not measured, and an unmeasured figure is not a zero`);
+      return;
+    }
+    if (value > max) refusals.push(`${criterion} (${field}): ${sentence} (${value}, budget ${max})`);
+  };
+
+  // X1 — THE WRAPPER'S OWN THREE RUNS, as the three numbers it produces rather than as a sentence.
+  if (typeof state.wrapperRunsCompleted !== 'number') {
+    refusals.push('X1 (wrapperRunsCompleted) was not measured: how many of the three runs completed is the '
+      + 'question, and an unmeasured count is not three');
+  } else if (state.wrapperRunsCompleted < PHASE13_RULES.CONSECUTIVE_FRESH_RUNS) {
+    refusals.push(`X1 (wrapperRunsCompleted): ${state.wrapperRunsCompleted} run(s) completed and §7 asks `
+      + `for ${PHASE13_RULES.CONSECUTIVE_FRESH_RUNS}; two of three is not two thirds of three`);
+  }
+  ceiling(state.wrapperRunsSkipped, 'X1', 'wrapperRunsSkipped',
+    'a run was skipped, and 77 is a skip rather than a pass', PHASE13_RULES.SKIPPED_RUNS_MAX);
+  if (state.wrapperExitStatus !== 0) {
+    refusals.push(`X1 (wrapperExitStatus): the wrapper answered ${String(state.wrapperExitStatus)} rather `
+      + 'than 0, and any other status is a sequence this record may not read as three');
+  }
+  if (state.candidate === undefined || !/^[0-9a-f]{7,40}$/.test(state.candidate)) {
+    refusals.push('X1 (candidate): no frozen candidate is named, so the three runs do not belong to one tree');
+  }
+
+  // X2 — EVERY TIER A CLAIM, FROM A REAL-MODE RUN. It is read off the result set rather than declared,
+  // because a declaration about verdicts is a second copy of the verdicts and the two can disagree.
+  if (results.mode !== 'real') {
+    refusals.push('X2: the run reports mode ' + String(results.mode) + ', and no Tier A verdict may be '
+      + 'recorded from a provider-free rehearsal');
+  }
+  for (const gateId of PHASE13_ACCEPTANCE_GATE_IDS) {
+    const found = results.results.filter((one) => one.gate === gateId);
+    if (found.length === 0) {
+      refusals.push(`X2 (${gateId}): no verdict, and an absent verdict is not a pass`);
+      continue;
+    }
+    if (found.length > 1) {
+      refusals.push(`X2 (${gateId}): more than one verdict, so it is not clear which one is the run's`);
+      continue;
+    }
+    if (found[0]!.verdict !== 'pass') {
+      refusals.push(`X2 (${gateId}): the verdict is ${found[0]!.verdict}, and a skip is not a pass`);
+    }
+  }
+
+  // X3 — THE TWO REFUSALS §4 OPENS WITH.
+  if (state.credentialReadPrintedOrChanged === undefined) {
+    refusals.push('X3 (credentialReadPrintedOrChanged) was not evaluated, and an unevaluated criterion is '
+      + 'not a satisfied one');
+  } else if (state.credentialReadPrintedOrChanged) {
+    refusals.push('X3 (credentialReadPrintedOrChanged): a credential was read, printed, written into '
+      + 'evidence, rotated or changed, which the first refusal of §4 forbids outright');
+  }
+  if (state.providerOutageInduced === undefined) {
+    refusals.push('X3 (providerOutageInduced) was not evaluated, and an unevaluated criterion is not a '
+      + 'satisfied one');
+  } else if (state.providerOutageInduced) {
+    refusals.push('X3 (providerOutageInduced): an outage was induced, simulated, provoked or waited for, '
+      + 'which the fourth refusal of §4 forbids and which is the claim of Phase 11 tier two rather than of '
+      + 'this phase');
+  }
+
+  // X4 — THE ALLOWLIST, BY DIGEST AND BY COUNT.
+  required(state.allowlistWholeFileDigestUnchanged, 'X4', 'allowlistWholeFileDigestUnchanged',
+    'the whole-file digest of the allowlist moved across the sequence');
+  required(state.allowlistMemberDigestsUnchanged, 'X4', 'allowlistMemberDigestsUnchanged',
+    'a member digest moved, so the allowlist is not the one the run started against');
+  ceiling(state.allowlistMembersMoved, 'X4', 'allowlistMembersMoved',
+    'a member moved, and a widening made to turn a run green is a BLOCKER rather than a step',
+    PHASE13_RULES.ALLOWLIST_MEMBERS_MOVED_MAX);
+
+  // X5 — THE HOST, IN BOTH DIRECTIONS. A count is satisfied by a removal and a creation, so the losses and
+  // the survivors are two measurements rather than one.
+  ceiling(state.hostSetLosses, 'X5', 'hostSetLosses',
+    'a container, network or volume that was there before is gone after', PHASE13_RULES.HOST_SET_LOSSES_MAX);
+  ceiling(state.residueSurviving, 'X5', 'residueSurviving',
+    'a mountpoint, a run directory or another artefact of this run survives', PHASE13_RULES.RESIDUE_MAX);
+  required(state.applianceUntouched, 'X5', 'applianceUntouched',
+    'the container, network or mount point of the appliance moved, and one mount point keeps exactly one '
+    + 'owner');
+
+  // X6 — THE CLOSURE FUNCTION, AND THE PROOF THAT ITS GREEN IS NOT VACUOUS.
+  const problems = phase13ClosureProblems(results);
+  if (problems.length > 0) {
+    refusals.push(`X6: phase13ClosureProblems returns ${problems.length} problem(s) over the run's own `
+      + `verdicts, the first being: ${problems[0]}`);
+  }
+  required(state.tamperedEvidenceStillRefused, 'X6', 'tamperedEvidenceStillRefused',
+    'the same evidence with one byte changed was not shown to be refused, so the green is a green nobody '
+    + 'has shown to be about anything');
+
+  return refusals;
+}
+
+/**
+ * True only when every exit criterion passes.
+ *
+ * IT IS NOT A GO. A GO is written by a person, into a run record, from evidence.
+ */
+export function phase13ExitSatisfied(results: Phase13Results, state: Phase13ExitState): boolean {
+  return phase13ExitRefusals(results, state).length === 0;
 }
 
 // ---------------------------------------------------------------------------------------------------------
