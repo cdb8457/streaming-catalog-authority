@@ -647,3 +647,23 @@ contacted, started, stopped, read for value or changed to produce any of them.
 it was taken from a candidate that includes this pass *and* that tranche's work, and a figure measured on a
 tree that is not this tranche's belongs to that tree's record. §10.9's arms are unchanged and are still the
 figure for `321a43b`.
+
+### 13.5 A LATER FINDING ABOUT `originStabilityRefusals`, REPAIRED AT ITS CALLER RATHER THAN HERE
+
+**THIS MODULE IS UNCHANGED BY THAT REPAIR AND IS BYTE-IDENTICAL TO THE CANDIDATE THIS DOCUMENT MEASURES.**
+It is recorded here because a reader of `phase13-preentry.ts` should find the note beside the function.
+
+An independent review of the Phase 13 preparation tranche found that `originStabilityRefusals` guards its
+pool comparison with `typeof allowed === 'number' && typeof pool === 'number'`, so an **absent**
+`observedPoolSize` — or an absent `allowedOriginCount` — produces **no refusal at all**, while an unmeasured
+lifetime, an unbounded duration and an ageless record are each refused there **by name**. The pool is the one
+field in that function where *not measured* reads as *satisfied*, which is the opposite of the rule this
+tranche wrote for itself.
+
+**IT IS NOT REPAIRED HERE, AND THAT IS THE RULE RATHER THAN A PREFERENCE.** This module is on
+`PHASE13_FORBIDDEN_SOURCE`, and the Phase 13 contract's §4 ninth refusal forbids that tranche from editing
+the instrument it is measured through — a tranche that could edit its own instrument is a tranche whose
+measurement concludes whatever it needs to. The refusal is therefore added at **E9's own site** in
+`src/core/projection/phase13.ts`, where the only consumer that makes this function load-bearing for an entry
+decision lives, and the Phase 13 contract's §6 and §8 record it with its control. **No claim of this tranche
+moves, and `P13PRE-C1`…`P13PRE-C8` are exactly as §12 leaves them.**

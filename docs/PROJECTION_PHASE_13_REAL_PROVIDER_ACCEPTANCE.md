@@ -675,3 +675,66 @@ the eight provider source allowlists moved. The working tree was clean entering 
 **IT CLOSES NOTHING.** It shows that the documentation edits carrying this record leave every suite that
 reads them green, and Phase 12 §13.7 records exactly what is left on the host. **Phase 13 is still NOT RUN
 and NOT ENTERED.**
+
+### 14.5 THE REPAIR TRANCHE — an independent review of the record commit, and what it found
+
+**IT IS NOT A PHASE 13 RUN EITHER, AND IT CLOSES NOTHING.** No provider, CDN, resolver, indexer, NNTP server,
+media server or production container was contacted. No credential, `endpoint.json`, object reference, URL,
+origin, media identity or allowlist member was read for value, printed or stored. No allowlist was widened.
+Every Tier A and Tier S claim of §5 is still **unrecorded**.
+
+An independent read-only review of `b676b58` reproduced **three MEDIUM** defects and **three LOW** ones, all
+of them in this tranche's own contract and module rather than in any product source. Each was **reproduced
+here from first principles before anything was changed**, and each repair carries a control that **fails on
+`b676b58`'s bytes**.
+
+| # | What it was | Where it is repaired | The control that fails without the repair |
+|---|---|---|---|
+| **F1** | **MEDIUM.** E6 read `allowedOriginCount`, E9 read `originPlan.allowedOriginCount` — two copies of ONE fact, and nothing asserted they agreed. Filling the plan's copy in as the observed pool size made §14.3's six-against-seven refusal **disappear** and `phase13MayEnter` returned **true** with an EMPTY list | §6, and `phase13EntryRefusals` | `phase13MayEnter` on the campaign's own figures with the plan's copy at 7: **true** before, **false** after |
+| **F2** | **MEDIUM.** `originStabilityRefusals` compares the pool to the allowlist only when both are numbers, so an **absent** `observedPoolSize` — or an absent plan-side `allowedOriginCount` — produced **no refusal at all** | §6 and §8, at **E9's own site**. `phase13-preentry.ts` is on `PHASE13_FORBIDDEN_SOURCE` and §4's ninth refusal forbids this tranche to edit it; it is **byte-identical** | `phase13MayEnter` on a plan missing either count: **true** before, **false** after. A pool of **zero** is still a measurement and still passes |
+| **F3** | **MEDIUM.** §5's Budget column named two thresholds for four claims and `phase13BudgetKeyFor` returned one. `RESIDUE_MAX` was read by **no function**; `CONSECUTIVE_FRESH_RUNS` by nothing at closure; `P13-S2` had **no** budget and **actively refused** a result set recording it the way §5.2 documents it | §5, `phase13BudgetKeysFor`, and the second measurement fields | driving `residueSurviving: 1`, and `consecutiveFreshRuns: 1` on `P13-S1` and on `P13-S2`: **no problem raised** before, refused after. `phase13BudgetKeyFor` for `P13-S2`: `undefined` before, `SKIPPED_CLAIMS_MAX` after |
+| **F4** | **LOW.** `REPAIRS_WITHOUT_A_CONTROL_MAX` was named by no claim and read by no function — the **D3** class the pre-entry tranche found in `P13PRE-C3` | §5.3 and E3, through `repairsWithoutAControlInCandidate` | `phase13MayEnter` with one repair carrying no control: **true** before, **false** after. And a sweep now asserts **every** key of `PHASE13_RULES` is named by a claim or **driven** to a refusal |
+| **F5** | **LOW.** §7 was six strings. X3 and X5 had **no executable counterpart at all**, while §13 claimed the module carries §7 "as code" | §7 and `phase13ExitRefusals` | the export does not exist before; after, an entirely unevaluated exit state refuses on **all six** of X1…X6 |
+| **F6** | **LOW.** `b838f11`, the commit that added `phase13.ts`, also dropped **TorBox** and **Unraid** from §2.3's meaning so `PHASE13_MEANING` could carry it without putting a provider name in `src/` | **ACCEPTED RESIDUAL, recorded in §2.3 rather than rewritten.** History is not falsified and no claim, threshold, refusal or criterion moved with it | a control asserts §3.1's and §5.1's pins — the two gate scripts, the operator's own **Unraid** host, the operator's own **TorBox** account, the **TorBox** credential and the **TorBox** stable references — are still present word for word, so the neutralisation cannot spread |
+
+**AND ONE FINDING OF THIS TRANCHE'S OWN, found while checking whether F2 could be repaired where it lives.**
+§4's ninth refusal described `PHASE13_FORBIDDEN_SOURCE` as already containing the two gate scripts. The
+constant has never held them and §13's own table records both as **modified by this tranche, each with a
+control**. The sentence is corrected to say what the rule always was — the instrument freezes when the
+candidate does — rather than the constant being widened to match a sentence, which would have made this
+tranche's own §13 table illegal retroactively. `deploy/projection-torbox-real-gate-three.sh` is unmodified
+and stays so. §8's opening sentence, which was missing a clause and did not parse, is completed to the
+reading §14.3 already carries.
+
+#### 14.5.1 What the review reproduced and did NOT find
+
+The same review re-measured every figure in §14.2 and §14.4 independently and **all of them reproduced
+exactly** — the seven refusals and their identities, the twelve closure problems, `339 / 339 / 0 failed / 39
+not selected / 0 required-but-skipped`, the 15 M / 5 A of §10.3, the 18 commits, the soak trigger FALSE over
+both path sets with **zero** `projectiond/` files, and the host figures **46 / 18 / 47**, zero
+`projection-*` containers, zero mountpoints, five ports free, 125 MB / 125 MB, and the daemon image digest
+`sha256:216f1ae6…` **identical to Phase 12's**. **No forbidden path had moved, no source allowlist had moved,
+and no credential, URL, origin, object reference, media identity or allowlist member appeared anywhere in the
+diff.** The findings above are latent contract defects that bite at the **first real run**, which is why they
+are repaired **before** an entry decision rather than after one.
+
+#### 14.5.2 The entry decision is UNCHANGED, and it was re-measured rather than restated
+
+`phase13EntryRefusals`, driven over exactly the facts §14.2.4 records, still returns **SEVEN** refusals and
+`phase13MayEnter` is still **false**. **They are the same seven** — 2×E5, 2×E7, 1×E8, 2×E9 — and that is the
+point: the repairs close paths by which an entry could have been authorised on an inconsistent or unmeasured
+state, and they manufacture **no new blocker** for a state that was honestly filled in.  §14.3's remediation
+list stands unchanged, and none of it is this tranche's to discharge.
+
+**AND E4 IS NOW REFUSED AS WELL, WHICH MAKES EIGHT, BECAUSE THE CANDIDATE CHANGED.** Repairing F1–F5 moved
+`src/core/projection/phase13.ts` and `test/projection-phase13.ts` — bytes arm 9 and arm 10 of a Phase 12
+sequence both read — so `cdbad42` is superseded as a Phase 13 candidate under Phase 12 §13.3's own rule, and
+Phase 12 §13.8 records that. Until the complete Phase 12 provider-free sequence has run from the new
+candidate **three consecutive fresh times with zero skips**, no candidate carries a Phase 12 GO of its own and
+**E4 is NOT MET**.
+
+**PHASE 13 ENTRY REMAINS NOT AUTHORISED. PHASE 13 IS NOT RUN AND NOT ENTERED.** All eight Tier A arms and all
+three Tier S claims are **unrecorded**. `P11-R1` is NOT RUN and has no half. Phase 9's `P9-2`, `P9-3`, `P9-5`
+and `P9-11` stay OPEN; Phase 11 tier two stays OPEN; Phase 10, Phase 11 tier one and Phase 12's `a8d7232`
+record stay GO, and Phase 12's `cdbad42` record in §13.5 stays exactly as written — it is a statement about
+`cdbad42`. **Phase 14 and Phase 15 are NOT ENTERED and no work of theirs was begun.**

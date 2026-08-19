@@ -1170,3 +1170,55 @@ record leave every suite that reads them green.
 `projection-*` containers, no appliance container, no appliance network, **zero mountpoints** under the
 staging directory. The two orchestration wrappers' own transcripts — 57 files across `/root` and
 `/mnt/user/appdata` — were read off the host and **deleted**, along with the host-side runner script.
+
+---
+
+### 13.8 THE CANDIDATE RULE APPLIED AGAIN — `cdbad42` IS SUPERSEDED AS A PHASE 13 CANDIDATE
+
+**§13.5 IS NOT DISTURBED, NOT RE-OPENED AND NOT SUPERSEDED BY THIS.** It records three consecutive fresh
+complete sequences from `cdbad42bf04d4653af7ac26a6a00fa15087e7736`, and that record stands exactly as
+written: it is a statement about `cdbad42` and it remains true of `cdbad42` whatever else lands. §10.9's GO
+from `a8d7232` is untouched, as are §10.10, §13.6 and §13.7.
+
+**WHAT HAPPENED, AND IT IS §13.3's OWN RULE APPLIED TO ITS AUTHOR.** An independent review of `b676b58`
+reproduced three MEDIUM defects and three LOW ones in the Phase 13 authorization-prep tranche. Repairing them
+moved **`src/core/projection/phase13.ts`** and **`test/projection-phase13.ts`**, and §13.5's own definition of
+a complete sequence reads those bytes twice:
+
+| arm | what it reads |
+|---|---|
+| **arm 9** — the full offline inventory, from Git Bash and from an ordinary PowerShell | selects `test/projection-phase13.ts`, which imports `src/core/projection/phase13.ts`. It is the reason the count is **339 rather than 338** |
+| **arm 10** — the twelve suites run one by one | runs `projection-phase13` as one of the twelve |
+
+§13.3 states the test in one sentence: a Phase 13 candidate may be `a8d7232`, **or a descendant whose only
+differences are documents Phase 12's suites do not read.** A descendant that moves a module a suite imports
+and the suite that imports it is **not** such a descendant. **So `cdbad42` has no Phase 13 GO to lend a tree
+that no longer matches it, the series restarts at one, and two of the three sequences §13.5 records are not
+two thirds of anything.** That sentence is §13.3's, and it is applied here to work done after §13.3 was
+written rather than only to work done before it.
+
+**WHAT MOVED BETWEEN `cdbad42` AND THE NEW CANDIDATE — five files, and every one of them named:**
+
+| path | why it is or is not a sequence-invalidating change |
+|---|---|
+| `src/core/projection/phase13.ts` | **INVALIDATING.** `src/`, and imported by a suite arms 9 and 10 both run |
+| `test/projection-phase13.ts` | **INVALIDATING.** A suite arms 9 and 10 both run, and one of arm 9's selected 339 |
+| `docs/PROJECTION_PHASE_13_REAL_PROVIDER_ACCEPTANCE.md` | **INVALIDATING BY ITSELF ANYWAY** — `test/projection-phase13.ts` parses §5's tables, §6's and §7's rows, §13's ownership table and §14's status, so it is a document a suite reads |
+| `docs/PROJECTION_PHASE_12_AUDIT_AND_PROVIDER_FREE_CLOSURE.md` | this section. §1–§12 untouched; §13.1–§13.7 untouched |
+| `docs/PROJECTION_PHASE_13_PRE_ENTRY_INSTRUMENT_REPAIR.md` | its §13 residual list only |
+
+**NO `projectiond/` FILE MOVED — zero — so the daemon image digest is expected to be `216f1ae6…` again, and
+the sequences below are what say it rather than this sentence.** No gate script moved. No wrapper moved.
+`phase13-preentry.ts` — the instrument §4's ninth refusal of the Phase 13 contract forbids this tranche to
+touch — is **byte-identical**, which is why the repair to `originStabilityRefusals`'s missing pool refusal was
+made at the **caller's** site instead.
+
+**WHAT THIS AMENDMENT DOES NOT DO.** It does not declare Phase 12 NO-GO and it weakens nothing. Every one of
+§5's eleven claims, every threshold in §5.4, every refusal in §4, §10 in its entirety, §11's audit, and
+§13.1–§13.7 stand exactly as written. **No verdict of any tranche is written, moved, re-worded or narrowed by
+this section. Phase 9's `P9-2`, `P9-3`, `P9-5` and `P9-11` stay OPEN. Phase 11 tier two stays OPEN and
+`P11-R1` is NOT RUN. Phase 13 is NOT ENTERED**, and this section contacts nothing and runs nothing.
+
+**THE NEW CANDIDATE IS THE COMMIT THAT CARRIES THIS SECTION**, and its own three sequences are recorded in a
+later section measured after they ran, never before. **Until that record exists, no candidate carries a Phase
+12 GO of its own and Phase 13 entry criterion E4 is NOT MET.**
