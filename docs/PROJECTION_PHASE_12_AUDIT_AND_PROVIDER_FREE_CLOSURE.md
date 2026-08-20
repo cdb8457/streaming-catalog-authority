@@ -1369,3 +1369,49 @@ carrying this repair.
 sequence runs from that exact commit three consecutive fresh times with zero skips and no reused evidence,
 **NO NEW CANDIDATE CARRIES A PHASE 12 GO OF ITS OWN AND PHASE 13 E4 IS NOT MET.** No historical commit or run
 record is rewritten by this amendment.
+
+### 13.12 THE NUMERIC-DOMAIN REPAIR CANDIDATE — three fresh sequences from `a5e5844`
+
+**THE FROZEN CANDIDATE IS `a5e584428e896a093ae2327d8140e466dcec7dc9`.** `bca6039` was discarded when
+the third attempted inventory exposed an offline-test Docker invocation waiting on a missing image; `c3c4450`
+was discarded when the git-driven ownership control correctly found the two repair paths absent from Phase 13
+§13. The final candidate adds `--pull=never`, makes the missing-image control fail in Docker's local argument
+parser, records both paths in the ownership table, and changes no `projectiond/` byte. The Phase 13 pre-entry
+instrument remains byte-identical to `2e51127`.
+
+Lowercase batch SSH to `tower` was confirmed before the campaign. Each sequence used only
+`PROJECTION_PHASE12_HOST=tower` and
+`PROJECTION_PHASE12_STAGE_DIR=/mnt/user/appdata/catalog-phase13-preentry-authorization`, staged the frozen
+candidate afresh, and retained only aggregate status, counts, timings and hashes.
+
+| measurement | sequence 1 | sequence 2 | sequence 3 |
+|---|---:|---:|---:|
+| staged files differing / archive CR / host CR | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| daemon image digest | `sha256:216f1ae6f298781b34b0855f1b5201d5db51eec816b8ccf894876797a7a21a46` | same | same |
+| Phase 10 one / Phase 11 one | 31 s / 62 s | 30 s / 63 s | 31 s / 62 s |
+| Phase 10 three / Phase 11 three | 93 s / 188 s | 93 s / 188 s | 93 s / 188 s |
+| alpha / real-provider fake / publisher / restart | 35 / 25 / 102 / 66 s | 35 / 26 / 101 / 66 s | 35 / 27 / 101 / 66 s |
+| Git Bash offline inventory | 339/339, 0 failed, 39 not selected, 0 required skipped, 724 s | 339/339, 0/39/0, 709 s | 339/339, 0/39/0, 708 s |
+| ordinary PowerShell offline inventory | 339/339, 0/39/0, 720 s | 339/339, 0/39/0, 709 s | 339/339, 0/39/0, 710 s |
+| complete sequence elapsed | 2,172 s | 2,145 s | 2,144 s |
+
+All twelve focused suites passed in every sequence: `projection-phase10` 31/0,
+`projection-phase11` 39/0, `projection-phase12` 29/0, the Phase 10 and Phase 11 gate audits 29/0 and 56/0,
+`projection-phase13-preentry` 42/0, its gate audit 76/0, `projection-phase13` 49/0,
+`projection-real-provider` 75/0, `torbox-resolver` 84/0 with five win32 blocks skipped,
+`projection-bounded-recovery` 52/0, and `custody-runtime-closure` 39/0. Those suites directly drove the
+Phase 10, Phase 11, Phase 12, Phase 13 pre-entry and Phase 13 closure functions with biting controls: shortened
+sequence sets, the wrong Phase 11 tier, an injected skip, absent verdicts, and the non-real Phase 13 campaign
+all produced problems. The inventory and focused arms also passed typecheck, inventory ownership, no-soak,
+allowlist non-movement, redaction and residue controls.
+
+Tower began and ended every sequence at **46 containers / 18 networks / 47 volumes**. Hashed set differences
+were zero lost and zero gained in all three kinds; full `docker ps -a` row differences were zero; and the final
+state had zero projection containers, appliance container, appliance network, mountpoints under the stage,
+endpoint files under the stage, or listeners on 5670, 5680, 8300, 5580 and 8140.
+
+**This satisfies E4 for this candidate and authorises nothing else.** The live entry function still refuses
+seven fields: two E5, two E7, one E8 and two E9. No provider, CDN, resolver, indexer, NNTP server, media server
+or production container was contacted; no secret, endpoint, object, URL, origin, media identity or allowlist
+value was read, printed or retained. Phase 13 remains **NOT RUN, NOT ENTERED, AND ENTRY NOT AUTHORISED**;
+Phases 14 and 15 remain not entered.

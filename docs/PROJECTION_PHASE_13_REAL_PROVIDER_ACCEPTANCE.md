@@ -890,3 +890,29 @@ table-driven controls follow in later commits; `src/core/projection/phase13-pree
 **Candidate `96f750c` is invalidated before any new measurement.** Phase 12 §13.11 records the invalidation and
 the restart-at-one rule. Phase 13 is **NOT RUN, NOT ENTERED, AND ENTRY IS NOT AUTHORISED**; all eleven claims
 remain unrecorded, the seven live-entry refusals remain to be re-measured, and Phases 14 and 15 are not entered.
+
+### 14.9 THE REPAIRED CANDIDATE — **E4 IS MET; ENTRY REMAINS REFUSED**
+
+The numeric-domain implementation and controls were frozen, then the validation-blocking offline Docker path
+was repaired so a missing image cannot cause registry resolution. The final candidate is
+**`a5e584428e896a093ae2327d8140e466dcec7dc9`**; Phase 12 §13.12 records why the intervening `bca6039` and
+`c3c4450` candidates were discarded and gives the exact three-sequence evidence.
+
+The complete amended Phase 12 provider-free sequence passed **three consecutive fresh times** from that exact
+candidate. Both supported shells ran all **339** selected suites on every sequence, with **339 passed, zero
+failed, 39 not selected and zero required-but-skipped**; all twelve focused suites and typecheck passed each
+time. Staging was byte-identical with zero CR files each time, the daemon digest remained
+`sha256:216f1ae6f298781b34b0855f1b5201d5db51eec816b8ccf894876797a7a21a46`, and every Tower arm exited zero.
+
+The shipped closure functions were exercised with non-vacuous negative controls by the focused suites in each
+sequence: too few runs, the wrong Phase 11 tier, an injected skip, absent verdicts, and a non-real Phase 13
+campaign all bit. Tower residue was zero: 46/18/47 containers/networks/volumes before and after, no lost or
+gained hashed members, no changed process rows, and zero projection containers, appliance objects,
+stage mountpoints, stage endpoint files or gate-port listeners afterwards.
+
+`phase13EntryRefusals` still yields the same **SEVEN** live-entry refusals: **two E5, two E7, one E8 and two
+E9**. E4 is now met by this candidate, but no Phase 13 claim has a verdict and the non-real closure control
+continues to refuse closure. **PHASE 13 IS NOT RUN, NOT ENTERED, AND ENTRY IS NOT AUTHORISED.** No provider,
+CDN, resolver, indexer, NNTP server, media server or production container was contacted; no secret, endpoint,
+object, URL, origin, media identity or allowlist value was read, printed or retained; no allowlist was widened;
+and Phases 14 and 15 remain not entered.
