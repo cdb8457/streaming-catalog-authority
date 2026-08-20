@@ -416,6 +416,8 @@ await test('the consumer\'s two spellings of one directory are kept apart', asyn
   // does not exist. The driver bind-mounts the directory AND writes two files into it, so it needs both
   // spellings; the Jellyfin driver takes one and gets away with it because it has no credential to deliver.
   const driver = read('src/ops/projection-emby-dataplane.ts');
+  assert(/'run', '--rm', '--pull=never'/.test(driver),
+    'the offline failure control cannot turn a missing local image into a registry lookup');
   assert(/localWorkDir, EMBY_CONSUMER_TOKEN_FILE/.test(driver),
     'the token is written through the LOCAL spelling');
   assert(/join\(opts\.localWorkDir, opts\.scriptRelPath\)/.test(driver),
@@ -429,7 +431,9 @@ await test('the consumer\'s two spellings of one directory are kept apart', asyn
   // driver that named the field and then used the other one two lines later.
   const dir = mkdtempSync(join(tmpdir(), 'emby-consumer-'));
   const outcome = await pacedDirectPlay({
-    image: 'unused', network: 'unused', containerName: 'emby-suite-nonexistent-consumer',
+    // A syntactically invalid image is refused by the Docker client itself. A merely nonexistent image can
+    // make an allegedly offline test wait on (and contact) a registry before it fails.
+    image: ':invalid', network: 'unused', containerName: 'emby-suite-nonexistent-consumer',
     workDir: '/some/docker/spelling', localWorkDir: dir,
     streamUrl: 'http://server:8096/Videos/6/stream', outputRelPath: 'out/x.mp4', seconds: 1,
     ffmpegPath: '/bin/ffmpeg', token: 'suite-token', scriptRelPath: 'out/paced-consumer.sh',

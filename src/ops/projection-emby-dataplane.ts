@@ -955,7 +955,7 @@ export async function pacedDirectPlay(opts: PacedPlayOptions): Promise<PacedPlay
   try { chmodSync(scriptPath, 0o755); } catch { /* likewise */ }
 
   const args = [
-    'run', '--rm', '--name', opts.containerName,
+    'run', '--rm', '--pull=never', '--name', opts.containerName,
     '--network', opts.network,
     '--user', `${EMBY_SERVER_UID}:${EMBY_SERVER_GID}`,
     '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
