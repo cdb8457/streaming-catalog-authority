@@ -1222,3 +1222,108 @@ this section. Phase 9's `P9-2`, `P9-3`, `P9-5` and `P9-11` stay OPEN. Phase 11 t
 **THE NEW CANDIDATE IS THE COMMIT THAT CARRIES THIS SECTION**, and its own three sequences are recorded in a
 later section measured after they ran, never before. **Until that record exists, no candidate carries a Phase
 12 GO of its own and Phase 13 entry criterion E4 is NOT MET.**
+
+### 13.9 THE CURRENT CANDIDATE — the sequence, three consecutive fresh times, from `96f750c`
+
+**§10.9, §13.5, §13.6 AND §13.7 ARE NOT DISTURBED, NOT RE-OPENED AND NOT SUPERSEDED BY THIS.** Each is a
+statement about the commit it names and each remains true of that commit. This section answers the question
+§13.8 raises — what the candidate carrying the Phase 13 repair tranche can say for itself — and its only
+consumer is Phase 13's entry criterion **E4**.
+
+**THE CANDIDATE IS `96f750c628a69493569ba1e7a6dfed5ae7655ffd`.** It was staged **three separate times**, once
+at the head of each sequence, and each staging proved **0 files differing and 0 text files carrying a CR** on
+either side against `git archive` of that commit with the working-tree conversion disabled.
+
+**THE DAEMON IMAGE DIGEST IS `sha256:216f1ae6f298781b34b0855f1b5201d5db51eec816b8ccf894876797a7a21a46` IN ALL
+THREE — THE SAME DIGEST `a8d7232`, `cdbad42`, `61445f2` AND `8be98c2` PRODUCED.** That is the sentence that
+says no daemon byte moved across the repair either. `projectiond/` is untouched, and the image built from the
+staged tree proves it rather than asserting it.
+
+**THE TEN ARMS ARE §13.5's, UNCHANGED, AND NO ARM WAS SKIPPED, FOLDED OR OMITTED IN ANY OF THE THREE.**
+
+| | sequence 1 | sequence 2 | sequence 3 |
+|---|---|---|---|
+| staged files differing / text files with a CR | 0 / 0 | 0 / 0 | 0 / 0 |
+| daemon image digest | `216f1ae6…` | `216f1ae6…` | `216f1ae6…` |
+| `projection-phase10-rehearsal.sh` | exit 0, 31 s | exit 0, 31 s | exit 0, 31 s |
+| `projection-phase11-mixed-gate.sh` | exit 0, 62 s | exit 0, 63 s | exit 0, 63 s |
+| `go:phase10-rehearsal:three` | exit 0, 93 s | exit 0, 93 s | exit 0, 92 s |
+| `go:phase11-mixed-gate:three` | exit 0, 188 s | exit 0, 187 s | exit 0, 187 s |
+| `alpha-acceptance` / `real-provider --fake` / `publisher-mount` / `restart-topology` | exit 0 × 4 (34 / 26 / 101 / 66 s) | exit 0 × 4 (35 / 26 / 101 / 66 s) | exit 0 × 4 (35 / 26 / 101 / 66 s) |
+| host containers / networks / volumes, before → after | 46 / 18 / 47 → 46 / 18 / 47 | same | same |
+| **SET membership** — names present before and absent after, per kind | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| names ADDED, per kind — measured as well, because a count is satisfied by a removal and a creation | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| full `docker ps -a` rows (id, name, state, created) differing | 0 | 0 | 0 |
+| mountpoints under the staging directory, after | 0 | 0 | 0 |
+| `projection-*` containers after; appliance container; appliance network | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| `endpoint.json` under the appliance's own path | absent before, absent after | absent, absent | absent, absent |
+| ports 5670 / 5680 / 8300 / 5580 / 8140, after | all free | all free | all free |
+| `npx tsc --noEmit` | clean, 9 s | clean, 8 s | clean, 8 s |
+| offline inventory, **Git Bash** | **339 / 339 / 0 failed / 39 not selected / 0 required-but-skipped**, 762 s | 339 / 339 / 0 / 39 / 0, 733 s | 339 / 339 / 0 / 39 / 0, 765 s |
+| offline inventory, **an ordinary PowerShell** | **339 / 339 / 0 / 39 / 0**, 766 s | 339 / 339 / 0 / 39 / 0, 749 s | 339 / 339 / 0 / 39 / 0, 783 s |
+| working tree, entering and leaving each sequence | clean / clean | clean / clean | clean / clean |
+| host half, end to end | 604 s | 605 s | 604 s |
+
+**All six inventory arms report `RESULT: PASS — every selected suite ran and exited zero`,** and the **39 not
+selected** are the Docker-only acceptance suites the default run has always excluded. "Not selected" is not
+"skipped". The count is **339**, unchanged: this tranche adds no suite and removes none.
+
+**THE PREFLIGHT SAID THE SAME THING THREE TIMES, BEFORE ANYTHING WAS CREATED:** no appliance container, no
+`projection-alpha` network, ports 5670 / 5680 / 8300 all free, `/dev/fuse` reachable from a container, and the
+staging directory on `/mnt/user`, `fuse.shfs`, propagation **`shared`**.
+
+#### The twelve suites of arm 10, identical in all three sequences
+
+`projection-phase10` 31/0 · `projection-phase11` 39/0 · `projection-phase12` 29/0 ·
+`projection-phase10-gate-audit` 29/0 · `projection-phase11-gate-audit` 56/0 ·
+`projection-phase13-preentry` 42/0 · `projection-phase13-preentry-gate-audit` 76/0 ·
+`projection-phase13` **42/0** — thirty before the repair tranche, and the twelve new checks are named in
+Phase 13 §14.5 — · `projection-real-provider` 75/0 · `torbox-resolver` 84/0 (5 win32 blocks skipped) ·
+`projection-bounded-recovery` 52/0 — the OPERATOR SOURCE DIGEST, **unmoved** — · `custody-runtime-closure` 39/0.
+
+#### The closure functions, run rather than summarised
+
+The shipped functions were given this campaign's verdicts. Every verdict started at `skip` and was moved only
+by an exit code a shipped command produced.
+
+| function | over this campaign | the control, and it is DRIVEN rather than asserted |
+|---|---|---|
+| `phase10ClosureProblems` | **0 problems** | two sequences rather than three → **1 problem** |
+| `phase11ClosureProblems` (tier one) | **0 problems** | the same evidence offered as **tier two** → **4 problems** |
+| `phase12ClosureProblems` | **0 problems** | two sequences rather than three → **1**; one verdict moved to `skip` → **2** |
+| `phase13PreEntryClosureProblems` | **0 problems** | one verdict moved to `skip` → **2 problems** |
+| `phase13ClosureProblems` | **12 problems** | the mode is not `real`, and **each of the eleven claims has no verdict**. It is the function REFUSING TO CLOSE ANYTHING, which is the correct answer for a phase that has not run |
+
+#### What this DOES and DOES NOT say
+
+**IT SAYS** the candidate `96f750c` carries a complete Phase 12 provider-free sequence of its own, three
+consecutive fresh times, zero skips, on the operator's real Unraid host — so Phase 13's entry criterion **E4**
+is satisfied **by this candidate** rather than inherited from another one.
+
+**IT DOES NOT SAY** anything about a provider. **NO PROVIDER, CDN, RESOLVER, INDEXER, NNTP SERVER, MEDIA
+SERVER OR PRODUCTION CONTAINER WAS CONTACTED.** No credential was read for value, printed, written into
+evidence or rotated. `endpoint.json` was not read for value, not written, and its `allowedOrigins` was not
+widened, reordered or edited. **Phase 13 is NOT ENTERED and NOT RUN**, and every claim of §5 of the Phase 13
+contract is **unrecorded**. `P11-R1` is NOT RUN and has no half. Phase 9's `P9-2`, `P9-3`, `P9-5` and `P9-11`
+stay OPEN. Phase 11 tier two stays OPEN. **Phase 14 and Phase 15 are NOT ENTERED.**
+
+`phase9RequiresSoakRerun` is **FALSE** over every path changed since `a8d7232` (26), since `fe4c1fd` (12),
+since `cdbad42` (5) and since `b676b58` (5); **zero** `projectiond/` files changed on any of those sets; and
+**zero** of the eight provider source allowlist suites moved.
+
+#### What is left on the host after this campaign
+
+| what | size | note |
+|---|---|---|
+| `/mnt/user/appdata/catalog-phase13-preentry-authorization` | 125 MB | this campaign's staging directory, the same one §13.7 names, re-staged three times and left holding the new candidate |
+| `/mnt/user/appdata/catalog-phase12-closure` | 125 MB | **§10.8's, untouched** |
+| `projectiond:phase13prep-frozen` | 10.3 MB | rebuilt three times, `216f1ae6…` every time |
+| `projectiond:phase12-frozen` | 10.3 MB | §10.8's, untouched |
+| `golang:1.26` | 874 MB | **re-pulled by this campaign.** All three preflights reported it ABSENT; the Phase 11 mixed gate runs the fake range origin through it. An image is not a container, a network or a volume, so it moves none of the SET figures above — and it is named here rather than left to be found |
+
+**Containers / networks / volumes: 46 / 18 / 47 — identical to how the campaign found them.** Zero
+`projection-*` containers, no appliance container, no appliance network, **zero mountpoints** under the
+staging directory, all five gate ports free, and `endpoint.json` absent under the appliance path. The
+campaign's own host-side runner script and its three transcripts, and the eight per-arm gate logs it wrote
+under `/mnt/user/appdata`, were read off the host and **deleted**; `/root` holds nothing dated later than
+2026‑08‑15.

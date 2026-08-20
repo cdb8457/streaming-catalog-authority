@@ -738,3 +738,79 @@ three Tier S claims are **unrecorded**. `P11-R1` is NOT RUN and has no half. Pha
 and `P9-11` stay OPEN; Phase 11 tier two stays OPEN; Phase 10, Phase 11 tier one and Phase 12's `a8d7232`
 record stay GO, and Phase 12's `cdbad42` record in §13.5 stays exactly as written — it is a statement about
 `cdbad42`. **Phase 14 and Phase 15 are NOT ENTERED and no work of theirs was begun.**
+
+### 14.6 THE CANDIDATE AND ITS SEQUENCES — **E4 IS NOW MET, AND ENTRY IS STILL NOT AUTHORISED**
+
+**THIS IS STILL NOT A PHASE 13 RUN.** No provider, CDN, resolver, indexer, NNTP server, media server or
+production container was contacted. No credential, `endpoint.json`, object reference, URL, origin, media
+identity or allowlist member was read for value, printed or stored. No allowlist was widened. **Every Tier A
+and Tier S claim of §5 remains unrecorded.**
+
+#### 14.6.1 The candidate — **E3**
+
+**`96f750c628a69493569ba1e7a6dfed5ae7655ffd`**, the commit carrying Phase 12 §13.8 and §14.5. Staged onto the
+operator's real Unraid host **three separate times**, once at the head of each sequence, each proving **0
+files differing and 0 text files carrying a CR** in both directions. **Repairs carrying no control: 0** —
+every one of F1…F5 has a control that was watched failing on `b676b58`'s bytes, which is the field
+`REPAIRS_WITHOUT_A_CONTROL_MAX` is now read through.
+
+#### 14.6.2 The candidate's own Phase 12 GO — **E4**
+
+**The complete Phase 12 provider-free sequence ran from `96f750c` three consecutive fresh times, zero skips,
+on the operator's real Unraid host**, and Phase 12 §13.9 is that record. Ten arms each, no arm skipped, folded
+or omitted. **The daemon image digest is `sha256:216f1ae6…` in all three — the same digest `a8d7232` and
+`cdbad42` produced** — which is what says no daemon byte moved across the repair.
+`phase10ClosureProblems`, `phase11ClosureProblems` (tier one), `phase12ClosureProblems` and
+`phase13PreEntryClosureProblems` were **run** over this campaign's verdicts and each returned **0 problems**;
+each has a control that moves it — two sequences rather than three, the same evidence offered as tier two, one
+verdict moved to `skip`. **E4 IS SATISFIED, and it is satisfied by THIS candidate rather than inherited.**
+
+#### 14.6.3 The host — **E8, partly**, and it is the same partly as before
+
+46 containers / 18 networks / 47 volumes before and after **every one of the three sequences**, with **0**
+names lost and **0** gained in each kind, **0** differing `docker ps -a` rows, **0** mountpoints under the
+staging directory, **0** `projection-*` containers, no appliance container, no appliance network,
+`endpoint.json` absent under the appliance path, and ports 5670 / 5680 / 8300 / 5580 / 8140 all free. What the
+campaign leaves is named with its size in Phase 12 §13.9. **E8 is still NOT MET on one field**: a baseline
+taken now is a **sampled** fact by the time a run starts, and pairing it with a fresh one invents an instant.
+
+#### 14.6.4 The entry criteria, run rather than summarised — `phase13EntryRefusals`
+
+**`phase13MayEnter` returns `false`, with SEVEN refusals**, driven over exactly the facts §14.2 and §14.6
+record. They are **the same seven** §14.2.4 recorded — 2×E5, 2×E7, 1×E8, 2×E9 — with **E3 and E4 now met for
+this candidate** rather than for a superseded one.
+
+| # | Criterion | Result |
+|---|---|---|
+| **E1** | the contract is committed before anything is run | **MET.** `6cf953a` precedes every commit that measures anything |
+| **E2** | Phase 12 is amended by its own §8 procedure | **MET.** Phase 12 §13, commit `50492b4`; §13.8 and §13.9 extend the same section |
+| **E3** | the candidate is frozen, staged, byte-identical both ways, and carries no repair without a control | **MET.** 0 differing, 0 CR, three times; 0 repairs without a control |
+| **E4** | the candidate carries a Phase 12 GO of its own | **MET.** Phase 12 §13.9 |
+| **E5** | the operator's four inputs, both secrets 0600 **and different values**, and one entitled object confirmed **by reference only** | **NOT MET — TWO FIELDS UNEVALUATED**, unchanged from §14.2.4 and for the same reasons: reading the two secrets to compare them is what §4's first refusal forbids this tranche, and no operator has confirmed an entitled object |
+| **E6** | the allowlist exists, is serving, and admits the pool | **PARTIALLY MET.** The record is taken and the allowlist admits **6** members. The two copies of that count now have to AGREE, and they do — both say 6. Whether those six are the pool is E7's and E9's question, and the answer is still no |
+| **E7** | the origin recheck inside the hour, exit 0 | **NOT MET — NOT MEASURED**, unchanged. The recheck starts a resolver and spends one resolution against the operator's metered account, which is provider contact and is forbidden here |
+| **E8** | no other campaign, residue accounted for, **a fresh before-baseline** | **NOT MET — one field**, unchanged |
+| **E9** | the origin-stability plan | **NOT MET — TWO REFUSALS.** The plan carries no current age, and the pool is **7** against an allowlist of **6**. Both counts are now required to be present and both are; a plan missing either would be refused by name |
+
+**AND THAT THE COUNT DID NOT MOVE IS THE POINT OF §14.5.** The repairs close paths by which entry could have
+been authorised on an inconsistent or unmeasured state — the same seven refusals could previously be reduced
+to **zero** by filling one field in differently — and they manufacture **no new blocker** for a state that was
+filled in honestly.
+
+#### 14.6.5 The state of every claim, unchanged by all of this
+
+**PHASE 13 IS NOT ENTERED AND NOT RUN. PHASE 13 ENTRY IS NOT AUTHORISED.** All eight Tier A arms and all three
+Tier S claims are **unrecorded**. `phase13ClosureProblems` given this campaign's evidence returns **twelve**
+problems — the mode is not `real`, and each of the eleven claims has no verdict — which is the function
+refusing to close anything, driven rather than asserted, and `phase13Closed` is **false**.
+
+§14.3's remediation list stands **unchanged and complete**: the two secret values, the entitled object, the
+allowlist against the observed pool, the origin recheck inside the hour, a bounded duration with a current
+origin measurement, and the before-baseline. **None is this tranche's to discharge and none can be discharged
+by reading.**
+
+**`P11-R1` IS NOT RUN AND HAS NO HALF.** Phase 9's `P9-2`, `P9-3`, `P9-5` and `P9-11` stay OPEN. Phase 11 tier
+two stays OPEN. Phase 10, Phase 11 tier one and Phase 12's `a8d7232` record stay GO; Phase 12's `cdbad42`
+record stays exactly as written and is superseded only as a **candidate**, never as a record. **Phase 14 and
+Phase 15 are NOT ENTERED and no work of theirs was begun.** `phase9RequiresSoakRerun` is **FALSE** over every
+path this branch touches; **zero** provider source allowlists moved; **zero** `projectiond/` files changed.
