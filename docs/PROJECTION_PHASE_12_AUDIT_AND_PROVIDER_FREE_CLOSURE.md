@@ -1356,3 +1356,16 @@ figure in §13.9 depends on it. Its only job is to show that the documentation e
 produced by running against §13.9, so the record commit is measured and its figures land in the next commit,
 which names the tree they belong to. **A third commit measuring the second is not taken, and would prove
 nothing the second does not.**
+
+### 13.11 THE CANDIDATE RULE APPLIED AGAIN — `96f750c` IS SUPERSEDED
+
+An independent review of record commit `2e51127` reproduced numeric evidence that fails open in the Phase 13
+entry, closure and exit functions. Repairing it necessarily changes the Phase 13 contract, its shipped module
+and the suite selected by arms 9 and 10 of this sequence. Therefore candidate `96f750c` and the three-sequence
+record in §13.9 remain true historical records about that commit, but **do not transfer** to a descendant
+carrying this repair.
+
+**THE SERIES RESTARTS AT ONE.** Until a later commit freezes the complete repair and the ten-arm provider-free
+sequence runs from that exact commit three consecutive fresh times with zero skips and no reused evidence,
+**NO NEW CANDIDATE CARRIES A PHASE 12 GO OF ITS OWN AND PHASE 13 E4 IS NOT MET.** No historical commit or run
+record is rewritten by this amendment.

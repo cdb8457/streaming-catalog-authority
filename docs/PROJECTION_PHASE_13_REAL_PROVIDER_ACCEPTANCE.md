@@ -279,6 +279,31 @@ table row by row and refuses any disagreement, in either direction, for every on
 no skips, so without `consecutiveFreshRuns` the words "three consecutive fresh" are a title rather than a
 measurement — the same argument `RESOLUTIONS_PER_OBJECT_MIN` exists for one tier up.
 
+### 5.4 Numeric domains — validation precedes comparison
+
+**EVERY DECISION-BEARING NUMBER IS REFUSED BEFORE COMPARISON UNLESS IT BELONGS TO THE DOMAIN OF THE THING IT
+MEASURES.** `typeof value === 'number'` is not evidence: it admits `NaN` and both infinities, and a one-sided
+ceiling admits negative evidence. The executable domains are:
+
+| semantic domain | fields | executable rule |
+|---|---|---|
+| counts, run totals, residue, repairs, skips and claims | every entry count; every count-valued `measured` and `budget`; `residueSurviving`; `consecutiveFreshRuns`; every exit run/residue/repair/skip/claim count; both origin-plan pool counts | **finite nonnegative integer** before any floor or ceiling comparison |
+| positive counts and denominators | E6 `allowedOriginCount`; A4 `perObjectDenominator` | **finite positive integer**; zero is not a denominator and an allowlist admitting zero members cannot serve an object |
+| ages, durations and elapsed measurements | E7 `originRecheckAgeMinutes`; E9 `shortestObservedOriginLifetimeMinutes`, `boundedSequenceDurationMinutes`, `originRecordAgeMinutes` | **finite and nonnegative**, with the imported E9 lifetime and bounded-duration policy retaining its stricter **positive-only** rule |
+| statuses | E7 `originRecheckExitStatus`; X1 `wrapperExitStatus` | **finite nonnegative integer** before disposition or equality; zero remains the only passing status where the criterion requires zero |
+| A4 numerator and denominator | A4 `measured`; A4 `perObjectDenominator` | numerator is a **finite nonnegative integer** resolution count; denominator is a **finite positive integer** object count; only then may the total be compared with the per-object floor and ceiling |
+
+**MISSING REMAINS REFUSED. ZERO PASSES DOMAIN VALIDATION ONLY WHERE ZERO IS A LEGITIMATE MEASUREMENT.** Zero is
+valid for losses, residue, repairs, skips, moved members, contacts, mismatches, traces, admitted writes and
+an observed pool. It does not satisfy a positive denominator, E6's positive admitted-member count, a positive
+origin lifetime/duration, or a floor that requires work to have occurred. Fractions are refused for every
+count-valued metric even when a one-sided comparison would otherwise put them on the passing side.
+
+The module carries one registry assigning every numeric field to one of these semantic domains, and the suite
+sweeps the entry, closure and exit numeric surfaces against it. Adding a numeric field without assigning a
+domain, or assigning a registry entry that no shipped decision surface consumes, is a failing structural
+control rather than a silent fall-back to a comparison.
+
 ---
 
 ## 6. ENTRY CRITERIA — every one must pass before a single packet
@@ -843,3 +868,23 @@ them green, and Phase 12 §13.9 records exactly what is left on the host.
 | the campaign's own artefacts — one host-side runner script, three transcripts, eight per-arm gate logs | **read off the host and deleted.** `/root` holds nothing dated later than 2026‑08‑15, which is an earlier campaign |
 
 **PHASE 13 IS STILL NOT RUN AND NOT ENTERED, AND ENTRY IS STILL NOT AUTHORISED.**
+
+### 14.8 NUMERIC-DOMAIN REPAIR — contract and invalidation recorded before implementation
+
+An independent review of `2e51127` drove the shipped exports directly and found that one-sided comparisons
+accepted invalid numeric evidence across all three decision surfaces. Before this amendment or any
+implementation change, the scratch matrix observed `phase13MayEnter === true` for `NaN` and negative repair,
+run-floor, age and host-count evidence; `phase13Closed === true` for invalid claim measurements, residue,
+fresh-run totals and A4 ratio inputs; and `phase13ExitSatisfied === true` for invalid completed-run, skipped-run,
+moved-member, host-loss and residue values. The matrix included `NaN`, both infinities, negatives and
+fractional count values, with which exact invalid values happened to fail already recorded rather than
+misreported as repaired.
+
+§5.4 is the contract-first amendment: it assigns every decision-bearing numeric field to an executable
+semantic domain before comparison, preserves legitimate zero measurements, and requires a structural sweep
+so a later field cannot silently inherit `typeof number` plus a one-sided comparison. The implementation and
+table-driven controls follow in later commits; `src/core/projection/phase13-preentry.ts` remains byte-identical.
+
+**Candidate `96f750c` is invalidated before any new measurement.** Phase 12 §13.11 records the invalidation and
+the restart-at-one rule. Phase 13 is **NOT RUN, NOT ENTERED, AND ENTRY IS NOT AUTHORISED**; all eleven claims
+remain unrecorded, the seven live-entry refusals remain to be re-measured, and Phases 14 and 15 are not entered.
