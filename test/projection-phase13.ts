@@ -22,6 +22,7 @@ import {
   PHASE13_GATE_TITLES,
   PHASE13_MEANING,
   PHASE13_NONCLAIMS,
+  PHASE13_NUMERIC_DOMAINS,
   PHASE13_OWNERSHIP_SECTION,
   PHASE13_PRESERVED_STATES,
   PHASE13_RULES,
@@ -35,6 +36,7 @@ import {
   phase13ExitRefusals,
   phase13ExitSatisfied,
   phase13MayEnter,
+  phase13NumericValueBelongsToDomain,
   type Phase13EntryState,
   type Phase13ExitState,
   type Phase13GateResult,
@@ -690,6 +692,142 @@ test('NO EXIT REFUSAL CARRIES A VALUE, A URL OR A MEMBER', () => {
   for (const refusal of phase13ExitRefusals({ mode: 'fake', results: [] }, {})) {
     const body = refusal.replace(/\([A-Za-z][A-Za-z0-9-]*\)/g, '(field)');
     assert(!/[a-z][a-z0-9+.-]*:\/\//i.test(body), `an exit refusal carries a URL: ${refusal}`);
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------
+h.section('§5.4 — numeric domains, including the controls that fail on 2e51127');
+// ---------------------------------------------------------------------------------------------------------
+
+const invalidForDomain = (domain: string): readonly number[] => {
+  const values = [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1];
+  if (domain.includes('integer')) values.push(0.5);
+  if (domain.includes('positive')) values.push(0);
+  return values;
+};
+
+test('THE FAILING-BEFORE MATRIX IS CLOSED: 2e51127 accepted these shipped-export inputs and this tree refuses', () => {
+  // This table is the exact direct-import scratch reproduction taken at clean head 2e51127 before §5.4 or
+  // the implementation moved. It records only cases that returned TRUE there; each row drives the same
+  // shipped export here and must now return FALSE.
+  const before: ReadonlyArray<readonly [string, number, () => boolean]> = [
+    ['entry F4 repair NaN', Number.NaN,
+      () => phase13MayEnter({ ...ready(), repairsWithoutAControlInCandidate: Number.NaN })],
+    ['entry F4 repair negative', -1,
+      () => phase13MayEnter({ ...ready(), repairsWithoutAControlInCandidate: -1 })],
+    ['entry E4 run floor NaN', Number.NaN,
+      () => phase13MayEnter({ ...ready(), phase12SequencesFromThisCandidate: Number.NaN })],
+    ['entry E4 run floor +Infinity', Number.POSITIVE_INFINITY,
+      () => phase13MayEnter({ ...ready(), phase12SequencesFromThisCandidate: Number.POSITIVE_INFINITY })],
+    ['entry E7 age NaN', Number.NaN,
+      () => phase13MayEnter({ ...ready(), originRecheckAgeMinutes: Number.NaN })],
+    ['entry E7 age negative', -1,
+      () => phase13MayEnter({ ...ready(), originRecheckAgeMinutes: -1 })],
+    ['closure measured NaN', Number.NaN, () => {
+      const run = honest(); run.results[0] = { ...run.results[0]!, measured: Number.NaN };
+      return phase13Closed(run);
+    }],
+    ['closure residue NaN', Number.NaN, () => {
+      const run = honest(); run.results[6] = { ...run.results[6]!, residueSurviving: Number.NaN };
+      return phase13Closed(run);
+    }],
+    ['closure consecutive runs +Infinity', Number.POSITIVE_INFINITY, () => {
+      const run = honest(); run.results[8] = { ...run.results[8]!, consecutiveFreshRuns: Number.POSITIVE_INFINITY };
+      return phase13Closed(run);
+    }],
+    ['closure A4 denominator NaN', Number.NaN, () => {
+      const run = honest(); run.results[3] = { ...run.results[3]!, perObjectDenominator: Number.NaN };
+      return phase13Closed(run);
+    }],
+    ['exit completed runs +Infinity', Number.POSITIVE_INFINITY,
+      () => phase13ExitSatisfied(honest(), { ...exited(), wrapperRunsCompleted: Number.POSITIVE_INFINITY })],
+    ['exit skipped runs NaN', Number.NaN,
+      () => phase13ExitSatisfied(honest(), { ...exited(), wrapperRunsSkipped: Number.NaN })],
+    ['exit moved members negative', -1,
+      () => phase13ExitSatisfied(honest(), { ...exited(), allowlistMembersMoved: -1 })],
+    ['exit host losses NaN', Number.NaN,
+      () => phase13ExitSatisfied(honest(), { ...exited(), hostSetLosses: Number.NaN })],
+    ['exit residue -Infinity', Number.NEGATIVE_INFINITY,
+      () => phase13ExitSatisfied(honest(), { ...exited(), residueSurviving: Number.NEGATIVE_INFINITY })],
+  ];
+  for (const [name, _acceptedAt2e51127, currentDecision] of before) {
+    assertEq(currentDecision(), false, `${name} still succeeds; this control returned true on 2e51127`);
+  }
+});
+
+test('EVERY ENTRY NUMERIC FIELD rejects its whole invalid domain before any comparison', () => {
+  for (const [path, domain] of Object.entries(PHASE13_NUMERIC_DOMAINS.entry)) {
+    for (const bad of invalidForDomain(domain)) {
+      const state = ready() as Record<string, unknown>;
+      if (path.startsWith('originPlan.')) {
+        const field = path.slice('originPlan.'.length);
+        state.originPlan = { ...(state.originPlan as object), [field]: bad };
+      } else {
+        state[path] = bad;
+      }
+      assertEq(phase13MayEnter(state as Phase13EntryState), false,
+        `entry ${path} accepted ${String(bad)} for ${domain}`);
+    }
+  }
+});
+
+test('EVERY CLOSURE NUMERIC FIELD rejects NaN, infinities, negatives and fractional counts', () => {
+  const targets: Readonly<Record<keyof typeof PHASE13_NUMERIC_DOMAINS.closure, number>> = {
+    measured: 0, budget: 0, perObjectDenominator: 3, residueSurviving: 6, consecutiveFreshRuns: 8,
+  };
+  for (const [field, domain] of Object.entries(PHASE13_NUMERIC_DOMAINS.closure)) {
+    for (const bad of invalidForDomain(domain)) {
+      const run = honest();
+      const at = targets[field as keyof typeof targets];
+      run.results[at] = { ...run.results[at]!, [field]: bad };
+      assertEq(phase13Closed(run), false, `closure ${field} accepted ${String(bad)} for ${domain}`);
+    }
+  }
+  // A4's numerator shares `measured` with the ceiling claims but has its own ratio path.
+  for (const bad of invalidForDomain(PHASE13_NUMERIC_DOMAINS.closure.measured)) {
+    const run = honest(); run.results[3] = { ...run.results[3]!, measured: bad };
+    assertEq(phase13Closed(run), false, `A4 numerator accepted ${String(bad)}`);
+  }
+});
+
+test('EVERY EXIT NUMERIC FIELD rejects NaN, infinities, negatives and fractional counts', () => {
+  for (const [field, domain] of Object.entries(PHASE13_NUMERIC_DOMAINS.exit)) {
+    for (const bad of invalidForDomain(domain)) {
+      const state = { ...exited(), [field]: bad };
+      assertEq(phase13ExitSatisfied(honest(), state), false,
+        `exit ${field} accepted ${String(bad)} for ${domain}`);
+    }
+  }
+});
+
+test('ZERO, BOUNDARY AND POSITIVE CONTROLS prevent the domain repair from over-refusing', () => {
+  const validatorControls: ReadonlyArray<readonly [number, keyof typeof PHASE13_NUMERIC_DOMAINS.entry, boolean]> = [
+    [0, 'stagedFilesDiffering', true], [1, 'allowedOriginCount', true],
+    [0, 'originRecheckAgeMinutes', true], [0.5, 'originRecheckAgeMinutes', true],
+  ];
+  for (const [value, field, expected] of validatorControls) {
+    assertEq(phase13NumericValueBelongsToDomain(value, PHASE13_NUMERIC_DOMAINS.entry[field]), expected,
+      `${String(value)} disagrees with ${field}'s domain`);
+  }
+  assertEq(phase13MayEnter({ ...ready(), originRecheckAgeMinutes: 0.5,
+    originPlan: { ...ready().originPlan!, shortestObservedOriginLifetimeMinutes: 40.5,
+      boundedSequenceDurationMinutes: 20.5, originRecordAgeMinutes: 0.5, observedPoolSize: 0 } }), true,
+  'valid zero/fractional elapsed measurements were over-refused');
+  assertEq(phase13Closed(honest()), true, 'valid closure zero/boundary/positive controls were refused');
+  assertEq(phase13ExitSatisfied(honest(), exited()), true, 'valid exit zero/boundary/positive controls were refused');
+});
+
+test('THE DOMAIN REGISTRY IS AN EXACT STRUCTURAL SWEEP, not a hand-picked list of examples', () => {
+  // `PHASE13_NUMERIC_DOMAINS` is also constrained in the module by Records derived from the three exported
+  // interfaces, so a new numeric field makes typecheck fail until it is assigned. These runtime counts make
+  // the control visibly non-vacuous and prove the fixtures exercise every registered surface.
+  assertEq(Object.keys(PHASE13_NUMERIC_DOMAINS.entry).length, 14, 'entry registry lost or gained a field');
+  assertEq(Object.keys(PHASE13_NUMERIC_DOMAINS.closure).length, 5, 'closure registry lost or gained a field');
+  assertEq(Object.keys(PHASE13_NUMERIC_DOMAINS.exit).length, 6, 'exit registry lost or gained a field');
+  for (const surface of Object.values(PHASE13_NUMERIC_DOMAINS)) {
+    for (const domain of Object.values(surface)) {
+      assertEq(phase13NumericValueBelongsToDomain(Number.NaN, domain), false, `${domain} accepted NaN`);
+    }
   }
 });
 

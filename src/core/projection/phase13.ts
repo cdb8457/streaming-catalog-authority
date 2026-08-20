@@ -84,6 +84,81 @@ export const PHASE13_RULES = Object.freeze({
 export type Phase13RuleKey = keyof typeof PHASE13_RULES;
 
 /**
+ * The numeric domains §5.4 assigns to decision-bearing inputs.
+ *
+ * A DOMAIN IS SEMANTIC, NOT A CALL-SITE CONVENIENCE. Counts cannot be fractional, a denominator cannot be
+ * zero, and a duration may be fractional while still having to be finite. Keeping these validators here
+ * prevents each comparison from inventing a weaker local definition of "number".
+ */
+export type Phase13NumericDomain =
+  | 'finite-nonnegative-integer'
+  | 'finite-positive-integer'
+  | 'finite-nonnegative-measurement'
+  | 'finite-positive-measurement';
+
+type NumericKeys<T> = {
+  [K in keyof T]-?: NonNullable<T[K]> extends number ? K : never
+}[keyof T] & string;
+type Phase13EntryNumericPath = NumericKeys<Omit<Phase13EntryState, 'originPlan'>>
+  | `originPlan.${NumericKeys<OriginStabilityPlan>}`;
+type Phase13NumericDomainRegistry = {
+  readonly entry: Readonly<Record<Phase13EntryNumericPath, Phase13NumericDomain>>;
+  readonly closure: Readonly<Record<NumericKeys<Phase13GateResult>, Phase13NumericDomain>>;
+  readonly exit: Readonly<Record<NumericKeys<Phase13ExitState>, Phase13NumericDomain>>;
+};
+
+export const PHASE13_NUMERIC_DOMAINS = Object.freeze({
+  entry: Object.freeze({
+    stagedFilesDiffering: 'finite-nonnegative-integer',
+    stagedTextFilesWithCarriageReturn: 'finite-nonnegative-integer',
+    repairsWithoutAControlInCandidate: 'finite-nonnegative-integer',
+    phase12SequencesFromThisCandidate: 'finite-nonnegative-integer',
+    phase12SkipsInThoseSequences: 'finite-nonnegative-integer',
+    allowedOriginCount: 'finite-positive-integer',
+    originRecheckExitStatus: 'finite-nonnegative-integer',
+    originRecheckAgeMinutes: 'finite-nonnegative-measurement',
+    projectionContainersOnHost: 'finite-nonnegative-integer',
+    'originPlan.shortestObservedOriginLifetimeMinutes': 'finite-positive-measurement',
+    'originPlan.boundedSequenceDurationMinutes': 'finite-positive-measurement',
+    'originPlan.originRecordAgeMinutes': 'finite-nonnegative-measurement',
+    'originPlan.allowedOriginCount': 'finite-nonnegative-integer',
+    'originPlan.observedPoolSize': 'finite-nonnegative-integer',
+  }),
+  closure: Object.freeze({
+    measured: 'finite-nonnegative-integer',
+    budget: 'finite-nonnegative-integer',
+    perObjectDenominator: 'finite-positive-integer',
+    residueSurviving: 'finite-nonnegative-integer',
+    consecutiveFreshRuns: 'finite-nonnegative-integer',
+  }),
+  exit: Object.freeze({
+    wrapperRunsCompleted: 'finite-nonnegative-integer',
+    wrapperRunsSkipped: 'finite-nonnegative-integer',
+    wrapperExitStatus: 'finite-nonnegative-integer',
+    allowlistMembersMoved: 'finite-nonnegative-integer',
+    hostSetLosses: 'finite-nonnegative-integer',
+    residueSurviving: 'finite-nonnegative-integer',
+  }),
+} as const satisfies Phase13NumericDomainRegistry);
+
+export function phase13NumericValueBelongsToDomain(value: unknown, domain: Phase13NumericDomain): value is number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return false;
+  if (domain === 'finite-nonnegative-measurement') return value >= 0;
+  if (domain === 'finite-positive-measurement') return value > 0;
+  if (!Number.isInteger(value)) return false;
+  return domain === 'finite-positive-integer' ? value > 0 : value >= 0;
+}
+
+const numericDomain = (surface: keyof typeof PHASE13_NUMERIC_DOMAINS, field: string): Phase13NumericDomain => {
+  const domain = (PHASE13_NUMERIC_DOMAINS[surface] as Readonly<Record<string, Phase13NumericDomain>>)[field];
+  if (domain === undefined) throw new Error(`Phase 13 numeric field ${surface}.${field} has no §5.4 domain`);
+  return domain;
+};
+
+const validNumeric = (surface: keyof typeof PHASE13_NUMERIC_DOMAINS, field: string, value: unknown): value is number =>
+  phase13NumericValueBelongsToDomain(value, numericDomain(surface, field));
+
+/**
  * TIER A — the provider-facing arms. NOT ANSWERABLE WITHOUT A REAL ACCOUNT.
  *
  * Every one is a statement about a run against the operator's own account, and `phase13ClosureProblems`
@@ -337,13 +412,13 @@ export function phase13ClosureProblems(results: Phase13Results): readonly string
     // satisfies every other number in this contract.
     if (gateId.startsWith('P13-A4-')) {
       const objects = result.perObjectDenominator;
-      if (typeof objects !== 'number' || objects < 1) {
+      if (!validNumeric('closure', 'perObjectDenominator', objects)) {
         problems.push(`${gateId} reports no object count, so its per-object ratio has no denominator and `
           + 'the number it carries is not a rate at all');
         continue;
       }
-      if (typeof result.measured !== 'number') {
-        problems.push(`${gateId} passed without recording how many resolutions it observed`);
+      if (!validNumeric('closure', 'measured', result.measured)) {
+        problems.push(`${gateId} passed without recording a finite nonnegative integer resolution count`);
         continue;
       }
       const floor = PHASE13_RULES.RESOLUTIONS_PER_OBJECT_MIN * objects;
@@ -372,7 +447,7 @@ export function phase13ClosureProblems(results: Phase13Results): readonly string
     // ceiling in this contract is satisfied by ONE run, so without the floor "three consecutive fresh" is a
     // title rather than a measurement.
     if (gateId.startsWith('P13-A7-')) {
-      if (typeof result.residueSurviving !== 'number') {
+      if (!validNumeric('closure', 'residueSurviving', result.residueSurviving)) {
         problems.push(`${gateId} passed without recording how much of this run survived on the host; §5.1 `
           + 'measures it against RESIDUE_MAX as well as against the set losses, and a residue nobody counted '
           + 'is not a zero');
@@ -386,7 +461,7 @@ export function phase13ClosureProblems(results: Phase13Results): readonly string
       }
     }
     if (gateId.startsWith('P13-S1-') || gateId.startsWith('P13-S2-')) {
-      if (typeof result.consecutiveFreshRuns !== 'number') {
+      if (!validNumeric('closure', 'consecutiveFreshRuns', result.consecutiveFreshRuns)) {
         problems.push(`${gateId} passed without recording how many consecutive fresh runs it counted; zero `
           + 'skips out of a number nobody recorded is not three consecutive fresh runs');
         continue;
@@ -407,13 +482,17 @@ export function phase13ClosureProblems(results: Phase13Results): readonly string
       continue;
     }
     const budget = PHASE13_RULES[key];
+    if (!validNumeric('closure', 'budget', result.budget)) {
+      problems.push(`${gateId} was not measured against a finite nonnegative integer budget from the contract`);
+      continue;
+    }
     if (result.budget !== budget) {
       problems.push(`${gateId} was measured against ${String(result.budget)} rather than against the `
         + `contract's ${String(budget)}, so the verdict is against a budget this phase did not set`);
       continue;
     }
-    if (typeof result.measured !== 'number') {
-      problems.push(`${gateId} passed without recording what it measured`);
+    if (!validNumeric('closure', 'measured', result.measured)) {
+      problems.push(`${gateId} passed without recording a finite nonnegative integer measurement`);
       continue;
     }
     if (result.measured > budget) {
@@ -505,8 +584,9 @@ export function phase13EntryRefusals(state: Phase13EntryState): readonly string[
     if (!value) refusals.push(`${criterion} (${field}): ${sentence}`);
   };
   const count = (value: number | undefined, criterion: string, field: string, sentence: string, max = 0): void => {
-    if (typeof value !== 'number') {
-      refusals.push(`${criterion} (${field}) was not measured, and an unmeasured figure is not a zero`);
+    if (!validNumeric('entry', field, value)) {
+      refusals.push(`${criterion} (${field}) was not measured as a finite nonnegative integer, and invalid `
+        + 'numeric evidence is not a zero');
       return;
     }
     if (value > max) refusals.push(`${criterion} (${field}): ${sentence} (${value}, budget ${max})`);
@@ -527,9 +607,9 @@ export function phase13EntryRefusals(state: Phase13EntryState): readonly string[
     'the candidate carries a repair that no control fails on, so nothing says the defect is gone rather '
     + 'than merely quiet', PHASE13_RULES.REPAIRS_WITHOUT_A_CONTROL_MAX);
 
-  if (typeof state.phase12SequencesFromThisCandidate !== 'number') {
+  if (!validNumeric('entry', 'phase12SequencesFromThisCandidate', state.phase12SequencesFromThisCandidate)) {
     refusals.push('E4 was not measured: how many complete Phase 12 provider-free sequences have run from '
-      + 'THIS candidate is the question, and an unmeasured count is not three');
+      + 'THIS candidate is the question, and only a finite nonnegative integer count can answer it');
   } else if (state.phase12SequencesFromThisCandidate < PHASE13_RULES.CONSECUTIVE_FRESH_RUNS) {
     refusals.push(`E4: the candidate carries ${state.phase12SequencesFromThisCandidate} complete Phase 12 `
       + `sequence(s) and §6 asks for ${PHASE13_RULES.CONSECUTIVE_FRESH_RUNS}. Phase 12's GO is a closed `
@@ -548,7 +628,7 @@ export function phase13EntryRefusals(state: Phase13EntryState): readonly string[
 
   required(state.allowlistRecordTaken, 'E6', 'allowlistRecordTaken',
     'no no-contact readiness record has been taken, so there is no before to compare an after against');
-  if (typeof state.allowedOriginCount !== 'number' || state.allowedOriginCount < 1) {
+  if (!validNumeric('entry', 'allowedOriginCount', state.allowedOriginCount)) {
     refusals.push('E6: the origin allowlist admits no member this run could be served from, and widening it '
       + 'is a BLOCKER rather than a step');
   }
@@ -567,8 +647,8 @@ export function phase13EntryRefusals(state: Phase13EntryState): readonly string[
   // which of the operator's measurements is the real one, and the pool comparison §8 turns on would then be
   // made against a number nobody took.
   if (state.originPlan !== undefined
-    && typeof state.allowedOriginCount === 'number'
-    && typeof state.originPlan.allowedOriginCount === 'number'
+    && validNumeric('entry', 'allowedOriginCount', state.allowedOriginCount)
+    && validNumeric('entry', 'originPlan.allowedOriginCount', state.originPlan.allowedOriginCount)
     && state.allowedOriginCount !== state.originPlan.allowedOriginCount) {
     refusals.push('E6/E9 (allowedOriginCount, originPlan.allowedOriginCount): the allowlist is described as '
       + `admitting ${state.allowedOriginCount} member(s) by the readiness record and `
@@ -577,7 +657,7 @@ export function phase13EntryRefusals(state: Phase13EntryState): readonly string[
       + 'turns on would be made against a number nobody took');
   }
 
-  if (typeof state.originRecheckExitStatus !== 'number') {
+  if (!validNumeric('entry', 'originRecheckExitStatus', state.originRecheckExitStatus)) {
     refusals.push('E7 was not measured: the origin recheck was not run, and not measured is not allowed');
   } else {
     const disposition = originRotationDisposition(state.originRecheckExitStatus);
@@ -589,7 +669,7 @@ export function phase13EntryRefusals(state: Phase13EntryState): readonly string[
         + 'MEASURED. An unevaluated policy is not a satisfied one');
     }
   }
-  if (typeof state.originRecheckAgeMinutes !== 'number') {
+  if (!validNumeric('entry', 'originRecheckAgeMinutes', state.originRecheckAgeMinutes)) {
     refusals.push('E7 was not measured: how long ago the recheck ran is the question, and a recheck of '
       + 'unknown age is an answer about a different origin');
   } else if (state.originRecheckAgeMinutes > PHASE13_RULES.ORIGIN_RECORD_MAX_AGE_MINUTES) {
@@ -628,17 +708,30 @@ export function phase13EntryRefusals(state: Phase13EntryState): readonly string[
     //
     // A ZERO IS STILL A MEASUREMENT AND IS NOT REFUSED HERE. What is refused is an absent, an infinite, a
     // NaN and a negative count — none of which is a number of origins anybody observed.
-    const planCount = (value: number | undefined, field: string, sentence: string): void => {
-      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
-        refusals.push(`E9 (originPlan.${field}) was not measured: ${sentence}, and an unmeasured pool is `
-          + 'not a small one');
+    const planFields = [
+      ['shortestObservedOriginLifetimeMinutes', state.originPlan.shortestObservedOriginLifetimeMinutes,
+        'a finite positive shortest observed origin lifetime'],
+      ['boundedSequenceDurationMinutes', state.originPlan.boundedSequenceDurationMinutes,
+        'a finite positive bounded sequence duration'],
+      ['originRecordAgeMinutes', state.originPlan.originRecordAgeMinutes,
+        'a finite nonnegative origin-record age'],
+      ['observedPoolSize', state.originPlan.observedPoolSize,
+        'a finite nonnegative integer observed-pool count'],
+      ['allowedOriginCount', state.originPlan.allowedOriginCount,
+        'a finite nonnegative integer allowlist count'],
+    ] as const;
+    let planIsDomainValid = true;
+    for (const [field, value, expected] of planFields) {
+      if (!validNumeric('entry', `originPlan.${field}`, value)) {
+        planIsDomainValid = false;
+        refusals.push(`E9 (originPlan.${field}) was not measured as ${expected}; invalid numeric evidence is `
+          + 'not a satisfied origin-stability plan');
       }
-    };
-    planCount(state.originPlan.observedPoolSize, 'observedPoolSize',
-      'how many distinct origins the pool was observed serving from is the question §8 turns on');
-    planCount(state.originPlan.allowedOriginCount, 'allowedOriginCount',
-      'the plan carries no allowlist count for an observed pool to be compared against');
-    for (const reason of originStabilityRefusals(state.originPlan)) refusals.push(`E9: ${reason}`);
+    }
+    // The imported policy may compare the fields only after this caller has validated every numeric input.
+    if (planIsDomainValid) {
+      for (const reason of originStabilityRefusals(state.originPlan)) refusals.push(`E9: ${reason}`);
+    }
   }
 
   return refusals;
@@ -719,24 +812,27 @@ export function phase13ExitRefusals(results: Phase13Results, state: Phase13ExitS
   };
   const ceiling = (value: number | undefined, criterion: string, field: string, sentence: string,
     max: number): void => {
-    if (typeof value !== 'number') {
-      refusals.push(`${criterion} (${field}) was not measured, and an unmeasured figure is not a zero`);
+    if (!validNumeric('exit', field, value)) {
+      refusals.push(`${criterion} (${field}) was not measured as a finite nonnegative integer, and invalid `
+        + 'numeric evidence is not a zero');
       return;
     }
     if (value > max) refusals.push(`${criterion} (${field}): ${sentence} (${value}, budget ${max})`);
   };
 
   // X1 — THE WRAPPER'S OWN THREE RUNS, as the three numbers it produces rather than as a sentence.
-  if (typeof state.wrapperRunsCompleted !== 'number') {
+  if (!validNumeric('exit', 'wrapperRunsCompleted', state.wrapperRunsCompleted)) {
     refusals.push('X1 (wrapperRunsCompleted) was not measured: how many of the three runs completed is the '
-      + 'question, and an unmeasured count is not three');
+      + 'question, and only a finite nonnegative integer count can answer it');
   } else if (state.wrapperRunsCompleted < PHASE13_RULES.CONSECUTIVE_FRESH_RUNS) {
     refusals.push(`X1 (wrapperRunsCompleted): ${state.wrapperRunsCompleted} run(s) completed and §7 asks `
       + `for ${PHASE13_RULES.CONSECUTIVE_FRESH_RUNS}; two of three is not two thirds of three`);
   }
   ceiling(state.wrapperRunsSkipped, 'X1', 'wrapperRunsSkipped',
     'a run was skipped, and 77 is a skip rather than a pass', PHASE13_RULES.SKIPPED_RUNS_MAX);
-  if (state.wrapperExitStatus !== 0) {
+  if (!validNumeric('exit', 'wrapperExitStatus', state.wrapperExitStatus)) {
+    refusals.push('X1 (wrapperExitStatus) was not measured as a finite nonnegative integer status');
+  } else if (state.wrapperExitStatus !== 0) {
     refusals.push(`X1 (wrapperExitStatus): the wrapper answered ${String(state.wrapperExitStatus)} rather `
       + 'than 0, and any other status is a sequence this record may not read as three');
   }
