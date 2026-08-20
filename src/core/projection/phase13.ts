@@ -720,18 +720,22 @@ export function phase13EntryRefusals(state: Phase13EntryState): readonly string[
       ['allowedOriginCount', state.originPlan.allowedOriginCount,
         'a finite nonnegative integer allowlist count'],
     ] as const;
-    let planIsDomainValid = true;
+    const validatedPlan: Partial<Record<keyof OriginStabilityPlan, number>> = {};
     for (const [field, value, expected] of planFields) {
       if (!validNumeric('entry', `originPlan.${field}`, value)) {
-        planIsDomainValid = false;
-        refusals.push(`E9 (originPlan.${field}) was not measured as ${expected}; invalid numeric evidence is `
-          + 'not a satisfied origin-stability plan');
+        // The imported policy already owns explicit missing/invalid refusals for its three elapsed
+        // measurements. The two pool counts are its known gap, so this caller supplies those two messages.
+        if (field === 'observedPoolSize' || field === 'allowedOriginCount') {
+          refusals.push(`E9 (originPlan.${field}) was not measured as ${expected}; invalid numeric evidence is `
+            + 'not a satisfied origin-stability plan');
+        }
+      } else {
+        validatedPlan[field] = value;
       }
     }
-    // The imported policy may compare the fields only after this caller has validated every numeric input.
-    if (planIsDomainValid) {
-      for (const reason of originStabilityRefusals(state.originPlan)) refusals.push(`E9: ${reason}`);
-    }
+    // Invalid inputs are withheld from the imported policy, so it never compares one. Valid independent
+    // fields remain present: a missing age must not hide a valid seven-against-six pool refusal.
+    for (const reason of originStabilityRefusals(validatedPlan)) refusals.push(`E9: ${reason}`);
   }
 
   return refusals;

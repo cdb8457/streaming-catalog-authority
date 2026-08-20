@@ -831,6 +831,26 @@ test('THE DOMAIN REGISTRY IS AN EXACT STRUCTURAL SWEEP, not a hand-picked list o
   }
 });
 
+test('NUMERIC VALIDATION DOES NOT HIDE AN INDEPENDENT REFUSAL: the recorded entry state remains seven', () => {
+  const recorded: Phase13EntryState = {
+    ...ready(),
+    candidate: '2b151a348596cd8bd312e2ac6db43f3c5ea9bc3a',
+    operatorSecretsDistinctAndRestricted: undefined,
+    operatorConfirmedEntitledObjectByReference: undefined,
+    originRecheckExitStatus: undefined,
+    originRecheckAgeMinutes: undefined,
+    baselineTakenImmediatelyBefore: undefined,
+    allowedOriginCount: 6,
+    originPlan: { ...ready().originPlan!, originRecordAgeMinutes: undefined,
+      allowedOriginCount: 6, observedPoolSize: 7 },
+  };
+  const refusals = phase13EntryRefusals(recorded);
+  assertEq(refusals.length, 7, 'the seven recorded refusals changed');
+  assertEq(refusals.filter((one) => one.startsWith('E9')).length, 2,
+    'an invalid E9 age hid the independent pool-larger-than-allowlist refusal');
+  assertEq(phase13MayEnter(recorded), false, 'the recorded state authorised entry');
+});
+
 // ---------------------------------------------------------------------------------------------------------
 h.section('the document and the module say the same thing');
 // ---------------------------------------------------------------------------------------------------------
