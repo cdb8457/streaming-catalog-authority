@@ -916,3 +916,14 @@ continues to refuse closure. **PHASE 13 IS NOT RUN, NOT ENTERED, AND ENTRY IS NO
 CDN, resolver, indexer, NNTP server, media server or production container was contacted; no secret, endpoint,
 object, URL, origin, media identity or allowlist value was read, printed or retained; no allowlist was widened;
 and Phases 14 and 15 remain not entered.
+
+### 14.10 THE RECORD COMMIT, RE-MEASURED
+
+Phase 12 §13.13 records the measurement of record commit
+**`18ff5bc434461f34f03b6cb4fda2f2905c18cb77`**: typecheck passed, both supported shells passed the complete
+offline inventory at **339/339 with zero failures and zero required skips**, all seventeen focused controls
+passed, and the final read-only Tower shape remained 46/18/47 with zero Phase 12/13 residue and all five gate
+ports free. This is a documentation-integrity measurement, not a fourth sequence and not a Phase 13 run.
+
+The seven entry refusals remain two E5, two E7, one E8 and two E9. **PHASE 13 REMAINS NOT RUN, NOT ENTERED,
+AND ENTRY IS NOT AUTHORISED.**

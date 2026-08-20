@@ -1415,3 +1415,21 @@ seven fields: two E5, two E7, one E8 and two E9. No provider, CDN, resolver, ind
 or production container was contacted; no secret, endpoint, object, URL, origin, media identity or allowlist
 value was read, printed or retained. Phase 13 remains **NOT RUN, NOT ENTERED, AND ENTRY NOT AUTHORISED**;
 Phases 14 and 15 remain not entered.
+
+### 13.13 RECORD-COMMIT RE-MEASUREMENT — not a fourth sequence
+
+The commit carrying §13.12 and Phase 13 §14.9 is
+**`18ff5bc434461f34f03b6cb4fda2f2905c18cb77`**. It was measured with a clean tree after the three-sequence
+campaign and is counted in none of those sequences: `npx tsc --noEmit` passed; the full offline inventory
+passed **339/339, zero failed, 39 not selected, zero required-but-skipped** from Git Bash in 710 s and from an
+ordinary PowerShell in 710 s; and the seventeen focused Phase 8–13, provider-boundary, recovery, custody and
+embedded-program suites all passed.
+
+Their exact totals were 17/0, 39/0, 19/0, 31/0, 29/0, 39/0, 56/0, 29/0, 49/0, 42/0, 76/0, 75/0,
+84/0 with five win32 blocks skipped, 7/0, 52/0, 39/0 and 64/0. These include the inventory, ownership,
+no-soak, allowlist non-movement, redaction, residue, numeric-domain sweep and closure controls. A final
+read-only Tower shape check found 46 containers, 18 networks and 47 volumes; zero projection containers,
+appliance container, appliance network or staging-directory mount; and zero listeners on all five gate ports.
+
+This measurement closes nothing and authorises nothing. The next commit records these figures because a
+commit cannot contain measurements made against itself; no endless regress follows.
