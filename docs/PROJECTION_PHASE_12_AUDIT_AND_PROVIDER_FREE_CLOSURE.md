@@ -1327,3 +1327,32 @@ staging directory, all five gate ports free, and `endpoint.json` absent under th
 campaign's own host-side runner script and its three transcripts, and the eight per-arm gate logs it wrote
 under `/mnt/user/appdata`, were read off the host and **deleted**; `/root` holds nothing dated later than
 2026‑08‑15.
+
+### 13.10 THE RE-MEASUREMENT ON THE RECORD COMMIT, WHICH IS NOT A FOURTH SEQUENCE
+
+**IT CLOSES NOTHING AND IS COUNTED IN NOTHING**, exactly as §13.6 is. The host tier was **not** re-run and no
+figure in §13.9 depends on it. Its only job is to show that the documentation edits carrying §13.9 and Phase
+13 §14.6 leave every suite that reads them green.
+
+**The commit measured is `5d80dd01460903953310e55bb9530671196747c5`.**
+
+| | |
+|---|---|
+| `npx tsc --noEmit` | **clean**, 10 s |
+| full offline inventory, **Git Bash** | **339 / 339 / 0 failed / 39 not selected / 0 required-but-skipped**, 777 s — `RESULT: PASS` |
+| full offline inventory, **an ordinary PowerShell** | **339 / 339 / 0 / 39 / 0**, 782 s — `RESULT: PASS` |
+| `projection-phase8-gate-audit` / `projection-phase9` / `projection-phase9-gate-audit` | 17/0 · 39/0 · 19/0 |
+| `projection-phase10` / `projection-phase10-gate-audit` | 31/0 · 29/0 |
+| `projection-phase11` / `projection-phase11-gate-audit` / `projection-phase12` | 39/0 · 56/0 · 29/0 |
+| `projection-phase13` / `projection-phase13-preentry` / `projection-phase13-preentry-gate-audit` | **42/0** · 42/0 · 76/0 |
+| `projection-real-provider` / `torbox-resolver` / `torbox-boundary` | 75/0 · 84/0 (5 win32 blocks skipped) · 7/0 |
+| `projection-bounded-recovery` — the OPERATOR SOURCE DIGEST | 52/0, **unmoved** |
+| `custody-runtime-closure` / `projection-gate-embedded-programs` | 39/0 · 64/0 |
+| working tree, entering and leaving | clean / clean |
+| `phase9RequiresSoakRerun` over every path changed since `a8d7232` (26), `fe4c1fd` (12), `cdbad42` (5) and `b676b58` (5) | **FALSE** on all four; **zero** `projectiond/` files changed |
+| the eight provider source allowlist suites, diffed since `a8d7232` | **zero moved** |
+
+**AND THE REGRESS ENDS HERE, FOR §13.6's REASON.** The tree carrying §13.9 cannot also carry the figures
+produced by running against §13.9, so the record commit is measured and its figures land in the next commit,
+which names the tree they belong to. **A third commit measuring the second is not taken, and would prove
+nothing the second does not.**

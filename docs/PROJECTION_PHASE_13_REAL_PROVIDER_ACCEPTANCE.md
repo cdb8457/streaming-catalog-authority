@@ -814,3 +814,32 @@ two stays OPEN. Phase 10, Phase 11 tier one and Phase 12's `a8d7232` record stay
 record stays exactly as written and is superseded only as a **candidate**, never as a record. **Phase 14 and
 Phase 15 are NOT ENTERED and no work of theirs was begun.** `phase9RequiresSoakRerun` is **FALSE** over every
 path this branch touches; **zero** provider source allowlists moved; **zero** `projectiond/` files changed.
+
+### 14.7 The record commit, measured, and what is left on the host
+
+Phase 12 §13.10 carries it: the commit that added §14.6 above — `5d80dd0` — was re-measured. **`npx tsc
+--noEmit` clean**, the **full offline inventory 339 / 339 / 0 failed / 39 not selected / 0
+required-but-skipped from Git Bash AND from an ordinary PowerShell**, `RESULT: PASS` on both, **seventeen
+suites green one by one** including all four gate audits and both Phase 13 suites, the soak trigger **FALSE**
+over every path changed since `a8d7232`, `fe4c1fd`, `cdbad42` and `b676b58`, **zero** `projectiond/` files,
+and **zero** of the eight provider source allowlists moved. The working tree was clean entering and leaving.
+
+**IT CLOSES NOTHING.** It shows that the documentation edits carrying this record leave every suite that reads
+them green, and Phase 12 §13.9 records exactly what is left on the host.
+
+#### What is left on the host, measured after everything
+
+| what | measured |
+|---|---|
+| containers / networks / volumes | **46 / 18 / 47**, identical to how the campaign found them |
+| `projection-*` containers; appliance container; appliance network | **0 / 0 / 0** |
+| mountpoints under the staging directory | **0** |
+| ports 5670 / 5680 / 8300 / 5580 / 8140 | **all five free** |
+| `/mnt/user/appdata/catalog-phase13-preentry-authorization` | **125 MB** — this campaign's staging directory, holding the new candidate |
+| `/mnt/user/appdata/catalog-phase12-closure` | **125 MB** — §10.8's, untouched |
+| `projectiond:phase13prep-frozen` / `projectiond:phase12-frozen` | 10.3 MB each, **both `sha256:216f1ae6…`** |
+| `golang:1.26` | **874 MB, re-pulled** by this campaign — all three preflights reported it ABSENT. An image is not a container, a network or a volume |
+| `endpoint.json` under the appliance's own path | **absent**, before and after every sequence |
+| the campaign's own artefacts — one host-side runner script, three transcripts, eight per-arm gate logs | **read off the host and deleted.** `/root` holds nothing dated later than 2026‑08‑15, which is an earlier campaign |
+
+**PHASE 13 IS STILL NOT RUN AND NOT ENTERED, AND ENTRY IS STILL NOT AUTHORISED.**
