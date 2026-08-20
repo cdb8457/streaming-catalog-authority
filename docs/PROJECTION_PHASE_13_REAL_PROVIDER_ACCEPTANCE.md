@@ -529,6 +529,8 @@ paths out of this table, unions them with the module's list, and runs `phase9Req
 | `test/projection-phase13-preentry.ts` | modified | the fail-closed git-driven ownership check, the post-candidate ownership union, and the §10.3 ↔ §11 agreement check |
 | `test/projection-phase13-preentry-gate-audit.ts` | modified | the driven controls for N4, N5, N6 and N7, and the regression for the `grep -c` defect |
 | `test/projection-real-provider.ts` | modified | its run-id pins follow the derivation |
+| `src/ops/projection-emby-dataplane.ts` | modified | the provider-free validation repair: `docker run` may use an already-local image only and cannot resolve a missing image through a registry |
+| `test/projection-emby-dataplane.ts` | modified | the offline missing-image control is rejected locally by Docker's argument parser, and structurally pins `--pull=never`, so the suite cannot contact or wait on a registry |
 | `test/suite-inventory.json` | modified | the new offline suite |
 | `package.json` | modified | the new scripts. **No existing script's meaning changes** |
 
