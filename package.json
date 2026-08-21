@@ -746,6 +746,10 @@
     "test:phase12": "tsx src/ops/test-runner-cli.ts --group offline --filter phase12",
     "test:phase13-preentry": "tsx src/ops/test-runner-cli.ts --group offline --filter phase13-preentry",
     "test:phase13": "tsx src/ops/test-runner-cli.ts --group offline --filter projection-phase13.ts",
+    "test:projection-phase14": "tsx test/projection-phase14.ts",
+    "ops:projection-phase14-preflight": "tsx src/ops/projection-phase14-preflight-cli.ts",
+    "test:projection-phase15": "tsx test/projection-phase15.ts",
+    "ops:projection-phase15-plan": "tsx src/ops/projection-phase15-plan-cli.ts",
     "go:preentry-readiness": "bash deploy/projection-preentry-readiness.sh"
   },
   "dependencies": {

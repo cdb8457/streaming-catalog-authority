@@ -1688,6 +1688,14 @@
     {
       "file": "projection-phase13-preentry-gate-audit.ts",
       "group": "offline"
+    },
+    {
+      "file": "projection-phase14.ts",
+      "group": "offline"
+    },
+    {
+      "file": "projection-phase15.ts",
+      "group": "offline"
     }
   ]
 }

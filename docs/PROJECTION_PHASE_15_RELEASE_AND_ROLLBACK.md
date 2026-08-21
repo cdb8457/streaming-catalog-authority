@@ -44,3 +44,14 @@ No second host, high availability, uptime/load figure, automatic source failover
 selection policy, instant Usenet streaming or Real-Debrid support is introduced. Live-provider entry and an
 operator maintenance window remain separately authorised actions.
 
+## 5. File ownership
+
+| Path | New or modified | Purpose |
+|---|---|---|
+| `docs/PROJECTION_PHASE_15_RELEASE_AND_ROLLBACK.md` | new | release-control contract and ownership record |
+| `src/core/projection/phase15.ts` | new | entry, planning, soak-decision and closure rules |
+| `src/ops/projection-phase15-plan-cli.ts` | new | value-silent release planner command |
+| `test/projection-phase15.ts` | new | entry, numeric-domain, soak, review, document and CLI controls |
+| `package.json` | modified | named Projection Phase 14 and 15 test and operator commands |
+| `test/suite-inventory.json` | modified | two new offline suites |
+| `docs/PROJECTION_ROADMAP.md` | modified | explicit preflight/control-plane status without a live-run claim |

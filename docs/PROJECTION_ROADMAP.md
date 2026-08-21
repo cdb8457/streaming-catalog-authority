@@ -176,6 +176,14 @@ The active product scope is **TorBox plus Usenet**. Projection Phase 9 is define
 repaired and unpacked outside `projectiond`, and only completed, verified regular files are admitted into
 the existing manifest and projection path. Real-Debrid is outside that phase's closure rule.
 
+Projection Phase 14 now supplies the all-or-nothing, boolean-only operator preflight required by
+`PROJECTION_PHASE_12_AUDIT_AND_PROVIDER_FREE_CLOSURE.md` section 12.2. It is **PREFLIGHT ONLY**: Phase 14
+has not run or entered, and every eligible claim remains open. Projection Phase 15 now supplies the
+provider-free release planner and fail-closed closure predicate required by section 12.3. It reuses the
+existing package, install, upgrade, rollback and soak-decision surfaces; it has **not** run or closed. See
+`docs/PROJECTION_PHASE_14_USENET_MIXED_ACCEPTANCE.md` and
+`docs/PROJECTION_PHASE_15_RELEASE_AND_ROLLBACK.md`.
+
 **HISTORICALLY — SUPERSEDED.** *There is no Phase 2 in this document. Writing one now would be a guess, and
 a guess in a roadmap is how a product acquires thirty phases of scaffolding around a thing that has never
 run.* That sentence was correct for exactly as long as the slice had never run end to end, and it is

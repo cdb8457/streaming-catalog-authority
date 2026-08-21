@@ -35,7 +35,7 @@ which claims it unblocks and how the operator can confirm the shape without disc
 
 The only claims a later authorised Phase 14 run may close are `P9-2`, `P9-3`, `P9-5`, `P9-11`, `P11-R1`,
 `P11-R2`, `P11-R4`, and conditionally `P11-R3`. `P11-R3` stays open unless a real outage happens or can be
-waited for; this product never induces an outage on the operator's account.
+waited for; an outage is never induced on the operator's account.
 
 The required windows are an operator window with the worker, both approved sources and all three media
 servers available; a retention window for the entitled content; and, only for `P11-R3`, a naturally
@@ -48,3 +48,11 @@ missing confirmation identifiers, their fixed descriptions, all eight still-open
 and explicit `contactsMade: 0`, `valuesEchoed: false`, `claimsClosed: []`, `phase14Entered: false` fields.
 `READY` means only that the shapes required to ask for separate live-run authorization are present.
 
+## 5. File ownership
+
+| Path | New or modified | Purpose |
+|---|---|---|
+| `docs/PROJECTION_PHASE_14_USENET_MIXED_ACCEPTANCE.md` | new | preflight contract and ownership record |
+| `src/core/projection/phase14.ts` | new | closed boolean descriptor, requirements and value-silent report |
+| `src/ops/projection-phase14-preflight-cli.ts` | new | operator preflight command |
+| `test/projection-phase14.ts` | new | entry, schema, redaction, document and CLI controls |
