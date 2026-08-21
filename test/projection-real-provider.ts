@@ -668,13 +668,13 @@ async function main(): Promise<void> {
     // run of a gate — and, for the TorBox compose file, by two different gates — so a `down` from one run
     // reached another's containers and volumes.
     assert(/^name: projection-real-provider-gate$/m.test(compose), 'its own Compose project name');
-    assert(/COMPOSE_PROJECT="projection-rp-gate-\$\$"/.test(gate), 'and a per-run project on top of it');
-    assert(/NETWORK="projection-real-provider-gate-\$\$"/.test(gate), 'and a per-run network');
+    assert(/COMPOSE_PROJECT="projection-rp-gate-\$\{RUN_ID\}"/.test(gate), 'and a per-run project on top of it');
+    assert(/NETWORK="projection-real-provider-gate-\$\{RUN_ID\}"/.test(gate), 'and a per-run network');
     // COMMENTS STRIPPED, because the repair EXPLAINS the flag it removed and a raw scan would read the
     // explanation as the thing being explained.
     assert(!/down -v --remove-orphans/.test(gate.replace(/^\s*#.*$/gm, '')),
       'and no teardown that removes containers this compose file does not name');
-    assert(/MOUNT_CONTAINER="projection-rp-mount-\$\$"/.test(gate), 'pid-scoped container names');
+    assert(/MOUNT_CONTAINER="projection-rp-mount-\$\{RUN_ID\}"/.test(gate), 'pid-scoped container names');
     assert(/GATE_ROOT="\$PWD\/\.projection-real-provider-gate"/.test(gate), 'its own gate root');
     assert(!/\/mnt\/user\/media|appdata\/catalog\/repo/.test(gate),
       'the gate must not name a production path');
@@ -1312,7 +1312,7 @@ async function main(): Promise<void> {
       'the trap does not stand down once the success path has cleaned up and asserted it');
 
       // THE FOREIGN-DIRECTORY COUNT MUST NOT SWALLOW THE EVIDENCE DIRECTORY IT NOW SITS BESIDE.
-      assert(/-name 'run-\*' ! -name "run-\$\$"/.test(gate),
+      assert(/-name 'run-\*' ! -name "run-\$\{RUN_ID\}"/.test(gate),
         'the foreign run-directory count would include the evidence directory');
     });
 
