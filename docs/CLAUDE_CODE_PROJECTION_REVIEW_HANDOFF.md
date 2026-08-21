@@ -4,6 +4,7 @@
 
 This file is the review entry point for a Claude Code session that needs to understand the projection
 appliance work in this repository without inheriting an earlier coordinator's private context.
+The definitive end goal and its measurable finish line are in **section 2.3**.
 
 Review target:
 
@@ -94,6 +95,164 @@ Do not collapse these during review:
 
 Provider access URLs, signed URLs, tokens and leases are ephemeral transport material. They are not
 manifest identity and must not cause a new namespace generation during ordinary renewal.
+
+### 2.3 End goal — Spec-Ops product definition
+
+#### 2.3.1 Mission
+
+Build and ship a **rough-edged but dependable self-hosted Unraid projection appliance** that lets an operator
+use TorBox and completed-file Usenet content as one ordinary media library in Plex, Jellyfin and Emby.
+
+The operator should not need to understand provider URLs, FUSE internals, manifest generations, database
+rows or developer-only TypeScript commands during normal use. They install the appliance, register or admit
+content through shipped operator commands, publish it, point their already-attached media servers at one
+stable read-only path, and play it.
+
+“Rough-edged” permits a command-line workflow, explicit configuration and documented limitations. It does
+not permit lost content, duplicate Usenet submissions, disappearing libraries, unstable file identity,
+secret leakage, a mount that only the daemon can see, or an upgrade with no proven rollback.
+
+The target is a usable product an operator can run soon, not an endless sequence of documentation phases.
+Every remaining phase must remove a concrete obstacle between the current alpha and this operator outcome.
+
+#### 2.3.2 End-state operator story
+
+An operator can complete this story using only shipped artifacts, runbooks and commands:
+
+1. Install or upgrade the appliance on a supported Unraid host.
+2. Run preflight and receive a precise actionable refusal if the host, mount propagation, secret file,
+   source worker or media-server attachment is not ready.
+3. Start one appliance that solely owns one projection mount.
+4. Add an entitled TorBox object by stable reference without storing or exposing its ephemeral access URL.
+5. Submit or reconcile an operator-approved Usenet source through SABnzbd without exposing the source or
+   credential, and admit it only after completion and byte proof.
+6. Publish one generation containing both source kinds.
+7. See ordinary read-only regular files at stable paths through Plex, Jellyfin and Emby.
+8. Scan, seek and play the TorBox-backed and Usenet-backed entries from all three media servers.
+9. Continue seeing the last admitted namespace through a control-plane outage, Usenet outage or transient
+   provider failure instead of seeing mass deletion.
+10. Recover from the bounded mount failures the product claims to handle without re-binding or restarting
+    the media servers.
+11. Inspect status and diagnostics that distinguish healthy, blocked, degraded and recovery states without
+    revealing provider or media identity.
+12. Upgrade and roll back through shipped commands, restoring the prior readable bytes and host topology.
+13. Stop the appliance and clean up phase-owned test/release resources without deleting operator media,
+    worker history or unrelated containers, networks, volumes or mounts.
+
+If any step needs an undocumented hand-run development command, a second daemon, an allowlist edit during
+the run, a secret pasted into argv, or a manual media-server rebind, the end goal is not met.
+
+#### 2.3.3 Product requirements
+
+| id | Requirement | Observable acceptance |
+|---|---|---|
+| `EG-P01` | One stable library path | Plex, Jellyfin and Emby observe the same projection namespace through their existing pre-attached binds |
+| `EG-P02` | Ordinary read-only files | consumers observe regular files; mutations are refused by the filesystem with `EROFS` |
+| `EG-P03` | TorBox usability | an entitled stable object reference resolves and reads byte-correctly through the production mount without exposing the access URL |
+| `EG-P04` | Usenet usability | a real SABnzbd/NNTP job completes, is proved, admitted exactly once and becomes readable through the same mount |
+| `EG-P05` | Mixed generation | at least one TorBox-backed entry and one admitted Usenet local entry coexist in one published generation |
+| `EG-P06` | Three-server playback | Plex, Jellyfin and Emby each scan, seek and play both source kinds through their own runtime identities |
+| `EG-P07` | Stable identity | ordinary provider resolution/lease renewal does not rename, resize, re-inode or republish the entry |
+| `EG-P08` | Explicit content operations | install, lifecycle, content admission, publication, status and diagnostics use shipped operator surfaces rather than developer commands |
+
+#### 2.3.4 Reliability requirements
+
+| id | Requirement | Observable acceptance |
+|---|---|---|
+| `EG-R01` | Unavailability is not absence | a failed provider/worker/control-plane observation cannot publish an empty or shortened namespace |
+| `EG-R02` | Last-known-good continuity | `projectiond` continues serving the last admitted generation while the control plane is unavailable |
+| `EG-R03` | Bad successor refusal | invalid pointer/artifact length, digest, schema or succession leaves the current generation undisturbed |
+| `EG-R04` | Bounded mount recovery | every declared recoverable mount fault returns the existing consumer namespace within its precommitted Phase 7/8 budget |
+| `EG-R05` | Correct foreign-mount refusal | the appliance never unmounts or adopts a mount whose ownership identity is not its own |
+| `EG-R06` | Consumer continuity | a recovery, appliance restart or operator cycle does not require Plex, Jellyfin or Emby to be restarted or rebound |
+| `EG-R07` | Usenet exactly-once | process/host restart does not resubmit a reserved or submitted job and does not lose an admitted entry |
+| `EG-R08` | Cross-source isolation | a Usenet failure moves nothing about TorBox visibility/identity, and a TorBox failure does not unpublish an admitted Usenet file |
+| `EG-R09` | Upgrade rollback | rollback restores a readable namespace whose bytes match the pre-upgrade baseline |
+| `EG-R10` | Zero cleanup residue | successful test/release sequences leave zero phase-owned mounts, transient resources or run directories |
+
+#### 2.3.5 Safety and privacy requirements
+
+| id | Requirement | Observable acceptance |
+|---|---|---|
+| `EG-S01` | Secret custody | provider and SABnzbd credentials come from restrictive files and never enter argv, manifests, logs, reports or metric labels |
+| `EG-S02` | Identity-safe evidence | preserved output contains no provider reference, NZB/indexer URL, article id, completed source path or media identity |
+| `EG-S03` | No destructive content cleanup | no shipped phase command deletes completed operator media, SABnzbd history or operator input |
+| `EG-S04` | No policy mutation to pass a gate | origin allowlists and credentials remain unchanged during measured acceptance |
+| `EG-S05` | One authority and one owner | PostgreSQL/control plane remains catalog authority and `projection-alpha.sh` remains sole runtime mount owner |
+| `EG-S06` | Honest evidence | skip, blocked, not-run and natural-window-unavailable states are never folded into pass |
+
+#### 2.3.6 Operator and release requirements
+
+| id | Requirement | Observable acceptance |
+|---|---|---|
+| `EG-O01` | Installable artifact | one versioned, digest-pinned candidate can be installed from its shipped bundle on the supported host |
+| `EG-O02` | Actionable preflight | every refusal names the missing shape and next safe action without asking for its secret value |
+| `EG-O03` | Actionable status | the operator can distinguish service liveness, mount readiness, source/admission state and bounded recovery lockout |
+| `EG-O04` | Literal runbook | acceptance can be completed by following the shipped runbook with zero undocumented commands and zero emergency interventions |
+| `EG-O05` | Reproducible candidate | the release bundle and image reproduce from one frozen commit and immutable digest |
+| `EG-O06` | Proven rollback | install, upgrade and rollback preserve unrelated host resource membership and restore the prior namespace |
+| `EG-O07` | Independent acceptance | a reviewer who did not build the tranche records findings and accepts the candidate |
+| `EG-O08` | Supported-scope clarity | release material states exactly: TorBox, completed-file Usenet, Plex, Jellyfin, Emby, one supported Unraid topology and all known limitations |
+
+#### 2.3.7 Spec-Ops execution rules
+
+The remaining program is operated as a closed feedback loop:
+
+```text
+specify observable -> freeze thresholds and ownership -> build minimal path
+-> attack it offline -> rehearse provider-free -> run authorised real evidence
+-> review independently -> repair with a regression control -> repeat or release
+```
+
+For every requirement:
+
+- **Spec authority:** the owning projection phase document and executable contract are named before work.
+- **Operational owner:** one shipped command owns the mutation; test gates compose it rather than duplicate it.
+- **Telemetry/evidence:** reports use closed-set labels and counts, never raw identities or upstream errors.
+- **Failure policy:** FAIL means the product/instrument contradicted a declared assertion; BLOCKED means an
+  external window or authorised input is unavailable; SKIP means the host lacks a declared capability;
+  NOT RUN means no evidence exists.
+- **Recovery policy:** automation may act only on resources whose exact ownership it proves at the instant of
+  mutation; otherwise it refuses and preserves the foreign resource.
+- **Change policy:** a change to shared mount, recovery, cache or operator source invokes
+  `phase9RequiresSoakRerun(actualChangedPaths)` and pays the resulting soak cost.
+- **Release policy:** a phase closes only through its executable closure predicate over complete evidence
+  from one frozen candidate. Prose does not override the function.
+
+#### 2.3.8 Definition of “shippable rough-edged beta”
+
+The immediate end goal is met when all of the following are true together:
+
+1. Projection Phase 13 has real TorBox GO from one frozen candidate, zero skips.
+2. Projection Phase 14 has demonstrated the real completed-file Usenet and mixed three-server path three
+   consecutive fresh times. If `P11-R3` cannot run because no natural outage occurs, it remains explicitly
+   open with its required window; no outage is induced and no claim is invented.
+3. Projection Phase 15's packaging, install, upgrade, rollback, literal smoke, conditional soak, sequence and
+   independent-review conditions all close through `phase15ClosureProblems`.
+4. The produced candidate is installable by the operator from the shipped artifact and runbook.
+5. The supported-scope and limitation matrix is published beside it.
+6. There are zero known severity-one correctness, data-loss, library-disappearance, foreign-unmount,
+   rollback-corruption or secret-disclosure findings.
+
+This finish line intentionally allows documented usability roughness and lower-severity limitations. It does
+not require every optional future capability.
+
+#### 2.3.9 Explicitly outside the end goal
+
+The product does **not** have to provide any of the following to ship the rough-edged beta:
+
+- Real-Debrid;
+- instant Usenet article streaming through FUSE;
+- indexer search or automatic content selection;
+- automatic source failover;
+- a second host, clustering or high availability;
+- an uptime percentage, load rating or universal performance guarantee;
+- a second frontend or a polished graphical setup wizard;
+- automatic deletion of provider, worker or operator content;
+- support for every NAS/Linux topology.
+
+These may become later products or later contracts. They are not reasons to postpone the usable
+TorBox-plus-Usenet finish line.
 
 ---
 
@@ -540,9 +699,10 @@ exit, refusals, ownership and invalidation rules.
 
 **Entry:** Phase 15 GO and independent acceptance.
 
-**Goal:** turn the accepted candidate into one versioned, digest-pinned beta artifact and Unraid installation
-path using existing release machinery. Prove clean install, upgrade from the last supported alpha, rollback,
-fresh-host preflight and documentation from the actual bundle.
+**Goal:** promote the already installable Phase 15 candidate from the immediate operator finish line into a
+versioned beta distribution for additional operators, using existing release machinery. Prove clean install,
+upgrade from the last supported alpha, rollback, fresh-host preflight and documentation from the exact
+distributed bundle.
 
 **Refusals:** no new provider, no automatic indexer/search policy, no second installer, no silent migration,
 no claim of general availability.
